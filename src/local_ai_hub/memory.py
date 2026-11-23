@@ -71,7 +71,7 @@ class WorkspaceMemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=0.75)
+        return connect_sqlite(self.path, timeout_seconds=5.0)
 
     def _init_db(self) -> None:
         if self._initialized:

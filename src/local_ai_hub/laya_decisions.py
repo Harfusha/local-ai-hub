@@ -21,6 +21,8 @@ class DecisionCategory(StrEnum):
     DELEGATION = "delegation"
     COMPLETION_GAP = "completion_gap"
     WATCHDOG = "watchdog"
+    RETRIEVAL_STRATEGY = "retrieval_strategy"
+    SUBAGENT_BUDGET = "subagent_budget"
 
 
 class DecisionMode(StrEnum):
@@ -93,6 +95,8 @@ _CATEGORY_OPTIONS = {
     DecisionCategory.WATCHDOG: frozenset(
         {"recommend_continue", "recommend_stop", "recommend_human_review"}
     ),
+    DecisionCategory.RETRIEVAL_STRATEGY: frozenset({"ast_graph", "lexical_bm25", "dense_rag", "hybrid"}),
+    DecisionCategory.SUBAGENT_BUDGET: frozenset({"single_agent", "parallel_split", "swarm"}),
 }
 _CATEGORY_INSTRUCTIONS = {
     DecisionCategory.CONTEXT_SOURCE: "Choose the next authorized context source or evidence action.",
@@ -103,6 +107,8 @@ _CATEGORY_INSTRUCTIONS = {
     DecisionCategory.DELEGATION: "Choose a review or bounded-delegation recommendation; do not execute it.",
     DecisionCategory.COMPLETION_GAP: "Choose the missing verification or review recommendation.",
     DecisionCategory.WATCHDOG: "Choose a watchdog recommendation; do not stop or continue the task.",
+    DecisionCategory.RETRIEVAL_STRATEGY: "Choose the optimal retrieval backend strategy (ast_graph, lexical_bm25, dense_rag, hybrid).",
+    DecisionCategory.SUBAGENT_BUDGET: "Choose the subagent decomposition budget (single_agent, parallel_split, swarm).",
 }
 _REASON_CODES = frozenset(
     {

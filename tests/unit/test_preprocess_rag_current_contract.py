@@ -133,6 +133,34 @@ def test_rag_idle_requeues_semantic_paths_missing_from_workspace(prep, tmp_path)
         assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] is None
 
 
+def test_rag_reconciles_missing_synced_paths_while_other_paths_are_pending(prep, tmp_path):
+    root = str(tmp_path)
+    prep.cfg["rag_files_per_step"] = 1
+    prep.deterministic = Mock()
+    prep.deterministic.semantic_needed.return_value = True
+    prep.rag.indexed_paths.return_value = set()
+    prep.rag.index_paths_step.return_value = {"success": True, "processed_paths": ["pending.py"]}
+    (tmp_path / "pending.py").write_text("cached text", encoding="utf-8")
+    (tmp_path / "service.py").write_text("def service(): pass\n", encoding="utf-8")
+    add_pending(prep, root, "pending.py")
+    with closing(prep._connect()) as con:
+        con.execute(
+            "INSERT INTO file_refs VALUES(?,?,?,0,?,0,1,0)",
+            (root, "service.py", "synced-hash", "synced-hash"),
+        )
+        con.commit()
+
+    assert prep._step_rag({"root": root, "workspace": "repo-workspace"})
+
+    prep.rag.indexed_paths.assert_called_once_with(
+        workspace="repo-workspace", paths=["service.py"],
+    )
+    with closing(prep._connect()) as con:
+        hashes = dict(con.execute("SELECT path,rag_hash FROM file_refs"))
+    assert hashes["service.py"] is None
+    assert hashes["pending.py"] == "current-hash"
+
+
 def test_declarative_skip_removes_stale_paths_and_marks_synced(prep, tmp_path):
     root = str(tmp_path)
     add_pending(prep, root, "settings.json")

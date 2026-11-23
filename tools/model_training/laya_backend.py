@@ -453,8 +453,8 @@ def _require_laya(device: str) -> Any:
         import laya
     except ImportError as exc:
         raise RuntimeError("Laya backend needs the pinned optional dependency; install requirements-laya.txt") from exc
-    if getattr(laya, "__version__", None) != "0.4.30":
-        raise RuntimeError(f"Laya backend requires laya==0.4.30; found {getattr(laya, '__version__', 'unknown')}")
+    if getattr(laya, "__version__", None) not in ("0.4.30", "0.4.31"):
+        raise RuntimeError(f"Laya backend requires laya==0.4.30 or 0.4.31; found {getattr(laya, '__version__', 'unknown')}")
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested for Laya but torch.cuda.is_available() is false; no CPU fallback")
     return laya

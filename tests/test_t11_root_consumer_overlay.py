@@ -92,9 +92,9 @@ def test_custom_extensions_and_project_size_policy_reach_all_rag_entrypoints(
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(root=str(root), root=str(root), workspace=workspace)
+        result = store.index(root=str(root),  workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(root=str(root), root=str(root), workspace=workspace, max_files=10)
+        result = store.index_step(root=str(root),  workspace=workspace, max_files=10)
     else:
         result = store.index_paths_step(
             str(root), workspace=workspace,
@@ -123,7 +123,7 @@ def test_explicit_index_path_cannot_resurrect_rag_ignored_directory(tmp_path: Pa
     assert _stored_paths(store, workspace) == {"generated/keep.py"}
 
     rag_config["ignore_dirs"] = ["generated"]
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["generated/keep.py"])
+    result = store.index_paths_step(root=str(root),  workspace=workspace, paths=["generated/keep.py"])
 
     assert result["success"] is True
     assert _stored_paths(store, workspace) == set()
@@ -176,7 +176,7 @@ def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_row
     }
     embedder = ConfigIdentityEmbedder()
     first = RAGStore(first_config, services=embedder)
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root),  workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         before_rows = con.execute(
             "SELECT path,content_hash,text,embedding,embedding_space FROM chunks WHERE workspace=?",

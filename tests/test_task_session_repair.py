@@ -8,7 +8,7 @@ import pytest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.operation_contracts import validate_operation_arguments
 
 
@@ -16,15 +16,15 @@ def test_session_repair_preserves_task_and_refuses_rebinding(tmp_path: Path):
     store = TaskStore(AgentStateStore(str(tmp_path / "state.db")))
     original = store.create(GoalContract(goal="repair"), ScopeContext(repository_id="repo"), repo_root=str(tmp_path))
     with pytest.raises(ValueError, match="owner"):
-        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="other")
+        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), actor="other")
     with pytest.raises(ValueError, match="root"):
         store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path / "other"), actor="agent")
     with pytest.raises(ValueError, match="session_id"):
-        store.repair_missing_session(original.task_id, session_id="bad\x00id", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+        store.repair_missing_session(original.task_id, session_id="bad\x00id", repo_root=str(tmp_path), actor="agent")
     with pytest.raises(Exception, match="budget"):
-        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="agent", response_budget_tokens=1)
+        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), actor="agent", response_budget_tokens=1)
     assert store.get(original.task_id).context.session_id == ""
-    repaired = store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+    repaired = store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), actor="agent")
     assert repaired.task_id == original.task_id
     assert repaired.context.session_id == "session-1"
     assert repaired.contract == original.contract
@@ -33,7 +33,7 @@ def test_session_repair_preserves_task_and_refuses_rebinding(tmp_path: Path):
     events = store.state_store.events(f"task:{original.task_id}")
     assert [(event.kind, event.payload.get("session_id")) for event in events if event.kind == "task.session_repaired"] == [("task.session_repaired", "session-1")]
     with pytest.raises(ValueError):
-        store.repair_missing_session(original.task_id, session_id="session-2", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+        store.repair_missing_session(original.task_id, session_id="session-2", repo_root=str(tmp_path), actor="agent")
 
 
 def test_session_repair_broker_requires_write_authority(tmp_path: Path):
@@ -42,9 +42,9 @@ def test_session_repair_broker_requires_write_authority(tmp_path: Path):
     broker = object.__new__(CommandBroker)
     broker.task_store = store
     with pytest.raises(PermissionError):
-        broker.repair_task_session(task.task_id, root=str(tmp_path), root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="api_token", authorization_permissions=frozenset({"read"}))
+        broker.repair_task_session(task.task_id, root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="api_token", authorization_permissions=frozenset({"read"}))
     assert store.get(task.task_id).context.session_id == ""
-    repaired = broker.repair_task_session(task.task_id, root=str(tmp_path), root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="local", authorization_permissions=frozenset())
+    repaired = broker.repair_task_session(task.task_id, root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="local", authorization_permissions=frozenset())
     assert repaired.context.session_id == "session-1"
 
 
@@ -53,7 +53,7 @@ def test_session_repair_rejects_failed_tasks(tmp_path: Path):
     task = store.create(GoalContract(goal="repair"), ScopeContext(repository_id="repo"), repo_root=str(tmp_path))
     store.fail(task.task_id, actor="agent", reason="failed")
     with pytest.raises(ValueError, match="status"):
-        store.repair_missing_session(task.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+        store.repair_missing_session(task.task_id, session_id="session-1", repo_root=str(tmp_path), actor="agent")
 
 
 def test_competing_repairs_commit_at_most_one_session(tmp_path: Path, monkeypatch):
@@ -70,7 +70,7 @@ def test_competing_repairs_commit_at_most_one_session(tmp_path: Path, monkeypatc
 
     def repair(session):
         try:
-            return store.repair_missing_session(task.task_id, session_id=session, repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+            return store.repair_missing_session(task.task_id, session_id=session, repo_root=str(tmp_path), actor="agent")
         except Exception as exc:
             return exc
 
@@ -90,7 +90,7 @@ def test_mcp_forwards_session_repair(monkeypatch, tmp_path: Path):
     from local_ai_hub import mcp_server
     calls = []
     monkeypatch.setattr(mcp_server.CLIENT, "coord", lambda **kwargs: calls.append(kwargs) or {"success": True})
-    mcp_server.local_ai_coord(action="task_repair_session", root=str(tmp_path), root=str(tmp_path), task_id="task-1", session_id="session-1", reason="repair")
+    mcp_server.local_ai_coord(action="task_repair_session", root=str(tmp_path), task_id="task-1", session_id="session-1", reason="repair")
     assert calls[0]["action"] == "task_repair_session"
     assert calls[0]["session_id"] == "session-1"
     assert calls[0]["reason"] == "repair"

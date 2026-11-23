@@ -1,11 +1,14 @@
 from pathlib import Path
 from contextlib import closing
 from unittest.mock import MagicMock
+import pytest
+
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
 
 
-def test_proactive_git_seeding_when_evidence_empty(tmp_path: Path):
+@pytest.mark.parametrize("fail_single_file", [False, True])
+def test_proactive_git_seeding_splits_timeouts_and_keeps_progress(tmp_path: Path, fail_single_file: bool):
     root = tmp_path / "repo"
     root.mkdir()
     (root / "main.py").write_text("import helper\n", encoding="utf-8")
@@ -23,7 +26,15 @@ def test_proactive_git_seeding_when_evidence_empty(tmp_path: Path):
 
     code_index = MagicMock()
     code_index.files_needing_reindex.side_effect = lambda root, refs: refs
-    code_index.update_files_batch.return_value = {"files_processed": 2}
+    calls = []
+
+    def update_files_batch(_root, items):
+        calls.append([path for path, _digest in items])
+        if len(items) > 1 or (fail_single_file and len(calls) == 3):
+            raise TimeoutError
+        return {"files_processed": 1}
+
+    code_index.update_files_batch.side_effect = update_files_batch
     code_index.prune.return_value = {"success": True}
 
     prep = ProjectPreprocessor(
@@ -36,6 +47,8 @@ def test_proactive_git_seeding_when_evidence_empty(tmp_path: Path):
         code_index=code_index,
     )
     prep._init_db()
+    transitions = []
+    prep._set_project = lambda _root, **values: transitions.append(values)
 
     # Prepopulate file_refs
     with prep._db_lock, closing(prep._connect()) as con:
@@ -58,6 +71,13 @@ def test_proactive_git_seeding_when_evidence_empty(tmp_path: Path):
 
     # Assert code_index received main.py and/or helper.py as proactive seeds!
     assert code_index.update_files_batch.called
-    call_args = code_index.update_files_batch.call_args[0]
-    indexed_paths = [p for p, _ in call_args[1]]
+    assert [len(batch) for batch in calls] == [2, 1, 1]
+    indexed_paths = [path for batch in calls for path in batch if len(batch) == 1]
     assert "main.py" in indexed_paths or "helper.py" in indexed_paths
+    if fail_single_file:
+        assert transitions[-1]["phase"] == "code_index"
+        assert transitions[-1]["status"] == "waiting"
+        assert transitions[-1]["last_error"] == "code_index_batch_failed:TimeoutError"
+        assert prep._stats["code_index_files"] == 1
+    else:
+        assert transitions[-1]["phase"] == "deterministic"

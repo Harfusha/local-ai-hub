@@ -175,9 +175,6 @@ def merge_overlapping_evidence(
     for key in group_keys:
         path, rev, chash, _ws, _source = key
         items = by_key[key]
-        if len(items) == 1:
-            result.append(items[0])
-            continue
 
         def get_range(item: EvidenceRecord) -> tuple[int, int]:
             start = _safe_line_number(item.get("start_line"), 1)
@@ -200,7 +197,7 @@ def merge_overlapping_evidence(
                     clusters.append((item_start, item_end, [item]))
 
         for cluster_start, cluster_end, cluster in clusters:
-            if len(cluster) == 1:
+            if len(cluster) == 1 and cluster_end - cluster_start + 1 <= MAX_MERGED_LINES:
                 result.append(cluster[0])
                 continue
 
@@ -208,6 +205,8 @@ def merge_overlapping_evidence(
             omitted_lines = max(0, cluster_end - cluster_start + 1 - MAX_MERGED_LINES)
             if omitted_lines:
                 cluster_end = cluster_start + MAX_MERGED_LINES - 1
+            truncation_reason = "max_merged_lines" if omitted_lines else ""
+            recovery_end_line = full_end_line
 
             max_score = max(
                 _safe_score(item.get("score"))
@@ -240,6 +239,11 @@ def merge_overlapping_evidence(
                         disk_hash = hashlib.sha256(raw_bytes).hexdigest()
                         if disk_hash == chash:
                             all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+                            if cluster_start > len(all_lines):
+                                continue
+                            recovery_end_line = min(full_end_line, len(all_lines))
+                            cluster_end = min(cluster_end, recovery_end_line)
+                            omitted_lines = max(0, recovery_end_line - cluster_end)
                             slice_lines = all_lines[max(0, cluster_start - 1):cluster_end]
                             merged_text = "\n".join(slice_lines)
                             snapshot_verified = True
@@ -254,7 +258,7 @@ def merge_overlapping_evidence(
                 except (OSError, PermissionError):
                     fallback_reason = "disk_read_failed"
 
-            if not merged_text:
+            if not snapshot_verified:
                 line_map: dict[int, str] = {}
                 for item in cluster:
                     item_start = get_range(item)[0]
@@ -263,6 +267,16 @@ def merge_overlapping_evidence(
                         line_number = item_start + index
                         if line_number not in line_map:
                             line_map[line_number] = line
+                if omitted_lines:
+                    contiguous_end = cluster_start - 1
+                    while contiguous_end + 1 in line_map and contiguous_end < cluster_end:
+                        contiguous_end += 1
+                    if contiguous_end < cluster_start:
+                        continue
+                    if contiguous_end < cluster_end:
+                        cluster_end = contiguous_end
+                        omitted_lines = max(0, full_end_line - cluster_end)
+                        truncation_reason = "unverified_in_memory_gap"
                 merged_text = "\n".join(
                     line_map.get(index, "")
                     for index in range(cluster_start, cluster_end + 1)
@@ -291,13 +305,13 @@ def merge_overlapping_evidence(
                 merged_item["slice_recovery"] = ({
                     "path": path,
                     "start_line": cluster_end + 1,
-                    "end_line": full_end_line,
+                    "end_line": recovery_end_line,
                     "content_hash": chash,
                     "repository_revision": rev or None,
                 } if snapshot_verified else None)
             if omitted_lines:
                 merged_item["original_end_line"] = full_end_line
-                merged_item["truncation_reason"] = "max_merged_lines"
+                merged_item["truncation_reason"] = truncation_reason
             merged_item["score"] = max_score
             merged_item["text"] = merged_text
             merged_item["snapshot_verified"] = snapshot_verified

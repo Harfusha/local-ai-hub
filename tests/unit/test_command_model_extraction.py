@@ -10,8 +10,8 @@ from local_ai_hub.command_transactions import (
     RollbackPostimage as ExtractedRollbackPostimage,
     RollbackSnapshot as ExtractedRollbackSnapshot,
 )
-from local_ai_hub.commands import CommandInvocation
-from local_ai_hub.commands import (
+from local_ai_hub.command_broker import CommandInvocation
+from local_ai_hub.command_broker import (
     PatchFileSnapshot,
     PatchTargetsSnapshot,
     RollbackFileSnapshot,

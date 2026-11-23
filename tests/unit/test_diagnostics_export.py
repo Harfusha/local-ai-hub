@@ -7,6 +7,7 @@ import sqlite3
 import pyzipper
 import pytest
 
+from local_ai_hub import diagnostics_export
 from local_ai_hub.diagnostics_export import _sanitize_laya_snapshot, create_diagnostics_archive
 
 
@@ -125,6 +126,32 @@ def test_support_archive_streams_global_state_source_and_redacted_config(tmp_pat
         assert len(export.password) >= 40
 
     assert not archive_path.exists()
+
+
+def test_support_archive_includes_installed_package_without_checkout(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    package = tmp_path / "site-packages" / "local_ai_hub"
+    package.mkdir(parents=True)
+    module = package / "diagnostics_export.py"
+    module.write_bytes(b"# installed Hub source\n")
+    (package.parent / "unrelated.py").write_bytes(b"# unrelated package\n")
+    monkeypatch.setattr(diagnostics_export, "__file__", str(module))
+
+    with create_diagnostics_archive(state_dir, temp_dir=tmp_path) as export:
+        assert export.manifest["source_files"] == 1
+        with pyzipper.AESZipFile(export.path) as archive:
+            archive.setpassword(export.password.encode("ascii"))
+            assert archive.read("hub/package/diagnostics_export.py") == module.read_bytes()
+            assert not any(name.endswith("unrelated.py") for name in archive.namelist())
+
+    with create_diagnostics_archive(state_dir, source_root=package, temp_dir=tmp_path) as export:
+        assert export.manifest["source_files"] == 1
+
+    unrelated_root = tmp_path / "unrelated-source"
+    unrelated_root.mkdir()
+    with pytest.raises(ValueError, match="escapes approved root"):
+        create_diagnostics_archive(state_dir, source_root=unrelated_root, temp_dir=tmp_path)
 
 
 def test_support_archive_exports_laya_shadow_metadata_and_manifest(tmp_path):

@@ -306,7 +306,7 @@ class BoardStore:
                 logger.warning("session_briefing semaphores failed: %s", exc)
 
         if root and self.services is not None:
-            plans_result = self.services.plan_list(root=root)
+            plans_result = self.services.plan_list(root=root, limit=50)
             briefing["plans"] = plans_result["plans"]
             if "board" in inc or "plan_board" in inc:
                 briefing["plan_board"] = self.services.plan_board_view(root=root)["columns"]

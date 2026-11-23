@@ -5,7 +5,7 @@ import pytest
 
 @pytest.mark.parametrize("tool,action,required,excluded", [
     ("local_ai_repo", "context", "query", "task"),
-    ("local_ai_repo", "solve", "task", "task_id"),
+    ("local_ai_repo", "solve", "task", "phase"),
     ("local_ai_coord", "memory_find", None, "ttl_seconds"),
 ])
 def test_action_guide_is_narrowed_from_the_canonical_contract(tool, action, required, excluded):
@@ -50,3 +50,31 @@ def test_argument_hint_lists_only_fields_allowed_for_the_selected_action():
     ) is None
     assert "required_arguments" in result
     assert "help_call" not in result
+
+
+def test_solve_accepts_real_task_session_identity_for_shadow_capture():
+    from local_ai_hub.operation_contracts import operation_argument_hint, validate_operation_arguments
+
+    arguments = {"task": "Review the repository decision", "task_id": "task-1", "session_id": "session-1"}
+    assert validate_operation_arguments("local_ai_repo", "solve", arguments) is None
+    assert validate_operation_arguments("local_ai_repo", "solve", {**arguments, "phase": "edit"}) is not None
+    hint = operation_argument_hint("local_ai_repo", "solve")
+    assert "task_id" in hint["allowed_arguments"]
+    assert "session_id" in hint["allowed_arguments"]
+    assert "phase" not in hint["allowed_arguments"]
+
+
+def test_symbol_lookup_guides_match_action_specific_arguments():
+    from local_ai_hub.operation_contracts import operation_argument_hint, validate_operation_arguments
+
+    find_symbol = operation_argument_hint("local_ai_repo", "find_symbol")
+    assert "query" in find_symbol["allowed_arguments"]
+    assert "limit" in find_symbol["allowed_arguments"]
+    assert "offset" in find_symbol["allowed_arguments"]
+    assert validate_operation_arguments("local_ai_repo", "find_symbol", {"query": "ProjectPreprocessor"}) is None
+    assert validate_operation_arguments("local_ai_repo", "find_symbol", {"query": "ProjectPreprocessor", "limit": 10}) is None
+
+    definition = operation_argument_hint("local_ai_repo", "definition")
+    assert "query" in definition["required_arguments"]
+    assert "path" in definition["allowed_arguments"]
+    assert "limit" not in definition["allowed_arguments"]

@@ -261,12 +261,15 @@ def test_exact_git_search_sorts_only_ripgrep_candidates(tmp_path: Path, monkeypa
     monkeypatch.setattr(
         repo_tools_module, "popen_managed", lambda *_args, **_kwargs: GitProcess(),
     )
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            ["rg"], 0, "match.py\n", "",
-        ),
-    )
+
+    def candidate_scan(args, **_kwargs):
+        if args[0] == "rg":
+            return subprocess.CompletedProcess(args, 0, b"match.py\0", b"")
+        assert "check-ignore" in args
+        return subprocess.CompletedProcess(args, 128, b"", b"unavailable")
+
+    monkeypatch.setattr(subprocess, "run", candidate_scan)
+    monkeypatch.setattr(repo_tools_module, "run_hidden", candidate_scan)
     sorted_set_sizes = []
     real_sorted = builtins.sorted
 

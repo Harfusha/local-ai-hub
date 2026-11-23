@@ -29,7 +29,7 @@ def test_services_queue_shadow_observation_runtime_baselines():
 
     # 1. Redundant step with command_broker_dedup
     ok = service._queue_laya_shadow_observation(
-        {"session_id": "s1"},
+        {"task_id": "task-s1", "session_id": "s1"},
         root="C:/repo",
         category="redundant_step",
         options=["possible_duplicate", "validation_still_required"],
@@ -47,7 +47,7 @@ def test_services_queue_shadow_observation_runtime_baselines():
 
     # Mismatched method for redundant step should be rejected
     bad = service._queue_laya_shadow_observation(
-        {"session_id": "s1"},
+        {"task_id": "task-s1", "session_id": "s1"},
         root="C:/repo",
         category="redundant_step",
         options=["possible_duplicate", "validation_still_required"],
@@ -63,7 +63,7 @@ def test_services_queue_shadow_observation_runtime_baselines():
 
     # 2. Next step with pipeline_step_progress
     ok2 = service._queue_laya_shadow_observation(
-        {"session_id": "s2"},
+        {"task_id": "task-s2", "session_id": "s2"},
         root="C:/repo",
         category="next_step",
         options=["inspect_source", "run_test", "retrieve_evidence", "ask_human"],

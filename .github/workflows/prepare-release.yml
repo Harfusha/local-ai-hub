@@ -1,0 +1,50 @@
+name: Prepare stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version increment
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
+
+concurrency:
+  group: prepare-stable-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    if: ${{ github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Create versioned release commit and tag
+        id: version
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          tag=$(python tools/prepare_release.py "$BUMP")
+          git add -- pyproject.toml src/local_ai_hub/__init__.py RELEASE.json README.md CHANGELOG.md
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "chore(release): $tag"
+          python tools/release_check.py --strict-tree --expected-version "${tag#v}"
+          git tag "$tag"
+          git push origin "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Dispatch CI on the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"

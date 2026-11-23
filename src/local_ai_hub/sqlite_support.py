@@ -106,7 +106,7 @@ def connect_sqlite(
     row_factory: Any | None = None,
     read_only: bool = False,
     uri: bool = False,
-    wal: bool = False,
+    wal: bool = True,
     foreign_keys: bool = True,
     check_same_thread: bool = True,
 ) -> sqlite3.Connection:
@@ -168,8 +168,8 @@ def connect_sqlite(
         try:
             con.execute("PRAGMA synchronous=NORMAL")
             con.execute("PRAGMA temp_store=MEMORY")
-            con.execute("PRAGMA mmap_size=67108864")
-            con.execute("PRAGMA cache_size=-8000")
+            con.execute("PRAGMA mmap_size=268435456")
+            con.execute("PRAGMA cache_size=-64000")
         except sqlite3.OperationalError as exc:
             if not is_busy_error(exc):
                 raise
@@ -982,6 +982,7 @@ def optimize_db(
     *,
     wal_checkpoint: bool = True,
     vacuum: bool = False,
+    quick_check: bool = True,
     incremental_vacuum_pages: int = 100,
     freelist_maintenance: bool = True,
     timeout_seconds: float = 5.0,
@@ -1002,6 +1003,14 @@ def optimize_db(
         con = connect_sqlite(p, timeout_seconds=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+            if quick_check:
+                check_row = con.execute("PRAGMA quick_check(1)").fetchone()
+                status = str(check_row[0]) if check_row else "unknown"
+                result["quick_check"] = status
+                if status != "ok":
+                    result["success"] = False
+                    result["error"] = f"sqlite_corrupt: {status}"
+                    _LOGGER.error("SQLite corruption detected in %s: %s", p.name, status)
             if wal_checkpoint:
                 row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if row:

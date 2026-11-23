@@ -604,10 +604,12 @@ def test_prepare_model_reloads_small_context_and_evicts_others(tmp_path: Path, m
     cfg["model_execution"] = {"fast": {"context_tokens": 8192, "large_context_tokens": 8192, "max_context_tokens": 8192}}
     runtime = OllamaRuntime(cfg)
     monkeypatch.setattr(runtime, "ensure_running", lambda: True)
-    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [
-        {"name": "fast", "context_length": 4096},
-        {"name": "other", "context_length": 4096},
-    ])
+    residency = {"size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}
+    details = iter((
+        [{"name": "fast", "context_length": 4096, **residency}, {"name": "other"}],
+        [{"name": "fast", "context_length": 8192, **residency}],
+    ))
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: next(details))
     unloaded: list[str] = []
     monkeypatch.setattr(runtime, "unload_model", lambda model, **_kwargs: (unloaded.append(model) or True))
     payloads: list[dict] = []
@@ -626,7 +628,8 @@ def test_embedding_model_residency_uses_embed_api(tmp_path: Path, monkeypatch: p
     cfg["models"] = {"embedding": "qwen3-embedding:0.6b"}
     runtime = OllamaRuntime(cfg)
     monkeypatch.setattr(runtime, "ensure_running", lambda: True)
-    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [])
+    details = iter(([], [{"name": "qwen3-embedding:0.6b", "size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}]))
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: next(details))
     requests: list[tuple[str, dict]] = []
 
     def request(endpoint: str, payload: dict, timeout=None, **_kwargs):
@@ -736,12 +739,11 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol(tmp_path: Path):
     skill = generate_skill_markdown({})
     assert setup.GLOBAL_POLICY_BEGIN in agents
     assert setup.GLOBAL_POLICY_END in agents
+    for text in (agents, policy):
+        assert "local-ai-orchestrator" in text
+        assert "Single-owner and repository scope contract" in text
     for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
-        assert phrase in agents
-    for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
-        assert phrase in policy
-    assert "Stop escalating" in skill
-    assert "retryable`/429/503" in skill
+        assert phrase in skill
 
 
 def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
@@ -767,8 +769,8 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         "Recipe — Change:",
         "Recipe — Validate:",
     )
-    for phrase in expected:
-        assert phrase in policy
+    assert "indexed evidence first" in policy
+    assert "Single-owner and repository scope contract" in policy
 
     skill = generate_skill_markdown(cfg)
     for phrase in expected:
@@ -823,10 +825,10 @@ def test_agent_policy_has_default_delegation_triggers():
     )
     policy = setup.build_global_policy(cfg)
     skill = generate_skill_markdown(cfg)
+    assert "Load the always-loaded `local-ai-orchestrator` skill" in policy
+    assert "Single-owner and repository scope contract" in policy
     for phrase in expected:
-        assert phrase in policy
         assert phrase in skill
-    assert "Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration." in policy
     assert "Codex controls subagent permissions per task, including `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration." in skill
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,9 +36,12 @@ def test_empty_unbound_workspace_allows_read_without_persisting_binding(tmp_path
     root.mkdir()
     workspace = canonical_workspace_id(str(root))
     store, db_path = _store(tmp_path)
+    store.project_context = lambda _root: pytest.fail("empty workspace must not load project context")
+    store._set_workspace_repository_id(workspace, "stale-binding")
 
     store.require_workspace_root(workspace=workspace, root=str(root))
 
+    assert store._get_workspace_repository_id(workspace) == ""
     with closing(sqlite3.connect(db_path)) as con, con:
         assert con.execute("SELECT COUNT(*) FROM rag_meta").fetchone()[0] == 0
 
@@ -92,7 +96,10 @@ def test_custom_workspace_label_is_preserved_but_root_binding_is_exact(tmp_path)
         ),
     )
 
+    store.project_context = lambda _root: SimpleNamespace(coordination_id="current-project")
     store.require_workspace_root(workspace=workspace, root=str(root))
+    assert store._get_workspace_repository_id(workspace) == "current-project"
+    store.project_context = lambda _root: pytest.fail("rejected workspace must not load project context")
     with pytest.raises(ValueError, match="already bound"):
         store.require_workspace_root(workspace=workspace, root=str(other))
 
@@ -132,7 +139,7 @@ def test_document_ingest_rejects_workspace_bound_to_another_root_before_writes(t
     )
 
     result = store.ingest_document(
-        root=str(root), root=str(root), workspace=workspace, content="must not be indexed"
+        root=str(root), workspace=workspace, content="must not be indexed"
     )
 
     assert result["success"] is False
@@ -153,7 +160,7 @@ def test_diagram_ingest_rejects_paths_outside_authorized_root(tmp_path):
     store, db_path = _store(tmp_path)
 
     result = store.ingest_diagram(
-        root=str(root), root=str(root), workspace=workspace, image_path=str(external_image)
+        root=str(root), workspace=workspace, image_path=str(external_image)
     )
 
     assert result["success"] is False

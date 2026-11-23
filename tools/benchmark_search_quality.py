@@ -48,14 +48,33 @@ def make_fixture(root: Path, noise_files: int = 100) -> list[dict]:
     ]
 
 
+def noise_file_extension(index: int) -> str:
+    if index % 20 == 0:
+        return ".php"
+    if index % 20 == 1:
+        return ".tsx"
+    return ".py"
+
+
+def noise_language_counts(noise_files: int) -> dict[str, int]:
+    counts = {"php": 0, "python": 0, "tsx": 0}
+    for index in range(noise_files):
+        extension = noise_file_extension(index)
+        language = {".php": "php", ".py": "python", ".tsx": "tsx"}[extension]
+        counts[language] += 1
+    return counts
+
+
 def make_holdout_fixture(root: Path, noise_files: int = 100) -> list[dict]:
     """Manually judged cases not used to tune the development queries."""
     files = {
         "src/access.py": 'def renew_access_key():\n    """renew access key"""\n',
         "src/noise.py": '# access access access\n# retry retry retry\n',
         "src/db.py": 'def retry():\n    # sqlite transaction\n    pass\n',
+        "src/access.php": '<?php\nfunction rotate_access_key() { return "access key"; }\n',
         "src/bridge.cs": '// C# bridge\nclass Bridge {}\n',
         "src/component.py": '# widget::render\nFLAG = "namespace.name"\n',
+        "src/component.tsx": 'export function renderWidget() { return <div>widget render</div>; }\n',
         "src/similar.py": 'FLAG = "namespaceXname"\n',
         "docs/guide.md": '# Guide\nwhile running, stop safely\n',
         "docs/cs_guide.md": '# Instalace Local AI Hubu\nNávod k instalaci a nastavení služby.\n',
@@ -65,14 +84,23 @@ def make_holdout_fixture(root: Path, noise_files: int = 100) -> list[dict]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     for index in range(noise_files):
-        path = root / "noise" / f"item_{index:05d}.py"
+        extension = noise_file_extension(index)
+        path = root / "noise" / f"item_{index:05d}{extension}"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# unrelated {index}\nvalue = {index}\n", encoding="utf-8")
+        if extension == ".php":
+            content = f"<?php // unrelated {index}\n$unused = {index};\n"
+        elif extension == ".tsx":
+            content = f"// unrelated {index}\nconst unused = {index};\n"
+        else:
+            content = f"# unrelated {index}\nvalue = {index}\n"
+        path.write_text(content, encoding="utf-8")
     return [
         {"query": "renew access key", "relevant": ["src/access.py"], "literal": "renew access key"},
+        {"query": "rotate access key", "relevant": ["src/access.php"], "literal": "rotate access key"},
         {"query": "retry sqlite", "relevant": ["src/db.py"], "literal": ""},
         {"query": "C#", "relevant": ["src/bridge.cs"], "literal": "C#"},
         {"query": "widget::render", "relevant": ["src/component.py"], "literal": "widget::render"},
+        {"query": "widget render", "relevant": ["src/component.tsx"], "literal": "widget render"},
         {"query": "namespace.name", "relevant": ["src/component.py"], "literal": "namespace.name"},
         {"query": "while", "relevant": ["docs/guide.md"], "literal": "while"},
         {"query": "Local AI Hub installation", "relevant": ["docs/cs_guide.md"], "literal": ""},
@@ -134,7 +162,8 @@ def run(repeats: int, noise_files: int, mode: str = "service", suite: str = "dev
         scope = ("synthetic LocalAIServices.repo_search with cache and optional backends disabled"
                  if mode == "service" else "synthetic RepositoryTools.search exact_count")
         return {"scope": scope + "; no HTTP/MCP transport or preprocessing", "suite": suite,
-                "noise_files": noise_files, "repeats": repeats, "ripgrep_available": bool(tools._rg),
+                "noise_files": noise_files, "noise_language_counts": noise_language_counts(noise_files),
+                "repeats": repeats, "ripgrep_available": bool(tools._rg),
                 "mean_recall_at_10": statistics.mean(row["recall_at_k"] for row in positives),
                 "mean_reciprocal_rank": statistics.mean(row["reciprocal_rank"] for row in positives),
                 "cases": rows}

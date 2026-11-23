@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from local_ai_hub.command_batches import _OPTIONS, run_parallel
-from local_ai_hub.commands import StreamMultiplexer
+from local_ai_hub.command_broker import StreamMultiplexer
 
 
 def _run_batch(run, commands, tmp_path, *, max_concurrency=2):

@@ -36,6 +36,20 @@ def deliver(text, quality=None):
     return service.review({"code": "pass", "changed_paths": [PATH]})
 
 
+def test_review_uses_full_configured_output_budget_by_default():
+    service = object.__new__(LocalAIServices)
+    captured = {}
+
+    def delegate(args):
+        captured.update(args)
+        return {"success": True, "text": '{"verdict":"pass","findings":[]}'}
+
+    service.delegate = delegate
+    service.review({"code": "pass", "changed_paths": [PATH]})
+
+    assert captured["max_tokens"] == 8192
+
+
 @pytest.mark.parametrize("text", [CONTRADICTORY, "Review prose without a structured verdict."])
 def test_service_review_rejection_also_rejects_semantic_quality(text):
     result = deliver(text)

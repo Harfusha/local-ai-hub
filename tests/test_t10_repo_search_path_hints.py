@@ -88,6 +88,24 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     ]
 
 
+def test_request_file_hint_precedes_pinned_context_in_bounded_match_budget(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "feature.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "pinned.py").write_text("needle\n" * 20, encoding="utf-8")
+    (tmp_path / ".local-ai.toml").write_text('pinned_context = ["pinned.py"]\n', encoding="utf-8")
+    services = _search_service(tmp_path, None)
+
+    result = services.repo_search(
+        str(tmp_path), "needle", top_k=1, exact_count=False, search_mode="lexical",
+        path_hints=[PathHint(path="src/feature.py", purpose="repository_search", scope="repo_search")],
+    )
+
+    assert result["success"] is True, result
+    assert result["results"][0]["path"] == "src/feature.py", {
+        key: result.get(key) for key in ("path_hint_usage", "phase_timings_ms", "candidate_count", "results")
+    }
+
+
 @pytest.mark.parametrize("use_git", [False, True])
 @pytest.mark.parametrize("hint_kind", ["file", "directory"])
 @pytest.mark.parametrize("directory_name", ["z_directory", "z český folder"])

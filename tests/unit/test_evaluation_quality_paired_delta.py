@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from local_ai_hub.evaluation_quality import paired_retrieval_delta
 
 
@@ -19,6 +21,34 @@ def _case(case: str, query: str, *, symbols: bool, metrics: dict) -> dict:
             }
         )
     return row
+
+
+@pytest.mark.parametrize("overrides", [{"k": 2}, {"k": True}, {"k": None}, {"intent": "test"}])
+def test_paired_retrieval_delta_rejects_metrics_that_conflict_with_case_settings(overrides) -> None:
+    metrics = {
+        "status": "measured", "measurement_scope": "symbol_ast", "k": 1, "intent": "production",
+        "recall_at_k": 1.0, "reciprocal_rank": 1.0, "citation_validity": 1.0,
+        "expected_symbol_recall_at_k": 1.0, "citation_precision": 1.0, "source_evidence_sufficient": True,
+    }
+    baseline = {"retrieval": [_case("symbol", "find symbol", symbols=True, metrics=metrics)]}
+    candidate = {"retrieval": [_case("symbol", "find symbol", symbols=True, metrics={**metrics, **overrides})]}
+
+    assert paired_retrieval_delta(baseline, baseline)["success"] is True
+    result = paired_retrieval_delta(baseline, candidate)
+    assert result["success"] is False
+    assert result["status"] == "unverified"
+
+
+def test_paired_retrieval_delta_preserves_intent_reported_only_in_path_metrics() -> None:
+    metrics = {
+        "status": "measured", "measurement_scope": "path_only", "k": 3, "intent": "production",
+        "recall_at_k": 1.0, "reciprocal_rank": 1.0, "citation_validity": 1.0,
+    }
+    baseline = {"retrieval": [_case("path", "find path", symbols=False, metrics=metrics)]}
+    candidate = {"retrieval": [_case("path", "find path", symbols=False, metrics={**metrics, "intent": "test"})]}
+
+    assert paired_retrieval_delta(baseline, baseline)["success"] is True
+    assert paired_retrieval_delta(baseline, candidate)["status"] == "unverified"
 
 
 def test_paired_retrieval_delta_aggregates_mixed_scopes_separately() -> None:

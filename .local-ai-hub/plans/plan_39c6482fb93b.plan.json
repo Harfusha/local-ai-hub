@@ -4,7 +4,15 @@
   "id": "plan_39c6482fb93b",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-12-deterministic-installer-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "548b4a31ebb3423cb4048fdbd942ec62b5b0554d3f4361dc3e7f49f8df035028"
+      }
+    }
+  ],
   "tasks": {
     "task_full_reinstall": {
       "acceptance_criteria": [
@@ -19,7 +27,16 @@
       "kind": "code",
       "next_action": "Full reinstall now includes Hub-managed tool-envs; recovery guide and canonical install/update prompts agree. Python AST and git whitespace checks pass; deletion behavior not runtime-tested.",
       "title": "Safe full reinstall and data cleanup",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-12-deterministic-installer-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "548b4a31ebb3423cb4048fdbd942ec62b5b0554d3f4361dc3e7f49f8df035028"
+          }
+        }
+      ]
     },
     "task_installer_wizard": {
       "acceptance_criteria": [
@@ -37,7 +54,16 @@
       "kind": "code",
       "next_action": "Static source audit confirms remembered profile/component choices, per-agent MCP/skills/instruction toggles, safe full reinstall choice, and conditional Intel OpenVINO setup. OpenVINO NPU filtering fixed. Runtime downloads and live client reload remain unverified.",
       "title": "Interactive installer and remembered choices",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-12-deterministic-installer-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "548b4a31ebb3423cb4048fdbd942ec62b5b0554d3f4361dc3e7f49f8df035028"
+          }
+        }
+      ]
     },
     "task_recovery_docs": {
       "acceptance_criteria": [
@@ -57,7 +83,16 @@
       "kind": "code",
       "next_action": "Static source audit confirms distinct selected/installed/model/manual-action fields, exact Ollama model outcomes, staged failure reports, and recovery-guide links. Added PATH reload guidance. Runtime/report generation remains unverified.",
       "title": "Installer report and manual recovery guide",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-12-deterministic-installer-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "548b4a31ebb3423cb4048fdbd942ec62b5b0554d3f4361dc3e7f49f8df035028"
+          }
+        }
+      ]
     },
     "task_state_migration": {
       "acceptance_criteria": [
@@ -73,7 +108,16 @@
       "kind": "code",
       "next_action": "Incremental N-to-N+1 framework is ready, with full-chain preflight, verified backup, staged conversion, verification after each step, and payload rollback. Registry stays empty because no verified older state schema exists; add migrations only alongside a documented schema change.",
       "title": "Ordered offline state migration framework",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-12-deterministic-installer-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "548b4a31ebb3423cb4048fdbd942ec62b5b0554d3f4361dc3e7f49f8df035028"
+          }
+        }
+      ]
     },
     "task_validation": {
       "acceptance_criteria": [],
@@ -84,7 +128,16 @@
       "kind": "code",
       "next_action": "PowerShell and bash bootstrap parsing, Python AST parsing, and git diff whitespace checks pass. No runtime install, downloads, model provisioning, or agent reload was run; acceptance for those remains unverified.",
       "title": "Targeted installer validation and plan closeout",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-12-deterministic-installer-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "548b4a31ebb3423cb4048fdbd942ec62b5b0554d3f4361dc3e7f49f8df035028"
+          }
+        }
+      ]
     }
   },
   "title": "Deterministic Local AI Hub installer"

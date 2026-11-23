@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 
-import local_ai_hub.commands as commands_module
-from local_ai_hub.commands import CommandBroker
+import local_ai_hub.command_broker as commands_module
+from local_ai_hub.command_broker import CommandBroker
 
 
 class _DummyArtifacts:

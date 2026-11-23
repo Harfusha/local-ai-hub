@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import threading
 import time
@@ -87,17 +88,6 @@ class RepoStateTracker:
             **hidden_run_kwargs(),
         )
 
-    @staticmethod
-    def _stat_tuple(path: Path) -> tuple[int, int, int, int] | str:
-        try:
-            stat = path.stat()
-            return (
-                int(stat.st_mtime_ns), int(stat.st_size),
-                int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)),
-            )
-        except OSError:
-            return "missing"
-
     def _directory_signature(self, path: Path, root: Path) -> dict[str, Any]:
         entries: list[tuple[str, int, int, int, int]] = []
         truncated = False
@@ -137,9 +127,16 @@ class RepoStateTracker:
             path.relative_to(root)
         except ValueError:
             return "outside-root"
-        if path.is_dir():
+        try:
+            metadata = path.stat()
+        except OSError:
+            return "missing"
+        if stat.S_ISDIR(metadata.st_mode):
             return self._directory_signature(path, root)
-        return self._stat_tuple(path)
+        return (
+            int(metadata.st_mtime_ns), int(metadata.st_size),
+            int(getattr(metadata, "st_ctime_ns", 0)), int(getattr(metadata, "st_ino", 0)),
+        )
 
     @staticmethod
     def _parse_porcelain_v1(status_raw: bytes) -> list[str]:

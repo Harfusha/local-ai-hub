@@ -85,12 +85,25 @@ def load_matrix_manifest(path: Path | str) -> dict[str, Any]:
     return config
 
 
-def run_matrix(manifest_path: Path | str, *, allow_model_download: bool = False) -> list[dict[str, Any]]:
+def run_matrix(
+    manifest_path: Path | str,
+    *,
+    allow_model_download: bool = False,
+    publish_hf: str | None = None,
+    private: bool = False,
+) -> list[dict[str, Any]]:
     matrix = load_matrix_manifest(manifest_path)
     if matrix.get("backend", "transformers_lora") == "laya":
         from .laya_backend import run_laya_matrix
 
-        return run_laya_matrix(matrix, allow_model_download=allow_model_download)
+        results = run_laya_matrix(matrix, allow_model_download=allow_model_download)
+        if publish_hf:
+            from .publish_hf import publish_run_to_hf
+            for r in results:
+                prefix = publish_hf.rstrip("/")
+                repo_id = f"{prefix}/{r['model']}" if "/" not in prefix else f"{prefix.split('/')[0]}/{r['model']}"
+                r["published_hf"] = publish_run_to_hf(r["run_dir"], repo_id, private=private)
+        return results
     dataset = validate_dataset_pair(matrix["train_file"], matrix["evaluation_file"])
     output_root = Path(matrix["output_root"])
     results: list[dict[str, Any]] = []
@@ -137,6 +150,12 @@ def run_matrix(manifest_path: Path | str, *, allow_model_download: bool = False)
                 run_manifest, adapter_path=None, output_path=before_path,
                 allow_model_download=allow_model_download,
             )
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         training_record_path = adapter_dir / "training_run.json"
         if training_record_path.exists():
             training_record = _load_matching_artifact(training_record_path, run_hash=run_hash, evaluation_hash=eval_hash, base_model=model_spec["base_model"])
@@ -146,6 +165,11 @@ def run_matrix(manifest_path: Path | str, *, allow_model_download: bool = False)
             if adapter_dir.exists() and any(adapter_dir.iterdir()):
                 raise ValueError(f"partial adapter output exists without training receipt: {adapter_dir}")
             training_record = train_from_manifest(run_manifest, allow_model_download=allow_model_download)
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         after_path = run_dir / "benchmark-after.json"
         if after_path.exists():
             after = _load_matching_artifact(after_path, run_hash=run_hash, evaluation_hash=eval_hash, base_model=model_spec["base_model"])
@@ -165,4 +189,14 @@ def run_matrix(manifest_path: Path | str, *, allow_model_download: bool = False)
         }
         results.append(result)
         print(json.dumps({"model": model_spec["name"], "phase": "complete", "run_dir": str(run_dir.resolve())}), flush=True)
+
+    if publish_hf:
+        from .publish_hf import publish_matrix_to_hf
+        print(json.dumps({"phase": "publishing_hf", "prefix": publish_hf}), flush=True)
+        publish_results = publish_matrix_to_hf(output_root, publish_hf, private=private)
+        for r in results:
+            matching = next((p for p in publish_results if p.get("artifact_dir", "").startswith(r["run_dir"])), None)
+            if matching:
+                r["published_hf"] = matching
+
     return results

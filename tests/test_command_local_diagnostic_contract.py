@@ -1,7 +1,7 @@
 import pytest
 
 from local_ai_hub.services import LocalAIServices
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_automatic_diagnostic_is_opt_in_by_default():

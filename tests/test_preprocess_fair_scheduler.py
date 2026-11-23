@@ -6,8 +6,9 @@ from contextlib import closing
 
 import pytest
 
-from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.preprocess import ProjectPreprocessor, _RetryablePreprocessingError
 from local_ai_hub.preprocess_write_actor import PreprocessWriteActor
+from local_ai_hub.sqlite_support import initialize_wal
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def scheduler(tmp_path, monkeypatch):
             updated_at REAL DEFAULT 0, retry_after REAL DEFAULT 0, next_check_at REAL DEFAULT 0
         )""")
         con.execute("""CREATE TABLE file_refs (
-            root TEXT, path TEXT, content_hash TEXT DEFAULT '', card_key TEXT,
+            root TEXT, path TEXT, content_hash TEXT DEFAULT '', card_key TEXT, size INTEGER NOT NULL DEFAULT 0,
             updated_at REAL DEFAULT 0, PRIMARY KEY(root,path)
         )""")
         con.commit()
@@ -60,6 +61,29 @@ def test_active_inventory_precedes_hash_even_when_hash_is_older(scheduler):
     add(connect, "inventory-active", "inventory", updated_at=now - 10, last_requested_at=now - 5)
 
     assert instance._next_cpu_project()["root"] == "inventory-active"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("writer busy"),
+        _RetryablePreprocessingError("writer queue saturated", retry_after_seconds=30.0),
+    ],
+    ids=["timeout", "queue-saturated"],
+)
+def test_cpu_selection_survives_a_busy_slot_rebalance_writer(scheduler, failure):
+    instance, connect = scheduler
+    add(connect, "runnable", "inventory", updated_at=0, last_requested_at=0, status="queued")
+    submitted = {}
+
+    def timed_out_write(operation, **kwargs):
+        submitted.update(kwargs)
+        raise failure
+
+    instance._write_retry = timed_out_write
+
+    assert instance._next_cpu_project(rebalance=True)["root"] == "runnable"
+    assert submitted["actor_timeout"] < 1.0
 
 
 def test_active_base_layer_precedes_rag(scheduler):
@@ -131,6 +155,55 @@ def test_new_projects_enter_lexical_directly_after_deterministic(scheduler):
 
     assert instance._step_deterministic({"root": "repo", "generation": 0}) is True
     assert transitions[-1][1]["phase"] == "lexical"
+
+
+def test_deterministic_batch_timeout_splits_and_keeps_progress(scheduler):
+    instance, connect = scheduler
+    with closing(connect()) as con:
+        con.execute("ALTER TABLE file_refs ADD COLUMN needs_hash INTEGER DEFAULT 0")
+        con.executemany(
+            "INSERT INTO file_refs(root,path,content_hash,needs_hash) VALUES(?,?,?,0)",
+            [("repo", f"file_{index}.py", f"hash_{index}") for index in range(4)],
+        )
+        con.commit()
+
+    class TimedBatch:
+        def __init__(self):
+            self.calls = []
+            self.completed = []
+
+        def prune(self, _root, _paths):
+            return None
+
+        def _connect(self):
+            con = sqlite3.connect(":memory:")
+            con.execute("CREATE TABLE files(root TEXT, path TEXT, content_hash TEXT)")
+            return con
+
+        def update_files_batch(self, _root, items):
+            paths = [path for path, _digest in items]
+            self.calls.append(paths)
+            if len(paths) > 1:
+                raise TimeoutError
+            self.completed.extend(paths)
+            return {"updated": 1, "cached": 0}
+
+    deterministic = TimedBatch()
+    progress = []
+    instance.cfg = {"deterministic_files_per_step": 4}
+    instance.deterministic = deterministic
+    instance._missing_refs_checked_generations = set()
+    instance._prune_missing_file_refs = lambda _root: None
+    instance._stats_lock = threading.Lock()
+    instance._stats = {"deterministic_files": 0}
+    instance._record_progress = lambda root, count: progress.append((root, count))
+    instance._set_project = lambda *_args, **_values: pytest.fail("successful split batches should not wait")
+
+    assert instance._step_deterministic({"root": "repo", "generation": 0}) is True
+    assert [len(batch) for batch in deterministic.calls] == [4, 2, 1, 1, 2, 1, 1]
+    assert deterministic.completed == [f"file_{index}.py" for index in range(4)]
+    assert instance._stats["deterministic_files"] == 4
+    assert progress == [("repo", 4)]
 
 
 def test_file_phase_enters_optional_serena_checkpoint(scheduler):
@@ -419,6 +492,8 @@ def test_scheduler_selector_serializes_rebalance_with_writer_actor(
 ):
     instance, connect = scheduler
     now = instance._test_now[0]
+    with closing(connect()) as con:
+        initialize_wal(con)
     for index in range(5):
         add(connect, f"project-{index}", "inventory", updated_at=now - 10, last_requested_at=now - 5)
 

@@ -38,6 +38,28 @@ def test_rag_index_job_persists_workspace_and_coalesces_duplicate_submission(tmp
             manager.close()
 
 
+def test_pending_result_directs_callers_to_wait(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        submitted = manager.submit(
+            "rag_index", {"root": "C:/project", "workspace": "workspace-1"},
+            dispatch_delay_seconds=30.0,
+        )
+
+        status = manager.status(submitted["job_id"])
+        result = manager.result(submitted["job_id"])
+
+        assert status["next_action"] == "wait"
+        assert result["success"] is False
+        assert result["in_progress"] is True
+        assert result["waiting"] is True
+        assert result["retryable"] is False
+        assert result["terminal"] is False
+        assert result["next_action"] == "wait"
+    finally:
+        manager.close()
+
+
 def test_rag_index_gpu_reservation_denial_is_known_failure_not_unknown(tmp_path):
     manager, _scheduler = _manager(tmp_path)
 

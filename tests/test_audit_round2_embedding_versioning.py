@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 
+from local_ai_hub import agent_memory as memory_module
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
@@ -143,6 +144,72 @@ def test_n09_unidentified_or_incompatible_embedding_is_not_compared(tmp_path: Pa
     found = memory_store.find(query="quantum orchard", services=services, include_all_scopes=True)
 
     assert rec.record_id not in {item.record_id for item in found}
+
+
+def test_n09_legacy_embedding_table_upgrades_without_assigning_an_identity(tmp_path: Path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    original_store = MemoryStore(AgentStateStore(db_path))
+    record = original_store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="storage.engine", value="sqlite-wal",
+    ))
+    legacy_embedding = "[1.0, 0.0, 0.0, 0.0]"
+    with closing(sqlite3.connect(db_path)) as con, con:
+        con.execute("DROP TABLE agent_memory_embeddings")
+        con.execute("""CREATE TABLE agent_memory_embeddings (
+            record_id TEXT PRIMARY KEY, embedding TEXT NOT NULL, created_at REAL NOT NULL
+        )""")
+        con.execute("INSERT INTO agent_memory_embeddings VALUES (?, ?, 42)", (record.record_id, legacy_embedding))
+
+    store = MemoryStore(AgentStateStore(db_path))
+    services = MagicMock()
+    services.embed = lambda texts: {
+        "success": True, "embeddings": [[1.0, 0.0, 0.0, 0.0]], "model": "model-a", "embedding_space_id": "space-a",
+    }
+    assert [item.record_id for item in store.find(query="sqlite", services=services, include_all_scopes=True)] == [record.record_id]
+    assert store.find(query="quantum orchard", services=services, include_all_scopes=True) == []
+    with closing(sqlite3.connect(db_path)) as con:
+        assert con.execute(
+            "SELECT record_id, embedding, created_at, embedding_space_id, model_name, dimension FROM agent_memory_embeddings"
+        ).fetchall() == [(record.record_id, legacy_embedding, 42, "", "", 0)]
+
+    assert store.set_embedding(record.record_id, [1.0, 0.0, 0.0, 0.0], model_name="model-a", embedding_space_id="space-a")
+    reopened = MemoryStore(AgentStateStore(db_path))
+    assert [item.record_id for item in reopened.find(query="quantum orchard", services=services, include_all_scopes=True)] == [record.record_id]
+
+
+@pytest.mark.parametrize("mode", ["scalar", "numpy", "numpy-fallback"])
+def test_n10_bad_embedding_rows_do_not_hide_valid_matches(tmp_path: Path, monkeypatch, mode: str):
+    use_numpy = mode != "scalar"
+    if use_numpy:
+        pytest.importorskip("numpy")
+    monkeypatch.setattr(memory_module, "_NUMPY_AVAILABLE", use_numpy)
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store = MemoryStore(state_store)
+    vectors = [
+        ("[1, 0, 0, 0]", 4),
+        ("[", 4),
+        ("[1, 0]", 4),
+        ("[1, NaN, 0, 0]", 4),
+        ("[1, 0, 0, 0]", "invalid"),
+        *[("[0, 1, 0, 0]", 4)] * 5,
+    ]
+    if mode != "numpy":
+        vectors.append(('[1, "broken", 0, 0]', 4))
+    records = [store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key=f"memo.{index}", value="storage notes",
+    )) for index in range(len(vectors))]
+    with closing(sqlite3.connect(state_store.db_path)) as con, con:
+        con.executemany(
+            """INSERT INTO agent_memory_embeddings (record_id, embedding, created_at, embedding_space_id, dimension)
+               VALUES (?, ?, 0, 'space-a', ?)""",
+            [(record.record_id, vector, dimension) for record, (vector, dimension) in zip(records, vectors)],
+        )
+    services = MagicMock()
+    services.embed = lambda texts: {"embeddings": [[1, 0, 0, 0]], "embedding_space_id": "space-a"}
+
+    found = store.find(query="quantum orchard", services=services, include_all_scopes=True)
+
+    assert [item.record_id for item in found] == [records[0].record_id]
 
 
 def test_n10_semantic_search_scans_past_newest_5000_embeddings(tmp_path: Path):

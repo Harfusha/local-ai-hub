@@ -18,10 +18,10 @@ from pathlib import Path
 
 from local_ai_hub.process_utils import popen_managed, process_identity
 if __package__:
-    from tools.benchmark_search_quality import evaluate, make_fixture, make_holdout_fixture
+    from tools.benchmark_search_quality import evaluate, make_fixture, make_holdout_fixture, noise_language_counts
     from tools.selftest import ROOT, SRC, _free_port, _get_json, _terminate_selftest_process
 else:
-    from benchmark_search_quality import evaluate, make_fixture, make_holdout_fixture
+    from benchmark_search_quality import evaluate, make_fixture, make_holdout_fixture, noise_language_counts
     from selftest import ROOT, SRC, _free_port, _get_json, _terminate_selftest_process
 
 
@@ -32,6 +32,15 @@ def build_search_payload(root: str, query: str, search_mode: str) -> dict[str, o
     if search_mode != "default":
         payload["search_mode"] = search_mode
     return payload
+
+
+def search_coverage_metadata(result: dict[str, object]) -> dict[str, object]:
+    keys = (
+        "coverage_complete", "truncated", "truncation_reasons", "scanned_files",
+        "count_exact", "candidate_count", "has_more", "read_errors",
+        "python_fallback_truncated",
+    )
+    return {key: result.get(key) for key in keys}
 
 
 def run(
@@ -97,6 +106,7 @@ def run(
                 reranker = result.get("reranker")
                 rows.append({"query": case["query"], "expected": case["relevant"], "paths": paths,
                              **evaluate(paths, case["relevant"]), "samples_ms": timings, "cache_hits": hits,
+                             **search_coverage_metadata(result),
                              "success": succeeded, "error": result.get("error"),
                              "actual_search_mode": result.get("search_mode"),
                              "result_source": result.get("result_source"),
@@ -107,6 +117,7 @@ def run(
                              "reranker_used": reranker.get("used") if isinstance(reranker, dict) else None})
             return {"scope": "isolated local supervisor and HTTP /api/search; CPU profile, preprocessing disabled",
                     "suite": suite, "search_mode": search_mode, "noise_files": noise_files,
+                    "noise_language_counts": noise_language_counts(noise_files),
                     "repeats": repeats, "cases": rows}
         finally:
             _terminate_selftest_process(process, identity)

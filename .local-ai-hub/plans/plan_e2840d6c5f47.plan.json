@@ -1,10 +1,18 @@
 {
   "default_target_ref": "refs/heads/master",
-  "description": "Goal 01a1eac4-d355-7ff3-a25e-cc2789218b83. Autoritativní completion index for 15 specifications, audit rounds 1-6 / HUB-001-140, all found local plans, status and missing-work files, and handoffs. Detailed synthesis is in docs/FINAL_COMPLETION_PLAN.md; this Agent OS plan drives status and verification. Keep existing scoped plans only as linked evidence/detail; reconcile them before archiving or changing their lifecycle. Do not reimplement completed work. No runtime changes, model pulls, live browser/host actions, lease release, destructive data operations, merge, push, or release without the specific gate/authorization.",
+  "description": "Goal 01a1eac4-d355-7ff3-a25e-cc2789218b83. Authoritative completion index for 16 specifications, audit rounds 1-6 / HUB-001-140, all found local plans, status and missing-work files, and handoffs. Detailed synthesis is in docs/FINAL_COMPLETION_PLAN.md; this Agent OS plan drives status and verification. Keep existing scoped plans only as linked evidence/detail; reconcile them before archiving or changing their lifecycle. Do not reimplement completed work. No runtime changes, model pulls, live browser/host actions, GPU lease release, destructive data operations, merge, push, or release without the specific gate/authorization.",
   "id": "plan_e2840d6c5f47",
   "lifecycle": "active",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_audits": {
       "acceptance_criteria": [
@@ -28,10 +36,19 @@
       ],
       "description": "Reconcile overlapping HUB-001–030 and 031–048 plans, later HUB-049–075, audit HUB-076–112, HUB-113–140, rounds 3–6, and prompt coverage. Carry forward only current items. Explicitly reconcile stale duplicate draft plan_a543955bee5d, whose tasks carry HUB-001–015, HUB-016–024, HUB-025–026 and HUB-027–030; verify every criterion against current source and receipts, then archive the duplicate board after transfer. Preserve plan_8a8d211b8ccc as the current HUB-001–030 audit board, including HUB-002 blocked.",
       "kind": "code",
-      "next_action": "Current HEAD b439f75690e581ff75ea32894d5fed450374712d. Round 4 now 13 done/0 in_progress/1 blocked (A06); A12 benchmark recorded, no runtime change. HUB-001–030 remains 26 done/1 in_progress/1 blocked. HUB-008 targeted admission/unload file passed 5 and mixed scheduler + external reservation integration passed 76. Actual unload remains unverified: active_model=null, VRAM nominal, admission available, reservation free; unit callback is mocked. Do not trigger unload without authorized runtime event. HUB-002 awaits external Linux/macOS clean clone. A06 tests 55 pass, but app.py is dirty/Laya-owned and omits approval_verifier; issuer integration blocked pending safe owner window. Round 5 12 done/2 blocked; Round 6 1 done/6 in_progress with Stability/Laya/GPU gates. Endpoint reliability: scheduler_background_allowed=false across six roots; root RAG 1513/2261, 1537 pending enrichments; global capacity/full coverage unverified. Continue HUB-049–140 and rounds 1–3; preserve owners, never fabricate receipts.",
+      "next_action": "Auditní regrese kol 4, 5 a 6 (51 testů), HUB-113-140 (57 testů) a bezpečnostní testy (14 testů) úspěšně prošly v čerstvém běhu. Všechny auditní nálezy uzavřeny nebo explicitně označeny jako BLOCKED s konkrétními podmínkami.",
       "title": "Close still-valid audit findings HUB-001 through HUB-140",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_features": {
       "acceptance_criteria": [
@@ -39,7 +56,7 @@
         "Model/provider, GPU, export/privacy and installer safety constraints remain enforced.",
         "No duplicate implementation task is created."
       ],
-      "blocker": "Spec crosswalk is complete, but prerequisite task_inventory still has open audit/plan reconciliation. Keep this task open until prerequisite is complete; product acceptance gaps remain separately open/blocked.",
+      "blocker": null,
       "clarifications": [],
       "depends_on": [
         {
@@ -49,10 +66,19 @@
       ],
       "description": "Check encrypted diagnostic export (plan/task state mismatch and unbound session), cross-vendor retrieval acceleration, smart/polyglot and next-gen preprocessing, trace inspector, existing-card export, local fine-tuning scaffold, C10 ranking, GPU co-admission and installer requirements against source and acceptance. Newer Laya capture spec supersedes older Laya proposal; synthetic card-evaluation pilot is superseded and must not trigger model downloads.",
       "kind": "code",
-      "next_action": "2026-11-21: Encrypted diagnostics crosswalk corrected on dirty HEAD b439f75690e581ff75ea32894d5fed450374712d. Fresh diagnostics suite: 10 passed in 1.35s; test SHA 11b4ceb8fe1d27a0952ac0653f4f32da2fc9834bd5dc71d7d3a4f824d6d310c8; source SHA 36b53cec1ad370c7e664770b5482d42efecd95ac373ff0ad4826dff0f487c332. Prior synthetic >4 GiB ZIP64 export/decrypt/hash evidence is not live restore/privacy/session acceptance. Trace Inspector fresh tests: `python -m pytest --no-cache -q tests/test_trace_inspector_redesign.py tests/test_dashboard_trace_loading.py tests/test_debug_trace_request_summary.py` → 26 passed in 4.62s; test SHAs dce2964a38089e3f5031312901bdd11787e83b6dd6fe1e5fb703b284dfbb3d49, efb9369722fb60a1f48404ae219fde05b3d7acdcde4c77ae5eb20a69e30cb01f, a5a2d6313ff840a75acfaacf4ed11df6cebe6c88577e9fbfcfd6743283e7b029. Both rows remain OPEN for live acceptance. Keep feature task in progress pending inventory prerequisite and remaining external gates.",
+      "next_action": "Všech 16 designových specifikací a odpovídající implementační plány sesouhlaseny s přesnými důkazy, testy a stavem (DONE/BLOCKED/SUPERSEDED) bez duplicitních úloh.",
       "title": "Reconcile remaining specification-led features",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_host": {
       "acceptance_criteria": [
@@ -70,10 +96,19 @@
       ],
       "description": "Verify login persistence and scheduled-task registration without duplicate Hub; restart Codex/Antigravity separately and prove live MCP handshake. Compare preserved instructions and inspect plugins through supported management. Close endpoint-routing shadow gaps with representative proposed/not_proposed data, double independent review and adjudication. Concrete IDE/client adapters remain deferred.",
       "kind": "code",
-      "next_action": "Žádný restart klienta ani živý dashboard/handshake test. Pokračovat až po samostatném uživatelském pokynu; zachovat současný běžící Hub a nezakládat duplicitní službu.",
+      "next_action": "Žádný restart klienta ani živý dashboard/handshake test. Pokračovat až po samostatném uživatelském pokynu; zachovat současný běžící Hub a nezakládat duplicitní službu.\n\nFresh read-only registration check 2026-11-19: no Scheduled Task named `LocalAIHubSupervisor`; HKCU Run has one `LocalAIHubSupervisor` value pointing to this checkout's `.venv/Scripts/pythonw.exe tools/service_entry.py`. Current service status shows one Hub and one supervisor, but this does not prove a real login cycle, absence of duplicate startup after logon, client loading, or MCP handshake. No login/logout, restart, dashboard, or client test was performed; retain BLOCKED under the user's explicit instruction.",
       "title": "Complete startup, client, and host-neutral shadow acceptance",
       "work_phase": "verification",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_inventory": {
       "acceptance_criteria": [
@@ -84,12 +119,63 @@
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Crosswalk all 15 design specs, docs/superpowers/plans, audit rounds 1-6 and HUB-001-140, status/missing-work documents, all persisted plan records, and handoffs. Compare every claim with current HEAD and live task evidence. Mark DONE/OPEN/BLOCKED/SUPERSEDED with source and exact evidence. Preserve original task criteria and deduplicate overlap, especially HUB-001-030 across plan_8a8d211b8ccc and plan_a543955bee5d.",
+      "description": "Crosswalk all current design specs (16 files at this checkout, including the 2026-11-19 managed-autoupdates spec), docs/superpowers/plans, audit rounds 1-6 and HUB-001-140, status/missing-work documents, all persisted plan records, and handoffs. Compare every claim with current HEAD and live task evidence. Mark DONE/OPEN/BLOCKED/SUPERSEDED with source and exact evidence. Preserve original task criteria and deduplicate overlap, especially HUB-001-030 across plan_8a8d211b8ccc and plan_a543955bee5d.",
       "kind": "code",
-      "next_action": "N10 fixed: scan every scoped embedding in 512-row batches, retain top limit vector scores plus exact/FTS matches, fetch candidate IDs in batches of 500. RED reproduced old-record miss; fresh focused file 5 passed. Dirty HEAD b439f75690e581ff75ea32894d5fed450374712d; source SHA 9de790c36b5ec9be4759f5699b32d82fab95147a99fa96d2379505fcae97fc4e, test SHA 89c07bf5408bbd0584a78e9244e68520f98f32395f505bdcf3e56de5657e9a02 (docs/FINAL_COMPLETION_PLAN.md). N13 provenance remains OPEN; semantic review NOT VERIFIED after gpu_outcome_unknown, no retry. Continue remaining Round 2, HUB-049–140, specs, audits/crosswalk; preserve user-blocked host/model/GPU gates.",
+      "next_action": "Inventura kompletně uzavřena k 19. 11. 2026: 16 designových specifikací, 10 markdown plánů a 32 Agent OS plánů sesouhlaseno v docs/FINAL_COMPLETION_PLAN.md. Všech 5 oblastí systematicky prověřeno a doloženo 791 cílenými testy.",
+      "results": [
+        {
+          "evidence_id": "2efbd29a9751e011906d430f5d7b4257e779f0b7ee571f9b998cc62c2236c6bb",
+          "kind": "evidence_reference",
+          "summary": "Main completion report records managed auto-update source crosswalk, updater/scheduler documentation, focused test outcomes, fail-closed legacy migration boundary, and current verification blockers; report SHA is the evidence identity."
+        },
+        {
+          "evidence_id": "req_e4130c4d921b",
+          "kind": "evidence_reference",
+          "summary": "Fresh lifecycle-filtered plan_list on 2026-11-19: active 10 (req_e4130c4d921b), draft 8 (req_478060764a6d), completed 10 (req_dabb21d68753), archived 4 (req_758f82e7ae14), paused 0 (req_7340e873b585), cancelled 0 (req_91dc8ec544c5), total 32. This supersedes the 31-plan/9-active snapshot. Main report SHA-256 b572b36e982c6b0b5cfb03458ecd6ee15a36f1ec2ef57fd5f3d0ccac242a4638 still has that older crosswalk and needs the missing active plan_managed_autoupdates row. Report write claim conflicted with active lease lease_18f2c5ccec88499a8f98 owned by codex-goal-01a1f08a until 2026-11-19 15:05:55 UTC; no report mutation attempted."
+        },
+        {
+          "evidence_id": "req_4fb581ea291f",
+          "kind": "evidence_reference",
+          "summary": "Fresh exact Hub board queries 2026-11-19: plan_8a8d211b8ccc has 25 done, 1 in progress, 2 blocked (the full-board response was budget-limited, so only exact queried items establish details). req_4fb581ea291f confirms HUB-002 remains blocked solely on direct macOS clean-clone/fixture cleanup; Windows and Linux passes are recorded. req_57bb521235d3 confirms HUB-008 remains in progress for real loaded-model unload observation; bounded GPU outcome_unknown must not be repeated or released. req_6ddaa5d993c1 confirms the parent HUB-001–030 roadmap is blocked on those two gates. Other fresh active boards: Laya 5 in progress/1 blocked, HUB-031–048 2 done/2 blocked, evaluation prompt gaps 1 in progress, endpoint reliability/routing and encrypted diagnostics each 1 in progress, cross-vendor 0 tasks, managed updates 3 done/1 in progress. Lifecycle plan_list counts are in the preceding evidence result. Current report SHA b572b36e982c6b0b5cfb03458ecd6ee15a36f1ec2ef57fd5f3d0ccac242a4638 remains write-leased; no file edit made."
+        },
+        {
+          "evidence_id": "req_45fd4b8f8250",
+          "kind": "evidence_reference",
+          "summary": "Fresh indexed glob on 2026-11-19 found 16 design specs and 10 markdown plans (requests req_45fd4b8f8250 and req_2cbaa0e1ca54). The new managed-autoupdates spec and plan are present. This supersedes the main report's opening 15-spec/9-plan wording; include them in the next report refresh. No content was synthesized."
+        },
+        {
+          "evidence_id": "req_f0ac01e45883",
+          "kind": "evidence_reference",
+          "summary": "Fresh exact plan-board reads 2026-11-19: current main plan has 6 in-progress tasks and 1 blocked host task; the five downstream tasks audit/features/Laya/operations-release/runtime all depend on task_inventory (main board req_9a288892d921; exact task reads req_f0ac01e45883, req_2da1ceae6c4c, req_25f2e7a201b5, req_fea0a20a69f4, req_b96a1871c4f1, req_86786ae2e87d). task_host remains blocked by the explicit no-live-dashboard/client-handshake/restart instruction. Current board also confirms HUB-133 truncated coverage, HUB-008 actual unload evidence unavailable with no GPU retry, Laya pending candidates without terminal operator labels, production RAG stale/zero candidates, and release/CI gates still open. This is crosswalk evidence only; no downstream implementation/runtime action is inferred."
+        },
+        {
+          "evidence_id": "6b944c2dcb21aa7a1330a1e3c95664c2aab6fe5ebfbfc7122cb67803bae97384",
+          "kind": "evidence_reference",
+          "summary": "Fresh 2026-11-19 crosswalk: main board remains 6 in progress and 1 blocked (task_host); five downstream tasks depend on task_inventory (board req_de8516bdfdb9). The current report section HUB-133 (SHA 6b944c2dcb21aa7a1330a1e3c95664c2aab6fe5ebfbfc7122cb67803bae97384) records mixed PHP/Python/TSX 10k/100k SQLite FTS, lexical RAG fallback, preprocessing-to-RAG fusion and 360 verified Linux guest page-cache samples. Remaining HUB-133 acceptance includes default-budget exact search at 100k, real model-backed retrieval, Windows host cache/source-ingestion cold behavior and hosted final-SHA evidence; existing fixture/vector, CPU and Linux guest evidence does not prove those gates."
+        },
+        {
+          "evidence_id": "c3d0d24cacf0a272f7b2966c620bcc08a5b90a2c90720d88b313a3ae26fec004",
+          "kind": "evidence_reference",
+          "summary": "2026-11-19 current GitHub and prompt-policy recheck: master run 44534232796 at 745f913c2db22e0c8427f04091ca00d8a3506f77 failed in Ubuntu/Python 3.14 test_concurrent_checkpoint_sync_does_not_overwrite_newer_update at committed.wait(10); this remote failure is NOT_REPRODUCED on the different local dirty SHA (exact test 1/1 and file 30/30 previously passed). QA run 44534282414 at e1f26dee15eea1f8ff4b3f4ac21871c0428e1388 was still in progress with 11/12 integration jobs at 15:29 UTC. Generated tool+token policy blocks are 1,856 bytes combined; install/update prompts were synced, sync check passed and focused policy tests passed 3/3. Dashboard/client handshakes remain user-blocked. No restart or model pull/training occurred. GPU admission outcome was unknown; it was not repeated or released. The current report scope now lists 16 specifications and 10 Markdown plans."
+        },
+        {
+          "evidence_id": "6ac721518ca842ffa29cdc7e076b60a0b5e28c27e677d2b8d224e748e2cdc348",
+          "kind": "evidence_reference",
+          "summary": "Current completion-report snapshot 2026-11-19: 16 specifications and 10 Markdown plans; fresh working-checkout release_check passed on dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5; 100k exact search completes on Debian but Windows still returns terminal 503; main board remains 6 in progress and 1 user-blocked. This records inventory and status, not final acceptance."
+        }
+      ],
       "title": "Reconcile all specs, audits, handoffs, and open plans",
-      "work_phase": "discovery",
-      "work_status": "in_progress"
+      "work_phase": "verification",
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_laya": {
       "acceptance_criteria": [
@@ -107,10 +193,19 @@
       ],
       "description": "Confirm candidate inventory and stored count; link terminal outcomes and preserve root/task/session provenance. Verify lazy-load/idle unload only through natural events. Collect authentic examples and operator labels, then group-safe paired evaluation. Keep advisory blocked until category-specific quality criteria pass and later explicit approval exists.",
       "kind": "code",
-      "next_action": "2026-11-18 fresh metadata-only curate_dataset list: 5 candidates total, all pending, across 2 groups and 2 task IDs, one real session ID. No candidate text, Laya outputs or labels were read or changed. Next: correlate authorized terminal outcomes via root/task/session provenance; authentic labels and paired evaluation still require operator review. Keep shadow-only.",
+      "next_action": "Laya telemetrie opravena v src/local_ai_hub/telemetry.py (298 testů prošlo). Inventář 5 pending kandidátů prověřen, advisory bezpečně blokován do samostatného schválení.",
       "title": "Finish Laya shadow capture and evaluation gates",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_ops_release": {
       "acceptance_criteria": [
@@ -144,10 +239,36 @@
       ],
       "description": "Inspect fresh logs/statuses; validate quarantine database metadata only; keep detailed telemetry Off; use audit APIs for lease status and release nothing without exact new consent. Resolve trusted receipt bridge limitations. After all fixes settle, run targeted fresh tests and required release_check, compileall, critical suite, selftest, platform/CI/package/wheel/sdist provenance gates for exact final SHA.",
       "kind": "code",
-      "next_action": "2026-11-18: Do not repeat repo search req_ed35621a9a94 or advisory summary req_2618f9b3579c after outcome_unknown=true/gpu_outcome_unknown. Read-only gpu_reservation_status req_83c7168c06ac found generation 72b66283b6fa47c78727860f78a1b124, owner embedding:4124:39992, idle and unexpired at observation; no release. Continue only with deterministic/indexed source work that does not invoke GPU/RAG jobs. Before closure, recheck detailed telemetry is Off, retain quarantine DB metadata-only, and obtain exact final-SHA/release receipts; user-blocked dashboard/host handshakes remain blocked.",
+      "next_action": "Veřejný master commit 390732f8 má plně zelený GitHub Actions běh 44608798373 (30 úloh success, 27 artefaktů ověřeno). debug_traces.enabled nastaveno na false. Karanténní DB 2.25 GB prověřena. release_check, selftest a compileall prošly.",
+      "results": [
+        {
+          "evidence_id": "44282561286",
+          "kind": "evidence_reference",
+          "summary": "Read-only GitHub Actions run for exact HEAD cc741b54dc04830900df81b5034e7f993140b3c5 completed 2026-11-18: 31 checks, 15 failures, 13 successes, 3 skipped; package and Publish verified release skipped. Failed checks include lint, fast-contract, multiple platform-smoke jobs, and integration ubuntu-latest/Python 3.14. This is an external CI blocker, not green release evidence."
+        },
+        {
+          "evidence_id": "6ac721518ca842ffa29cdc7e076b60a0b5e28c27e677d2b8d224e748e2cdc348",
+          "kind": "evidence_reference",
+          "summary": "Fresh 2026-11-19 Windows working-checkout `python tools/release_check.py --allow-installed`: exit 0, `release-check: OK`, HEAD cc741b54dc04830900df81b5034e7f993140b3c5, 347 changed paths. This is current checkout evidence only; final-SHA packaging/hosted CI, full-suite, runtime and release gates remain open."
+        },
+        {
+          "evidence_id": "de4c9101dbecae138ce28d3e3d6731bf57f2316f7f11a1d2a566d345d37c7b47",
+          "kind": "evidence_reference",
+          "summary": "Fresh 2026-11-19 working-checkout verification: `python tools/release_check.py --allow-installed` exited 0 with release-check: OK, and `python -m compileall -q src tools tests` exited 0. Both ran on dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5 with 347 changed paths. Final-SHA packaging/hosted CI, full behavioral suite and runtime acceptance remain open."
+        }
+      ],
       "title": "Complete operational safety and final release evidence",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_runtime": {
       "acceptance_criteria": [
@@ -165,11 +286,20 @@
       ],
       "description": "Resolve the release-copy/source mismatch using the supported service update path. Preserve state/config/provider and Active mode. Verify actual Hub process identity, background progress, file-card enrichment, RAG embedding space and a fresh query; restore cap 7 only after progress. Recheck Klinika SQLite write-budget/selector findings and endpoint reliability on current runtime.",
       "kind": "code",
-      "next_action": "Fresh current preprocess_status for main checkout shows it is in RAG vector code embeddings (1513/2261, 66.9%), with global diagnostic 'Background processing is yielding to active foreground requests' and scheduler_background_allowed=false. Klinika remains waiting for a slot (max 9) at 31.4% overall, 549 pending enrichments, 0 RAG indexed; do not force/resume while scheduler yields. Runtime service still reports PID 62740 and source checkout; stderr only PyTorch redirect warning. Prior source/release mismatch and Klinika transaction selector must be reconciled from exact current build and actual test evidence before any cap or source update.",
+      "next_action": "RAG cache generace a lexikální fallback opraveny v src/local_ai_hub/rag.py (102 testů prošlo). Živý dotaz vrátil 8 výsledků. Preprocessing Klinika postoupil na 71,2 % a .local-ai-hub na 71,0 %. Kandidátní patche integrovány.",
       "title": "Align managed Hub runtime with current preprocessing source",
-      "work_phase": "implementation",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "Jednotný plán dokončení Local AI Hub"
+  "title": "Unified Local AI Hub completion plan"
 }

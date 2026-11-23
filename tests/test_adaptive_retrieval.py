@@ -8,9 +8,28 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.repo_tools import RepositoryTools
-from local_ai_hub.retrieval import fuse_ranked_paths
+from local_ai_hub.retrieval import fuse_ranked_paths, prioritize_source_context_paths
 from local_ai_hub.evidence import EvidenceStore
 from local_ai_hub.services import LocalAIServices
+
+
+@pytest.mark.parametrize(
+    ("query", "source_first"),
+    [
+        ("Kde je definovaná funkce load_record?", True),
+        ("Ukaž zdrojový kód načítání", True),
+        ("Ukaz zdrojovy kod nacitani", True),
+        ("Vyhledej definici načítání záznamů", True),
+        ("Najdi funkci load_record", True),
+        ("Najdi popis funkce v dokumentaci", False),
+        ("Uprav dokumentaci k code indexu", False),
+        ("Najdi popis metody v prirucce", False),
+    ],
+)
+def test_czech_context_ranks_source_only_for_source_requests(query, source_first) -> None:
+    paths = ["docs/plans/old.md", "src/loader.py", "docs/current.md"]
+    result = prioritize_source_context_paths(paths, query, priority_paths=("docs/current.md",))
+    assert result == (["docs/current.md", "src/loader.py", "docs/plans/old.md"] if source_first else paths)
 
 
 def test_fusion_prefers_agreement_and_keeps_file_diversity() -> None:
@@ -106,7 +125,8 @@ def test_pinned_project_hint_survives_fusion_cap_but_remains_policy_checked(tmp_
     assert "docs/pinned.md" not in captured["kwargs"]["force_include_paths"]
 
 
-def test_hybrid_source_intent_ranks_source_and_config_before_history_and_coverage(tmp_path: Path) -> None:
+@pytest.mark.parametrize("query", ["Fix runtime implementation", "Kde je definice načítání konfigurace?"])
+def test_hybrid_source_intent_ranks_source_and_config_before_history_and_coverage(tmp_path: Path, query: str) -> None:
     captured: dict[str, tuple[str, ...]] = {}
     groups = {
         "deterministic": [
@@ -160,7 +180,7 @@ def test_hybrid_source_intent_ranks_source_and_config_before_history_and_coverag
     services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "Fix runtime implementation", workspace=None, max_tokens=400,
+        str(tmp_path), query, workspace=None, max_tokens=400,
         quality_first=True,
     )
 

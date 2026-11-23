@@ -4,7 +4,36 @@
   "id": "plan_eed2783af553",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-10-local-model-finetuning-scaffold.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "38098634ea10275e38d0d9513d9b4573e7da4e2cd4def61bc512c79ea035c04e"
+      }
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-10-existing-hub-cards-data-export.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "2da53be569338d5f1aada29841e53b6f0abf312cecf1d7471777f9562119559d"
+      }
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-10-preprocessing-card-model-evaluation.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "779795e1e223677d1c8b9a90de968178024a0057906c5b7472651556d6f2a4b7"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-10-local-model-finetuning-scaffold.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "6d68a62c8551592fd3bc453049611535319782217fdba8664b59798d4c6327e8"
+      }
+    }
+  ],
   "tasks": {
     "task_preprocessing_card_pilot": {
       "acceptance_criteria": [
@@ -22,7 +51,37 @@
       "next_action": "Collect authentic query-to-card relevance pairs before supervised embedding fine-tuning.",
       "title": "Export existing preprocessing and embedding cards",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-10-local-model-finetuning-scaffold.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "38098634ea10275e38d0d9513d9b4573e7da4e2cd4def61bc512c79ea035c04e"
+          }
+        },
+        {
+          "path": "docs/superpowers/specs/2026-11-10-existing-hub-cards-data-export.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "2da53be569338d5f1aada29841e53b6f0abf312cecf1d7471777f9562119559d"
+          }
+        },
+        {
+          "path": "docs/superpowers/specs/2026-11-10-preprocessing-card-model-evaluation.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "779795e1e223677d1c8b9a90de968178024a0057906c5b7472651556d6f2a4b7"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-10-local-model-finetuning-scaffold.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "6d68a62c8551592fd3bc453049611535319782217fdba8664b59798d4c6327e8"
+          }
+        }
+      ]
     }
   },
   "title": "Preprocessing file-card fine-tuning pilot"

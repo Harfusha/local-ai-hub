@@ -121,7 +121,7 @@ def test_cuda_request_fails_instead_of_falling_back_to_cpu() -> None:
 
 
 def test_cuda_runtime_prefers_bf16_sdpa_and_fused_optimizer() -> None:
-    result = resolve_runtime(device="cuda", torch_module=_FakeTorch())
+    result = resolve_runtime(device="cuda", precision="bf16", torch_module=_FakeTorch())
 
     assert result["device"] == "cuda"
     assert result["precision"] == "bf16"
@@ -337,18 +337,20 @@ def _write_existing_card_index(tmp_path: Path) -> tuple[Path, Path]:
             """
             CREATE TABLE projects(root TEXT PRIMARY KEY);
             CREATE TABLE content_cards(
-                card_key TEXT PRIMARY KEY, card_json TEXT, model TEXT, analyzer_version TEXT
+                card_key TEXT PRIMARY KEY, content_hash TEXT NOT NULL, card_json TEXT, model TEXT, analyzer_version TEXT
             );
             CREATE TABLE file_refs(
                 root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, card_key TEXT
             );
             CREATE TABLE source_index(root TEXT, path TEXT, text TEXT, content_hash TEXT);
+            CREATE TABLE module_cards(root TEXT, module TEXT, revision_hash TEXT, card_json TEXT);
+            CREATE TABLE project_cards(root TEXT, revision_hash TEXT, card_json TEXT);
             """
         )
         connection.execute("INSERT INTO projects(root) VALUES (?)", (str(project),))
         connection.execute(
-            "INSERT INTO content_cards VALUES (?, ?, ?, ?)",
-            (card_key, json.dumps({"summary": "example"}), "local-teacher", "v1"),
+            "INSERT INTO content_cards VALUES (?, ?, ?, ?, ?)",
+            (card_key, source_hash, json.dumps({"summary": "example"}), "local-teacher", "v1"),
         )
         connection.execute(
             "INSERT INTO file_refs VALUES (?, ?, ?, ?, ?)",
@@ -401,8 +403,8 @@ def test_existing_card_export_resume_drops_rows_missing_from_current_index(tmp_p
     second_hash = hashlib.sha256(second_source.encode("utf-8")).hexdigest()
     with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
         connection.execute(
-            "INSERT INTO content_cards VALUES (?, ?, ?, ?)",
-            ("src/second.py", json.dumps({"summary": "second example"}), "local-teacher", "v1"),
+            "INSERT INTO content_cards VALUES (?, ?, ?, ?, ?)",
+            ("src/second.py", second_hash, json.dumps({"summary": "second example"}), "local-teacher", "v1"),
         )
         connection.execute(
             "INSERT INTO file_refs VALUES (?, ?, ?, ?, ?)",
@@ -429,6 +431,303 @@ def test_existing_card_export_resume_drops_rows_missing_from_current_index(tmp_p
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert result["row_count"] == 1
     assert [row["id"] for row in rows] == [selected["row_id"]]
+
+
+@pytest.mark.parametrize("dataset_format", ["card-training", "embedding-corpus"])
+def test_existing_card_export_resume_drops_card_with_stale_stored_source_hash(tmp_path: Path, dataset_format: str) -> None:
+    from tools.model_training.existing_cards import export_existing_cards, list_existing_card_candidates
+
+    state, _project = _write_existing_card_index(tmp_path)
+    output = state / "cards.jsonl"
+    original = export_existing_cards(state_dir=state, output_path=output, format=dataset_format)
+    assert original["row_count"] == 1
+
+    new_text = "def updated(): return 'current source'\n"
+    new_hash = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+        connection.execute("UPDATE file_refs SET content_hash=?", (new_hash,))
+        connection.execute("UPDATE source_index SET text=?,content_hash=?", (new_text, new_hash))
+        connection.commit()
+
+    with pytest.raises(ValueError, match="no eligible existing Hub cards"):
+        list_existing_card_candidates(state_dir=state, format=dataset_format)
+    with pytest.raises(ValueError, match="no eligible existing Hub cards"):
+        export_existing_cards(state_dir=state, output_path=state / "unused.jsonl", format=dataset_format)
+    resumed = export_existing_cards(state_dir=state, output_path=output, format=dataset_format, resume=True)
+    assert resumed["row_count"] == 0
+    assert resumed["counts"]["missing_source_pairs"] == 1
+    assert output.read_bytes() == b""
+    manifest = json.loads(Path(resumed["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["row_count"] == 0
+    assert manifest["dataset_sha256"] == hashlib.sha256(b"").hexdigest()
+
+    with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+        connection.execute("UPDATE content_cards SET content_hash=?,card_json=?",
+                           (new_hash, json.dumps({"summary": "new card"})))
+        connection.commit()
+    restored = export_existing_cards(state_dir=state, output_path=output, format=dataset_format, resume=True)
+    assert restored["row_count"] == 1
+    row = json.loads(output.read_text(encoding="utf-8"))
+    assert row["provenance"]["source_sha256"] == new_hash
+    assert "new card" in json.dumps(row)
+
+
+def test_existing_card_export_reads_one_index_snapshot_during_wal_update(tmp_path: Path, monkeypatch) -> None:
+    from tools.model_training import existing_cards
+
+    state, _project = _write_existing_card_index(tmp_path)
+    database = state / "preprocess.sqlite3"
+    original_authorize = existing_cards._authorized_roots
+    updated_source = "def updated(): return 42\n"
+    updated_hash = hashlib.sha256(updated_source.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(database, timeout=2.0)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+
+        def authorize_then_update(connection, roots_file):
+            roots = original_authorize(connection, roots_file)
+            writer.execute("UPDATE file_refs SET content_hash=?", (updated_hash,))
+            writer.execute("UPDATE source_index SET text=?,content_hash=?", (updated_source, updated_hash))
+            writer.execute("UPDATE content_cards SET content_hash=?,card_json=?",
+                           (updated_hash, json.dumps({"summary": "new snapshot"})))
+            writer.commit()
+            return roots
+
+        monkeypatch.setattr(existing_cards, "_authorized_roots", authorize_then_update)
+        output = state / "cards.jsonl"
+        report = existing_cards.export_existing_cards(state_dir=state, output_path=output, format="card-training")
+        assert report["row_count"] == 1
+        assert writer.execute("SELECT content_hash FROM source_index").fetchone() == (updated_hash,)
+
+    row = json.loads(output.read_text(encoding="utf-8"))
+    assert row["provenance"]["source_sha256"] != updated_hash
+    assert any("private source text" in message["content"] for message in row["messages"])
+    assert json.loads(row["messages"][-1]["content"]) == {"summary": "example"}
+
+
+def test_existing_card_export_resume_preserves_unrelated_state_files(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import export_existing_cards
+
+    state, _project = _write_existing_card_index(tmp_path)
+    database = state / "preprocess.sqlite3"
+    unrelated = state / "other-data.jsonl"
+    unrelated.write_bytes(b'{"id":"unrelated","text":"keep this"}\n')
+    for output in (unrelated, database):
+        original = output.read_bytes()
+        with pytest.raises(ValueError, match="existing card export|preprocessing index"):
+            export_existing_cards(state_dir=state, output_path=output, format="card-training", resume=True)
+        assert output.read_bytes() == original
+
+    output = state / "unstarted.jsonl"
+    manifest = output.with_name(output.name + ".manifest.json")
+    manifest.write_bytes(b'{"unrelated":true}\n')
+    with pytest.raises(ValueError, match="existing card export manifest"):
+        export_existing_cards(state_dir=state, output_path=output, format="card-training", resume=True)
+    assert not output.exists()
+    assert manifest.read_bytes() == b'{"unrelated":true}\n'
+
+
+@pytest.mark.parametrize("manifest_missing", [True, False])
+def test_existing_card_export_recovers_interrupted_manifest_publication(tmp_path: Path, manifest_missing: bool) -> None:
+    from tools.model_training.existing_cards import export_existing_cards
+
+    state, _project = _write_existing_card_index(tmp_path)
+    output = state / "cards.jsonl"
+    exported = export_existing_cards(state_dir=state, output_path=output, format="card-training")
+    manifest_path = Path(exported["manifest_path"])
+    expected = output.read_bytes()
+    if manifest_missing:
+        manifest_path.unlink()
+    else:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["dataset_sha256"] = hashlib.sha256(b"earlier complete export").hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    resumed = export_existing_cards(state_dir=state, output_path=output, format="card-training", resume=True)
+
+    assert output.read_bytes() == expected
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["dataset_sha256"] == resumed["dataset_sha256"] == hashlib.sha256(expected).hexdigest()
+
+
+def test_existing_card_export_serializes_same_output_across_processes(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+    import time
+
+    from local_ai_hub.process_utils import hidden_run_kwargs
+
+    state, _project = _write_existing_card_index(tmp_path)
+    output = state / "cards.jsonl"
+    manifest_path = output.with_name(output.name + ".manifest.json")
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    pause_first = """
+import os
+import sys
+import time
+from pathlib import Path
+from tools.model_training.cli import main
+
+ready, release, manifest = map(Path, sys.argv[1:4])
+replace = os.replace
+def pause_at_manifest(source, target):
+    if Path(target) == manifest:
+        ready.touch()
+        deadline = time.monotonic() + 25
+        while not release.exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('test did not release first exporter')
+            time.sleep(0.02)
+    return replace(source, target)
+
+os.replace = pause_at_manifest
+sys.argv = [sys.argv[0], *sys.argv[4:]]
+raise SystemExit(main())
+"""
+    args = ["export-existing-cards", "--state-dir", str(state), "--all-indexed",
+            "--output", str(output), "--format", "card-training"]
+    cli = [sys.executable, "-m", "tools.model_training.cli", *args, "--resume"]
+    first = subprocess.Popen(
+        [sys.executable, "-c", pause_first, str(ready), str(release), str(manifest_path), *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_run_kwargs(),
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and first.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "first exporter never reached manifest publication"
+        first_bytes = output.read_bytes()
+        assert not manifest_path.exists()
+
+        with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+            connection.execute("UPDATE content_cards SET card_json=?", (json.dumps({"summary": "later card"}),))
+            connection.commit()
+        second = subprocess.run(cli, capture_output=True, timeout=12, **hidden_run_kwargs())
+        assert second.returncode != 0
+        assert b"file update lock timed out" in second.stderr
+        assert output.read_bytes() == first_bytes
+        assert not manifest_path.exists()
+    finally:
+        release.touch()
+        try:
+            _stdout, stderr = first.communicate(timeout=8)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.communicate(timeout=5)
+            raise
+
+    assert first.returncode == 0, stderr.decode(errors="replace")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["dataset_sha256"] == hashlib.sha256(first_bytes).hexdigest()
+    completed = subprocess.run(cli, capture_output=True, check=True, timeout=12, **hidden_run_kwargs())
+    report = json.loads(completed.stdout)
+    final_bytes = output.read_bytes()
+    assert final_bytes != first_bytes
+    assert b"later card" in final_bytes
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["dataset_sha256"] == report["dataset_sha256"] == hashlib.sha256(final_bytes).hexdigest()
+
+
+def test_existing_card_export_keeps_cases_separate_for_outputs_with_same_stem(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import export_existing_cards
+
+    state, project = _write_existing_card_index(tmp_path)
+    prepared = []
+    for suffix, case_id in [(".jsonl", "first"), (".copy", "second")]:
+        cases = project / f"{case_id}.json"
+        cases.write_text(json.dumps({
+            "schema_version": 1,
+            "case_set": case_id,
+            "cases": [{"id": case_id, "query": "find the example", "expected_paths": ["src/example.py"]}],
+        }), encoding="utf-8")
+        report = export_existing_cards(
+            state_dir=state, output_path=f"cards{suffix}", format="embedding-corpus",
+            benchmark_cases_file=cases, benchmark_root=project,
+        )
+        manifest = json.loads(Path(report["manifest_path"]).read_text(encoding="utf-8"))
+        evaluation = manifest["benchmark_inputs"]["retrieval_evaluation"]
+        assert evaluation["prepared"] is True
+        prepared.append((state / evaluation["prepared_cases"], evaluation["prepared_cases_sha256"], case_id))
+
+    assert prepared[0][0] != prepared[1][0]
+    for path, digest, case_id in prepared:
+        content = path.read_bytes()
+        assert hashlib.sha256(content).hexdigest() == digest
+        assert json.loads(content)["cases"][0]["id"] == case_id
+
+
+def test_existing_card_export_resume_cleans_staging_left_by_process_exit(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from local_ai_hub.process_utils import hidden_run_kwargs
+
+    state, _project = _write_existing_card_index(tmp_path)
+    output = state / "cards.jsonl"
+    manifest_path = output.with_name(output.name + ".manifest.json")
+    source_index = (state / "preprocess.sqlite3").read_bytes()
+    crash = """
+import os
+import sys
+from pathlib import Path
+from tools.model_training.cli import main
+
+manifest = Path(sys.argv.pop(1))
+replace = os.replace
+def crash_at_manifest(source, target):
+    if Path(target) == manifest:
+        os._exit(77)
+    return replace(source, target)
+
+os.replace = crash_at_manifest
+raise SystemExit(main())
+"""
+    args = ["export-existing-cards", "--state-dir", str(state), "--all-indexed",
+            "--output", str(output), "--format", "card-training"]
+    first = subprocess.run(
+        [sys.executable, "-c", crash, str(manifest_path), *args], capture_output=True, timeout=15,
+        **hidden_run_kwargs(),
+    )
+    assert first.returncode == 77, first.stderr.decode(errors="replace")
+    assert output.is_file() and not manifest_path.exists()
+    leftover, = state.rglob("*.tmp")
+    untouched = leftover.with_name("unrelated.tmp")
+    untouched.write_bytes(b"preserve")
+    exported = output.read_bytes()
+
+    resumed = subprocess.run(
+        [sys.executable, "-m", "tools.model_training.cli", *args, "--resume"],
+        capture_output=True, check=True, timeout=15, **hidden_run_kwargs(),
+    )
+    assert not leftover.exists()
+    assert untouched.read_bytes() == b"preserve"
+    assert output.read_bytes() == exported
+    digest = hashlib.sha256(exported).hexdigest()
+    assert json.loads(resumed.stdout)["dataset_sha256"] == digest
+    assert json.loads(manifest_path.read_bytes())["dataset_sha256"] == digest
+    assert (state / "preprocess.sqlite3").read_bytes() == source_index
+
+
+def test_existing_card_export_leaves_unowned_staging_directory_untouched(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import export_existing_cards
+
+    state, _project = _write_existing_card_index(tmp_path)
+    output = state / "cards.jsonl"
+    report = export_existing_cards(state_dir=state, output_path=output, format="card-training")
+    stage, = (path for path in state.glob(".card-export-*") if path.is_dir())
+    (stage / "owner").unlink()
+    foreign = stage / "dataset.tmp"
+    foreign.write_bytes(b"unrelated fixture")
+    published = output.read_bytes()
+    manifest = Path(report["manifest_path"])
+    published_manifest = manifest.read_bytes()
+
+    with pytest.raises(ValueError, match="has no ownership marker"):
+        export_existing_cards(state_dir=state, output_path=output, format="card-training", resume=True)
+
+    assert foreign.read_bytes() == b"unrelated fixture"
+    assert output.read_bytes() == published
+    assert manifest.read_bytes() == published_manifest
 
 
 def _laya_row(
@@ -584,8 +883,8 @@ def test_existing_card_export_includes_all_authorized_indexed_rows(tmp_path: Pat
     second_hash = hashlib.sha256(second_source.encode("utf-8")).hexdigest()
     with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
         connection.execute(
-            "INSERT INTO content_cards VALUES (?, ?, ?, ?)",
-            ("src/second.py", json.dumps({"summary": "second example"}), "local-teacher", "v1"),
+            "INSERT INTO content_cards VALUES (?, ?, ?, ?, ?)",
+            ("src/second.py", second_hash, json.dumps({"summary": "second example"}), "local-teacher", "v1"),
         )
         connection.execute(
             "INSERT INTO file_refs VALUES (?, ?, ?, ?, ?)",

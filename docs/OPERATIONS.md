@@ -129,6 +129,10 @@ T03/T04/T13 integration and all platform gates remain unverified in this candida
 `ollama.enabled = true` selects Ollama and prevents llama.cpp installation. With Ollama disabled, `llama_cpp.mode = "on"` installs and supervises the pinned llama.cpp runtime and Qwen 1.5B default under `server.state_dir`; `"auto"` checks a configured external loopback endpoint without downloading; `"off"` disables llama.cpp. SYCL startup on Windows Intel retries once on CPU. `hubctl status` and `doctor` show the selected provider and actual health; disabled providers are shown as disabled.
 
 Bundles move preprocessed project state between Local AI Hub 4.0 installations; they are not source-code backups. Derived cache/index databases are disposable and are rebuilt when their current schema contract does not match.
+## Encrypted support archive
+
+The dashboard's installation-wide encrypted support ZIP includes retained Hub state across projects, Hub source, and redacted effective configuration. Operational databases, logs, and traces remain complete records and may contain private or credential-shaped content, including paths, tasks, memories, and captured request/response data. Treat the archive and its password as sensitive. Request/response bodies are included only when Detailed diagnostics was enabled when they were captured; export does not enable capture. The fresh password appears after a successful download and is not stored by the Hub. Default limits are 8 GiB compressed and 64 GiB source; temporary disk space is required.
+
 ## Latency and restart diagnostics
 
 If a request becomes slow, inspect realtime runtime statistics before raising timeouts. Repository-state counters expose Git timeouts, degraded fingerprints and slow-root cooldowns. On a warm watched project, normal edits should invalidate only watcher-reported paths; a full preprocessing inventory is a periodic consistency pass, not a per-edit operation.

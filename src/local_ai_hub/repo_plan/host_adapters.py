@@ -1324,18 +1324,30 @@ def remove_managed_instructions(content: str) -> str:
 
 
 def detect_host_environment() -> str:
-    """Detect current running host agent environment."""
-    if os.environ.get("ANTIGRAVITY_ENV"):
-        return "gemini_antigravity"
-    if os.environ.get("GEMINI_CLI_HOME"):
-        return "gemini_cli"
-    if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_ENV"):
-        return "codex"
-    if os.environ.get("CLAUDE_ENV") or os.environ.get("CLAUDE_BASE_DIR"):
-        return "claude"
-    if os.environ.get("CURSOR_PROJECT_DIR") or os.environ.get("CURSOR_ENV"):
-        return "cursor"
-    return "generic_mcp"
+    """Detect current running host agent environment.
+
+    Delegates to ClientRegistry for consistent detection across CAL.
+    """
+    try:
+        from local_ai_hub.client_adapters.registry import (
+            ClientRegistry,
+        )
+        detected = ClientRegistry.detect()
+        if detected == "antigravity":
+            return "gemini_antigravity"
+        return detected
+    except Exception:
+        if os.environ.get("ANTIGRAVITY_ENV"):
+            return "gemini_antigravity"
+        if os.environ.get("GEMINI_CLI_HOME"):
+            return "gemini_cli"
+        if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_ENV"):
+            return "codex"
+        if os.environ.get("CLAUDE_ENV") or os.environ.get("CLAUDE_BASE_DIR"):
+            return "claude"
+        if os.environ.get("CURSOR_PROJECT_DIR") or os.environ.get("CURSOR_ENV"):
+            return "cursor"
+        return "generic_mcp"
 
 
 def probe_host_capabilities(

@@ -23,7 +23,7 @@ import re
 _BROKER_WORKER = r'''
 import json, os, sys, time
 from pathlib import Path
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 class Artifacts:
     def put(self, *_args, **_kwargs): return "t15-paired-benchmark"
 class NullRepoState:

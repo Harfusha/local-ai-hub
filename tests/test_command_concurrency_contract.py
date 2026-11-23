@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-import local_ai_hub.commands as commands_module
+import local_ai_hub.command_broker as commands_module
 import local_ai_hub.process_utils as process_utils_module
-from local_ai_hub.commands import CommandBroker, CommandInvocation
+from local_ai_hub.command_broker import CommandBroker, CommandInvocation
 from local_ai_hub.process_utils import pid_alive
 
 
@@ -578,7 +578,7 @@ def test_interactive_prompt_hang_aborts_and_reaps_command(tmp_path) -> None:
 
 
 def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch) -> None:
-    import local_ai_hub.commands as commands_module
+    import local_ai_hub.command_broker as commands_module
 
     broker = _broker(tmp_path)
     pid_path = tmp_path / "reader-start-child.pid"
@@ -1494,7 +1494,7 @@ def test_patch_rollback_preserves_concurrent_edit_to_touched_file(tmp_path, monk
 
 
 def test_patch_path_rejects_nested_git_metadata() -> None:
-    from local_ai_hub.commands import _patch_relative_parts
+    from local_ai_hub.command_broker import _patch_relative_parts
 
     with pytest.raises(ValueError, match="Git metadata"):
         _patch_relative_parts("vendor/subrepo/.git/config")
@@ -1531,7 +1531,7 @@ def test_patch_root_guard_blocks_rename_during_validation_and_releases_afterward
 
 
 def test_patch_snapshot_rejects_change_between_lstat_and_open(tmp_path, monkeypatch) -> None:
-    import local_ai_hub.commands as commands_module
+    import local_ai_hub.command_broker as commands_module
 
     target = tmp_path / "target.txt"
     target.write_text("small", encoding="utf-8")
@@ -1553,7 +1553,7 @@ def test_patch_snapshot_rejects_change_between_lstat_and_open(tmp_path, monkeypa
 
 @pytest.mark.parametrize("stage", ["metadata", "check"])
 def test_patch_git_preapply_timeout_returns_structured_failure(tmp_path, monkeypatch, stage) -> None:
-    import local_ai_hub.commands as commands_module
+    import local_ai_hub.command_broker as commands_module
 
     _init_patch_repo(tmp_path, {"target.txt": "before\n"})
     real_run = commands_module.subprocess.run
@@ -1582,7 +1582,7 @@ def test_patch_git_preapply_timeout_returns_structured_failure(tmp_path, monkeyp
 
 
 def test_patch_apply_timeout_reports_unknown_state_without_claiming_rollback(tmp_path, monkeypatch) -> None:
-    import local_ai_hub.commands as commands_module
+    import local_ai_hub.command_broker as commands_module
 
     _init_patch_repo(tmp_path, {"target.txt": "before\n"})
     real_run = commands_module.subprocess.run
@@ -1613,7 +1613,7 @@ def test_patch_apply_timeout_reports_unknown_state_without_claiming_rollback(tmp
 
 
 def test_patch_rollback_fingerprints_postapply_file_above_preimage_cap(tmp_path, monkeypatch) -> None:
-    import local_ai_hub.commands as commands_module
+    import local_ai_hub.command_broker as commands_module
 
     _init_patch_repo(tmp_path, {"target.txt": "x\n"})
     target = tmp_path / "target.txt"
@@ -1670,7 +1670,7 @@ def test_patch_scope_rejects_symlink_escape_without_touching_target(tmp_path) ->
 
 
 def test_early_preflight_does_not_acquire_rollback_guard(tmp_path, monkeypatch) -> None:
-    import local_ai_hub.commands as commands_module
+    import local_ai_hub.command_broker as commands_module
 
     broker = _broker(tmp_path)
     monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: "missing-tool")
@@ -1936,6 +1936,8 @@ def test_structured_invocation_identity_uses_selected_executable(tmp_path, monke
     broker = _broker(tmp_path)
     selected = str(tmp_path / "powershell.exe")
     alternative = str(tmp_path / "pwsh.exe")
+    if os.name == "nt":
+        (tmp_path / "powershell").touch()
     available = {"powershell": selected, "pwsh": alternative}
     monkeypatch.setattr(commands_module.shutil, "which", lambda name, *_args, **_kwargs: available.get(name))
 
@@ -1945,6 +1947,27 @@ def test_structured_invocation_identity_uses_selected_executable(tmp_path, monke
     available["powershell"] = None
     unavailable = broker._unavailable_executable("powershell", str(tmp_path), argv_override=["powershell", "-NoProfile"])
     assert unavailable == "powershell"
+
+
+@pytest.mark.skipif(os.name != "nt" or sys.prefix == sys.base_prefix, reason="requires a Windows virtual environment")
+@pytest.mark.parametrize("structured", [False, True], ids=["direct", "structured"])
+def test_windows_worker_launches_python_selected_from_path(tmp_path, monkeypatch, structured) -> None:
+    executable = Path(sys.executable).resolve()
+    monkeypatch.setenv("PATH", str(executable.parent), prepend=os.pathsep)
+    broker = _broker(tmp_path)
+    name = "test_selected_executable.py"
+    (tmp_path / name).write_text(
+        "import sys\nfrom pathlib import Path\n\n"
+        "def test_running_interpreter():\n"
+        f"    assert Path(sys.executable).resolve() == Path({str(executable)!r})\n",
+        encoding="utf-8",
+    )
+    argv = ["python", "-m", "pytest", "-q", name]
+    command = CommandInvocation(argv=argv, cwd=str(tmp_path), shell=False) if structured else " ".join(argv)
+
+    result = broker.run(command, str(tmp_path), force=True, timeout=20)
+
+    assert result["success"] is True, result.get("stderr") or result.get("error")
 
 
 def test_command_job_cleanup_requires_empty_job_confirmation(monkeypatch) -> None:

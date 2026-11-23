@@ -180,3 +180,27 @@ def test_no_automatic_model_pull_on_missing_model():
     installed = service.runtime.list_installed_models()
     assert "nonexistent_model:latest" not in installed
     # Policy: pulls are opt-in, no background pull triggered
+
+
+def test_missing_laya_checkpoint_fails_before_provider_load(tmp_path, monkeypatch):
+    """A missing pinned checkpoint must not initialize a model provider."""
+    import pytest
+    import local_ai_hub.laya_runtime as laya_runtime
+
+    provider_calls = []
+    adapter = laya_runtime.LayaRuntimeAdapter(
+        checkpoint_path=tmp_path / "missing-revision",
+        revision="missing-revision",
+        expected_sha256={"model.safetensors": "0" * 64},
+        device_candidates=(),
+    )
+    monkeypatch.setattr(
+        laya_runtime.importlib,
+        "import_module",
+        lambda name: provider_calls.append(name),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        adapter._load()
+
+    assert provider_calls == []

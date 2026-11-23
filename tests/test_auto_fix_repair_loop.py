@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_events import AgentStateStore

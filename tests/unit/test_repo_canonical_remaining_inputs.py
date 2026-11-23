@@ -130,7 +130,7 @@ def test_direct_repo_impl_rejects_alias_even_with_canonical_value(
         get=lambda *args, **kwargs: calls.append(args),
     ))
     result = mcp_server._local_ai_repo_impl(
-        action, root=str(tmp_path), root=str(tmp_path), **canonical, **alias,
+        action, root=str(tmp_path), **canonical, **alias,
     )
     assert result["success"] is False
     assert calls == []
@@ -166,7 +166,7 @@ def test_direct_repo_impl_dispatches_canonical_value(
             return {"success": True}
 
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
-    result = mcp_server._local_ai_repo_impl(action, root=str(tmp_path), root=str(tmp_path), **fields)
+    result = mcp_server._local_ai_repo_impl(action, root=str(tmp_path), **fields)
 
     assert result["success"] is True
     assert len(calls) == 1

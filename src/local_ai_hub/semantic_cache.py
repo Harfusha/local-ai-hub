@@ -103,7 +103,7 @@ class SemanticGenerationCache:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=0.75)
+        return connect_sqlite(self.path, timeout_seconds=5.0)
 
     def _init_db(self) -> None:
         with closing(self._connect()) as con:
@@ -336,7 +336,7 @@ class SemanticGenerationCache:
                 )
                 count = int(con.execute("SELECT COUNT(*) FROM semantic_entries WHERE scope_key=?", (self._scoped_key(scope),)).fetchone()[0])
                 if count > self.max_entries:
-                    con.execute("DELETE FROM semantic_entries WHERE id IN (SELECT id FROM semantic_entries WHERE scope_key=? ORDER BY accessed_at ASC LIMIT ?)", (scope, count - self.max_entries + 32))
+                    con.execute("DELETE FROM semantic_entries WHERE id IN (SELECT id FROM semantic_entries WHERE scope_key=? ORDER BY accessed_at ASC LIMIT ?)", (self._scoped_key(scope), count - self.max_entries + 32))
                 if self.ttl_seconds > 0:
                     con.execute("DELETE FROM semantic_entries WHERE created_at < ?", (now - self.ttl_seconds,))
                 con.commit()

@@ -1,4 +1,4 @@
-from local_ai_hub.commands import MultiplexEvent, StreamMultiplexer
+from local_ai_hub.command_broker import MultiplexEvent, StreamMultiplexer
 
 
 def test_stream_multiplexer_orders_interleaved_lines_and_flushes_partial_output():

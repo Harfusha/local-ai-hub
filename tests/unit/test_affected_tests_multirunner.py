@@ -80,17 +80,17 @@ def test_mcp_preserves_incomplete_multirunner_selection(tmp_path, monkeypatch):
 def test_auto_patch_verification_rejects_mixed_runner_selection(
     tmp_path, monkeypatch, claimed_complete, excluded, multiple, matrix_extra,
 ):
-    from local_ai_hub import commands, deterministic
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub import command_broker, deterministic
+    from local_ai_hub.command_broker import CommandBroker
 
     root = tmp_path.resolve()
     broker = CommandBroker({"commands": {"allowed": True, "allow_unknown": True, "allow_validation": True},
                             "server": {"state_dir": str(tmp_path / "state")}})
     monkeypatch.setattr(broker, "_transaction_root_for_context", lambda _context: root)
-    monkeypatch.setattr(commands, "_patch_write_paths", lambda *_args: ["note.txt"])
-    monkeypatch.setattr(commands, "_snapshot_patch_targets", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(commands, "_assert_patch_root", lambda *_args: None)
-    monkeypatch.setattr(commands.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stderr=b""))
+    monkeypatch.setattr(command_broker, "_patch_write_paths", lambda *_args: ["note.txt"])
+    monkeypatch.setattr(command_broker, "_snapshot_patch_targets", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(command_broker, "_assert_patch_root", lambda *_args: None)
+    monkeypatch.setattr(command_broker.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stderr=b""))
     broker.run = Mock(return_value={"success": True, "exit_code": 0})
     fake = SimpleNamespace(
         affected_tests=lambda *_args, **_kwargs: {

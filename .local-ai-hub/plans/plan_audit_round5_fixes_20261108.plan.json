@@ -4,7 +4,15 @@
   "id": "plan_audit_round5_fixes_20261108",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_b01_root_family_admission": {
       "acceptance_criteria": [
@@ -22,7 +30,16 @@
       "next_action": "B01 implementation and focused verification complete; remaining Round 5 tasks stay open.",
       "title": "B01 — Root-family reservation ownership: zamezení dvojímu uvolnění",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b02_model_policy": {
       "acceptance_criteria": [
@@ -36,7 +53,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/model_policy.py ec1af2cb3cf1fd018e45712edd71db13a99bc989196a438ab5bae243f528e19c; test tests/unit/test_model_lifecycle_and_policy_edge_cases.py 495b4bbf8fa3287470d7c136403ee6cfc6b177d069031d729af473a3b034aad5.",
       "title": "B02 — Model memory policy: přesná klasifikace velikosti modelu",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b03_php_psr4_discovery": {
       "acceptance_criteria": [
@@ -50,7 +76,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/code_index_demand.py 66d78f11f64a44ad587bf17e52537a1cd8998b7cdfc9c4b4a69b6e46710c7447; test tests/unit/test_code_index_demand.py 03ea5d634f97da1391bbad26e49c33f56c3a89f2e8084b2258b50d5fd0121ef4.",
       "title": "B03 — PHP dependency resolver: podpora Composer PSR-4 use imports",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b04_b05_unified_language_registry": {
       "acceptance_criteria": [
@@ -65,7 +100,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/retrieval.py 95384930fbdc56102f4cea90e451c562b6d308cef597594651c71d991b8bbcb2; test tests/unit/test_retrieval_fusion_canonical_paths.py 3ea66f3957f79dbd1085dec4337bdc78c162337cd7e01b7a3af2adcd0521981d.",
       "title": "B04+B05 — Unified language registry a multilingvální source-context detekce",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b06_b07_b18_import_resolvers": {
       "acceptance_criteria": [
@@ -80,7 +124,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/code_index_demand.py 66d78f11f64a44ad587bf17e52537a1cd8998b7cdfc9c4b4a69b6e46710c7447; tests tests/unit/test_code_index_demand.py 03ea5d634f97da1391bbad26e49c33f56c3a89f2e8084b2258b50d5fd0121ef4 and tests/test_code_index_polyglot_demand.py 4081c6123242abc7365a7b1ce7b956812361b24e6cfc4e9e132f484c1fb31c5c.",
       "title": "B06+B07+B18 — Import resolvery: TypeScript NodeNext, Rust nested mod a Go root package",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b08_b19_indexed_dependency_lookup": {
       "acceptance_criteria": [
@@ -95,7 +148,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/code_index_demand.py 66d78f11f64a44ad587bf17e52537a1cd8998b7cdfc9c4b4a69b6e46710c7447; tests tests/unit/test_code_index_demand_efficiency.py d97844d792371590c415cce95d1f96ff0a5201536af019bd80413bce8d00e8b3 and tests/test_code_index_polyglot_demand.py 4081c6123242abc7365a7b1ce7b956812361b24e6cfc4e9e132f484c1fb31c5c.",
       "title": "B08+B19 — Indexed dependency lookup a přesný C# namespace matching",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b09_circuit_breaker_generations": {
       "acceptance_criteria": [
@@ -110,7 +172,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/resilience.py 4271ceae9181d9913e43282dd1e5894414ffc876bd494a363c49ee44f4eaf5a2; tests tests/unit/test_resilience_circuit_breaker.py 8e81b7f8ff196b2777b09dfb30f8e69dfa47becf09b7aff2db803e73e566886b and tests/test_resilience_defaults.py f7a7cd29229391f4ebed85637ba7668f860d731b72bf0131ee4c7ff0851372aa.",
       "title": "B09 — Circuit breaker generations: ochrana před opožděnými half-open výsledky",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b10_output_integrity": {
       "acceptance_criteria": [],
@@ -121,7 +192,16 @@
       "kind": "code",
       "next_action": "Wait for the Stability/performance owner in 01a1c762-d599-75c2-ae34-344aae056aa0 to confirm current ownership and a safe window, then have that owner wire format-aware normalization and provide current source/test evidence. Review and integrate only after that.",
       "title": "B10 — Runtime output integrity: ochrana zdrojového kódu před nežádoucí substitucí",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b11_speculative_inference_observability": {
       "acceptance_criteria": [
@@ -139,7 +219,16 @@
       "next_action": "B11 implementation and focused verification complete; remaining Round 5 tasks and overall audit/eval gates stay open.",
       "title": "B11 — Speculative inference observability: reálný stav a správná volba modelů",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b12_response_size_contract": {
       "acceptance_criteria": [
@@ -153,7 +242,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/response_protocol.py 801a6372b9db379c31a124100dfe26a2bef51fd9cd0ff8bdca34c51eaa4484ff; test tests/unit/test_response_protocol_edge_cases.py 74c425fdd6439e9874721af7b80b613055544de3feb2edbe7081bac09192db8c.",
       "title": "B12 — Response size contract: tvrdý limit výstupní obálky a budget_rejected",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b13_recovery_journal_cas": {
       "acceptance_criteria": [],
@@ -165,7 +263,16 @@
       "next_action": "Wait for the Stability/performance owner in 01a1c762-d599-75c2-ae34-344aae056aa0 to confirm ownership and a validation window. Then have that owner validate committed conflict replay and cross-process reservation races; review only after current source and test evidence is returned.",
       "title": "B13 — Recovery journal terminal CAS: ochrana neměnnosti dokončených výsledků",
       "work_phase": "integration",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b14_retrieval_evaluation_contract": {
       "acceptance_criteria": [
@@ -180,7 +287,16 @@
       "kind": "code",
       "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/evaluation_quality.py 3e83817dd27072b7f92c8b889a740a5e3d1639556e0a511e5d77662c3dff2afd; test tests/unit/test_evaluation_quality_paired_delta.py 091671cf69cedff4a613e4cff3168604a4e4558cc5a40c7d25b68898b2622cb4.",
       "title": "B14 — Retrieval evaluation contract: oddělení path_only a symbol_ast benchmarků",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b15_b16_vision_contracts": {
       "acceptance_criteria": [
@@ -198,7 +314,16 @@
       "next_action": "B15/B16 acceptance met on HEAD 2915047af9ce7976ef9d267ade182cd7f0003604; 265 targeted tests passed across vision service/phases, MCP routing/contracts and vision edge suites. Current semantic review action and live vision model evaluation unavailable; broad repository gates remain outside this unit.",
       "title": "B15+B16 — Vision contracts: podpora custom JSON schema a multilingvální fix intent",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_b17_warmup_lifecycle": {
       "acceptance_criteria": [
@@ -216,8 +341,17 @@
       "next_action": "B17 implementation and focused verification complete; remaining Round 5 tasks and overall audit/eval gates stay open.",
       "title": "B17 — Context warmup lifecycle: zamezení blokování po chybě nebo timeoutu",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "Audit Round 5: Opravy a regresní testy (commit 2176b0e)"
+  "title": "Audit Round 5: fixes and regression tests (commit 2176b0e)"
 }

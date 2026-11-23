@@ -307,7 +307,10 @@ def test_preprocessor_pause_resume_status_regressions(tmp_path: Path):
         pre.close()
 
 
-def test_preprocess_status_reports_resource_wait_for_pending_file_cards(tmp_path: Path):
+@pytest.mark.parametrize(("worker_enabled", "expected_waiting"), [(True, True), (False, False)])
+def test_preprocess_status_reports_resource_wait_for_pending_file_cards(
+    tmp_path: Path, worker_enabled: bool, expected_waiting: bool,
+):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -317,7 +320,7 @@ def test_preprocess_status_reports_resource_wait_for_pending_file_cards(tmp_path
         root = str(repo.resolve())
         pre._background_work_allowed = lambda: True
         pre._file_card_enrichment_enabled = lambda: True
-        pre.background_gpu = SimpleNamespace(ready=lambda: False)
+        pre.background_gpu = SimpleNamespace(enabled=worker_enabled, ready=lambda: False)
         now = time.time()
         with closing(pre._connect()) as con:
             con.execute(
@@ -337,9 +340,10 @@ def test_preprocess_status_reports_resource_wait_for_pending_file_cards(tmp_path
         project = pre.status(root)["projects"][0]
 
         assert project["status"] == "running"
-        assert project["waiting"] is True
-        assert project["waiting_reason"] == "Waiting for preprocessing model or resources"
-        assert project["active_detail"].startswith("Waiting for preprocessing model or resources")
+        assert project["waiting"] is expected_waiting
+        if expected_waiting:
+            assert project["waiting_reason"] == "Waiting for preprocessing model or resources"
+            assert project["active_detail"].startswith("Waiting for preprocessing model or resources")
     finally:
         pre.close()
 
@@ -400,7 +404,7 @@ def test_project_completion_requeues_pending_watcher_paths():
     pre._dirty_lock = threading.Lock()
     pre._dirty_paths = {"repo": {"overflow.py"}}
     con = _Connection()
-    pre._write_retry = lambda operation: operation(con)
+    pre._write_retry = lambda operation, **kwargs: operation(con)
 
     pre._set_project("repo", status="complete", phase="complete", next_check_at=time.time() + 1800)
 
@@ -925,10 +929,7 @@ def test_incremental_inventory_invalidates_learned_priority_after_content_change
                 "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
                 (root, "hot.py", digest, source.read_text(encoding="utf-8"), now),
             )
-            con.execute(
-                "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-                (root, "hot.py", "hot.py\nrare_demand = 'old'"),
-            )
+            pre._insert_fts_rows(con, [(root, "hot.py", "hot.py\nrare_demand = 'old'")])
             con.commit()
 
         assert pre._learned_priority_paths(root) == ("hot.py",)
@@ -986,10 +987,7 @@ def test_real_learned_query_recovers_after_incremental_reindex_and_card_generati
                 "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
                 (root, "hot.py", digest, source.read_text(encoding="utf-8"), now),
             )
-            con.execute(
-                "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-                (root, "hot.py", "hot.py\nrare demand marker = 'old'"),
-            )
+            pre._insert_fts_rows(con, [(root, "hot.py", "hot.py\nrare demand marker = 'old'")])
             con.commit()
 
         assert pre._learned_priority_paths(root) == ("hot.py",)

@@ -1,5 +1,5 @@
 from local_ai_hub.command_redaction import redact_secrets
-from local_ai_hub.commands import _redact_secrets
+from local_ai_hub.command_broker import _redact_secrets
 
 
 def test_command_redaction_wrapper_preserves_all_secret_patterns():

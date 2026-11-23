@@ -15,9 +15,9 @@ OBSOLETE_FALLBACK_POLICY = (
     "a policy denial must never be retried through native shell",
 )
 HOST_COMMAND_POLICY = (
-    "If active MCP schema exposes no action",
-    "skip Hub and run one bounded host command directly",
-    "This needs no Hub failure result",
+    "If the live schema has no action for an operation",
+    "use the authorized native tool directly",
+    "native fallback requires explicit `terminal=true` and `retryable=false`",
 )
 
 
@@ -33,5 +33,11 @@ def test_native_fallback_policy_distinguishes_unknown_commands_and_is_synced() -
             assert obsolete_text not in contents, f"{relative_path} retains: {obsolete_text}"
 
     project_policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Load the always-loaded `local-ai-orchestrator` skill" in project_policy
+    assert "complete Hub ownership, scope, MCP contract, lifecycle, memory, budget, GPU, and receipt rules" in project_policy
+
+    from local_ai_hub.generator import generate_skill_markdown
+
+    skill = generate_skill_markdown({})
     for required_text in HOST_COMMAND_POLICY:
-        assert required_text in project_policy, f"AGENTS.md is missing: {required_text}"
+        assert required_text in skill, f"local-ai-orchestrator is missing: {required_text}"

@@ -19,10 +19,10 @@
 | **N07** | `scheduler.py` | `submit` a `enqueue` používají odlišné podklady pro VRAM admission | Chyba v kódu | **P1** |
 | **N08** | `scheduler.py` | Rezidentní model může dostat přednost před podstatně prioritnějším požadavkem | Optimalizační hypotéza | **P2** |
 | **N09** | `agent_memory.py` | Vektorová paměť nemá identitu embeddingového modelu ani prostoru | Architektonické riziko | **P1** |
-| **N10** | `agent_memory.py` | Retrieval omezuje výběr vektorů podle stáří (`created_at DESC`), ne relevance | Architektonické riziko | **P1** |
+| **N10** | `agent_memory.py` | Historický nález: retrieval omezoval kandidáty na nejnovější vektory. Aktuální zdroj prochází scoped vektory v dávkách a udržuje relevance heap; regrese zahrnuje 5 001 vektorů. | Zdroj/test ověřeny; viz `AUDIT_ROUND2_PLAN.md` | **P1** |
 | **N11** | `preprocess_ingest.py` | Kritická kolize preprocessing cache mezi projekty (společný klíč bez kořene) | Chyba v kódu | **P1** |
 | **N12** | `token_router.py` | Lokální model může vrátit intervaly obcházející maximální rozpočet řádků | Chyba v kódu | **P1** |
-| **N13** | `agent_memory.py` | Graf entit nemá repository namespace a ignoruje kombinaci filtrů | Chyba v kódu | **P1** |
+| **N13** | `agent_memory.py` | Historický nález: graf entit neměl repository namespace a ignoroval kombinaci filtrů. Recheck 2026-11-18 ověřil canonical-root namespace a kombinované filtry; obecné povinné `repository_id` pro přímé zápisy zůstává neověřené. | Root/test ověřeny; viz `AUDIT_ROUND2_PLAN.md` | **P1** |
 | **N14** | `leases.py` | V persistentních lease závislostech mohou zůstat neplatné čekací hrany | Chyba v kódu | **P1** |
 | **N15** | `repo_plan/storage.py` | Uložení více souborů plánu není atomické pro souběžné čtenáře | Architektonické riziko | **P2** |
 | **N16** | `context_ledger.py` | Před reuse ověřuje digest, čerstvost i dostupnost artefaktu; chybějící artefakt se obnoví, identický živý zápis se neopakuje (Round 82). | Opraveno a ověřeno | **P2** |

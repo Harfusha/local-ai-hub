@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_command_runner_invokes_streaming_callback(tmp_path: Path) -> None:
@@ -42,7 +42,7 @@ def test_command_runner_buffers_live_output(tmp_path: Path) -> None:
 
 
 def test_bounded_stream_buffer() -> None:
-    from local_ai_hub.commands import _BoundedStreamBuffer
+    from local_ai_hub.command_broker import _BoundedStreamBuffer
 
     buf = _BoundedStreamBuffer(max_chars=1024)
     for i in range(200):

@@ -12,12 +12,13 @@ def test_unchanged_file_keeps_existing_cache_identity_when_git_map_appears(tmp_p
     root.mkdir()
     source = root / "example.py"
     source.write_text("value = 1\n", encoding="utf-8")
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}}
     repo = RepositoryTools(config)
     repo.git_blob_map = MagicMock(return_value={"example.py": "git:example"})
     rag = MagicMock()
     rag.workspace_id.return_value = "workspace"
     prep = ProjectPreprocessor(config, services=MagicMock(), rag=rag, scheduler=MagicMock(), runtime=MagicMock(), repo_tools=repo)
+    prep.enabled = True
     prep.register(str(root))
     prep._yield = lambda: False
     stat = source.stat()
@@ -51,12 +52,13 @@ def test_legacy_git_identity_converges_to_stable_lexical_cache(tmp_path: Path) -
     root.mkdir()
     source = root / "example.py"
     source.write_bytes(b"value = 1\r\n")
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}}
     repo = RepositoryTools(config)
     repo.git_blob_map = MagicMock(return_value={"example.py": "git:legacy"})
     rag = MagicMock()
     rag.workspace_id.return_value = "workspace"
     prep = ProjectPreprocessor(config, services=MagicMock(), rag=rag, scheduler=MagicMock(), runtime=MagicMock(), repo_tools=repo)
+    prep.enabled = True
     prep.register(str(root))
     prep._yield = lambda: False
     stat = source.stat()
@@ -93,7 +95,7 @@ def test_hash_retries_when_file_changes_during_snapshot_read(tmp_path: Path) -> 
     original = b"value = 1\n"
     current = b"value = 2\n"
     source.write_bytes(original)
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}}
     repo = RepositoryTools(config)
     real_hash = repo._hash_file_only
     calls = 0
@@ -110,6 +112,7 @@ def test_hash_retries_when_file_changes_during_snapshot_read(tmp_path: Path) -> 
     rag = MagicMock()
     rag.workspace_id.return_value = "workspace"
     prep = ProjectPreprocessor(config, services=MagicMock(), rag=rag, scheduler=MagicMock(), runtime=MagicMock(), repo_tools=repo)
+    prep.enabled = True
     prep.register(str(root))
     prep._yield = lambda: False
     stat = source.stat()
@@ -122,10 +125,7 @@ def test_hash_retries_when_file_changes_during_snapshot_read(tmp_path: Path) -> 
             "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,0)",
             (str(root.resolve()), "example.py", hashlib.sha256(original).hexdigest(), original.decode()),
         )
-        con.execute(
-            "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-            (str(root.resolve()), "example.py", "example.py\n" + original.decode()),
-        )
+        prep._insert_fts_rows(con, [(str(root.resolve()), "example.py", "example.py\n" + original.decode())])
         con.commit()
         row = dict(con.execute("SELECT * FROM projects WHERE root=?", (str(root.resolve()),)).fetchone())
 
@@ -157,7 +157,7 @@ def test_rag_does_not_publish_cached_text_after_unwatched_edit(tmp_path: Path) -
     old_text = "value = 1\n"
     current_text = "value = 2\n"
     source.write_text(current_text, encoding="utf-8")
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}}
 
     class CapturingRag:
         def __init__(self) -> None:
@@ -178,6 +178,7 @@ def test_rag_does_not_publish_cached_text_after_unwatched_edit(tmp_path: Path) -
 
     rag = CapturingRag()
     prep = ProjectPreprocessor(config, services=MagicMock(), rag=rag, scheduler=MagicMock(), runtime=MagicMock(), repo_tools=RepositoryTools(config))
+    prep.enabled = True
     prep.register(str(root))
     prep._yield = lambda: False
     resolved = str(root.resolve())
@@ -192,10 +193,7 @@ def test_rag_does_not_publish_cached_text_after_unwatched_edit(tmp_path: Path) -
             "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,0)",
             (resolved, "example.py", old_hash, old_text),
         )
-        con.execute(
-            "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-            (resolved, "example.py", "example.py\n" + old_text),
-        )
+        prep._insert_fts_rows(con, [(resolved, "example.py", "example.py\n" + old_text)])
         con.commit()
 
     assert prep._step_rag({"root": resolved, "workspace": "workspace", "generation": 1})
@@ -245,13 +243,14 @@ def test_rag_does_not_publish_cached_text_after_unwatched_edit(tmp_path: Path) -
 def test_same_relative_path_keeps_root_scoped_current_search_content(tmp_path: Path) -> None:
     roots = (tmp_path / "root-a", tmp_path / "root-b")
     texts = ("ROOT_A_MARKER = 'alpha'\n", "ROOT_B_MARKER = 'beta'\n")
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}}
     rag = MagicMock()
     rag.workspace_id.side_effect = lambda root: str(root)
     prep = ProjectPreprocessor(
         config, services=MagicMock(), rag=rag, scheduler=MagicMock(),
         runtime=MagicMock(), repo_tools=RepositoryTools(config),
     )
+    prep.enabled = True
     prep._yield = lambda: False
 
     for root, text in zip(roots, texts):
@@ -297,10 +296,11 @@ def test_same_relative_path_keeps_root_scoped_current_search_content(tmp_path: P
 def test_completed_project_reports_actual_coverage(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "preprocessing": {"enabled": False}}
     rag = MagicMock()
     rag.workspace_id.return_value = "workspace"
     prep = ProjectPreprocessor(config, services=MagicMock(), rag=rag, scheduler=MagicMock(), runtime=MagicMock(), repo_tools=RepositoryTools(config))
+    prep.enabled = True
     prep.register(str(root))
     with closing(prep._connect()) as con:
         con.execute("UPDATE projects SET phase='complete', status='complete' WHERE root=?", (str(root.resolve()),))

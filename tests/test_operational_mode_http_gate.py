@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -48,3 +49,34 @@ def test_gaming_allows_safe_reads_but_maintenance_blocks_agent_reads():
     assert http_server._http_mode_policy("POST", "/api/command", {"action": "run"}) == "blocked"
     assert http_server._http_mode_policy("GET", "/api/context/pack") == "blocked"
     assert http_server._http_mode_policy("POST", "/api/async-jobs", {"job_action": "result"}) == "existing_job"
+
+@pytest.mark.parametrize(
+    ("length", "should_drain"),
+    [(0, False), (64 * 1024 + 1, True), (128 * 1024, True), (128 * 1024 + 1, False)],
+)
+def test_windows_rejected_mode_post_drains_only_after_the_response(monkeypatch, length, should_drain):
+    monkeypatch.setattr(http_server, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"server": {"max_request_body_bytes": 128 * 1024}},
+    ))
+    blocked = {"success": False, "mode": "preprocessing", "error_code": "operational_mode_blocked"}
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda _method, _path: blocked)
+    events = []
+    timeouts = []
+    handler = _post_handler("/api/search", {})
+    handler.headers["Content-Length"] = str(length)
+    handler._send = lambda status, _data: events.append(status)
+    handler._read_json = lambda: pytest.fail("a rejected POST must skip JSON parsing")
+    handler.wfile = SimpleNamespace(flush=lambda: events.append("flush"))
+    handler.connection = SimpleNamespace(
+        shutdown=lambda how: events.append(how),
+        settimeout=timeouts.append,
+    )
+    handler.rfile = BytesIO(b"x" * length)
+
+    handler.do_POST()
+
+    assert events == ([423, "flush", http_server.socket.SHUT_WR] if should_drain else [423])
+    assert handler.rfile.tell() == (length if should_drain else 0)
+    assert bool(timeouts) == should_drain
+    assert all(0 < timeout <= 0.100001 for timeout in timeouts)

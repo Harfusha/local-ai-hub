@@ -5,7 +5,15 @@
   "id": "plan_eval_prompt_gaps_20261108",
   "lifecycle": "active",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_coverage": {
       "acceptance_criteria": [
@@ -23,11 +31,20 @@
       "depends_on": [],
       "description": "CASE132 prompt action contracts are corrected and the latest isolated GPT-6 Luna Low run completed the required 14 calls in order. Focused prompt guard passes. Protocol is verified from host markers; endpoint payloads, content and Windows LF transport remain NOT_VERIFIED. Continue full six-round audit and practical eval reconciliation; preserve Laya/Stability ownership and do not run broad checks on the dirty shared checkout.",
       "kind": "documentation",
-      "next_action": "Fresh host-native contract validation on dirty checkout, HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest --no-cache -q tests/test_case132_prompt_contract.py tests/test_case135_prompt_contract.py tests/test_case136_prompt_contract.py` passed 3 tests in 1.53s. This verifies only source prompt contracts. It is not isolated GPT-6 Luna run evidence, live MCP payloads, Windows LF transport, or CASE131/135 semantic acceptance. Keep disposable CASE132 fixture untouched after host rejected cleanup. Continue R1-R6 evidence reconciliation and safe assigned fixes; do not run broad checks on the dirty shared checkout.",
+      "next_action": "Fresh current dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5 check: catalog reconciliation verified read-only. docs/agent-evaluation/prompts.md has 123 unique numeric prompts; cases 114–136 are all present. README.md line 7 confirms the 123 count and lists merged legacy cases. evaluation-key.md lines 823–831 cover 114–128 and 134 under shared acceptance criteria; CASE129–133 and CASE135–136 have dedicated criteria. mcp-action-coverage.md maps the action cases and README names mcp-action-contracts.md. The apparent missing-key gap is resolved by the shared range section; no catalog edit warranted. Host output was bounded read/regex plus file hashes; no practical chat, payload, fixture, transport, or runtime claims. Continue the independent six-round audit and safe fixes; retain open live-evaluation gates and do not touch the disposable fixture.",
       "order": 1,
       "title": "Audit and stress-test prompt catalog",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
   "title": "Close missing evaluation prompt scenarios"

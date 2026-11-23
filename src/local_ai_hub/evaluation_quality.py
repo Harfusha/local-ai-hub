@@ -18,19 +18,23 @@ def paired_retrieval_delta(baseline, candidate):
             key = item["case"]
             if key in mapped or not item.get("query") or type(item.get("expected_path")) is not str:
                 raise ValueError("unique case/query/path required")
+            metrics = item.get("metrics")
+            if not isinstance(metrics, dict) or metrics.get("status") != "measured":
+                raise ValueError("unverified metrics cannot establish a delta")
             expected_symbols = item.get("expected_symbols")
             if expected_symbols is not None and "intent" not in item:
                 raise ValueError("symbol-aware paired cases require explicit intent")
-            intent = item.get("intent", "any")
+            intent = item.get("intent", metrics.get("intent", "any"))
             if type(intent) is not str or intent not in {"any", "production", "test"}:
                 raise ValueError("explicit supported retrieval intent required")
+            if metrics.get("intent", intent) != intent:
+                raise ValueError("measured intent differs from the case intent")
             symbol_contract = _normalize_expected_symbols(expected_symbols) if expected_symbols is not None else None
-            metrics = item.get("metrics", {})
-            if metrics.get("status") != "measured":
-                raise ValueError("unverified metrics cannot establish a delta")
             k = item.get("k", metrics.get("k"))
             if k is not None and (type(k) is not int or k < 1):
                 raise ValueError("positive exact k required when supplied")
+            if "k" in metrics and (type(metrics["k"]) is not int or metrics["k"] != k):
+                raise ValueError("measured k differs from the case k or is invalid")
             if symbol_contract is not None and (type(k) is not int or metrics.get("measurement_scope") != "symbol_ast"):
                 raise ValueError("symbol-aware cases require bound k and AST measurement scope")
             values = {name: metrics.get(name) for name in ("recall_at_k", "reciprocal_rank", "citation_validity")}

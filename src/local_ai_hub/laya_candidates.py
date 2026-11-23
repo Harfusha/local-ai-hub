@@ -65,24 +65,6 @@ _STATES = {"captured", "pending", "reviewed", "verified", "rejected", "ambiguous
 
 
 @dataclass(frozen=True)
-class _AdhocTaskContext:
-    session_id: str
-    repository_id: str | None = None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
-
-
-class _AdhocTask:
-    def __init__(self, task_id: str, session_id: str, root: str = "") -> None:
-        self.task_id = task_id
-        self.root = root
-        self.context = _AdhocTaskContext(session_id)
-        self.checkpoint = None
-        self.status = "active"
-
-
-@dataclass(frozen=True)
 class LocalModelReviewResult:
     """Typed result returned only by the Hub's configured local reviewer."""
 
@@ -442,10 +424,6 @@ class LayaCandidateStore:
         task = task_store.get(task_id)
         if task is not None and not task.is_stale and _task_matches_scope(task, root, None):
             return task
-        if isinstance(task_id, str) and task_id.startswith("adhoc_") and len(task_id) > 6:
-            session_part = task_id[6:]
-            if _IDENT.fullmatch(session_part):
-                return _AdhocTask(task_id, session_part, root)
         raise ValueError("task_id is outside the authorized repository scope")
 
     @staticmethod

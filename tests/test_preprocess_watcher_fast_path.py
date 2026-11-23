@@ -78,9 +78,10 @@ def test_preprocess_watcher_fast_path(tmp_path: Path) -> None:
             assert proj[0] == "complete"
 
             # Verify source_index has the new text
-            src_row = con.execute("SELECT text FROM source_index WHERE root=? AND path='app.py'", (str(root.resolve()),)).fetchone()
+            src_row = con.execute("SELECT text,text_origin FROM source_index WHERE root=? AND path='app.py'", (str(root.resolve()),)).fetchone()
             assert src_row is not None
             assert "universe" in src_row[0]
+            assert src_row[1] == "source"
 
             # Verify source_fts has the new content indexed
             fts_row = con.execute("SELECT path FROM source_fts WHERE root=? AND source_fts MATCH 'universe'", (str(root.resolve()),)).fetchone()

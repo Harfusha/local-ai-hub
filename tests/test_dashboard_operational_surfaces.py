@@ -61,26 +61,43 @@ def test_request_trace_availability_does_not_infer_expiry_from_partial_local_cac
     start = DASHBOARD_HTML.index("function requestTrace(request){")
     end = DASHBOARD_HTML.index("function requestOutcome(request={}", start)
     trace_functions = DASHBOARD_HTML[start:end]
+    row = DASHBOARD_HTML.index("function requestRow(")
+    trace_functions += DASHBOARD_HTML[row:DASHBOARD_HTML.index("\n", row)]
     requests = [
         {"request_id": "request-missing-local-trace", "trace_id": "trace-known-but-not-loaded"},
         {"request_id": "request-no-trace-metadata"},
         {"request_id": "request-explicitly-untraced", "trace_id": "trace-absent", "trace_available": False},
         {"request_id": "request-local-trace", "trace_id": "trace-loaded"},
+        {"request_id": ""},
+        {},
+        {"request_id": 123},
+        {"request_id": " "},
     ]
-    traces = [{"request_id": "request-local-trace", "trace_id": "trace-loaded"}]
+    traces = [
+        {"request_id": "request-local-trace", "trace_id": "trace-loaded"},
+        {"request_id": "request-explicitly-untraced", "trace_id": "trace-conflicting"},
+        {"trace_id": "trace-without-request-id"},
+        {"request_id": "123", "trace_id": "trace-string-id"},
+        {"request_id": " ", "trace_id": "trace-blank-id"},
+    ]
     script = f"""
 const vm=require('node:vm');
 const sources={json.dumps(trace_functions)};
 const requests={json.dumps(requests)};
-const sandbox=vm.createContext({{lastTraces:{json.dumps(traces)}}});
+const sandbox=vm.createContext({{lastTraces:{json.dumps(traces)},esc:String,clickableRow:()=>'<tr></tr>'}});
 vm.runInContext(sources,sandbox,{{timeout:1000}});
 const results=requests.map(request=>{{
   const value=sandbox.requestTraceAvailability(request);
+  const linked=sandbox.requestTrace(request);
+  if(value.trace?.trace_id!==linked?.trace_id)throw new Error('Inconsistent trace link and availability');
+  const target=sandbox.requestRow(request,'').match(/data-trace-id="([^"]+)"/)?.[1];
+  if(target!==linked?.trace_id)throw new Error('Request row opens the wrong destination');
   return {{label:value.label,className:value.className,traceId:value.trace?.trace_id||null}};
 }});
 console.log(JSON.stringify(results));
 """
-    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", check=True, timeout=5)
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=5)
+    assert completed.returncode == 0, completed.stderr
     results = json.loads(completed.stdout)
 
     assert results == [
@@ -88,6 +105,10 @@ console.log(JSON.stringify(results));
         {"label": "Trace status unverified", "className": "muted", "traceId": None},
         {"label": "No trace recorded", "className": "muted", "traceId": None},
         {"label": "Trace available", "className": "ok", "traceId": "trace-loaded"},
+        {"label": "Trace status unverified", "className": "muted", "traceId": None},
+        {"label": "Trace status unverified", "className": "muted", "traceId": None},
+        {"label": "Trace status unverified", "className": "muted", "traceId": None},
+        {"label": "Trace status unverified", "className": "muted", "traceId": None},
     ]
 
 
@@ -429,10 +450,10 @@ def test_live_pollers_skip_overlapping_requests() -> None:
     assert "statusPoller.start();" in DASHBOARD_HTML[:pollers_start]
     assert "pollStatus()" not in pollers
     trace_poller = DASHBOARD_HTML[DASHBOARD_HTML.index("async function pollTraces(isCurrent=") : DASHBOARD_HTML.index("$('traceRefresh')")]
-    assert "let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false" in pollers
-    assert "if(!isCurrent()||tracesPollInFlight)return false" in trace_poller
+    assert "let liveEvents=[],eventsPollInFlight=false" in pollers
+    assert "traceSummaryPoll?.kind===kind)return false" in trace_poller
     assert "if(!isCurrent()||eventsPollInFlight)return false" in pollers
-    assert "finally{tracesPollInFlight=false;" in trace_poller
+    assert "finally{if(traceSummaryPoll===poll)traceSummaryPoll=null}" in trace_poller
     assert "finally{eventsPollInFlight=false;" in pollers
 
 

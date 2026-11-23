@@ -75,7 +75,7 @@ def test_mcp_revision_arguments_reach_existing_route(tmp_path, monkeypatch):
                         calls.append((path, payload)) or {"success": True, "comparison": "merge_base"}))
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
-    result = mcp_server.local_ai_repo(action="git_diff", root=str(tmp_path), root=str(tmp_path), rev1="HEAD~3", rev2="HEAD")
+    result = mcp_server.local_ai_repo(action="git_diff", root=str(tmp_path), rev1="HEAD~3", rev2="HEAD")
     assert result["success"], result
     assert calls[0][0] == "/api/git/diff"
     assert calls[0][1]["rev1"] == "HEAD~3"

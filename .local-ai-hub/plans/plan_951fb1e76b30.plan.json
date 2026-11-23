@@ -4,7 +4,22 @@
   "id": "plan_951fb1e76b30",
   "lifecycle": "active",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "1079de6af92bdaa0f1783425cbe36d7dd0586bf06f6e6788aad526d24372b9d8"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+      }
+    }
+  ],
   "tasks": {
     "task_browser": {
       "acceptance_criteria": [
@@ -19,7 +34,23 @@
       "kind": "code",
       "next_action": "Do not launch or interact with live Chrome until required action-time confirmation. Run owned headless fixtures only when the configured Playwright MCP CLI exists. Keep strict egress requests refused until an actual enforcement backend exists. Recheck Linux/browser environment only after an external change.",
       "title": "HUB-036–042 Browser evidence, privacy, and permission contracts",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "1079de6af92bdaa0f1783425cbe36d7dd0586bf06f6e6788aad526d24372b9d8"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_embeddings": {
       "acceptance_criteria": [
@@ -27,15 +58,31 @@
         "Default changes only after repeated measured evaluation with no English regression and acceptable resource use.",
         "Acceptance suite covers implemented findings and documents unrun runtime/platform evidence."
       ],
-      "blocker": "BLOCKED_BILINGUAL_MODEL_ABSENT: Default English model BAAI/bge-small-en-v1.5 exists in HF cache and passes local CPU inference, but Ollama has no embedding model and HF cache lacks BAAI/bge-m3, nomic-ai/nomic-embed-text-v1.5, and intfloat/multilingual-e5-base. No bilingual model pull was authorized.",
+      "blocker": "BLOCKED_BILINGUAL_MODEL_ABSENT: Current 2026-11-18 `ollama list` shows no embedding model. Exact HF cache checks find BAAI/bge-small-en-v1.5 and BAAI/bge-reranker-v2-m3; bge-m3, nomic-embed-text-v1.5 and multilingual-e5-base are absent. No model pull authorized.",
       "clarifications": [],
       "depends_on": [],
       "description": "Add bilingual source-anchored retrieval evaluation without downloads; qualify supported defaults from evidence and add targeted acceptance coverage.",
       "kind": "code",
-      "next_action": "2026-11-21 current host check: `ollama list` has no embedding model; exact HF cache check found BAAI/bge-small-en-v1.5 and bge-reranker-v2-m3 only among checked models; bge-m3, Nomic v1.5 and multilingual-e5-base absent. Fresh offline-only `EmbeddingModel.encode` with BAAI/bge-small-en-v1.5, sentence-transformers CPU, allow_hf_downloads=false produced two valid 384-dimensional vectors; no model downloaded, temp state discarded, model released. This resolves the stale claim that no embedding model exists, but English-only model does not satisfy bilingual qualification. Keep task blocked until an approved multilingual model is already available or user authorizes a pull; then run bilingual gold set with explicit model identity and verify no English regression.",
+      "next_action": "Do not download. When an approved multilingual embedding model is already present or the user authorizes a pull, run the bilingual source-anchored gold set with explicit model identity and compare English regression. Current installed Ollama and HF cache check does not qualify bilingual retrieval.",
       "title": "HUB-046, 048 Embedding qualification and second-round acceptance",
       "work_phase": "verification",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "1079de6af92bdaa0f1783425cbe36d7dd0586bf06f6e6788aad526d24372b9d8"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_installer": {
       "acceptance_criteria": [
@@ -51,7 +98,23 @@
       "next_action": "Acceptance now covers root/home/source/source-parent/unowned-marker denials, timeout/stale PID/nonzero exit/still-running stop failures, and absent vs verified-stopped process states; 385-test cross-workstream matrix passes with two Windows symlink-privilege skips. Cross-platform confirmation remains not run.",
       "title": "HUB-031–035 Installer safety and reversible agent ownership",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "1079de6af92bdaa0f1783425cbe36d7dd0586bf06f6e6788aad526d24372b9d8"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_retrieval": {
       "acceptance_criteria": [
@@ -67,7 +130,23 @@
       "kind": "code",
       "next_action": "Acceptance now verifies deterministic Git-relative path identity and case policy, lexical/semantic chunk retention and deduplication, primary/alternative matches, truncation metadata, FTS_UNAVAILABLE distinction, and explicit degraded hybrid coverage. Linux/macOS run remains not done; model-specific retrieval qualification stays in HUB-046.",
       "title": "HUB-043–045, 047 Search evidence and FTS failure semantics",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "1079de6af92bdaa0f1783425cbe36d7dd0586bf06f6e6788aad526d24372b9d8"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     }
   },
   "title": "Implement 2026-11-12 second audit HUB-031–048"

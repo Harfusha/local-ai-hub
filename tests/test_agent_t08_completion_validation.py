@@ -16,7 +16,7 @@ from local_ai_hub.agent_tasks import (
     TaskStore,
 )
 from local_ai_hub.agent_verification import VerificationStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def _task_with_memory(tmp_path, task_id: str, monkeypatch, *, audited: bool = True):

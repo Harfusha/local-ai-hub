@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from typing import Any
 import weakref
 
 from .process_utils import popen_managed, terminate_tree
@@ -211,7 +212,35 @@ class OwnedNLPModel:
         self.max_seq_length = metadata.get("max_seq_length", max_length)
 
     def encode(self, items, **kwargs):
-        return self._transport.request({"operation": "encode", "items": items, "kwargs": kwargs}, timeout=60)["value"]
+        if not isinstance(items, (list, tuple)) or not items:
+            return self._transport.request({"operation": "encode", "items": items, "kwargs": kwargs}, timeout=60)["value"]
+        base_bytes = len(json.dumps(
+            {"operation": "encode", "items": [], "kwargs": kwargs},
+            allow_nan=False, separators=(",", ":"),
+        ).encode("utf-8")) + 64 - 2
+        batches: list[list[Any]] = []
+        batch: list[Any] = []
+        batch_bytes = base_bytes
+        for item in items:
+            item_bytes = len(json.dumps(item, allow_nan=False, separators=(",", ":")).encode("utf-8"))
+            added_bytes = item_bytes + int(bool(batch))
+            if batch and batch_bytes + added_bytes > _INPUT_LIMIT:
+                batches.append(batch)
+                batch = []
+                batch_bytes = base_bytes
+                added_bytes = item_bytes
+            if batch_bytes + added_bytes > _INPUT_LIMIT:
+                raise ValueError("model request exceeds byte limit")
+            batch.append(item)
+            batch_bytes += added_bytes
+        if batch:
+            batches.append(batch)
+        values: list[Any] = []
+        for batch in batches:
+            values.extend(self._transport.request(
+                {"operation": "encode", "items": batch, "kwargs": kwargs}, timeout=60,
+            )["value"])
+        return values
 
     def predict(self, items, **kwargs):
         return self._transport.request({"operation": "predict", "items": items, "kwargs": kwargs}, timeout=60)["value"]

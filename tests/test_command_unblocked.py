@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
 
@@ -330,7 +330,7 @@ def test_docker_sandbox_mutation_is_not_suppressed(tmp_path, monkeypatch):
         _RepoState(),
     )
     _register_task_worktree(broker, tmp_path)
-    monkeypatch.setattr("local_ai_hub.commands.shutil.which", lambda name: "docker" if name == "docker" else None)
+    monkeypatch.setattr("local_ai_hub.command_broker.shutil.which", lambda name: "docker" if name == "docker" else None)
 
     first = broker.run("git add changed.py", str(tmp_path), task_id="task-owned", sandbox="docker")
     second = broker.run("git add changed.py", str(tmp_path), task_id="task-owned", sandbox="docker")

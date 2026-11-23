@@ -287,8 +287,8 @@ def pytest_sessionstart(session):
 def pytest_collection_modifyitems(config, items):
     """Categorize tests with domain/speed markers."""
     for item in items:
-        path = str(item.fspath).replace("\\", "/").lower()
-        nodeid = item.nodeid.lower()
+        nodeid = item.nodeid.replace("\\", "/").lower()
+        path = "/" + nodeid.partition("::")[0].lstrip("/")
 
         # Speed / execution layer
         if "/acceptance/" in path or "acceptance" in nodeid:
@@ -415,7 +415,7 @@ def _test_owned_mutation_fence(request, monkeypatch):
     if request.module.__name__ not in {"test_command_rollback", "test_command_transaction_snapshot"}:
         return
 
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
     from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
     original_init = CommandBroker.__init__

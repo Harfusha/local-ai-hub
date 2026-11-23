@@ -211,11 +211,11 @@ def test_dashboard_trace_polling_requires_a_relevant_visible_panel():
         pytest.skip("Node is unavailable")
     source = DASHBOARD_HTML[DASHBOARD_HTML.index("function tracePollingNeeded"):DASHBOARD_HTML.index("async function probeHealth")]
     harness = """
-let active='overview',requests=0,renders=0,tracesPollInFlight=false;
-let tracesPollAbortController=null,lastTraces=[],refresh;
+let active='overview',requests=0,renders=0,traceSummaryPoll=null,tracesPollInFlight=false,tracesPollAbortController=null;
+let lastTraces=[],refresh;
 const document={visibilityState:'visible',querySelector:()=>({id:active})};
 const $=id=>id==='traceRefresh'?{addEventListener:(_event,cb)=>{refresh=cb}}:null;
-const apiFetch=async()=>{requests++;return {json:async()=>({success:true,items:[{trace_id:'real-fixture'}]})}};
+const apiFetch=async()=>{requests++;return {ok:true,json:async()=>({success:true,items:[{trace_id:'real-fixture'}]})}};
 const renderTraceList=()=>{renders++};
 const updateTraceSummaries=items=>{if(JSON.stringify(items)===JSON.stringify(lastTraces))return {changed:false};lastTraces=items;renderTraceList(lastTraces);return {changed:true}};
 """
@@ -226,7 +226,7 @@ const updateTraceSummaries=items=>{if(JSON.stringify(items)===JSON.stringify(las
   active='work';await pollTraces();
   document.visibilityState='hidden';await pollTraces();
   document.visibilityState='visible';await refresh({type:'click'});
-  process.stdout.write(JSON.stringify({requests,renders,inFlight:tracesPollInFlight}));
+  process.stdout.write(JSON.stringify({requests,renders,inFlight:tracesPollInFlight||traceSummaryPoll!==null}));
 })().catch(e=>{console.error(e);process.exitCode=1});
 """
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, timeout=10, check=True)

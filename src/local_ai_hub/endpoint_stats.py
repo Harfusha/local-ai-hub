@@ -11,7 +11,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 from .sqlite_support import connect_sqlite, write_transaction
 
@@ -95,8 +95,6 @@ def _exact_project_scope(root: str) -> str:
 
 def _scope_selector(root: str | None) -> tuple[str, str]:
     raw = str(root or "")
-    if raw.startswith("legacy:"):
-        return "legacy", unquote(raw[len("legacy:"):])
     if re.fullmatch(r"root:[0-9a-f]{64}:[A-Za-z0-9_.%~-]+", raw):
         return "exact", raw
     exact = _exact_project_scope(raw)
@@ -363,12 +361,10 @@ class EndpointStatsStore:
             with closing(self._connect()) as con:
                 con.execute("BEGIN")
                 if is_global:
-                    p_rows = con.execute("SELECT DISTINCT scope_root FROM endpoint_stats WHERE scope_root != '' ORDER BY scope_root").fetchall()
-                    projects = ["legacy:" + quote(str(r[0]), safe="") for r in p_rows]
-                    projects += [str(r[0]) for r in con.execute("SELECT DISTINCT scope_root FROM endpoint_stats_exact WHERE scope_root != '' ORDER BY scope_root").fetchall()]
+                    projects = [str(r[0]) for r in con.execute("SELECT DISTINCT scope_root FROM endpoint_stats_exact WHERE scope_root != '' ORDER BY scope_root").fetchall()]
 
                     # Global requests need dynamic names from every project.
-                    db_items = con.execute("SELECT item_type, item_name FROM endpoint_stats UNION SELECT item_type, item_name FROM endpoint_stats_exact").fetchall()
+                    db_items = con.execute("SELECT item_type, item_name FROM endpoint_stats_exact").fetchall()
                     for d_type, d_name in db_items:
                         key = (str(d_type), str(d_name))
                         if key not in known_map:
@@ -397,18 +393,17 @@ class EndpointStatsStore:
                            SUM(calls), SUM(success_calls), SUM(fail_calls),
                            {', '.join(f'SUM(b{i})' for i in range(NUM_BUCKETS))},
                            MAX(last_used)
-                    FROM (SELECT * FROM endpoint_stats UNION ALL SELECT * FROM endpoint_stats_exact)
+                    FROM endpoint_stats_exact
                     GROUP BY item_type, item_name
                     """
                     rows = con.execute(query).fetchall()
                 else:
-                    table = "endpoint_stats" if scope_kind == "legacy" else "endpoint_stats_exact"
                     query = f"""
                     SELECT item_type, item_name,
                            calls, success_calls, fail_calls,
                            {bucket_cols},
                            last_used
-                    FROM {table}
+                    FROM endpoint_stats_exact
                     WHERE scope_root = ?
                     """
                     rows = con.execute(query, (target_root,)).fetchall()
@@ -474,9 +469,9 @@ class EndpointStatsStore:
             "histogram_bucket_ceiling_ms": int(BUCKET_INTERVALS[-1][1]),
             "histogram_top_bucket_open_ended": True,
             "last_used_unit": "unix_seconds",
-            "root": (("legacy:" + quote(target_root, safe="")) if scope_kind == "legacy" else target_root) if not is_global else "",
+            "root": target_root if not is_global else "",
             "is_global": is_global,
-            "project_scope_precision": "mixed" if is_global else ("historical_basename" if scope_kind == "legacy" else "exact_root"),
+            "project_scope_precision": "exact_root",
             "total_items": len(all_items),
             "unused_count": unused_count,
             "slow_count": slow_count,

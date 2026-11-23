@@ -9,7 +9,7 @@ from local_ai_hub.command_python import (
     python_inline_code_argument,
     python_inline_code_syntax_is_valid,
 )
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_extracted_python_read_classification_respects_read_gate():

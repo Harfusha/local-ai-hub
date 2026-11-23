@@ -71,7 +71,8 @@ def test_orphaned_laya_capacity_release_is_advertised_and_generation_fenced(monk
     seen = {}
 
     def post(path, payload, **kwargs):
-        seen.update(path=path, payload=payload)
+        if path == "/api/gpu-reservation":
+            seen.update(path=path, payload=payload)
         return {"success": True, "mutation_applied": True, "lease_id": "lease-1", "generation": "generation-1"}
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
@@ -103,7 +104,8 @@ def test_orphaned_scheduler_capacity_release_uses_exact_fenced_payload(monkeypat
     seen = {}
 
     def post(path, payload, **kwargs):
-        seen.update(path=path, payload=payload)
+        if path == "/api/gpu-reservation":
+            seen.update(path=path, payload=payload)
         return {"success": True, "mutation_applied": True, "lease_id": "lease-2", "generation": "generation-2"}
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)

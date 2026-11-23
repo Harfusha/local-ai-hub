@@ -248,7 +248,7 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
           : [{seq: 4}, {seq: 5}];
       return {json: async () => ({success: true, session: {output: {truncated: true, preview: 'short'}}, events, next_seq: events[events.length - 1].seq, events_has_more: since === 0, terminal: true})};
     }
-    """;
+    """
     script_source = setup + source + r"""
     (async () => {
       const assert = require('node:assert/strict');
@@ -278,7 +278,7 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
       assert.equal(activeTraceData.has_older_events, true);
       assert.equal(activeTraceData.has_newer_events, false);
     })().catch(error => { console.error(error); process.exitCode = 1; });
-    """;
+    """
     script = "const vm = require('node:vm');\n" + f"vm.runInNewContext({json.dumps(script_source)}, {{require, process, console, URL}});\n"
     with tempfile.TemporaryDirectory() as directory:
         script_path = Path(directory) / "trace_paging.cjs"
@@ -304,7 +304,7 @@ def test_trace_reveal_keeps_event_history_window_bounded() -> None:
       const events = Array.from({length: Math.max(0, last - first + 1)}, (_, index) => ({seq: first + index}));
       return {json: async () => ({success: true, session: {}, events, next_seq: last, events_has_more: last < 205, terminal: true})};
     }
-    """;
+    """
     script_source = setup + source + r"""
     (async () => {
       const assert = require('node:assert/strict');
@@ -313,7 +313,7 @@ def test_trace_reveal_keeps_event_history_window_bounded() -> None:
       assert.equal(result[0].seq, 6);
       assert.equal(result[result.length - 1].seq, 205);
     })().catch(error => { console.error(error); process.exitCode = 1; });
-    """;
+    """
     script = "const vm = require('node:vm');\n" + f"vm.runInNewContext({json.dumps(script_source)}, {{require, process, console, URL}});\n"
     with tempfile.TemporaryDirectory() as directory:
         script_path = Path(directory) / "trace_window.cjs"

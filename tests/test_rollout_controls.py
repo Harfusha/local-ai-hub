@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.features import FeatureSet
 from local_ai_hub import mcp_server
 from local_ai_hub.services import LocalAIServices

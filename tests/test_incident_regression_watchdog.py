@@ -50,7 +50,7 @@ def test_incident_record_persists_affected_paths(tmp_path: Path):
 
 
 def test_incident_watchdog_in_commands(tmp_path: Path):
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
 
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     inc_store = IncidentStore(state_store)

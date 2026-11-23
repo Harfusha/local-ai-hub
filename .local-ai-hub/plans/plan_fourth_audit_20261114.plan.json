@@ -4,7 +4,22 @@
   "id": "plan_fourth_audit_20261114",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/AUDIT_ROUND2_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "66c8e58f54931d5bafd3a543ee5c18cc631b3e13606bfdee8c99f39cf0bd3055"
+      }
+    },
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_wave1_ci_and_data": {
       "acceptance_criteria": [
@@ -24,7 +39,23 @@
       "next_action": "final_acceptance",
       "title": "Wave 0 & 1: CI, async jobs, search, evidence merge a preprocess (HUB-076-079, HUB-082-088, HUB-092)",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/AUDIT_ROUND2_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "66c8e58f54931d5bafd3a543ee5c18cc631b3e13606bfdee8c99f39cf0bd3055"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_wave2_quality_and_perf": {
       "acceptance_criteria": [
@@ -40,7 +71,23 @@
       "kind": "code",
       "next_action": "",
       "title": "Wave 2: Kvalita a vykon (HUB-089-091, HUB-109)",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/AUDIT_ROUND2_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "66c8e58f54931d5bafd3a543ee5c18cc631b3e13606bfdee8c99f39cf0bd3055"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_wave4_live_hardware": {
       "acceptance_criteria": [
@@ -56,7 +103,23 @@
       "kind": "code",
       "next_action": "",
       "title": "Wave 4: Live operation, hardware, and remaining integrations (HUB-103, 106-108)",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/AUDIT_ROUND2_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "66c8e58f54931d5bafd3a543ee5c18cc631b3e13606bfdee8c99f39cf0bd3055"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_wave5_final_release": {
       "acceptance_criteria": [
@@ -73,8 +136,24 @@
       "kind": "code",
       "next_action": "",
       "title": "Wave 5: Security, evidence, packaging a release uzaverka (HUB-080-081, HUB-110-112)",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/AUDIT_ROUND2_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "66c8e58f54931d5bafd3a543ee5c18cc631b3e13606bfdee8c99f39cf0bd3055"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "Local AI Hub: Ctvrty delta audit a realizacni plan (HUB-076-112)"
+  "title": "Local AI Hub: Fourth delta audit and implementation plan (HUB-076-112)"
 }

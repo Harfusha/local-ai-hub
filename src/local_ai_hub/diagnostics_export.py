@@ -109,12 +109,12 @@ def _repository_root(module_path: Path) -> Path | None:
     return None
 
 
-def _source_files(source_root: Path | str | None) -> list[tuple[Path, str]]:
+def _source_files(source_root: Path | str | None) -> tuple[Path, list[tuple[Path, str]]]:
     module_path = Path(__file__).resolve()
     root = Path(source_root).expanduser().resolve() if source_root is not None else _repository_root(module_path)
-    if source_root is not None and (root is None or not root.is_dir()):
-        return []
-    if root is not None and root.is_dir() and (root / "src" / "local_ai_hub").is_dir():
+    if root is not None and not root.is_dir():
+        return root, []
+    if root is not None and (root / "src" / "local_ai_hub").is_dir():
         allowed_roots = [
             root / item for item in (
                 ".github", ".local-ai-hub-superpowers", "benchmarks", "browser_bridge", "data",
@@ -151,7 +151,7 @@ def _source_files(source_root: Path | str | None) -> list[tuple[Path, str]]:
                         continue
                     candidates.append((path, "hub/" + relative))
         unique = {archive_name: (path, archive_name) for path, archive_name in candidates}
-        return sorted(unique.values(), key=lambda entry: entry[1])
+        return root, sorted(unique.values(), key=lambda entry: entry[1])
 
     package_root = module_path.parent
     candidates = []
@@ -161,7 +161,7 @@ def _source_files(source_root: Path | str | None) -> list[tuple[Path, str]]:
         if any(part in _SKIP_DIRS for part in path.relative_to(package_root).parts):
             continue
         candidates.append((path, "hub/package/" + path.relative_to(package_root).as_posix()))
-    return sorted(candidates, key=lambda entry: entry[1])
+    return root if root is not None else package_root, sorted(candidates, key=lambda entry: entry[1])
 
 
 def _state_inventory(state_dir: Path) -> tuple[list[Path], list[Path]]:
@@ -211,6 +211,7 @@ def _snapshot_database(path: Path, destination: Path, *, cancelled: Callable[[],
         timeout_seconds=5.0,
         isolation_level="DEFERRED",
         foreign_keys=False,
+        wal=False,
     )
     started = time.monotonic()
 
@@ -221,6 +222,7 @@ def _snapshot_database(path: Path, destination: Path, *, cancelled: Callable[[],
 
     try:
         source.backup(snapshot, pages=256, progress=progress, sleep=0.01)
+        snapshot.execute("PRAGMA journal_mode=DELETE")
         snapshot.commit()
     finally:
         snapshot.close()
@@ -259,7 +261,7 @@ def _sanitize_laya_snapshot(
     database: Path, *, redact_candidates: bool, redact_traces: bool
 ) -> dict[str, int]:
     """Remove candidate payloads from a disposable support-archive DB snapshot."""
-    connection = connect_sqlite(database, timeout_seconds=2.0, foreign_keys=False)
+    connection = connect_sqlite(database, timeout_seconds=2.0, foreign_keys=False, wal=False)
     connection.row_factory = sqlite3.Row
     removed = {"candidate_rows": 0, "candidate_tables": 0, "trace_records": 0}
     try:
@@ -445,12 +447,11 @@ def create_diagnostics_archive(
         raise ValueError("diagnostics source limit must be positive")
 
     databases, state_files = _state_inventory(root)
-    source_files = _source_files(source_root)
-    for path in (*databases, *state_files, *(item[0] for item in source_files)):
-        resolved = path.resolve(strict=True)
-        expected_root = root if _inside(root, resolved) else (Path(source_root).resolve() if source_root else _repository_root(Path(__file__)))
-        if expected_root is None or not _inside(expected_root, resolved):
-            raise ValueError(f"diagnostic input escapes approved root: {path.name}")
+    source_base, source_files = _source_files(source_root)
+    for approved_root, paths in ((root, (*databases, *state_files)), (source_base, (path for path, _ in source_files))):
+        for path in paths:
+            if not _inside(approved_root, path.resolve(strict=True)):
+                raise ValueError(f"diagnostic input escapes approved root: {path.name}")
 
     database_source_bytes = sum(
         path.stat().st_size
@@ -618,8 +619,7 @@ def create_diagnostics_archive(
             for path, archive_name in source_files:
                 _cancelled(cancelled)
                 resolved = path.resolve(strict=True)
-                source_base = Path(source_root).resolve() if source_root is not None else _repository_root(Path(__file__))
-                if source_base is None or not _inside(source_base, resolved):
+                if not _inside(source_base, resolved):
                     continue
                 size = resolved.stat().st_size
                 source_total += size

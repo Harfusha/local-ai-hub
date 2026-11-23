@@ -28,6 +28,7 @@ _ENCODINGS = {
     ),
 }
 _CODE_PIECES = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d{1,3}|_+|[^\w\s]|[^\W\d_]+", re.UNICODE)
+_GLOBAL_FAST_TOKENIZER_CACHE: Any = None
 
 
 @lru_cache(maxsize=2)
@@ -75,8 +76,30 @@ def count_code_tokens(text: str, *, encoding: str = "o200k_base") -> dict[str, A
     tokenizer = offline_encoding(encoding) if text else None
     if tokenizer is not None:
         try:
-            return {"tokens": len(tokenizer.encode(text, disallowed_special=())), "encoding": encoding,
-                    "exact": True, "method": "offline_verified_bpe", "reference_sha256": _ENCODINGS[encoding][0]}
+            from .fast_tokenizer_cache import FastTokenizerCache
+            global _GLOBAL_FAST_TOKENIZER_CACHE
+            if "_GLOBAL_FAST_TOKENIZER_CACHE" not in globals() or _GLOBAL_FAST_TOKENIZER_CACHE is None:
+                _GLOBAL_FAST_TOKENIZER_CACHE = FastTokenizerCache(max_cached_tokens=2_000_000)
+
+            cached_tokens = _GLOBAL_FAST_TOKENIZER_CACHE.get_tokens(text)
+            if cached_tokens is not None:
+                return {
+                    "tokens": len(cached_tokens),
+                    "encoding": encoding,
+                    "exact": True,
+                    "method": "fast_tokenizer_cache_hit",
+                    "reference_sha256": _ENCODINGS[encoding][0],
+                }
+
+            token_ids = tokenizer.encode(text, disallowed_special=())
+            _GLOBAL_FAST_TOKENIZER_CACHE.store_tokens(text, token_ids)
+            return {
+                "tokens": len(token_ids),
+                "encoding": encoding,
+                "exact": True,
+                "method": "offline_verified_bpe",
+                "reference_sha256": _ENCODINGS[encoding][0],
+            }
         except (ValueError, TypeError, RuntimeError):
             pass
     return {"tokens": estimate_code_tokens(text), "encoding": encoding, "exact": not text,

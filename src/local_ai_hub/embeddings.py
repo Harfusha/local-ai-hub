@@ -428,7 +428,7 @@ class EmbeddingModel:
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
             openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
-            cpu_fallback = bool(openvino_cfg.get("cpu_fallback", True)) if isinstance(openvino_cfg, dict) else True
+            cpu_fallback = bool(openvino_cfg.get("cpu_fallback", False)) if isinstance(openvino_cfg, dict) else False
             if cpu_fallback:
                 candidates.append(("sentence-transformers", "cpu"))
             # Keep order stable while removing duplicate logical devices.
@@ -441,8 +441,6 @@ class EmbeddingModel:
                     deduped.append((backend, device))
             return deduped
         candidates = [("sentence-transformers", self.device)]
-        if str(self.device).lower().startswith("cuda"):
-            candidates.append(("sentence-transformers", "cpu"))
         return candidates
 
     def _load_candidate(self, index: int, *, ollama_fallback: bool = False) -> bool:
@@ -1404,6 +1402,7 @@ class EmbeddingModel:
             "active_device": self.active_device,
             "loaded": self._model is not None or self.backend == "ollama",
             "load_error": self._load_error,
+            "fallback_reason": self._fallback_reason,
             "cache_enabled": self.cache_enabled,
             "cache": self.cache.stats(),
             "cache_hits_runtime": self._memory_hits,

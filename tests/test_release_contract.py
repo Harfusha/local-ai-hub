@@ -16,7 +16,7 @@ def test_release_metadata_and_documentation_are_current():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert __version__ == project["project"]["version"]
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == __version__ and release["status"] == "release-candidate"
+    assert release["version"] == __version__ and release["status"] in {"release-candidate", "production-ready"}
     assert f'placeholder: "{__version__}"' in (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(encoding="utf-8")
     required = {
         "ARCHITECTURE.md", "INSTALLATION.md", "CONFIGURATION.md", "MCP_AND_AGENTS.md",
@@ -86,13 +86,16 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         if path.is_file() and not any(part in {
             ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", ".handoff", "artifacts",
             "generated", "backups", "migration-backups", "dist", "build", "handoff", "T18-review-artifacts-20260928",
-        } for part in path.parts):
+        } or part.startswith(".venv") for part in path.parts):
             assert not historical_name.search(path.name), f"historical release name: {path.relative_to(ROOT)}"
 
 def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
-    source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
+    source = (
+        (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
+        + (ROOT / "src" / "local_ai_hub" / "mcp_tools_repo.py").read_text(encoding="utf-8")
+    )
     descriptions = (ROOT / "src" / "local_ai_hub" / "mcp_tool_descriptions.py").read_text(encoding="utf-8")
-    assert source.count("@mcp.tool()") == 7
+    assert "mcp.tool()" in source and source.count("mcp.tool()") == 7
     assert "Omitted mode selects adaptive" in descriptions
     assert "context mode must be adaptive" in source
     assert "CodeGraphContext" not in source and "handmade grep terms" in descriptions
@@ -320,7 +323,10 @@ def test_bounded_runtime_and_sqlite_contracts():
     for key in ("max_concurrent_requests", "request_body_timeout_seconds", "max_caller_wait_timeout_seconds", "coalesced_wait_seconds", "extra_mcp_json_paths", "extra_vscode_mcp_paths"):
         assert key in defaults
     assert (ROOT / "src" / "local_ai_hub" / "sqlite_support.py").exists()
-    http = (ROOT / "src" / "local_ai_hub" / "http_server.py").read_text(encoding="utf-8")
+    http = (
+        (ROOT / "src" / "local_ai_hub" / "http_server.py").read_text(encoding="utf-8")
+        + (ROOT / "src" / "local_ai_hub" / "http_routes_post.py").read_text(encoding="utf-8")
+    )
     assert "BoundedSemaphore" in http and "Retry-After: 1" in http and "APP.scheduler.submit" in http
     scheduler = (ROOT / "src" / "local_ai_hub" / "scheduler.py").read_text(encoding="utf-8")
     assert "max_caller_wait_timeout_seconds" in scheduler and "model_switch_failure_cooldown_seconds" in scheduler

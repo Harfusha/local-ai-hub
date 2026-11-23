@@ -146,6 +146,38 @@ def build_messages(relative_path: str, source: str) -> list[dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
 
 
+def ground_card_to_source(card: dict[str, Any], relative_path: str, source: str) -> dict[str, Any]:
+    ext = Path(relative_path).suffix.lower()
+    if ext in (".md", ".txt", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".xml", ".svg", ".sql"):
+        card["symbols"] = []
+        card["dependencies"] = []
+    else:
+        symbols = card.get("symbols", [])
+        if isinstance(symbols, list):
+            card["symbols"] = [
+                s.strip() for s in symbols
+                if isinstance(s, str) and s.strip() and s.strip() in source and len(s.strip()) < 80
+            ]
+        deps = card.get("dependencies", [])
+        if isinstance(deps, list):
+            lower_source = source.lower()
+            card["dependencies"] = [
+                d.strip() for d in deps
+                if isinstance(d, str) and d.strip() and d.strip().lower() in lower_source and len(d.strip()) < 80
+            ]
+    kws = card.get("keywords", [])
+    if isinstance(kws, list):
+        import re
+        clean_kws = []
+        for kw in kws:
+            if isinstance(kw, str):
+                k = re.sub(r"\s+", " ", kw).strip()
+                if 2 <= len(k) <= 60 and "###" not in k and "{" not in k and k not in clean_kws:
+                    clean_kws.append(k)
+        card["keywords"] = clean_kws[:15]
+    return card
+
+
 def generate_card(
     messages: list[dict[str, str]], *, model: str, endpoint: str, timeout_seconds: int = 120,
     num_ctx: int = 8192, max_new_tokens: int = 320,
@@ -215,6 +247,7 @@ def generate_cards(
                 break
             messages = build_messages(relative_path, source)
             card, stats = generate_card(messages, model=model, endpoint=endpoint)
+            card = ground_card_to_source(card, relative_path, source)
             row = {
                 "id": item_id,
                 "group_id": group_id,

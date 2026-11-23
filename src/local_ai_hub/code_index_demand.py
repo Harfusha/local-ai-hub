@@ -6,6 +6,7 @@ import ast
 import json
 import posixpath
 import re
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -19,8 +20,15 @@ _JS_DYNAMIC_IMPORT = re.compile(
 _PHP_INCLUDE = re.compile(
     r"\b(?:require|include)(?:_once)?\s*(?:\(\s*)?(?:(?P<dir>__DIR__)\s*\.\s*)?['\"](?P<path>(?:\.{1,2}/|/)[^'\"]+)['\"]\s*\)?"
 )
+_PHP_USE_COMMENT = re.compile(r"/\*(?s:.*?)\*/|(?://|#)[^\r\n]*")
+_PHP_USE_BODY = rf"(?:{_PHP_USE_COMMENT.pattern}|[^;{{}}#/])*+"
 _PHP_USE = re.compile(
-    r"^\s*use\s+([\\a-zA-Z0-9_]+)", re.MULTILINE
+    rf"^[ \t]*use\s+(?!(?:function|const)\s)([\\a-z_]{_PHP_USE_BODY})"
+    rf"(?:\{{({_PHP_USE_BODY})\}}\s*;|(?=[;{{]))",
+    re.MULTILINE | re.IGNORECASE,
+)
+_PHP_USE_NAME = re.compile(
+    r"(\\?[a-z_]\w*(?:\\[a-z_]\w*)*)(?:\s+as\s+[a-z_]\w*)?", re.IGNORECASE,
 )
 _RUBY_REQUIRE_RELATIVE = re.compile(
     r"\brequire_relative\s*['\"]([^'\"]+)['\"]"
@@ -31,8 +39,8 @@ _C_INCLUDE = re.compile(
 _RUST_MOD = re.compile(
     r"\b(?:pub\s+)?mod\s+([a-zA-Z0-9_]+)\s*;", re.MULTILINE
 )
-_RUST_USE_CRATE = re.compile(
-    r"\buse\s+(?:crate|self|super)::([a-zA-Z0-9_:]+)", re.MULTILINE
+_RUST_USE_LOCAL = re.compile(
+    r"\buse\s+(crate|self|super)::([a-zA-Z0-9_:]+)", re.MULTILINE
 )
 _CS_USING = re.compile(
     r"^\s*using\s+([A-Za-z0-9_.]+)\s*;", re.MULTILINE
@@ -182,77 +190,105 @@ def _python_import_candidates(seed: str, tree: ast.AST, eligible: set[str]) -> l
 
 
 def _go_import_candidates(
-    base: Path, source: str, eligible: set[str], eligible_index: dict[str, Any] | None = None,
+    base: Path, seed: str, source: str, eligible: set[str], repo_tools: Any,
+    eligible_index: dict[str, Any] | None = None,
 ) -> list[str]:
-    found: list[str] = []
-    module_name = ""
-    go_mod = base / "go.mod"
-    if go_mod.is_file():
-        try:
-            for line in go_mod.read_text(encoding="utf-8", errors="ignore").splitlines():
-                if line.strip().startswith("module "):
-                    module_name = line.strip().split()[1]
-                    break
-        except Exception:
-            module_name = ""
-
-    index = eligible_index if eligible_index is not None else _build_eligible_path_index(eligible)
     import_paths: list[str] = []
     for block in _GO_IMPORT_BLOCK.findall(source):
         import_paths.extend(_GO_STRINGS.findall(block))
-    for single in _GO_SINGLE_IMPORT.findall(source):
-        import_paths.append(single)
+    import_paths.extend(_GO_SINGLE_IMPORT.findall(source))
+    if not import_paths:
+        return []
 
+    module_name = ""
+    module_dir = PurePosixPath()
+    for parent in PurePosixPath(seed).parents:
+        relative_manifest = (parent / "go.mod").as_posix()
+        manifest = base / relative_manifest
+        if not manifest.is_file():
+            continue
+        if _safe_inventory_file(base, relative_manifest, repo_tools):
+            _, lines = repo_tools._read_snapshot(manifest)
+            for line in lines:
+                fields = line.split()
+                if len(fields) >= 2 and fields[0] == "module":
+                    module_name = fields[1].strip('"')
+                    module_dir = parent
+                    break
+        break
+
+    found: list[str] = []
+    index = eligible_index if eligible_index is not None else _build_eligible_path_index(eligible)
     for imp in import_paths:
-        target_dir = ""
-        if module_name and imp == module_name:
-            matches = [path for path in index["by_dir"].get("", ()) if path.endswith(".go")]
-            found.extend(matches)
-        elif module_name and imp.startswith(module_name + "/"):
-            target_dir = imp[len(module_name) + 1:].strip("/")
+        if module_name and (imp == module_name or imp.startswith(module_name + "/")):
+            package = PurePosixPath(imp[len(module_name):].removeprefix("/"))
+            if package.is_absolute() or ".." in package.parts:
+                continue
+            target_dir = (module_dir / package).as_posix()
         elif imp.startswith("./") or imp.startswith("../"):
-            target_dir = posixpath.normpath(imp)
-        if target_dir:
-            matches = [path for path in index["by_dir"].get(target_dir, ()) if path.endswith(".go")]
-            found.extend(matches)
+            target_dir = posixpath.normpath(posixpath.join(posixpath.dirname(seed), imp))
+            if target_dir == ".." or target_dir.startswith("../"):
+                continue
+        else:
+            continue
+        key = "" if target_dir == "." else target_dir
+        found.extend(path for path in index["by_dir"].get(key, ()) if path.endswith(".go"))
     return found
+
+
+def _rust_module_directories(seed: PurePosixPath, eligible: set[str]) -> tuple[PurePosixPath, PurePosixPath]:
+    source_dirs = [parent for parent in seed.parents if parent.name == "src"]
+    if seed.name == "build.rs" and (not source_dirs or (seed.parent / "Cargo.toml").as_posix() in eligible):
+        return seed.parent, seed.parent
+    fallback = source_dirs[0] if source_dirs else seed.parent
+    crate_dir = next((parent for parent in source_dirs if any(
+        marker.as_posix() in eligible for marker in (parent.parent / "Cargo.toml", parent / "lib.rs", parent / "main.rs")
+    )), fallback)
+    crate_entry = seed.parent == crate_dir and seed.name in ("lib.rs", "main.rs")
+    relative = seed.relative_to(crate_dir).parts
+    if crate_dir.name == "src" and relative[0] == "bin":
+        if len(relative) == 2:
+            return seed.parent, seed.parent
+        binary_root = crate_dir / "bin" / relative[1]
+        binary_entry = binary_root / "main.rs"
+        if binary_entry.as_posix() in eligible:
+            crate_dir = binary_root
+            crate_entry = seed == binary_entry
+    elif crate_dir == seed.parent and crate_dir.name in ("benches", "examples", "tests"):
+        crate_entry = True
+    module_dir = seed.parent if crate_entry or seed.name == "mod.rs" else seed.parent / seed.stem
+    return crate_dir, module_dir
 
 
 def _rust_import_candidates(seed: str, source: str, eligible: set[str]) -> list[str]:
     found: list[str] = []
-    parent = PurePosixPath(seed).parent
-    seed_stem = PurePosixPath(seed).stem
-    for mod_match in _RUST_MOD.finditer(source):
-        mod_name = mod_match.group(1)
-        candidates = [
-            (parent / f"{mod_name}.rs").as_posix(),
-            (parent / mod_name / "mod.rs").as_posix(),
-        ]
-        if seed_stem not in ("lib", "main", "mod"):
-            candidates.extend([
-                (parent / seed_stem / f"{mod_name}.rs").as_posix(),
-                (parent / seed_stem / mod_name / "mod.rs").as_posix(),
-            ])
-        for c in candidates:
-            if c in eligible:
-                found.append(c)
+    crate_dir, module_dir = _rust_module_directories(PurePosixPath(seed), eligible)
 
-    for use_match in _RUST_USE_CRATE.finditer(source):
-        parts = [p for p in use_match.group(1).split("::") if p]
+    def add_module(path: PurePosixPath) -> None:
+        for candidate in (path.as_posix() + ".rs", (path / "mod.rs").as_posix()):
+            if candidate in eligible:
+                found.append(candidate)
+
+    for mod_match in _RUST_MOD.finditer(source):
+        add_module(module_dir / mod_match.group(1))
+
+    for use_match in _RUST_USE_LOCAL.finditer(source):
+        scope, name = use_match.groups()
+        parts = [part for part in name.split("::") if part]
+        if scope == "super":
+            hops = 1
+            while hops <= len(parts) and parts[hops - 1] == "super":
+                hops += 1
+            if hops > len(module_dir.parts) - len(crate_dir.parts):
+                continue
+            prefix = module_dir.parents[hops - 1]
+            parts = parts[hops - 1:]
+        else:
+            prefix = crate_dir if scope == "crate" else module_dir
         if parts:
-            for prefix in (PurePosixPath("src"), parent):
-                mod_path = prefix.joinpath(*parts).as_posix()
-                candidates = [
-                    mod_path + ".rs",
-                    (prefix.joinpath(*parts) / "mod.rs").as_posix(),
-                ]
-                if len(parts) > 1:
-                    mod_parent = prefix.joinpath(*parts[:-1]).as_posix()
-                    candidates.append(mod_parent + ".rs")
-                    candidates.append((prefix.joinpath(*parts[:-1]) / "mod.rs").as_posix())
-                for c in candidates:
-                    if c in eligible:
-                        found.append(c)
+            add_module(prefix.joinpath(*parts))
+            if len(parts) > 1:
+                add_module(prefix.joinpath(*parts[:-1]))
     return found
 
 
@@ -361,6 +397,21 @@ def _php_psr4_map(base: Path) -> dict[str, tuple[str, ...]]:
     return mapping
 
 
+def _php_class_imports(source: str) -> Iterator[str]:
+    for match in _PHP_USE.finditer(source):
+        statement, grouped_names = match.groups(default="")
+        statement = _PHP_USE_COMMENT.sub(" ", statement).strip()
+        prefix = statement
+        if prefix.endswith("\\"):
+            names = _PHP_USE_COMMENT.sub(" ", grouped_names)
+        else:
+            names, prefix = statement, ""
+        for item in names.split(","):
+            name = _PHP_USE_NAME.fullmatch(item.strip())
+            if name is not None:
+                yield (prefix + name[1]).lstrip("\\")
+
+
 def _php_psr4_candidates(
     namespace: str,
     mapping: dict[str, tuple[str, ...]],
@@ -447,8 +498,7 @@ def _direct_import_candidates_for_seed(
                 )
                 if path is not None:
                     candidates.append(path)
-            for use_match in _PHP_USE.finditer(source):
-                ns = use_match.group(1).lstrip("\\")
+            for ns in _php_class_imports(source):
                 mapped, mapped_candidates = _php_psr4_candidates(
                     ns, psr4_mapping, eligible, base, repo_tools,
                 )
@@ -466,7 +516,7 @@ def _direct_import_candidates_for_seed(
                         if el.endswith("/" + rel_path) or el == rel_path or el.endswith("/" + class_file):
                             candidates.append(el)
         elif suffix == ".go":
-            candidates = _go_import_candidates(base, source, eligible, eligible_index)
+            candidates = _go_import_candidates(base, seed, source, eligible, repo_tools, eligible_index)
         elif suffix == ".rs":
             candidates = _rust_import_candidates(seed, source, eligible)
         elif suffix in _C_EXTENSIONS:

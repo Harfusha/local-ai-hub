@@ -14,6 +14,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shlex
 import sys
 import uuid
@@ -467,13 +468,86 @@ def install_superpowers(
             "dependency": dependency, "host_activation": "not_verified"}
 
 
-def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[str, Any]:
-    """Validate an untrusted hook envelope, then leave the host unchanged.
+def _trigger_repo_warmup(root: Path) -> None:
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "http://127.0.0.1:11435/api/repo/preprocess",
+            data=json.dumps({"root": str(root)}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "HostHook"},
+        )
+        urllib.request.urlopen(req, timeout=0.5)
+    except Exception:
+        pass
 
-    Hook payloads do not prove session ownership or authentic event delivery.
-    Shadow recording requires a verified Hub-managed session through the typed
-    adapter contract; this legacy hook cannot establish that authority.
-    """
+
+def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    name = (tool_name or "").lower().strip()
+    cmd = str(args.get("command") or args.get("CommandLine") or "").strip()
+
+    # 1. Bare pytest check across 17,500+ tests
+    if cmd and re.search(r"\b(?:python\s+(?:-m\s+)?pytest|pytest)\b", cmd, re.IGNORECASE):
+        parts = cmd.split()
+        try:
+            pt_idx = next(i for i, part in enumerate(parts) if "pytest" in part.lower())
+            subargs = parts[pt_idx + 1:]
+            has_selector = any(not a.startswith("-") or a in ("-m", "-k", "--run-all") for a in subargs)
+            if not has_selector and subargs in ([], ["-q"], ["-v"], ["-s"]):
+                return {
+                    "decision": "deny",
+                    "reason": (
+                        f"Unconstrained bare pytest '{cmd}' across 17,500+ tests is blocked to prevent freezing. "
+                        f"Use targeted selectors (e.g. pytest -m 'fast' or a specific test file path)."
+                    ),
+                }
+        except Exception:
+            pass
+
+    # 2. Unconstrained grep/find/search check
+    if cmd:
+        unconstrained = [
+            re.compile(r"\bdir\s+.*(?:\/s|\/S)", re.IGNORECASE),
+            re.compile(r"\bfindstr\s+.*(?:\/s|\/S)", re.IGNORECASE),
+            re.compile(r"\bfind\s+(?:\.|\/|[a-zA-Z]:)[^\n|;]*\s+-name\b", re.IGNORECASE),
+            re.compile(r"\bgrep\s+-[a-zA-Z]*[rR]\b"),
+        ]
+        for p in unconstrained:
+            if p.search(cmd):
+                return {
+                    "decision": "deny",
+                    "reason": (
+                        f"Unconstrained repository search '{cmd}' is blocked by Token Economy. "
+                        f"Use local_ai_repo(action='search'|'code_index') instead."
+                    ),
+                }
+
+    # 3. Direct full-file read check (> 80 lines)
+    path_str = str(args.get("path") or args.get("file_path") or args.get("Path") or "")
+    if name in ("view_file", "read_file") and path_str:
+        p = Path(path_str)
+        if p.is_file() and p.name.lower() not in {"agents.md", "pyproject.toml", ".gitignore"}:
+            start = args.get("start_line") or args.get("line_start")
+            end = args.get("end_line") or args.get("line_end")
+            if start is None and end is None:
+                try:
+                    with p.open("r", encoding="utf-8", errors="ignore") as f:
+                        lines = sum(1 for _ in zip(f, range(220)))
+                        if lines > 200:
+                            return {
+                                "decision": "deny",
+                                "reason": (
+                                    f"Direct full read of '{p.name}' (> 200 lines) is blocked by Token Economy. "
+                                    f"Specify a targeted slice or use local_ai_repo(action='context')."
+                                ),
+                            }
+                except Exception:
+                    pass
+
+    return {"decision": "allow"}
+
+
+def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[str, Any]:
+    """Validate hook envelope and enforce project and token-economy safety policies."""
     root = checked_root(repo_root)
     if host not in HOSTS or not isinstance(payload, dict):
         raise ValueError("unsupported host or invalid event payload")
@@ -484,10 +558,33 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
     if checked_root(cwd) != root:
         raise ValueError("event repository root mismatch")
     event = payload.get("hook_event_name")
-    if event not in {"SessionStart", HOSTS[host][1]}:
+    valid_events = {"SessionStart", HOSTS[host][1], HOSTS[host][2], "PreToolUse", "PostToolUse"}
+    if event not in valid_events:
         raise ValueError("unsupported hook event")
-    # The session ID and working directory are validated but never persisted.
-    # This hook has no proof that the host session is owned by the Hub.
+
+    if event == "SessionStart":
+        _trigger_repo_warmup(root)
+        return {}
+
+    if event in (HOSTS[host][2], "PreToolUse", "BeforeTool"):
+        tool_call = payload.get("tool_call") or payload.get("toolCall") or payload.get("tool") or {}
+        tool_name = str(tool_call.get("name") or payload.get("tool_name") or "")
+        tool_args = tool_call.get("args") or payload.get("tool_args") or {}
+        return _check_codex_tool_use(tool_name, tool_args)
+
+    if event == "PostToolUse":
+        tool_call = payload.get("tool_call") or payload.get("toolCall") or payload.get("tool") or {}
+        tool_name = str(tool_call.get("name") or payload.get("tool_name") or "").lower()
+        tool_args = tool_call.get("args") or payload.get("tool_args") or {}
+        path_str = tool_args.get("path") or tool_args.get("Path") or tool_args.get("file_path")
+        if path_str and tool_name in ("edit", "write", "patch", "edit_file", "write_file"):
+            try:
+                from local_ai_hub.shadow_compiler import shadow_check
+                shadow_check(path_str, root=root)
+            except Exception:
+                pass
+        return {}
+
     return {}
 
 

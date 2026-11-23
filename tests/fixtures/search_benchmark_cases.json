@@ -8,13 +8,13 @@
       "query": "repo_search",
       "language": "symbol",
       "expected_paths": [
-        "src/local_ai_hub/services.py",
+        "src/local_ai_hub/service_repository.py",
         "src/local_ai_hub/mcp_server.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/services.py",
+          "path": "src/local_ai_hub/service_repository.py",
           "anchor": "def repo_search("
         },
         {
@@ -28,12 +28,12 @@
       "query": "_exact_search_page",
       "language": "symbol",
       "expected_paths": [
-        "src/local_ai_hub/repo_tools.py"
+        "src/local_ai_hub/repo_tools_project_search.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/repo_tools.py",
+          "path": "src/local_ai_hub/repo_tools_project_search.py",
           "anchor": "def _exact_search_page"
         }
       ]
@@ -63,12 +63,12 @@
       "query": "_step_rag",
       "language": "symbol",
       "expected_paths": [
-        "src/local_ai_hub/preprocess.py"
+        "src/local_ai_hub/preprocess_rag.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/preprocess.py",
+          "path": "src/local_ai_hub/preprocess_rag.py",
           "anchor": "def _step_rag"
         }
       ]
@@ -93,13 +93,13 @@
       "query": "C++",
       "language": "symbol",
       "expected_paths": [
-        "src/local_ai_hub/repo_tools.py",
+        "src/local_ai_hub/repo_tools_workspace.py",
         "docs/INSTALL_PROMPT.md"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/repo_tools.py",
+          "path": "src/local_ai_hub/repo_tools_workspace.py",
           "anchor": "\".cpp\": \"C++\""
         },
         {
@@ -154,7 +154,7 @@
       "language": "cs",
       "expected_paths": [
         "docs/CODE_INDEX.md",
-        "src/local_ai_hub/code_index.py"
+        "src/local_ai_hub/code_index_maintenance.py"
       ],
       "negative": false,
       "evidence": [
@@ -163,7 +163,7 @@
           "anchor": "max_index_bytes"
         },
         {
-          "path": "src/local_ai_hub/code_index.py",
+          "path": "src/local_ai_hub/code_index_maintenance.py",
           "anchor": "def enforce_size_limit"
         }
       ]
@@ -173,12 +173,12 @@
       "query": "How does hybrid search handle an unavailable RAG index?",
       "language": "en",
       "expected_paths": [
-        "src/local_ai_hub/services.py"
+        "src/local_ai_hub/service_repo_search.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/services.py",
+          "path": "src/local_ai_hub/service_repo_search.py",
           "anchor": "lexical_fallback"
         }
       ]
@@ -241,12 +241,12 @@
       "query": "How does hybrid search report an unavailable RAG index?",
       "language": "en",
       "expected_paths": [
-        "src/local_ai_hub/services.py"
+        "src/local_ai_hub/service_repo_search.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/services.py",
+          "path": "src/local_ai_hub/service_repo_search.py",
           "anchor": "rag_search_skipped"
         }
       ]
@@ -256,12 +256,12 @@
       "query": "How does preprocessing refresh RAG for changed files?",
       "language": "en",
       "expected_paths": [
-        "src/local_ai_hub/preprocess.py"
+        "src/local_ai_hub/preprocess_rag.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/preprocess.py",
+          "path": "src/local_ai_hub/preprocess_rag.py",
           "anchor": "def _step_rag"
         }
       ]
@@ -298,37 +298,37 @@
     },
     {
       "id": "czech-hybrid-unavailable-rag",
-      "query": "Jak hybridní hledání označí nedostupný RAG index?",
+      "query": "Jak hybridn\u00ed hled\u00e1n\u00ed ozna\u010d\u00ed nedostupn\u00fd RAG index?",
       "language": "cs",
       "expected_paths": [
-        "src/local_ai_hub/services.py"
+        "src/local_ai_hub/service_repo_search.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/services.py",
+          "path": "src/local_ai_hub/service_repo_search.py",
           "anchor": "rag_search_skipped"
         }
       ]
     },
     {
       "id": "czech-incremental-rag",
-      "query": "Jak preprocessing obnoví RAG po změně souborů?",
+      "query": "Jak preprocessing obnov\u00ed RAG po zm\u011bn\u011b soubor\u016f?",
       "language": "cs",
       "expected_paths": [
-        "src/local_ai_hub/preprocess.py"
+        "src/local_ai_hub/preprocess_rag.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/preprocess.py",
+          "path": "src/local_ai_hub/preprocess_rag.py",
           "anchor": "def _step_rag"
         }
       ]
     },
     {
       "id": "czech-search-result-pagination",
-      "query": "Kde se ověřuje limit a offset výsledků hledání?",
+      "query": "Kde se ov\u011b\u0159uje limit a offset v\u00fdsledk\u016f hled\u00e1n\u00ed?",
       "language": "cs",
       "expected_paths": [
         "src/local_ai_hub/search_pagination.py"
@@ -343,7 +343,7 @@
     },
     {
       "id": "czech-code-index-one-hop",
-      "query": "Jak hluboko hledá deterministické vyhledávání související symboly?",
+      "query": "Jak hluboko hled\u00e1 deterministick\u00e9 vyhled\u00e1v\u00e1n\u00ed souvisej\u00edc\u00ed symboly?",
       "language": "cs",
       "expected_paths": [
         "src/local_ai_hub/deterministic.py",
@@ -359,7 +359,7 @@
     },
     {
       "id": "czech-search-worktree-scope",
-      "query": "Jak se vyhledávání drží kořene aktuálního worktree?",
+      "query": "Jak se vyhled\u00e1v\u00e1n\u00ed dr\u017e\u00ed ko\u0159ene aktu\u00e1ln\u00edho worktree?",
       "language": "cs",
       "expected_paths": [
         "src/local_ai_hub/repo_tools.py"
@@ -390,7 +390,7 @@
     },
     {
       "id": "czech-uninstall-path-guards",
-      "query": "Jak plán odinstalace ověřuje bezpečnost instalační cesty a odmítá kořenové nebo nadřazené adresáře?",
+      "query": "Jak pl\u00e1n odinstalace ov\u011b\u0159uje bezpe\u010dnost instala\u010dn\u00ed cesty a odm\u00edt\u00e1 ko\u0159enov\u00e9 nebo nad\u0159azen\u00e9 adres\u00e1\u0159e?",
       "language": "cs",
       "expected_paths": [
         "tools/uninstall.py"
@@ -420,7 +420,7 @@
     },
     {
       "id": "installer-marker-atomic-write",
-      "query": "Kde se atomicky zapisuje manifest vlastnictví instalace?",
+      "query": "Kde se atomicky zapisuje manifest vlastnictv\u00ed instalace?",
       "language": "cs",
       "expected_paths": [
         "tools/install_ownership.py"
@@ -450,15 +450,15 @@
     },
     {
       "id": "fts-distinguishes-empty-and-failure",
-      "query": "Jak vyhledávání rozlišuje prázdný FTS výsledek od nedostupné nebo poškozené databáze?",
+      "query": "Jak vyhled\u00e1v\u00e1n\u00ed rozli\u0161uje pr\u00e1zdn\u00fd FTS v\u00fdsledek od nedostupn\u00e9 nebo po\u0161kozen\u00e9 datab\u00e1ze?",
       "language": "cs",
       "expected_paths": [
-        "src/local_ai_hub/rag.py"
+        "src/local_ai_hub/rag_search.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/rag.py",
+          "path": "src/local_ai_hub/rag_search.py",
           "anchor": "def _fts_error_status"
         }
       ]
@@ -480,7 +480,7 @@
     },
     {
       "id": "search-fusion-case-policy",
-      "query": "Kde se nastavuje case-sensitive normalizace cest pro výsledky vyhledávání?",
+      "query": "Kde se nastavuje case-sensitive normalizace cest pro v\u00fdsledky vyhled\u00e1v\u00e1n\u00ed?",
       "language": "cs",
       "expected_paths": [
         "src/local_ai_hub/search_modes.py"
@@ -510,7 +510,7 @@
     },
     {
       "id": "browser-large-screenshot-review-block",
-      "query": "Co se stane, když screenshot překročí limit pro vision review?",
+      "query": "Co se stane, kdy\u017e screenshot p\u0159ekro\u010d\u00ed limit pro vision review?",
       "language": "cs",
       "expected_paths": [
         "src/local_ai_hub/browser_bridge.py",
@@ -545,7 +545,7 @@
     },
     {
       "id": "capture-listener-idempotence",
-      "query": "Jak injektovaný skript brání opakované registraci posluchačů?",
+      "query": "Jak injektovan\u00fd skript br\u00e1n\u00ed opakovan\u00e9 registraci poslucha\u010d\u016f?",
       "language": "cs",
       "expected_paths": [
         "browser_bridge/capture.js"
@@ -575,7 +575,7 @@
     },
     {
       "id": "automation-egress-not-proven",
-      "query": "Kde automatizace přiznává, že síťová izolace není vynucená?",
+      "query": "Kde automatizace p\u0159izn\u00e1v\u00e1, \u017ee s\u00ed\u0165ov\u00e1 izolace nen\u00ed vynucen\u00e1?",
       "language": "cs",
       "expected_paths": [
         "src/local_ai_hub/automation.py",
@@ -611,102 +611,152 @@
     },
     {
       "id": "czech-cakephp-detection",
-      "query": "Jak Hub rozpozná projekt CakePHP podle Composer závislosti?",
+      "query": "Jak Hub rozpozn\u00e1 projekt CakePHP podle Composer z\u00e1vislosti?",
       "language": "cs",
-      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools_workspace.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "src/local_ai_hub/repo_tools.py", "anchor": "(\"cakephp/cakephp\", \"cakephp\")"}
+        {
+          "path": "src/local_ai_hub/repo_tools_workspace.py",
+          "anchor": "(\"cakephp/cakephp\", \"cakephp\")"
+        }
       ]
     },
     {
       "id": "english-cakephp-detection",
       "query": "How does Hub detect CakePHP projects from Composer dependencies?",
       "language": "en",
-      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools_workspace.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "src/local_ai_hub/repo_tools.py", "anchor": "(\"cakephp/cakephp\", \"cakephp\")"}
+        {
+          "path": "src/local_ai_hub/repo_tools_workspace.py",
+          "anchor": "(\"cakephp/cakephp\", \"cakephp\")"
+        }
       ]
     },
     {
       "id": "english-czech-audit-typescript",
       "query": "Which Czech audit identifies excluded TypeScript tests as incomplete verification?",
       "language": "en",
-      "expected_paths": ["docs/AUDIT_ROUND_3_2026-11-08.md"],
+      "expected_paths": [
+        "docs/AUDIT_ROUND_3_2026-11-08.md"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "docs/AUDIT_ROUND_3_2026-11-08.md", "anchor": "TypeScript testy v polyglot repozitáři"}
+        {
+          "path": "docs/AUDIT_ROUND_3_2026-11-08.md",
+          "anchor": "TypeScript testy v polyglot repozit\u00e1\u0159i"
+        }
       ]
     },
     {
       "id": "czech-typescript-audit",
-      "query": "Jaké riziko český audit popisuje při vynechání TypeScript testů v polyglotním repozitáři?",
+      "query": "Jak\u00e9 riziko \u010desk\u00fd audit popisuje p\u0159i vynech\u00e1n\u00ed TypeScript test\u016f v polyglotn\u00edm repozit\u00e1\u0159i?",
       "language": "cs",
-      "expected_paths": ["docs/AUDIT_ROUND_3_2026-11-08.md"],
+      "expected_paths": [
+        "docs/AUDIT_ROUND_3_2026-11-08.md"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "docs/AUDIT_ROUND_3_2026-11-08.md", "anchor": "TypeScript testy v polyglot repozitáři"}
+        {
+          "path": "docs/AUDIT_ROUND_3_2026-11-08.md",
+          "anchor": "TypeScript testy v polyglot repozit\u00e1\u0159i"
+        }
       ]
     },
     {
       "id": "english-php8-outline",
       "query": "Which PHP 8 readonly class construct does the outline test recognize?",
       "language": "en",
-      "expected_paths": ["tests/test_php_js_ts_support.py"],
+      "expected_paths": [
+        "tests/test_php_js_ts_support.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "tests/test_php_js_ts_support.py", "anchor": "final readonly class OrderAggregate"}
+        {
+          "path": "tests/test_php_js_ts_support.py",
+          "anchor": "final readonly class OrderAggregate"
+        }
       ]
     },
     {
       "id": "czech-php8-enum-outline",
-      "query": "Kterou PHP 8 enum syntaxi testuje rozpoznávání outline?",
+      "query": "Kterou PHP 8 enum syntaxi testuje rozpozn\u00e1v\u00e1n\u00ed outline?",
       "language": "cs",
-      "expected_paths": ["tests/test_php_js_ts_support.py"],
+      "expected_paths": [
+        "tests/test_php_js_ts_support.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "tests/test_php_js_ts_support.py", "anchor": "enum OrderStatus: string"}
+        {
+          "path": "tests/test_php_js_ts_support.py",
+          "anchor": "enum OrderStatus: string"
+        }
       ]
     },
     {
       "id": "english-typescript-generic-alias",
       "query": "Which generic TypeScript result alias is recognized by the outline tests?",
       "language": "en",
-      "expected_paths": ["tests/test_php_js_ts_support.py"],
+      "expected_paths": [
+        "tests/test_php_js_ts_support.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "tests/test_php_js_ts_support.py", "anchor": "export type Result<T> = Success<T> | Failure;"}
+        {
+          "path": "tests/test_php_js_ts_support.py",
+          "anchor": "export type Result<T> = Success<T> | Failure;"
+        }
       ]
     },
     {
       "id": "czech-typescript-interface-outline",
-      "query": "Jaký TypeScript interface pokrývá test rozpoznávání outline?",
+      "query": "Jak\u00fd TypeScript interface pokr\u00fdv\u00e1 test rozpozn\u00e1v\u00e1n\u00ed outline?",
       "language": "cs",
-      "expected_paths": ["tests/test_php_js_ts_support.py"],
+      "expected_paths": [
+        "tests/test_php_js_ts_support.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "tests/test_php_js_ts_support.py", "anchor": "export interface UserProfile {"}
+        {
+          "path": "tests/test_php_js_ts_support.py",
+          "anchor": "export interface UserProfile {"
+        }
       ]
     },
     {
       "id": "english-python-extension-map",
       "query": "Which file suffix does project language detection map to Python?",
       "language": "en",
-      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools_workspace.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "src/local_ai_hub/repo_tools.py", "anchor": "\".py\": \"Python\""}
+        {
+          "path": "src/local_ai_hub/repo_tools_workspace.py",
+          "anchor": "\".py\": \"Python\""
+        }
       ]
     },
     {
       "id": "czech-python-extension-map",
-      "query": "Jak detekce jazyka mapuje příponu Python souborů?",
+      "query": "Jak detekce jazyka mapuje p\u0159\u00edponu Python soubor\u016f?",
       "language": "cs",
-      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "expected_paths": [
+        "src/local_ai_hub/repo_tools_workspace.py"
+      ],
       "negative": false,
       "evidence": [
-        {"path": "src/local_ai_hub/repo_tools.py", "anchor": "\".py\": \"Python\""}
+        {
+          "path": "src/local_ai_hub/repo_tools_workspace.py",
+          "anchor": "\".py\": \"Python\""
+        }
       ]
     }
   ]

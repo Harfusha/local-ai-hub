@@ -16,6 +16,35 @@ setup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(setup)
 
 
+@pytest.mark.parametrize("known_backup", [True, False])
+def test_migration_recovery_report_lists_verified_backups(tmp_path, known_backup):
+    install = tmp_path / "install"
+    install.mkdir()
+    state = tmp_path / "state"
+    migrations = setup._state_migrations_module
+    migrations.write_state_version(state, version=1)
+    (state / "records.txt").write_text("original records", encoding="utf-8")
+
+    def fail_migration(staged):
+        (staged / "records.txt").write_text("partial changes", encoding="utf-8")
+        raise RuntimeError("verification fixture failed")
+
+    steps = (migrations.StateMigration(1, 2, fail_migration, lambda _root: False),) if known_backup else ()
+    with pytest.raises(RuntimeError) as error:
+        setup.run_state_migrations(state, migrations=steps, target_version=2)
+    setup.write_migration_failure_report(
+        install, state, stage="apply" if known_backup else "preflight", error=error.value,
+    )
+
+    report = json.loads((install / "setup-report.json").read_text(encoding="utf-8"))
+    retained = list(tmp_path.glob("state.backup-v1-*"))
+    assert len(retained) == int(known_backup)
+    assert report["migration"]["backups"] == [str(path) for path in retained]
+    assert (state / "records.txt").read_text(encoding="utf-8") == "original records"
+    if known_backup:
+        assert (retained[0] / "records.txt").read_text(encoding="utf-8") == "original records"
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows batch executable lookup')
 def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     script = tmp_path / 'hub-test-command.cmd'

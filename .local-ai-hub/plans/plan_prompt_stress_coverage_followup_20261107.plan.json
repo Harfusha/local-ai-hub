@@ -4,7 +4,15 @@
   "id": "plan_prompt_stress_coverage_followup_20261107",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_audit_coverage": {
       "acceptance_criteria": [
@@ -21,7 +29,16 @@
       "next_action": "All acceptance criteria verified; plan closed.",
       "title": "Audit 105 prompts and reconcile execution evidence",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_correct_findings": {
       "acceptance_criteria": [
@@ -39,7 +56,16 @@
       "next_action": "All acceptance criteria verified; plan closed.",
       "title": "Repair confirmed production and fixture defects",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_deploy_verify": {
       "acceptance_criteria": [
@@ -57,7 +83,16 @@
       "next_action": "All acceptance criteria verified; plan closed.",
       "title": "Install, restart Hub, and verify repaired behavior",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_gap_scenarios": {
       "acceptance_criteria": [
@@ -74,7 +109,16 @@
       "next_action": "All acceptance criteria verified; plan closed.",
       "title": "Add missing practical scenarios and current coverage matrix",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_isolated_iteration": {
       "acceptance_criteria": [
@@ -91,7 +135,16 @@
       "next_action": "All acceptance criteria verified; plan closed.",
       "title": "Run second isolated-chat iteration for unresolved practical cases",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
   "title": "Agent prompt stress suite: complete audit and second iteration"

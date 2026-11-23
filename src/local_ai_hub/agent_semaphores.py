@@ -273,7 +273,7 @@ class SemaphoreStore:
                     remaining_holders = []
                     for h in holders:
                         if h.get("lease_id") == lease_id:
-                            if not owner or not h.get("owner") or h.get("owner") != owner:
+                            if h.get("owner") and h.get("owner") != owner:
                                 remaining_holders.append(h)
                             else:
                                 released = True

@@ -45,10 +45,10 @@ def test_db_query_handler_propagates_errors_to_shared_http_boundary() -> None:
 
 
 def test_db_query_keeps_auth_mode_recovery_and_error_boundary_order() -> None:
-    source = Path(http_server.__file__).read_text(encoding="utf-8")
+    from local_ai_hub import http_routes_post
+    source = Path(http_routes_post.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
-    do_post = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+    do_post = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
     calls = [
         (node.lineno, node.func.id if isinstance(node.func, ast.Name) else node.func.attr)
         for node in ast.walk(do_post)

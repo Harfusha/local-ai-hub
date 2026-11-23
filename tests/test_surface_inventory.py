@@ -817,7 +817,7 @@ def test_behavioral_links_only_reference_inventoried_operations():
     assert "MCP action local_ai_task::not_a_real_action" not in links
     task_list_selector = (
         "tests/test_mcp_coord_operation_acceptance.py::"
-        "test_local_ai_coord_task_list_forwards_status_and_stale_filter"
+        "test_local_ai_coord_task_list_forwards_pagination_and_filters"
     )
     assert task_list_selector in links["MCP action local_ai_coord::task_list"]
     # The retired command tool must not become a live operation or schema gap.
@@ -1377,6 +1377,44 @@ def test_write_doc_mode_updates_coverage(tmp_path, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["written"] == "docs/API_COVERAGE.md"
     assert summary["coverage_rows"] > 0
+
+
+@pytest.mark.parametrize("catalog", ["markdown", "artifact"])
+def test_write_doc_without_task_id_preserves_existing_provenance(tmp_path, catalog, capsys):
+    make_repo(tmp_path)
+    inventory = MODULE.collect_inventory(tmp_path)
+    task_id = "task-existing-coverage"
+    if catalog == "markdown":
+        write(tmp_path, "docs/API_COVERAGE.md", MODULE.render_coverage(inventory, task_id))
+    else:
+        write(tmp_path, "docs/API_COVERAGE.json", MODULE.render_coverage_artifact(inventory, task_id))
+
+    assert MODULE.main(["--root", str(tmp_path), "--write-doc"]) == 0
+
+    markdown = (tmp_path / "docs/API_COVERAGE.md").read_text(encoding="utf-8")
+    artifact = json.loads((tmp_path / "docs/API_COVERAGE.json").read_text(encoding="utf-8"))
+    assert MODULE._coverage_task_id(markdown) == task_id
+    assert artifact["task_id"] == task_id
+    assert json.loads(capsys.readouterr().out)["success"] is True
+
+
+def test_write_doc_preserves_catalogs_on_source_drift(tmp_path, capsys, monkeypatch):
+    make_repo(tmp_path)
+    inventory = MODULE.collect_inventory(tmp_path)
+    markdown = MODULE.render_coverage(inventory, "task-existing-coverage")
+    artifact = MODULE.render_coverage_artifact(inventory, "task-existing-coverage")
+    write(tmp_path, "docs/API_COVERAGE.md", markdown)
+    write(tmp_path, "docs/API_COVERAGE.json", artifact)
+    monkeypatch.setattr(MODULE, "collect_inventory", lambda _root: {**inventory, "drift": ["missing handler evidence"]})
+
+    assert MODULE.main(["--root", str(tmp_path), "--write-doc"]) == 1
+
+    assert (tmp_path / "docs/API_COVERAGE.md").read_text(encoding="utf-8") == markdown
+    assert (tmp_path / "docs/API_COVERAGE.json").read_text(encoding="utf-8") == artifact
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["success"] is False
+    assert summary["drift"] == ["missing handler evidence"]
+    assert "written" not in summary
 
 
 def test_rendered_coverage_includes_task_id_for_every_finding(tmp_path):

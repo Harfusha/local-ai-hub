@@ -75,6 +75,7 @@ def openvino_device_candidates(config: dict[str, Any], requested: str = "auto") 
         family = [device for device in available if _normalise_device(device).split(".", 1)[0] == requested_norm.split(".", 1)[0]]
         if family:
             return family
+        return []
 
     raw_priority = cfg.get("device_priority", ["NPU", "GPU", "CPU"])
     priorities = [str(item).upper() for item in raw_priority] if isinstance(raw_priority, list) else ["NPU", "GPU", "CPU"]
@@ -234,29 +235,71 @@ def openvino_cache_dir(config: dict[str, Any]) -> Path | None:
         return None
 
 
+def _configured_candidates(
+    config: dict[str, Any], backend: str, device: str, *, cpu_backend: str,
+) -> list[tuple[str, str]]:
+    requested = str(device or "cpu").strip() or "cpu"
+    if backend == "auto":
+        if requested.lower() == "auto":
+            candidates = [
+                (cpu_backend if route == "sentence-transformers" and cpu_backend == "torch" else route, target)
+                for route, target in automatic_embedding_candidates(config)
+            ]
+            return [*candidates, (cpu_backend, "cpu")]
+        if requested.lower().startswith("cpu"):
+            return [(cpu_backend, "cpu")]
+        if requested.upper().startswith(("NPU", "GPU")):
+            selected = [("openvino", item) for item in openvino_device_candidates(config, requested)]
+            if requested.upper().startswith("NPU") and not selected:
+                selected = [
+                    ("onnx-vitisai", "VitisAIExecutionProvider")
+                    for route, _target in automatic_embedding_candidates(config)
+                    if route == "onnx-vitisai"
+                ]
+            return selected
+        if requested.lower() in {"directml", "dml", "dmlexecutionprovider"}:
+            return [("onnx-directml", "DmlExecutionProvider")]
+        if requested.lower() in {"vitisai", "vitisai-executionprovider"}:
+            return [("onnx-vitisai", "VitisAIExecutionProvider")]
+        return [(cpu_backend, requested)]
+    if backend == "openvino":
+        candidates = [("openvino", item) for item in openvino_device_candidates(config, requested)]
+        openvino_cfg = config.get("openvino") if isinstance(config, dict) else None
+        if isinstance(openvino_cfg, dict) and openvino_cfg.get("cpu_fallback") is True:
+            candidates.append((cpu_backend, "cpu"))
+        return candidates
+
+    route = "torch" if cpu_backend == "torch" and backend == "sentence-transformers" else backend
+    candidates = [(route, requested)]
+    if cpu_backend == "torch" and route == "torch" and requested.lower().startswith("cuda"):
+        candidates.append(("torch", "cpu"))
+    return candidates
+
+
 def accelerator_status(config: dict[str, Any]) -> dict[str, Any]:
     runtime = openvino_runtime()
     models_raw = config.get("models") if isinstance(config, dict) else None
     models = models_raw if isinstance(models_raw, dict) else {}
+    embedding_backend = str(models.get("embedding_backend", "auto") or "auto").strip().lower()
+    embedding_device = str(models.get("embedding_device", "cpu") or "cpu").strip()
+    reranker_backend = str(models.get("reranker_backend", "torch") or "torch").strip().lower()
+    reranker_device = str(models.get("reranker_device", "cpu") or "cpu").strip()
     return {
         "openvino": runtime,
         "embedding": {
-            "backend": models.get("embedding_backend", "sentence-transformers"),
-            "requested_device": models.get("embedding_device", "cpu"),
-            "candidates": [*automatic_embedding_candidates(config), ("sentence-transformers", "cpu")]
-            if str(models.get("embedding_backend", "")).lower() == "auto"
-            else openvino_device_candidates(config, str(models.get("embedding_device", "auto"))),
+            "backend": embedding_backend,
+            "requested_device": embedding_device,
+            "candidates": _configured_candidates(
+                config, embedding_backend, embedding_device, cpu_backend="sentence-transformers",
+            ),
             "onnx_providers": sorted(_onnx_providers()),
             "torch_gpu_available": _torch_gpu_route() is not None,
         },
         "reranker": {
-            "backend": models.get("reranker_backend", "torch"),
-            "requested_device": models.get("reranker_device", "cpu"),
-            "candidates": [
-                ("torch" if backend == "sentence-transformers" else backend, device)
-                for backend, device in automatic_embedding_candidates(config)
-            ] + [("torch", "cpu")]
-            if str(models.get("reranker_backend", "")).lower() == "auto"
-            else openvino_device_candidates(config, str(models.get("reranker_device", "auto"))),
+            "backend": reranker_backend,
+            "requested_device": reranker_device,
+            "candidates": _configured_candidates(
+                config, reranker_backend, reranker_device, cpu_backend="torch",
+            ),
         },
     }

@@ -76,7 +76,7 @@ def test_oversized_svg_closes_open_descriptor(tmp_path: Path, monkeypatch: pytes
         return fd, stat_result
 
     monkeypatch.setattr(store, "_safe_open_diagram", observe_open)
-    result = store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="test", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="test", image_path=str(image))
 
     assert result["success"] is False
     assert "size limit" in result["error"]
@@ -114,7 +114,7 @@ def test_parent_swap_cannot_ingest_external_svg(tmp_path: Path, monkeypatch: pyt
 
     monkeypatch.setattr(store, "_safe_open_diagram", swap_parent)
     try:
-        result = store.ingest_diagram(root=str(root), root=str(root), workspace="test", image_path=str(image))
+        result = store.ingest_diagram(root=str(root), workspace="test", image_path=str(image))
         assert result["success"] is False
         assert published == []
     finally:
@@ -147,7 +147,7 @@ def test_final_file_swap_cannot_ingest_external_svg(tmp_path: Path, monkeypatch:
         return original_open(authorized_root, path)
 
     monkeypatch.setattr(store, "_safe_open_diagram", swap_file)
-    result = store.ingest_diagram(root=str(root), root=str(root), workspace="test", image_path=str(image))
+    result = store.ingest_diagram(root=str(root), workspace="test", image_path=str(image))
     assert result["success"] is False
     assert published == []
 

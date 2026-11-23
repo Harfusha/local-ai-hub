@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from local_ai_hub.commands import _BoundedStreamBuffer, _is_interactive_prompt, CommandBroker
+from local_ai_hub.command_broker import _BoundedStreamBuffer, _is_interactive_prompt, CommandBroker
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.work_orchestrator import WorkOrchestrator
 from local_ai_hub.async_jobs import AsyncJobManager

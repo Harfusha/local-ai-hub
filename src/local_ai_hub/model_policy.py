@@ -294,7 +294,7 @@ class ModelExecutionPolicy:
             elif safe_vram < 4096:
                 clean["keep_alive"] = "1m"
         options["num_ctx"] = profile.num_ctx
-        if self._is_small_model(model):
+        if self._is_small_model(model) or "qwen2.5-coder:7b" in _clean_str(model).lower():
             if "repeat_penalty" not in options:
                 options["repeat_penalty"] = 1.18
             if "repeat_last_n" not in options:

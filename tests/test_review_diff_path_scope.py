@@ -24,7 +24,7 @@ def test_review_diff_mcp_forwards_explicit_path(monkeypatch, tmp_path):
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kw: calls.append((endpoint, payload)) or {'success': True, 'text': 'ok'})
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
-    result = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path), root=str(tmp_path), path='src/example.py')
+    result = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path),  path='src/example.py')
     assert result['success'] is True
     assert calls[0][1]['path'] == 'src/example.py'
 
@@ -223,7 +223,7 @@ def test_mcp_reports_untracked_scope_omission(monkeypatch, tmp_path):
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kw: LocalAIServices.review_diff(service, payload))
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
-    result = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path), root=str(tmp_path), path='new_test.py', max_response_tokens=800)
+    result = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path),  path='new_test.py', max_response_tokens=800)
     assert result['success'] is False
     assert result['untracked_files_excluded'] == ['new_test.py']
     assert result['review_scope_complete'] is False
@@ -236,7 +236,7 @@ def test_mcp_failure_preserves_incomplete_scope_at_small_budget(monkeypatch, tmp
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kw: result)
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
-    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path), root=str(tmp_path), path='new_test.py', max_response_tokens=256)
+    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path),  path='new_test.py', max_response_tokens=256)
     assert output['success'] is False
     assert output.get('review_scope_complete') is False
 
@@ -311,7 +311,7 @@ def test_review_diff_mcp_preserves_unverified_citation_status(monkeypatch, tmp_p
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kw: result)
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
-    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path), root=str(tmp_path), diff='--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n', max_response_tokens=800)
+    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path),  diff='--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n', max_response_tokens=800)
     assert output['review_consistency']['usable'] is False
     assert output['review_consistency']['semantic_truth_verified'] is False
 
@@ -324,7 +324,7 @@ def test_review_diff_small_budget_never_silently_promotes_unverified_result(monk
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kw: result)
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
-    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path), root=str(tmp_path), diff='--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n', max_response_tokens=128)
+    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path),  diff='--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n', max_response_tokens=128)
     assert output.get('success') is False or output.get('review_consistency', {}).get('usable') is False
 
 
@@ -335,5 +335,5 @@ def test_review_diff_small_budget_preserves_incomplete_scope(monkeypatch, tmp_pa
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kw: result)
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
-    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path), root=str(tmp_path), path='a.py', max_response_tokens=128)
+    output = mcp_server.local_ai_repo(action='review_diff', root=str(tmp_path),  path='a.py', max_response_tokens=128)
     assert output.get('success') is False or output.get('review_scope_complete') is False

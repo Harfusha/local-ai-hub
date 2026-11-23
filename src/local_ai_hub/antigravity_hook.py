@@ -61,7 +61,7 @@ UNCONSTRAINED_SEARCH_PATTERNS = [
     re.compile(r"\bdir\s+.*(?:\/s|\/S)", re.IGNORECASE),
     re.compile(r"\bfindstr\s+.*(?:\/s|\/S)", re.IGNORECASE),
     re.compile(r"\bfind\s+(?:\.|\/|[a-zA-Z]:)[^\n|;]*\s+-name\b", re.IGNORECASE),
-    re.compile(r"\bgrep\s+-[a-zA-Z]*[rR]\b"),
+    re.compile(r"\bgrep\s+-[a-zA-Z]*[rR][a-zA-Z]*\b"),
 ]
 
 RG_BOUNDED_PATTERN = re.compile(
@@ -253,6 +253,23 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
     if not cmd:
         return {"decision": "allow"}
 
+    # Proactive context-saving overwrites for verbose CLI commands
+    if re.match(r"^git\s+status\s*$", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": "git status -s"},
+        }
+    if re.match(r"^git\s+log\s*$", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": "git log --oneline -n 10"},
+        }
+    if re.match(r"^git\s+diff\s*$", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": "git diff --stat"},
+        }
+
     for pattern in UNCONSTRAINED_SEARCH_PATTERNS:
         if pattern.search(cmd):
             return {
@@ -277,6 +294,86 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
                     ),
                 }
 
+    # Bare unconstrained pytest check (preventing freezing across 17,500+ tests)
+    if re.search(r"\b(?:python\s+(?:-m\s+)?pytest|pytest)\b", cmd, re.IGNORECASE):
+        parts = cmd.split()
+        try:
+            pt_idx = next(i for i, part in enumerate(parts) if "pytest" in part.lower())
+            subargs = parts[pt_idx + 1:]
+            has_selector = any(not a.startswith("-") or a in ("-m", "-k", "--run-all") for a in subargs)
+            if not has_selector and subargs in ([], ["-q"], ["-v"], ["-s"]):
+                return {
+                    "decision": "deny",
+                    "reason": (
+                        f"Unconstrained bare pytest '{cmd}' across 17,500+ tests is blocked to prevent session freeze. "
+                        f"Use targeted selectors (e.g. -m 'fast', -m 'critical', or a specific test file path)."
+                    ),
+                }
+        except Exception:
+            pass
+
+    # Unconstrained file dumping in command shell
+    if re.search(r"\b(?:Get-Content|gc|cat|type)\s+['\"]?([^'\"\s|;>]+)['\"]?", cmd, re.IGNORECASE):
+        if not re.search(r"(?:-TotalCount|-Head|Select-Object\s+-First|\|\s*head)", cmd, re.IGNORECASE):
+            match = re.search(r"\b(?:Get-Content|gc|cat|type)\s+['\"]?([^'\"\s|;>]+)['\"]?", cmd, re.IGNORECASE)
+            if match:
+                target_file = Path(match.group(1))
+                if target_file.is_file() and target_file.name.lower() not in WHITELIST_FILENAMES:
+                    try:
+                        with target_file.open("r", encoding="utf-8", errors="ignore") as f:
+                            lines = sum(1 for _ in zip(f, range(90)))
+                            if lines > 80:
+                                return {
+                                    "decision": "deny",
+                                    "reason": (
+                                        f"Direct unconstrained dump of '{target_file.name}' (> 80 lines) via '{cmd}' is blocked by Token Economy. "
+                                        f"Use targeted slice (Select-Object -First 80) or local_ai_artifact(action='slice')."
+                                    ),
+                                }
+                    except Exception:
+                        pass
+
+    return {"decision": "allow"}
+
+
+def handle_post_tool_use(payload: dict[str, Any]) -> dict[str, Any]:
+    tool_call = payload.get("toolCall", {})
+    name = str(tool_call.get("name") or "").strip().lower()
+    args = tool_call.get("args") or {}
+    path_str = args.get("Path") or args.get("path")
+    if name in ("edit_file", "write_file") and path_str:
+        p = Path(path_str)
+        if p.is_file() and p.suffix.lower() in (".py", ".json"):
+            try:
+                from .shadow_compiler import shadow_check
+                receipt = shadow_check(p)
+                if not receipt.get("syntax_ok"):
+                    return {
+                        "decision": "warn",
+                        "warning": f"SYNTAX ERROR in {p.name}: {receipt.get('error')}. Fix immediately.",
+                    }
+                violations = [v for v in receipt.get("violations", []) if v.get("severity") == "high"]
+                if violations:
+                    return {
+                        "decision": "warn",
+                        "warning": f"INVARIANT VIOLATION in {p.name}: {violations[0].get('message')}.",
+                    }
+
+                # AST diff invariant check
+                if p.suffix.lower() == ".py":
+                    try:
+                        from .diff_invariant_verifier import verify_code_invariants
+                        code_text = p.read_text(encoding="utf-8", errors="replace")
+                        verdict = verify_code_invariants(code_text, strict_interface_check=False)
+                        if not verdict.passed and verdict.violations:
+                            return {
+                                "decision": "warn",
+                                "warning": f"INVARIANT GATE in {p.name}: {'; '.join(verdict.violations[:2])}",
+                            }
+                    except Exception:
+                        pass
+            except Exception:
+                pass
     return {"decision": "allow"}
 
 
@@ -290,13 +387,24 @@ def handle_pre_tool_use(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(args, dict):
         args = {}
 
+    res = {"decision": "allow"}
     if tool_name == "read_file":
-        return _check_read_file(args)
+        res = _check_read_file(args)
+    elif tool_name == "run_command":
+        res = _check_run_command(args)
 
-    if tool_name == "run_command":
-        return _check_run_command(args)
+    try:
+        from .agent_telemetry import record_agent_event
+        record_agent_event(
+            agent="antigravity",
+            tool=tool_name,
+            outcome=str(res.get("decision", "allow")),
+            details={"stepIdx": payload.get("stepIdx"), "args": list(args.keys())},
+        )
+    except Exception:
+        pass
 
-    return {"decision": "allow"}
+    return res
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -334,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
         result = handle_pre_invocation(payload)
     elif hook_type == "PreToolUse":
         result = handle_pre_tool_use(payload)
+    elif hook_type == "PostToolUse":
+        result = handle_post_tool_use(payload)
     else:
         result = {"decision": "allow"}
 

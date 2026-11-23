@@ -222,7 +222,7 @@ def _task_owned_worktree_root(
     ):
         return None
     try:
-        from .process_utils import _worktree_ownership_path
+        from .git_worktrees import _worktree_ownership_path
 
         metadata_path = _worktree_ownership_path(worktree_path)
         if metadata_path is None or not metadata_path.is_file():

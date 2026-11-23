@@ -6,7 +6,7 @@ import inspect
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_command_entry_points_reject_retired_tenant_argument() -> None:

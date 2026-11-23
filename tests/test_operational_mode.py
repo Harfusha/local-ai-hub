@@ -329,7 +329,8 @@ def test_http_mode_skips_gaming_unload_after_later_resume(monkeypatch, tmp_path)
         "config": {"server": {"state_dir": str(tmp_path)}}, "runtime": runtime, "async_jobs": async_jobs,
     })())
     responses = []
-    handler = type("MockHandler", (), {
+    handler = type("MockHandler", (http_server.Handler,), {
+        "__init__": lambda self: None,
         "path": "/api/admin/mode",
         "headers": {},
         "_begin_trace": lambda self, _path: None,
@@ -353,7 +354,8 @@ def test_http_mode_update_rejects_invalid_and_unauthorized_requests(monkeypatch,
         "config": {"server": {"state_dir": str(tmp_path)}},
     })())
     responses = []
-    handler = type("MockHandler", (), {
+    handler = type("MockHandler", (http_server.Handler,), {
+        "__init__": lambda self: None,
         "path": "/api/admin/mode",
         "headers": {},
         "_begin_trace": lambda self, _path: None,
@@ -385,7 +387,8 @@ def test_http_mode_update_reports_missing_async_cancellation_hook(monkeypatch, t
         "config": {"server": {"state_dir": str(tmp_path)}}, "runtime": runtime,
     })())
     responses = []
-    handler = type("MockHandler", (), {
+    handler = type("MockHandler", (http_server.Handler,), {
+        "__init__": lambda self: None,
         "path": "/api/admin/mode",
         "headers": {},
         "_begin_trace": lambda self, _path: None,

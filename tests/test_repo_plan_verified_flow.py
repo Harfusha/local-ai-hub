@@ -45,7 +45,7 @@ def _delayed_plan_sync_from_process(state_path, entered, release, outcomes):
 
     def slow_sync(*args, **kwargs):
         entered.set()
-        if not release.wait(15):
+        if not release.wait(30):
             raise TimeoutError("plan sync test timed out")
         return real_sync(*args, **kwargs)
 
@@ -57,7 +57,7 @@ def _delayed_plan_sync_from_process(state_path, entered, release, outcomes):
         outcomes.put(f"error: {exc}")
 
 
-def _checkpoint_from_process(state_path, committed, outcomes):
+def _checkpoint_from_process(state_path, ready, entered, committed, outcomes):
     store = TaskStore(AgentStateStore(state_path))
     real_project = store._sync_project_plan_checkpoint
 
@@ -66,6 +66,10 @@ def _checkpoint_from_process(state_path, committed, outcomes):
         return real_project(state)
 
     store._sync_project_plan_checkpoint = notify
+    ready.set()
+    if not entered.wait(60):
+        outcomes.put("error: first projection did not start")
+        return
     try:
         store.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="process update"), actor="agent_a")
         outcomes.put("success")
@@ -107,7 +111,7 @@ def environment(tmp_path: Path):
     task = tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
         context=ScopeContext(repository_id=str(root), session_id="session_a"),
-        actor="agent_a", repo_root=str(root), root=str(root), task_id="execution_a",
+        actor="agent_a", repo_root=str(root), task_id="execution_a",
     )
     storage = RepoPlanStorage(root)
     rel = ".local-ai-hub/plans/plan_work.plan.json"
@@ -142,7 +146,7 @@ def test_plan_binding_reports_missing_persisted_session(environment):
     task = tasks.create(
         GoalContract(goal="Bind a plan", acceptance_criteria=["session is persisted"]),
         context=ScopeContext(repository_id=str(root), session_id=""),
-        actor="agent_a", repo_root=str(root), root=str(root), task_id="execution_without_session",
+        actor="agent_a", repo_root=str(root), task_id="execution_without_session",
     )
 
     assert task.context.session_id == ""
@@ -151,7 +155,7 @@ def test_plan_binding_reports_missing_persisted_session(environment):
         match="execution task has no persisted session; repair its session before plan binding",
     ):
         agent_bridge.bind_plan_execution(
-            tasks, root=str(root), root=str(root), task_id=task.task_id, plan_id="plan_work",
+            tasks, root=str(root),  task_id=task.task_id, plan_id="plan_work",
             plan_task_id="task_work",
         )
 
@@ -216,7 +220,7 @@ def test_rebinding_repairs_a_missed_checkpoint_sync(environment, monkeypatch):
     tasks = TaskStore(AgentStateStore(tasks.state_store.db_path))
     stale_revision = storage.read_plan_file(binding.plan_rel_path)[1]
     result = agent_bridge.bind_plan_execution(
-        tasks, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work", plan_task_id="task_work",
+        tasks, root=str(root),  task_id="execution_a", plan_id="plan_work", plan_task_id="task_work",
         expected_revision=stale_revision, session_id="session_a",
     )
     repaired, current_revision = storage.read_plan_file(binding.plan_rel_path)
@@ -241,7 +245,7 @@ def test_rebinding_after_process_crash_preserves_checkpoint_and_plan(environment
     ):
         subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=15)
     agent_bridge.bind_plan_execution(
-        tasks, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+        tasks, root=str(root),  task_id="execution_a", plan_id="plan_work",
         plan_task_id="task_work", session_id="session_a",
     )
     baseline_task = tasks.get("execution_a").checkpoint.next_action
@@ -276,7 +280,7 @@ def test_rebinding_after_process_crash_preserves_checkpoint_and_plan(environment
 
     def rebind():
         return agent_bridge.bind_plan_execution(
-            restarted, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+            restarted, root=str(root),  task_id="execution_a", plan_id="plan_work",
             plan_task_id="task_work", session_id="session_a", expected_revision=revision,
         )
 
@@ -292,7 +296,7 @@ def test_rebinding_after_process_crash_preserves_checkpoint_and_plan(environment
         assert recovered["tasks"]["task_work"]["next_action"] == expected
         rebind_revision = storage.read_plan_file(binding.plan_rel_path)[1]
         agent_bridge.bind_plan_execution(
-            restarted, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+            restarted, root=str(root),  task_id="execution_a", plan_id="plan_work",
             plan_task_id="task_work", session_id="session_a", expected_revision=rebind_revision,
         )
         assert storage.read_plan_file(binding.plan_rel_path)[1] == rebind_revision
@@ -300,13 +304,13 @@ def test_rebinding_after_process_crash_preserves_checkpoint_and_plan(environment
 
 def test_rebinding_preserves_newer_operator_plan_edit(environment):
     root, tasks, _, _, storage, _, binding, _ = environment
-    agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+    agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_a", plan_id="plan_work",
                                      plan_task_id="task_work", session_id="session_a")
     tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="agent action"), actor="agent_a")
     plan, revision = storage.read_plan_file(binding.plan_rel_path)
     plan["tasks"]["task_work"]["next_action"] = "new operator clarification"
     revision = storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)["file_revision"]
-    result = agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_a", plan_id="plan_work",
                                              plan_task_id="task_work", expected_revision=revision, session_id="session_a")
     assert result["success"]
     assert result["checkpoint_sync"] == "not_pending"
@@ -319,7 +323,7 @@ def test_binding_sync_failure_is_explicit_and_rebinding_recovers(environment, mo
     ws.edit_task("plan_work", "task_other", title="Other", acceptance_criteria=["tests pass"])
     tasks.create(GoalContract(goal="Other", acceptance_criteria=["tests pass"]),
                  context=ScopeContext(repository_id=str(root), session_id="session_b"),
-                 actor="agent_b", repo_root=str(root), root=str(root), task_id="execution_b")
+                 actor="agent_b", repo_root=str(root), task_id="execution_b")
     real_sync = agent_bridge.sync_checkpoint_to_plan
 
     def fail(**_kwargs):
@@ -327,11 +331,11 @@ def test_binding_sync_failure_is_explicit_and_rebinding_recovers(environment, mo
 
     monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", fail)
     with pytest.raises(RuntimeError, match="binding was persisted.*synchronization failed"):
-        agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_b",
+        agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_b",
                                          plan_id="plan_work", plan_task_id="task_other", session_id="session_b")
     assert agent_bridge.TaskBindingManager(root).get_binding("execution_b").task_id == "execution_b"
     monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
-    result = agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_b",
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_b",
                                              plan_id="plan_work", plan_task_id="task_other", session_id="session_b")
     assert result["success"] and result["file_revision"] == storage.read_plan_file(binding.plan_rel_path)[1]
 
@@ -348,7 +352,7 @@ def test_persisted_checkpoint_sync_failure_can_recover_without_repeating_update(
         tasks.checkpoint("execution_a", TaskCheckpoint(phase="implementation", next_action="persisted action"), actor="agent_a")
     assert tasks.get("execution_a").checkpoint.next_action == "persisted action"
     monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", real_sync)
-    result = agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_a",
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_a",
                                              plan_id="plan_work", plan_task_id="task_work", session_id="session_a")
     assert result["success"]
     assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "persisted action"
@@ -365,7 +369,7 @@ def test_recovery_refuses_to_overwrite_operator_edit_after_sync_failure(environm
     plan["tasks"]["task_work"]["next_action"] = "new operator clarification"
     storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)
     with pytest.raises(RepoPlanConflictError, match="conflict preserved newer plan edits") as error:
-        agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+        agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_a", plan_id="plan_work",
                                          plan_task_id="task_work", session_id="session_a")
     assert "plan changed" in str(error.value.__cause__)
     assert storage.read_plan_file(binding.plan_rel_path)[0]["tasks"]["task_work"]["next_action"] == "new operator clarification"
@@ -390,7 +394,7 @@ def test_recovery_allows_unrelated_plan_edits(environment, monkeypatch):
     plan, revision = storage.read_plan_file(binding.plan_rel_path)
     plan["description"] = "An unrelated operator edit"
     storage.save_plan_file(binding.plan_rel_path, plan, expected_revision=revision)
-    result = agent_bridge.bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_a", plan_id="plan_work",
+    result = agent_bridge.bind_plan_execution(tasks, root=str(root),  task_id="execution_a", plan_id="plan_work",
                                              plan_task_id="task_work", session_id="session_a")
     plan, _ = storage.read_plan_file(binding.plan_rel_path)
     assert result["checkpoint_sync"] == "reconciled"
@@ -436,23 +440,33 @@ def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment,
 def test_cross_process_checkpoint_sync_retains_newer_update(environment):
     _, tasks, _, _, storage, _, binding, _ = environment
     ctx = multiprocessing.get_context("spawn")
-    entered, release, committed = ctx.Event(), ctx.Event(), ctx.Event()
+    ready, entered, release, committed = ctx.Event(), ctx.Event(), ctx.Event(), ctx.Event()
     outcomes = ctx.Queue()
     state_path = str(tasks.state_store.db_path)
     first = ctx.Process(target=_delayed_plan_sync_from_process, args=(state_path, entered, release, outcomes))
-    second = ctx.Process(target=_checkpoint_from_process, args=(state_path, committed, outcomes))
-    first.start()
+    second = ctx.Process(target=_checkpoint_from_process, args=(state_path, ready, entered, committed, outcomes))
     try:
-        assert entered.wait(15)
         second.start()
-        assert committed.wait(15)
-    finally:
+        # Startup can be slow on CI. Start the concurrency deadline after both workers are ready.
+        assert ready.wait(45), "checkpoint worker did not initialize"
+        first.start()
+        assert entered.wait(45), "first projection did not pause"
+        assert committed.wait(15), "newer checkpoint did not persist while the first projection was paused"
+        assert tasks.get("execution_a").checkpoint.next_action == "process update"
         release.set()
         first.join(20)
-        if second.pid is not None:
-            second.join(20)
-    assert first.exitcode == second.exitcode == 0
-    assert [outcomes.get(timeout=2), outcomes.get(timeout=2)].count("success") == 2
+        second.join(20)
+        assert first.exitcode == second.exitcode == 0
+        results = [outcomes.get(timeout=2), outcomes.get(timeout=2)]
+        assert results == ["success", "success"], results
+    finally:
+        release.set()
+        for process in (first, second):
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+        outcomes.close()
+        outcomes.join_thread()
     plan, _ = storage.read_plan_file(binding.plan_rel_path)
     assert plan["tasks"]["task_work"]["next_action"] == "process update"
 
@@ -553,7 +567,7 @@ def test_terminal_history_does_not_hide_an_active_plan_binding(environment):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}",
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     result = agent_bridge.bind_plan_execution(
@@ -573,7 +587,7 @@ def test_unknown_prior_binding_requires_reconciliation(environment, monkeypatch)
     tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
         context=ScopeContext(repository_id=str(root), session_id="session_b"),
-        actor="agent_b", repo_root=str(root), root=str(root), task_id="execution_b",
+        actor="agent_b", repo_root=str(root), task_id="execution_b",
     )
     original_get = tasks.get
     monkeypatch.setattr(tasks, "get", lambda task_id: None if task_id == "execution_a" else original_get(task_id))
@@ -590,7 +604,7 @@ def test_failed_attempt_remains_reserved_because_it_can_resume(environment):
     tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
         context=ScopeContext(repository_id=str(root), session_id="session_b"),
-        actor="agent_b", repo_root=str(root), root=str(root), task_id="execution_b",
+        actor="agent_b", repo_root=str(root), task_id="execution_b",
     )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     with pytest.raises(ValueError, match="failed execution binding"):
@@ -622,7 +636,7 @@ def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}",
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     barrier = Barrier(2)
@@ -654,7 +668,7 @@ def test_separate_processes_cannot_bind_two_active_attempts(environment):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}",
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     context = multiprocessing.get_context("spawn")

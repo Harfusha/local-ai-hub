@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-import local_ai_hub.commands as commands
+import local_ai_hub.command_broker as commands
 
 
 def test_cached_command_preserves_execution_timing_but_measures_current_request(tmp_path, monkeypatch):

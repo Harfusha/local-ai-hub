@@ -62,7 +62,6 @@ def test_task_projection_writes_keep_filesystem_io_outside_sqlite_transactions(
 def test_task_projection_write_timeout_rolls_back_slow_index_work(
     tmp_path, monkeypatch, operation
 ):
-    monkeypatch.setattr(agent_tasks, "_AGENT_TASK_WRITE_TIMEOUT_SECONDS", 0.25)
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     store = TaskStore(state_store)
     task_id = f"task-slow-{operation}"
@@ -71,8 +70,10 @@ def test_task_projection_write_timeout_rolls_back_slow_index_work(
             GoalContract(goal="Update safely", acceptance_criteria=("criterion",)),
             ScopeContext(repository_id="repo-1", task_id=task_id),
             task_id=task_id,
+            actor="initial-owner",
         )
 
+    monkeypatch.setattr(agent_tasks, "_AGENT_TASK_WRITE_TIMEOUT_SECONDS", 0.25)
     refresh_index = store._refresh_task_search_index
 
     def _slow_refresh(con, indexed_task_id):
@@ -102,6 +103,7 @@ def test_task_projection_write_timeout_rolls_back_slow_index_work(
     if operation == "create":
         assert events == []
     else:
+        assert current.owner == "initial-owner"
         assert not [event for event in events if event.kind != "task.created"]
 
 

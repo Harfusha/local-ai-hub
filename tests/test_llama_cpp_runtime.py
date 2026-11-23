@@ -873,7 +873,11 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             validate_config({"ollama": {"enabled": True}, "smart_ollama": {"enabled": True}, "llama_cpp": valid_mixed})
 
     def test_custom_managed_model_requires_matching_existing_file_without_downloading_default(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(LlamaCppManagedRuntime, "_host_platform", return_value=("linux", "x86_64")),
+            patch("local_ai_hub.llama_cpp_runtime.platform.freedesktop_os_release", return_value={"ID": "ubuntu"}),
+        ):
             model_bytes = b"local candidate"
             digest = hashlib.sha256(model_bytes).hexdigest()
             runtime = LlamaCppManagedRuntime({
@@ -882,8 +886,7 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             })
             runtime.runtime_dir.mkdir(parents=True)
             runtime.model_dir.mkdir(parents=True)
-            binary_name = "llama-server.exe" if runtime._host_platform()[0] == "win32" else "llama-server"
-            binary = runtime.runtime_dir / binary_name
+            binary = runtime.runtime_dir / "llama-server"
             binary.write_bytes(b"server")
             _, asset_digest, _ = runtime.runtime_asset()
             (runtime.runtime_dir / ".runtime-sha256").write_text(asset_digest, encoding="utf-8")
@@ -898,14 +901,17 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             download.assert_not_called()
 
     def test_custom_model_refuses_symlink(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(LlamaCppManagedRuntime, "_host_platform", return_value=("linux", "x86_64")),
+            patch("local_ai_hub.llama_cpp_runtime.platform.freedesktop_os_release", return_value={"ID": "ubuntu"}),
+        ):
             runtime = LlamaCppManagedRuntime({
                 "server": {"state_dir": temp},
                 "llama_cpp": {"managed_model_filename": "candidate.gguf", "managed_model_sha256": "a" * 64},
             })
             runtime.runtime_dir.mkdir(parents=True)
-            binary_name = "llama-server.exe" if runtime._host_platform()[0] == "win32" else "llama-server"
-            (runtime.runtime_dir / binary_name).write_bytes(b"server")
+            (runtime.runtime_dir / "llama-server").write_bytes(b"server")
             (runtime.runtime_dir / ".runtime-sha256").write_text(runtime.runtime_asset()[1], encoding="utf-8")
             original_is_symlink = Path.is_symlink
             with patch.object(
@@ -1033,6 +1039,12 @@ class LlamaCppRuntimeTests(unittest.TestCase):
         self.assertEqual(LlamaCppManagedRuntime.runtime_asset("darwin", "arm64")[0], "llama-b10964-bin-macos-arm64.tar.gz")
         with self.assertRaisesRegex(RuntimeError, "not supported"):
             LlamaCppManagedRuntime.runtime_asset("freebsd", "x86_64")
+        with (
+            patch.object(LlamaCppManagedRuntime, "_host_platform", return_value=("linux", "x86_64")),
+            patch("local_ai_hub.llama_cpp_runtime.platform.freedesktop_os_release", return_value={"ID": "debian"}),
+            self.assertRaisesRegex(RuntimeError, "requires Ubuntu"),
+        ):
+            LlamaCppManagedRuntime.runtime_asset()
 
     def test_download_requires_expected_sha256_and_removes_partial_files(self):
         with tempfile.TemporaryDirectory() as temp:

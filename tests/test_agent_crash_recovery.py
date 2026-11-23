@@ -10,7 +10,7 @@ import pytest
 
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_memory import (
     AgentScope,
@@ -894,18 +894,18 @@ def test_committed_memory_relation_survives_restart_before_publish(tmp_path, mon
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
     with pytest.raises(SystemExit, match="after commit"):
-        memory.record_relation("entity-a", "depends_on", "entity-b", root=str(tmp_path))
+        memory.record_relation("entity-a", "depends_on", "entity-b", root=str(tmp_path), repository_id="repo-crash")
 
     restarted_store = AgentStateStore(db_path)
     restarted_memory = MemoryStore(restarted_store)
-    relations = restarted_memory.find_relations(source_entity="entity-a", root=str(tmp_path))
+    relations = restarted_memory.find_relations(source_entity="entity-a", root=str(tmp_path), repository_id="repo-crash")
     assert len(relations) == 1
     assert relations[0]["relation"] == "depends_on"
     assert relations[0]["target_entity"] == "entity-b"
     assert [
         event.kind
         for event in restarted_store.events(
-            f"relation:{len(str(tmp_path).replace(chr(92), '/').casefold())}:"
+            f"relation:10:repo-crash{len(str(tmp_path).replace(chr(92), '/').casefold())}:"
             f"{str(tmp_path).replace(chr(92), '/').casefold()}8:entity-a8:entity-b"
         )
     ] == ["relation.recorded"]

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from local_ai_hub import token_accounting
 from local_ai_hub.token_accounting import (
     _streaming_json_tokens,
     json_tokens,
@@ -197,6 +198,8 @@ def test_performance_speedup_on_realistic_payloads():
 
     # Verify exact parity
     _assert_parity(payload)
+    if token_accounting._orjson is None:
+        pytest.skip("throughput comparison requires the optional orjson backend")
 
     # Warmup
     for _ in range(3):

@@ -245,8 +245,10 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions"])
-    parser.add_argument("mode_value", nargs="?", choices=ACTIVITY_MODES, metavar="MODE")
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client"])
+    parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
+    parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, vscode, gemini_cli)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
     parser.add_argument("--all-agents", action="store_true", help="Discover and compress instructions across all configured agent directories (.gemini, .codex, .claude, etc.)")
@@ -269,10 +271,24 @@ def main() -> int:
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
-    if args.action != "mode" and args.mode_value is not None:
-        parser.error("MODE is only valid with the mode action")
+    if args.action == "mode":
+        if args.sub_arg is not None and args.sub_arg not in ACTIVITY_MODES:
+            parser.error(f"MODE must be one of: {', '.join(ACTIVITY_MODES)}")
+        requested_mode = args.sub_arg
+    elif args.action in {"pause", "resume"}:
+        if args.sub_arg is not None:
+            parser.error(f"Action '{args.action}' takes no arguments")
+        requested_mode = None
+    elif args.action == "client":
+        if args.sub_arg is not None and args.sub_arg not in {"status", "detect", "inject", "remove", "config"}:
+            parser.error("CLIENT_SUBCOMMAND must be one of: status, detect, inject, remove, config")
+        requested_mode = None
+    elif args.sub_arg is not None:
+        parser.error(f"Unrecognized argument '{args.sub_arg}' for action '{args.action}'")
+    else:
+        requested_mode = None
+
     if args.action in {"pause", "resume", "mode"}:
-        requested_mode = args.mode_value
         if args.action == "pause":
             requested_mode = "gaming"
         elif args.action == "resume":
@@ -305,6 +321,124 @@ def main() -> int:
             return 1
         print(f"Activity mode: {mode}" if requested_mode is None else f"Mode set to {mode}")
         return 0
+    if args.action == "client":
+        from local_ai_hub.client_adapters.registry import (
+            ClientRegistry,
+        )
+
+        from local_ai_hub.client_adapters.instruction_engine import (
+            InstructionEngine,
+        )
+        target_root = Path(args.root).resolve() if args.root else Path.cwd().resolve()
+        subcmd = args.sub_arg or "status"
+
+        if subcmd == "detect":
+            detected_id = ClientRegistry.detect(repo_root=target_root)
+            adapter = ClientRegistry.get(detected_id)
+            result = {
+                "success": True,
+                "detected_client": detected_id,
+                "display_name": adapter.capabilities.display_name,
+                "repo_root": str(target_root),
+            }
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(f"Detected client: {detected_id} ({adapter.capabilities.display_name})")
+            return 0
+
+        if subcmd == "status":
+            if args.client_name:
+                adapter = ClientRegistry.get(args.client_name)
+                rep = adapter.capability_report(repo_root=str(target_root))
+                rep["success"] = True
+                if args.raw_json:
+                    print(json.dumps(rep, indent=2, ensure_ascii=False))
+                else:
+                    print(f"Client: {rep['display_name']} ({rep['client_id']})")
+                    print(f"Hook Support:        {rep['hook_support']}")
+                    print(f"Instruction Targets: {', '.join(rep['instruction_targets'])}")
+                    print(f"Prompt Cache Shield: {rep.get('prompt_cache_shield', False)}")
+                    print(f"Token Tracking:      {rep['has_token_tracking']}")
+                    print(f"Reasoning Slicing:   {rep['has_reasoning_tokens']}")
+                    print(f"Tool Filter:         {', '.join(rep['tool_filter']) if rep['tool_filter'] else 'None'}")
+                    print(f"Support Level:       {rep.get('support_level', 'unknown')}")
+                return 0
+
+            adapters = ClientRegistry.list_adapters()
+            detected_id = ClientRegistry.detect(repo_root=target_root)
+            reports = {}
+            for cid in sorted(adapters):
+                ad = ClientRegistry.get(cid)
+                reports[cid] = ad.capability_report(repo_root=str(target_root))
+            result = {
+                "success": True,
+                "detected_client": detected_id,
+                "clients": reports,
+            }
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(f"Active/Detected Client: {detected_id}\n")
+                print(f"{'Client ID':<15} {'Display Name':<25} {'Hooks':<12} {'Cache Shield':<14} {'Targets'}")
+                print("-" * 80)
+                for cid, rep in reports.items():
+                    targets = ", ".join(rep['instruction_targets'][:2])
+                    if len(rep['instruction_targets']) > 2:
+                        targets += "..."
+                    print(f"{cid:<15} {rep['display_name']:<25} {rep['hook_support']:<12} {str(rep.get('prompt_cache_shield', False)):<14} {targets}")
+            return 0
+
+        if subcmd in {"inject", "remove"}:
+            client_id = args.client_name or ClientRegistry.detect(repo_root=target_root)
+            engine = InstructionEngine(client_id=client_id, repo_root=target_root)
+            res = engine.remove(dry_run=args.dry_run) if subcmd == "remove" else engine.inject(dry_run=args.dry_run)
+            result = {
+                "success": all(v.get("success", False) for v in res.values()) if res else True,
+                "client_id": client_id,
+                "action": subcmd,
+                "dry_run": args.dry_run,
+                "files": res,
+            }
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                action_name = "Removed" if subcmd == "remove" else "Injected"
+                mode_str = " (dry run)" if args.dry_run else ""
+                print(f"{action_name} instructions for {client_id}{mode_str}:")
+                if not res:
+                    print("  No target files applicable for this client.")
+                for fpath, fstat in res.items():
+                    status_text = "updated" if fstat.get("changed") else "unchanged"
+                    if not fstat.get("success"):
+                        status_text = f"failed: {fstat.get('error')}"
+                    print(f"  {fpath} -> {status_text}")
+            return 0 if result["success"] else 1
+
+        if subcmd == "config":
+            client_id = args.client_name or ClientRegistry.detect(repo_root=target_root)
+            adapter = ClientRegistry.get(client_id)
+            configs: dict[str, Any] = {}
+            if client_id == "vscode" or hasattr(adapter, "get_mcp_config"):
+                configs[".vscode/mcp.json"] = adapter.get_mcp_config(hub_install_dir=str(ROOT))
+            elif client_id == "opencode" or hasattr(adapter, "get_js_plugin_server_config"):
+                configs["opencode_plugin_storage"] = adapter.get_js_plugin_server_config(
+                    hub_install_dir=str(ROOT),
+                    python_exe=sys.executable,
+                )
+            result = {
+                "success": True,
+                "client_id": client_id,
+                "configs": configs,
+            }
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(f"Generated configuration for {client_id}:")
+                for cname, cdata in configs.items():
+                    print(f"\n--- {cname} ---")
+                    print(json.dumps(cdata, indent=2, ensure_ascii=False))
+            return 0
     if args.action == "generate":
         cfg = load_config(_config_arg(args.config))
         from local_ai_hub.generator import write_all_generated

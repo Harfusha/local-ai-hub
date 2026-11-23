@@ -4,7 +4,22 @@
   "id": "plan_4eaec0889497",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-07-smart-polyglot-preprocessing.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "5a9c30caa33ccff04660bce8dde940aa9cc1d3fa746121df83fe0e9e2bbd50cc"
+      }
+    }
+  ],
   "tasks": {
     "task_preprocessing_audit": {
       "acceptance_criteria": [
@@ -30,7 +45,23 @@
       "next_action": "Implement and verify HUB-005 no-watcher content changes, cross-root isolation, restart and concurrent-edit behavior within the existing preprocessing task.",
       "title": "End-to-end preprocessing optimization and cache freshness",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-07-smart-polyglot-preprocessing.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "5a9c30caa33ccff04660bce8dde940aa9cc1d3fa746121df83fe0e9e2bbd50cc"
+          }
+        }
+      ]
     }
   },
   "title": "Preprocessing correctness and cache reuse audit"

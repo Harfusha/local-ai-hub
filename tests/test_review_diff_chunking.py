@@ -141,6 +141,29 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         self.assertTrue(result["degraded"])
         self.assertEqual(result["format_recoveries"][0]["from_model"], "qwen2.5-coder:3b-instruct-q5_K_M")
 
+    def test_heavy_review_format_recovery_never_downgrades_model_tier(self):
+        diff_text = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+        services = self._services(diff_text, estimate_tokens(diff_text))
+        services.config["models"]["reasoning"] = "qwen3.5:9b-nvfp4"
+        calls = []
+
+        def fake_delegate(payload):
+            calls.append(payload)
+            if len(calls) == 1:
+                return {"success": True, "text": "1**", "model": "qwen2.5-coder:7b-instruct-q5_K_M"}
+            return {
+                "success": True,
+                "text": "SUMMARY: No actionable findings were identified.",
+                "model": "qwen3.5:9b-nvfp4",
+            }
+
+        services.delegate = fake_delegate
+        result = LocalAIServices.review_diff(services, {"root": "."})
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["model"], "qwen3.5:9b-nvfp4")
+
     def test_malformed_synthesis_falls_back_to_valid_segment_reviews(self):
         changed_lines = [f"+    value_{index} = {index}\n" for index in range(500)]
         diff_text = (

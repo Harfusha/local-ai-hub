@@ -19,9 +19,9 @@ def test_ripgrep_skips_literal_excluded_tree_without_losing_results(tmp_path, mo
 
     def run(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="ok.py\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=b"ok.py\0", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", run)
+    monkeypatch.setattr(repo_tools, "run_hidden", run)
     tools = RepositoryTools({"rag": {"extensions": [".py"]}})
     tools._rg = "rg"
 
@@ -41,9 +41,9 @@ def test_ripgrep_skips_simple_excluded_config_files(tmp_path, monkeypatch):
 
     def run(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="config.toml\nok.py\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=b"config.toml\0ok.py\0", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", run)
+    monkeypatch.setattr(repo_tools, "run_hidden", run)
     tools = RepositoryTools({"rag": {"extensions": [".py", ".toml"]}})
     tools._rg = "rg"
 

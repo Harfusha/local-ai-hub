@@ -19,6 +19,17 @@ def canonical_search_mode(value: Any) -> str | None:
     return value
 
 
+def search_execution_stopped(value: Any) -> bool:
+    return isinstance(value, dict) and any(
+        value.get(flag) is True for flag in ("in_progress", "outcome_unknown", "cancelled", "timed_out")
+    )
+
+
+def repository_search_timeout(config: Mapping[str, Any]) -> float:
+    resilience = config.get("resilience", {})
+    return max(0.1, float(resilience.get("repository_search_timeout_seconds", 10.0)))
+
+
 def _is_version_or_number(token: str) -> bool:
     clean = token.strip(".,!?;()[]{}<>\"'`")
     return bool(re.match(r"^v?\d+(\.\d+)*[a-zA-Z0-9_-]*$", clean))

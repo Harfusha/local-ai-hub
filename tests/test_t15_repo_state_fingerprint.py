@@ -1,8 +1,31 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from local_ai_hub.repo_state import RepoStateTracker
+
+
+def test_changed_file_signature_reads_metadata_once(tmp_path, monkeypatch):
+    root = tmp_path.resolve()
+    source = root / "changed.py"
+    source.write_bytes(b"value = 1\n")
+    stat = Path.stat
+    expected = stat(source)
+    calls = []
+
+    def tracked_stat(path, *args, **kwargs):
+        if path == source:
+            calls.append(path)
+        return stat(path, *args, **kwargs)
+
+    # Isolate metadata reads from platform-specific work in path resolution.
+    monkeypatch.setattr(Path, "resolve", lambda path, **_kwargs: path)
+    monkeypatch.setattr(Path, "stat", tracked_stat)
+    result = RepoStateTracker({})._path_signature(root, "changed.py")
+
+    assert result == (expected.st_mtime_ns, expected.st_size, expected.st_ctime_ns, expected.st_ino)
+    assert calls == [source]
 
 
 def test_fingerprint_collapses_git_probes_and_detects_immediate_change(tmp_path, monkeypatch) -> None:

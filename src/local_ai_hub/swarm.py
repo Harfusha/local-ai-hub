@@ -1124,7 +1124,7 @@ def execute_swarm_dag(
                         success = out
                     return step_id, success, out
                 else:
-                    from .commands import CommandInvocation
+                    from .command_models import CommandInvocation
 
                     invocation = CommandInvocation(
                         argv=list(cmd), cwd=str(Path(worktree_path).resolve()), shell=False

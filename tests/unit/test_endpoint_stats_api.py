@@ -77,6 +77,13 @@ def test_compact_endpoint_stats_preserves_all_issue_dimensions():
             "status": "failing",
             "issues": ["failing", "slow"],
         }, {
+            "type": "endpoint",
+            "name": "/api/telemetry/endpoint-stats",
+            "calls": 8,
+            "success_rate": 100.0,
+            "p95_ms": 25.0,
+            "status": "active",
+        }, {
             "type": "http",
             "name": "/api/invalid-last-used",
             "calls": 1,
@@ -92,7 +99,10 @@ def test_compact_endpoint_stats_preserves_all_issue_dimensions():
     assert response["histogram_top_bucket_open_ended"] is True
     assert response["last_used_unit"] == "unix_seconds"
     assert response["items"][0]["last_used"] == 1794537000.0
-    assert "last_used" not in response["items"][1]
+    assert response["items"][1]["type"] == "endpoint"
+    assert response["items"][1]["name"] == "/api/telemetry/endpoint-stats"
+    assert response["items"][1]["p95_ms"] == 25.0
+    assert "last_used" not in response["items"][2]
 
 
 def test_project_stats_skip_global_scans_and_project_list_payload(tmp_path, monkeypatch):

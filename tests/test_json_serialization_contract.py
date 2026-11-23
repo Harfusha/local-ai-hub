@@ -20,7 +20,7 @@ def test_production_json_dumps_are_compact_or_explicitly_human_readable():
         "agent_tasks.py",
         "artifacts.py",
         "benchmark.py",
-        "commands.py",
+        "command_broker.py",
         "deterministic.py",
         "diagnostics_export.py",  # Redacted config and archive manifest are operator-readable.
         "generator.py",

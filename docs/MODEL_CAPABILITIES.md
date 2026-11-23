@@ -137,7 +137,7 @@ infer installed model, quality or live device use.
 
 On `high`/`max`, a detected NVIDIA adapter with at least 15 GiB selects CUDA for
 embedding and reranker placement, sets Ollama and managed llama.cpp K/V cache
-types to `q8_0`, and caps both the scheduler and Ollama at two parallel requests.
+types to 4-bit `q4_0`, and caps both the scheduler and Ollama at two parallel requests.
 The smart role receives a 65,536-token context ceiling; background GPU preprocessing uses larger bounded
 batches and prioritizes recently accessed files. CUDA embedding and reranking
 claim the shared external GPU reservation for execution and fail closed with a

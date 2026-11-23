@@ -46,7 +46,7 @@ REGRESSION_TOLERANCE_PCT = 10.0
 INPUT_GENERATOR_VERSION = 1
 REQUIRED_INPUT_SEED = 42
 SOURCE_PIN_PATHS = (
-    "src/local_ai_hub/commands.py",
+    "src/local_ai_hub/command_broker.py",
     "tests/test_surface_benchmarks.py",
     "tools/benchmark_surfaces.py",
 )

@@ -4,7 +4,15 @@
   "id": "plan_a543955bee5d",
   "lifecycle": "archived",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+      }
+    }
+  ],
   "tasks": {
     "task_contracts": {
       "acceptance_criteria": [
@@ -21,7 +29,16 @@
       "kind": "code",
       "next_action": "Complete HUB-014 repository-wide transaction, integrity and repair audit; then reconcile HUB-012 modular slices and HUB-013 strict typing.",
       "title": "Architecture HUB-011–015",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_install": {
       "acceptance_criteria": [],
@@ -32,7 +49,16 @@
       "kind": "code",
       "next_action": "",
       "title": "Onboarding HUB-025–026",
-      "work_status": "planned"
+      "work_status": "planned",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_p0": {
       "acceptance_criteria": [
@@ -49,7 +75,16 @@
       "kind": "code",
       "next_action": "HUB-001 reservation/status tests pass. HUB-002 Windows clean-clone/checkout/submodule/ignored cleanup pass; Linux/macOS unverified. HUB-003 fixed Windows critical cohort now 931 passed, 1 symlink-privilege skip; coverage baseline success=true. P0-A CI gates validate. HUB-004 release_check allow_installed no longer bypasses build/; release cohort 43 passed, 1 Linux /proc skip. Wheel build/install and CLI version pass, MCP smoke lacks pywintypes; pip check reports existing laya/vegaml mismatch, no SHA-bound receipt. RELEASE.json remains release-candidate. Preserve build/. Remote CI, Linux/macOS and exact-commit wheel evidence remain outstanding; no commit/push/release.",
       "title": "Release blockers HUB-001–004",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_p1": {
       "acceptance_criteria": [
@@ -65,7 +100,16 @@
       "kind": "code",
       "next_action": "HUB-005 freshness acceptance complete. HUB-006 source contract verified; added concurrent admission/backpressure and priority-aging tests. Focused run: 32 passed in 25.35s. HUB-007 targeted recovery/CAS rerun: 178 passed. HUB-008 deterministic reservation/VRAM/model-idle-unload suites: 139 passed; additional Laya/model lifecycle/fallback suite: 71 passed. Actual unload remains NOT_VERIFIED; status now reports admission available but do not replay Wishflix or stop/use the already-active model without a safe, non-disruptive path. HUB-011 fixed deterministic schema inventory to parse checked-in defaults without local runtime overrides, regenerated 698-row API coverage, updated three route response snapshots and added debug-trace purge disposition. `audit_agent_surface.py` and surface inventory checks pass; parity cohort: 286 passed; pyflakes and diff-check clean. Next reconcile HUB-012–015 in bounded slices while keeping HUB-008 hardware status explicit.",
       "title": "Runtime correctness and security HUB-005–010",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_quality": {
       "acceptance_criteria": [],
@@ -76,7 +120,16 @@
       "kind": "code",
       "next_action": "",
       "title": "Evidence and release HUB-027–030",
-      "work_status": "planned"
+      "work_status": "planned",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     },
     "task_ui": {
       "acceptance_criteria": [],
@@ -87,7 +140,16 @@
       "kind": "code",
       "next_action": "",
       "title": "Frontend HUB-016–024",
-      "work_status": "planned"
+      "work_status": "planned",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-13-second-audit-hub031-048.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "9d3b8c35b2da9ded9ac4fd3414cd18d03d4ef710917d14f4710ed7a98ea53d7f"
+          }
+        }
+      ]
     }
   },
   "title": "Implement 2026-11-12 audit roadmap"

@@ -16,55 +16,15 @@ from typing import Any
 
 
 SINGLE_OWNER_CONTRACT = (
-    "Single-owner release contract: one Local AI Hub installation on one PC serves one human. "
-    "Agents, chats, projects and worktrees are not tenants. Remove tenant selection, propagation and storage partitions; "
-    "no constant tenant, aliases, shims or dual contracts. Retired tenant fields and headers reject explicitly in preflight. "
-    "Preserve project/repository/clone/worktree/branch/task/session scopes, owner global scope, loopback-only Hub access, command authorization, capabilities, path confinement and writer leases. "
-    "Scheduler jobs use model/source/priority metadata and global limits, never tenant buckets. "
-    "Synthetic benchmark items use id/prompt fields; tenant fields reject explicitly. "
-    "Incident records use repository provenance only; retry and negative-knowledge require an explicit root. "
-    "MCP coordination has no tenant argument; LOCAL_AI_TENANT is retired; session evidence uses session_id. "
-    "HubClient options are keyword-only; requests carry no Hub API token or tenant headers; scope aliases reject. "
-    "SDK checkpoint_task sends canonical nested checkpoint object with explicit phase, next_action, affected_paths, evidence_ids, blockers and state_data; malformed falsey values are not empty defaults. "
-    "HTTP root binding preserves owner-global memory and explicit session IDs; task creation derives context.repository_id from resolved project coordination ID (supplied IDs must match exactly). "
-    "Task ownership checks repository identity; rate limiting uses one bounded installation window. "
-    "Memory context/diagnostics use resolved coordination IDs, no root fallback. MemoryStore/HTTP: no tenant; mutations require scope/provenance, no cwd/session/global fallback. memory_record requires explicit absolute root, canonical scope, key and value; memory_delete and memory_promote require explicit root, scope and record ID. Reject name/content/query aliases. Mark foreign refs external context; cite authorized source root/date; never use as repo facts. "
-    "Task-memory adoption uses snapshot schema_version=2 with explicit context (root, coordination_id, task_id, session_id, clone_id, worktree_id, branch); wire projection preserves this context. "
-    "Agent questions use canonical repository root and session_id with optional task association; answer_question rejects task mismatch; question storage/API have no tenant column or selector. "
-    "Server-managed task scope uses version=2 and repo_root only; reaping retains status/heartbeat/deadline checks; task lookup never reconstructs scope from retired metadata. Automatic task worktrees require explicit authorized physical root. "
-    "Watchdog maintenance authorizes explicit roots and retains bounded batches, cancellation and heartbeat/CAS fences. Context warmup rechecks root authorization, task revision/scope/status and active mode. "
-    "Hybrid context uses explicit workspace keywords without tenant routing; retrieval backends retain independent failure handling. "
-    "Project RAG and diagram ingestion require authorized absolute root and bound workspace; files stay inside root without symlink/junction traversal; named docsets retain owner-global namespace. "
-    "Generation uses keyword-only source and priority; telemetry and artifact dispatch must not manufacture a tenant identity. Async jobs retain repository/task/session context; conversations use their own IDs without tenant ownership. "
-    "Writer lease owner identifies an actual task/execution; claim/release/renew use explicit owner; claim uses purpose; coordination ttl_seconds is optional (defaults: 900s for leases, no forced expiry). Never derive writer owner from credentials. "
-    "Artifact put/compact methods and selectors are keyword-only without owner selector. Receipt evaluation uses exact task owner/root and command_execution_record.v2; broker receipts require canonical JSON artifact persistence and server-managed task root. "
-    "Patch and repair forward actual broker receipts only; missing receipts are never synthesized; stored receipts require explicit metadata schema with strict passed flags and mutation generations. "
-    "Writer fencing initializes only final canonical DDL; runtime ALTERs and migration tables are unsupported; work orders keep work_id distinct from Agent OS task_id. "
-    "Context ledger reuse preserves session identity; request journaling uses request_id, action and payload fingerprint; HTTP principal helpers and security.users are removed. "
-    "Global quota limits aggregate installation usage without tenant buckets. rag.scope is retired and rejects by presence. "
-    "Retired tenant provenance blocks startup pending offline conversion; runtime does not merge/rewrite records; conversion is an explicit offline operation with collision refusal, backups and verified record preservation, never a runtime fallback."
+    "Single-owner and repository scope contract: one Local AI Hub installation on one PC serves one human. "
+    "Loopback-only Hub access without auth token or tenant partitions. "
+    "Repository root scopes all operations. Durable Agent OS tasks, memory and verification receipts."
 )
 
 
-T21_HANDOFF_CONTRACT = """Project configuration and PathHint core are integrated. `resolve_project_context(root, state_dir)` returns immutable effective settings and a `config_digest`; project configuration stays in the project or Git common directory, while `state_dir` stores only bounded, evidence-bound path hints. Maps merge by key, lists replace as a whole, and explicit excludes and hard boundaries take precedence over force includes. Overrides cannot bypass root containment, binary policy, configured size limits, or preprocessing exclusions; walkers check every directory and file.
+T21_HANDOFF_CONTRACT = """Project configuration and PathHint core: `resolve_project_context(root, state_dir)` provides effective settings. Candidate ranking: `entry_points`, request hints, then saved hints. Verification rules map task criteria to required command receipts before completion."""
 
-`verification_rules` maps exact task acceptance-criterion names to receipt requirements: `true` requires configured `lint` and `test` receipts, and an array names exact configured command aliases. `required_commands` is not a global switch; it applies only when the task criterion has that exact name. The root evaluator and persisted completion gate are integrated. The HTTP completion wrapper rejects invalid configuration or incomplete verification before checkpointing and completion. A positive HTTP case passed; the broader work-ownership, repository/task scope, revision, criterion, and memory-audit matrix remains open.
-
-`shared_namespace` exposes a server-derived coordination identity and shares bounded hints across linked worktrees under one Git common directory. It does not replace the physical repository root. Repository memory uses the resolved coordination identity. Writer leases retain repository coordination and actual execution-owner boundaries; neither identity substitutes for the verified physical root.
-
-`ProjectContext.prioritize_paths(...)` ranks the complete candidate list in this order: literal `entry_points`, request-scoped `path_hints`, then saved hints matching scope, repository revision, and config digest. It preserves every candidate and returns `PathHintUsage`; `hint_helped` stays unknown until measured. When a hint does not help, consumers use their broader fallback. Telemetry exposes usage flags without candidate paths. Save only verified hints.
-
-The HTTP `/api/search` adapter accepts typed `path_hints`. `HubClient.post` forwards them only to `/api/search`. T21's private MCP search dispatch forwards typed hints internally, but the installed public `local_ai_repo` argument and output schema remain owned by T03 and pending its schema release. `/api/context/pack` does not accept or use hints. Do not infer public wire support from internal methods.
-
-Hints are repository-relative paths beneath the trusted project root; reject absolute, traversal, glob, missing, and symlink or junction escape paths. Request hints may omit evidence metadata. Learned hints require evidence ID, provenance, matching repository revision, and config digest. Revalidate saved paths when reading them, and never write raw paths or hint contents to telemetry."""
-
-T19_RUNTIME_PARITY_CONTRACT = """Use the installed `tools/list` input/output schema; action-specific fields and result shapes are not interchangeable. Schema presence is not authorization.
-
-`hubctl pause` sets `gaming` and `hubctl resume` sets `active`. When Hub is offline, `pause` and `resume` update persisted mode without starting the server; offline `mode` and `status` read that persisted state.
-
-For durable work, create and checkpoint one Agent OS task contract before edits. On restart, resume the existing task with the same `task_id`. Record memory with scope-appropriate provenance; repository-scoped memory requires provenance tied to the trusted project root.
-
-If the live MCP schema has no action for the requested operation, skip Hub and use the authorized native tool directly. After calling an advertised Hub action, native fallback requires an explicit result with `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never poll or repeat an identical operation."""
+T19_RUNTIME_PARITY_CONTRACT = """Installed schema is authoritative. Hub modes: `active`, `gaming`, `maintenance`. For durable work, create and checkpoint an Agent OS task before edits. If live schema lacks an action, use authorized native tool directly. Native fallback after Hub action requires `terminal=true` and `retryable=false`."""
 
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.operation_contracts import (
@@ -96,6 +56,8 @@ def _model_capability_guidance(cfg: dict[str, Any]) -> str:
         seen.add(model)
         capability = capability_for(model, role="vision" if role == "vision" else "")
         parts.append(f"`{model}`: {', '.join(capability.can[:4])}; not {', '.join(capability.cannot[:3])}")
+    if not parts:
+        return ""
     return " Model capability contract: " + " | ".join(parts) + "."
 
 
@@ -124,8 +86,7 @@ def _semantic_handoff_contract(fs: FeatureSet) -> str:
         if action in semantic_actions
     )
     actionable_guidance = (
-        " Use the matching exposed semantic action by default after deterministic/indexed evidence when backend and model quality checks pass. "
-        + " ".join(_SEMANTIC_TASK_ACTION_GUIDANCE[action] for action in _SEMANTIC_TASK_ACTION_ORDER if action in semantic_actions)
+        " " + " ".join(_SEMANTIC_TASK_ACTION_GUIDANCE[action] for action in _SEMANTIC_TASK_ACTION_ORDER if action in semantic_actions)
         if semantic_actions
         else " No semantic task action is advertised at this profile; do not guess or call hidden actions."
     )
@@ -191,6 +152,107 @@ def _active_tool_action_lines(fs: FeatureSet) -> list[str]:
     return lines
 
 
+def _categorized_operational_triggers(fs: FeatureSet) -> list[str]:
+    """Generate structured operational triggers categorized by developer intent."""
+    repo_actions = set(fs.supported_repo_actions()) if fs.repo else set()
+    coord_actions = set(fs.supported_coord_actions()) if fs.coord else set()
+    task_actions = set(fs.supported_task_actions()) if fs.tasks else set()
+    lines: list[str] = [
+        "## Categorized Operational Triggers (Prioritize over shell / raw reads)",
+        "",
+    ]
+
+    # 1. Code Navigation & Structural Search
+    nav_items: list[str] = []
+    if "callers" in repo_actions:
+        nav_items.append('- **Callers & Inbound References**: Trace callers across codebase -> `local_ai_repo(action="callers", symbol="<name>", root=ABS_ROOT)`')
+    if "callees" in repo_actions:
+        nav_items.append('- **Callees & Outbound Calls**: Trace function dependencies -> `local_ai_repo(action="callees", symbol="<name>", root=ABS_ROOT)`')
+    if "ast_outline" in repo_actions:
+        nav_items.append('- **AST Outline**: Class/function signature summary without dumping source -> `local_ai_repo(action="ast_outline", path="<relpath>", root=ABS_ROOT)`')
+    if "definition" in repo_actions or "implementations" in repo_actions:
+        nav_items.append('- **Definitions & Implementations**: Find declarations/subclasses -> `local_ai_repo(action="definition"|"implementations", symbol="<name>", root=ABS_ROOT)`')
+    if "structural_search" in repo_actions:
+        nav_items.append('- **Structural AST Search**: Query code patterns by syntax -> `local_ai_repo(action="structural_search", query="<pattern>", root=ABS_ROOT)`')
+    if "code_index" in repo_actions or "search" in repo_actions:
+        nav_items.append('- **Fast Symbols & Text**: Bounded symbols/lexical search -> `local_ai_repo(action="code_index"|"search", query="<term>", root=ABS_ROOT)`')
+
+    if nav_items:
+        lines.extend(["### 1. Code Navigation & AST Discovery (`local_ai_repo`)", *nav_items, ""])
+
+    # 2. Impact Analysis & Testing
+    impact_items: list[str] = []
+    if "affected_tests" in repo_actions:
+        impact_items.append('- **Affected Tests**: Pinpoint tests impacted by changed files -> `local_ai_repo(action="affected_tests", paths=["path/to/file.py"], root=ABS_ROOT)`')
+    if "refactor_impact" in repo_actions or "impact" in repo_actions:
+        impact_items.append('- **Refactoring Blast Radius**: Evaluate symbol usage before edits -> `local_ai_repo(action="refactor_impact", symbol="<name>", root=ABS_ROOT)`')
+    if "generate_tests_for_diff" in repo_actions or "generate_tests" in repo_actions:
+        impact_items.append('- **Test Generation**: Scaffold test cases for diff or file -> `local_ai_repo(action="generate_tests_for_diff", root=ABS_ROOT)`')
+
+    if impact_items:
+        lines.extend(["### 2. Impact Analysis & Test Scaffolding (`local_ai_repo`)", *impact_items, ""])
+
+    # 3. Code Health, Auditing & Security
+    audit_items: list[str] = []
+    if "security_audit" in repo_actions or "secret_scan" in repo_actions:
+        audit_items.append('- **Security & Secret Scan**: Audit code for CVEs, credentials, and risks -> `local_ai_repo(action="security_audit", root=ABS_ROOT)`')
+    if "dead_code" in repo_actions or "reachability_dead_code" in repo_actions:
+        audit_items.append('- **Dead Code Detection**: Find unused functions and unreachable code -> `local_ai_repo(action="dead_code", root=ABS_ROOT)`')
+    if "circular_dependencies" in repo_actions:
+        audit_items.append('- **Circular Dependencies**: Detect module import loops -> `local_ai_repo(action="circular_dependencies", root=ABS_ROOT)`')
+    if "complexity" in repo_actions or "hotspots" in repo_actions:
+        audit_items.append('- **Complexity & Churn Hotspots**: Rank high-complexity and hotspot files -> `local_ai_repo(action="complexity", root=ABS_ROOT)`')
+
+    if audit_items:
+        lines.extend(["### 3. Code Health, Auditing & Security (`local_ai_repo`)", *audit_items, ""])
+
+    # 4. Git Inspection & Commits
+    git_items: list[str] = []
+    if "git_status" in repo_actions or "git_diff" in repo_actions:
+        git_items.append('- **Git Status & Diffs**: Inspect working tree state without shell git -> `local_ai_repo(action="git_status"|"git_diff", root=ABS_ROOT)`')
+    if "synthesize_commit" in repo_actions:
+        git_items.append('- **Synthesize Commit**: Draft standardized commit message from verified diff -> `local_ai_repo(action="synthesize_commit", root=ABS_ROOT)`')
+
+    if git_items:
+        lines.extend(["### 4. Git Inspection & Commits (`local_ai_repo`)", *git_items, ""])
+
+    # 5. Planning & Agent OS Coordination
+    coord_items: list[str] = []
+    if "plan_board_view" in coord_actions or "plan_list" in coord_actions:
+        coord_items.append('- **Mandatory First Entrypoint**: Inspect active plan, status and `spec_refs` -> `local_ai_coord(action="plan_board_view"|"plan_list", root=ABS_ROOT)`')
+    if "task_checkpoint" in coord_actions:
+        coord_items.append('- **Milestone Progress**: Record checkpoint with affected paths -> `local_ai_coord(action="task_checkpoint", task_id="...", checkpoint={...})`')
+    if "memory_find" in coord_actions or "memory_record" in coord_actions:
+        coord_items.append('- **Project Memory**: Query or store verified project learnings -> `local_ai_coord(action="memory_find"|"memory_record", root=ABS_ROOT, ...)`')
+    if "negative_knowledge_find" in coord_actions:
+        coord_items.append('- **Negative Knowledge**: Check known failure modes before repeating mistakes -> `local_ai_coord(action="negative_knowledge_find", query=...)`')
+
+    if coord_items:
+        lines.extend(["### 5. Planning & Agent OS Coordination (`local_ai_coord`)", *coord_items, ""])
+
+    # 6. Semantic Review & Local AI Tasks
+    task_items: list[str] = []
+    if "review" in task_actions:
+        task_items.append('- **Adversarial Code Review**: Skeptical review of changes before commit -> `local_ai_task(action="review", ...)`')
+    if "reason" in task_actions or "second_opinion" in task_actions:
+        task_items.append('- **Local Reasoning / 2nd Opinion**: Bounded local reasoning or alternative perspective -> `local_ai_task(action="reason"|"second_opinion", ...)`')
+    if "compress" in task_actions:
+        task_items.append('- **Evidence Compression**: Compress voluminous logs/evidence -> `local_ai_task(action="compress", ...)`')
+
+    if task_items:
+        lines.extend(["### 6. Semantic Tasks & Review (`local_ai_task`)", *task_items, ""])
+
+    # 7. Exact Slices
+    if fs.artifacts:
+        lines.extend([
+            "### 7. Exact Slices & Artifacts (`local_ai_artifact`)",
+            '- **Bounded File Slice**: Read line ranges without full-file dumping -> `local_ai_artifact(action="slice", path="<relpath>", start_line=N, end_line=M, root=ABS_ROOT)`',
+            "",
+        ])
+
+    return lines
+
+
 def context_pack_guidance() -> str:
     """Compact contract for the guarded repository-context operation."""
     return (
@@ -227,7 +289,9 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
 - For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed.
+- After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
@@ -248,6 +312,11 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled in configuration)"
     active_tool_actions = _active_tool_action_lines(fs)
     active_tool_surface = "\n".join(active_tool_actions) if active_tool_actions else "- (all Hub tools currently disabled in configuration)"
+    task_action_contract = (
+        "For `local_ai_task`, action inputs are strict: `benchmark` reads stored results only; `hardware_benchmark` accepts `model`, `prompt`, `max_tokens`, and `context_tokens` (4096–32768), with no `timeout_seconds`."
+        if fs.supported_task_actions()
+        else ""
+    )
     recipe_lines = "\n".join(fs.recipe_lines())
 
     # Delegation section
@@ -285,7 +354,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
             f"`{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning."
         )
         tiering_bullets.append(
-            "- **Local model routing:** follow the active profile and user overrides, preserve the configured preprocessing provider, and verify installed model availability. Measured task quality and risk govern autonomy. "
+            "- **Local model routing:** follow the active profile and user overrides, preserve the configured preprocessing provider, and verify installed model availability. Measured task quality and risk govern autonomy. Whisper transcription uses CPU by default; when GPU-only execution is required, set `[transcription].enabled=false` until a GPU-admitted route exists. "
             "Run deterministic/indexed Hub actions first for exact facts, symbols, diff and tests. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression."
         )
     if fs.rag:
@@ -521,6 +590,14 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 - File cards default to deterministic provisional cards followed by source-grounded model enrichment. `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences; either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.
 """
 
+    batch_replacement_contract = ""
+    if fs.repo and fs.batch_replacement:
+        batch_replacement_contract = """
+## Batch repository replacement
+
+Use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for preview. `staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. Non-overlapping dirty Git hunks may be preserved; overlapping edits require an active path lease claimed with the actual execution owner, then pass its exact `owner` and returned `lease_id`. The engine preflights all edits, rolls back write failures, and performs no auto-commit. Set `dry_run=false` only after review.
+"""
+
     # Full SKILL.md content
     return f"""---
 name: local-ai-orchestrator
@@ -536,6 +613,7 @@ Active MCP tools and profile-enabled actions:
 {active_tool_surface}
 
 This generated surface reflects configuration and profile feature gates. Runtime authorization, task permissions, backend health, and quality gates are checked when an action runs.
+{task_action_contract}
 
 Recommended Hub routes (apply the matching route by default):
 {recipe_lines}
@@ -556,11 +634,17 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 
 {ollama_ownership_section}
 
+## Single-owner and repository scope contract
+
+{SINGLE_OWNER_CONTRACT}
+{batch_replacement_contract}
+
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects; split validation into a separately owned, explicitly side-effecting task.
 - Before native discovery or validation, retain the preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 {audit_fallback}
+- A Hub-classified unknown command requires `native_fallback_allowed=true` plus native-tool authorization for the exact command and scope. `native_fallback_allowed=false`, a dangerous command, or a policy denial blocks fallback; this rule does not apply when the live schema has no action.
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
 - Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
 
@@ -590,7 +674,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 - `in_progress=true`: do not duplicate the work.
 - `retryable`/429/503: back off and do independent work.
 - `degraded`/`stale`: verify only the affected slice.
-- If the live schema has no action for an operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+- If the live schema has no action for an operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
@@ -667,11 +751,15 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
 Use this for non-trivial multi-step, long-running, delegated, or acceptance-criteria work, even when the main agent retains ownership. Create a task contract before edits, keep the returned task ID, checkpoint phase changes, compile context when resuming or when state is scattered, and attach validation receipts. Run `verify_completion` before `task_complete`. Trivial one-step lookups can skip this workflow.
 """
 
+    categorized_section = "\n".join(_categorized_operational_triggers(fs))
+
     refs["tools.md"] = f"""# MCP routing card
 
 The active tool surface reflects your configuration:
 
 {tool_lines}
+
+{categorized_section}
 
 {agent_os_reference}
 
@@ -883,7 +971,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     model_default = ""
     if fs.tasks and fs.has_any_model():
         model_default = (
-            "\nLocal model policy: Follow the active hardware profile and user overrides; see `docs/MODEL_CAPABILITIES.md` for foreground targets. Do not silently change the preprocessing provider. Pinned master `2458f72c` has no Gemini preprocessing provider; agent manifests do not prove runtime support. Model pulls are opt-in; check installed models before inference. Configured routes do not prove availability, quality or performance."
+            "\nLocal model policy: Follow the active hardware profile and user overrides; see `docs/MODEL_CAPABILITIES.md` for foreground targets. Do not silently change the preprocessing provider. Pinned master has no Gemini preprocessing provider; agent manifests do not prove runtime support. Model pulls are opt-in; check installed models before inference. Configured routes do not prove availability, quality or performance."
         )
     llama_cpp = cfg.get("llama_cpp", {})
     if isinstance(llama_cpp, dict) and str(llama_cpp.get("mode", "off")).casefold() == "on":
@@ -971,10 +1059,11 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
     prioritization_bullets.append(
-        "> - **Native fallback**: If the live MCP schema has no action for the operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires `terminal=true` and `retryable=false`; keep it bounded to the same root/scope."
+        "> - **Native fallback**: Use authorized native tools when the schema has no matching Hub action; after an advertised action fails, fallback requires explicit `terminal=true` and `retryable=false`. Full routing and scope rules are in `local-ai-orchestrator`."
     )
     prioritization_directive = (
         "> [!IMPORTANT]\n"
+        "> ## LOCAL AI HUB TOOL PRIORITY\n"
         "> ## AUTOMATIC LOCAL AI HUB PRIORITIZATION IN ANTIGRAVITY\n"
         "> ## MANDATORY LOCAL AI HUB PRIORITIZATION IN CODEX\n"
         "> Agents (Gemini in Antigravity, Codex, Claude) MUST prioritize `local-ai` MCP tools when the live schema supports the requested operation; when no matching action exists, use the authorized native tool directly:\n"
@@ -984,6 +1073,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     return (
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
         f"{prioritization_directive}\n\n"
+        "Load `local-ai-orchestrator` for full ownership, scope, retrieval, lifecycle, mutation, model, GPU and receipt rules.\n\n"
         "Diagnostics require dashboard toggle, not caller control, including nested, async, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.\n\n"
         'Only on the user\'s explicit task instruction, `task_complete` accepts `operator_waiver={"consent":true,"reason":"..."}`. It records unverified completion, not passing receipts; ownership, repository scope, mutation fences and safety checks remain. Retain the instruction; never invent consent.\n\n'
         "Keep Agent OS tasks/counters. Explicit approval: `task_budget_increase` uses write-authorized broker, absolute root, audit reason; canonical loopback needs no token or special owner/admin token. Failed-task increases preserve status/owner; resume separate. Never edit task storage. `curate_dataset` needs absolute root.\n\n"
@@ -1075,7 +1165,8 @@ and scoped indexed search. Use `tokcount` to measure actual token use and
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed.
+- After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ## Integration with Local AI Hub
@@ -1093,35 +1184,14 @@ Do not enable an autonomous workflow or download a model without permission.
 
 
 def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
-    """Generate the standard TOKEN ECONOMY POLICY block."""
-    local_model_line = ""
-    if cfg:
-        try:
-            fs = FeatureSet.from_config(cfg)
-            task_actions = fs.supported_task_actions() if fs.tasks and fs.has_any_model() else []
-            if task_actions:
-                action_list = "|".join(f"`{action}`" for action in task_actions)
-                local_model_line = (
-                    f"- Active `{fs.hardware_profile}` profile; use only exposed `local_ai_task` actions: {action_list}.\n"
-                )
-        except Exception:
-            pass
+    """Generate the compact global policy; the always-loaded skill holds details."""
     return (
         "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
-        "- Before coding or repository work, load `local-ai-orchestrator` and `token-economizer` when installed, even under deadline pressure.\n"
-        "- Zero full-file dumping: Never read >80-line files in full; use `local_ai_repo(action=\"context\")`/`repo-map`, `grep-ast`, targeted line slices, or `local_ai_artifact(action=\"slice\")`.\n"
-        "- Search: Prefer Hub `code_index`/`search`, Serena LSP, or `ast-grep` for code and symbols; bounded `rg -m 5`/`fd` is fallback-only, before opening files.\n"
-        "- Compress repo snapshots with `repomix --compress`/`files-to-prompt -c`; use `tokcount` for exact tokens.\n"
-        "- Run tests/builds with the native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines. Use `jq` for JSON.\n"
-        "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        + "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
-        + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
-        + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
-        + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
-        + "- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.\n"
-        + "- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.\n"
-        + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
-        + local_model_line
+        "- Before repository work, load `local-ai-orchestrator` and `token-economizer` when installed; the orchestrator skill is the full reference for scope, ownership, evidence, routing, and lifecycle.\n"
+        "- Keep reads and responses bounded; use indexed evidence (`code_index`, `search`), exact slices, and host-native validation.\n"
+        "- Preserve status, errors, evidence identity, and response budgets. Never invent results, receipts, or savings.\n"
+        "- Use only live Hub actions. If none exists, use the authorized native tool; after an advertised action fails, fallback requires `terminal=true` and `retryable=false`.\n"
+        "- On `in_progress` or `outcome_unknown`, do independent work; never replay the operation.\n"
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )
 
@@ -1257,6 +1327,7 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
     repo_actions = [action for action in ("search", "code_index", "context", "solve") if action in fs.supported_repo_actions()]
     task_actions = list(_available_semantic_task_actions(fs))
     active_tool_actions = _active_tool_action_lines(fs)
+    categorized_triggers = _categorized_operational_triggers(fs)
     lines = [
         "# Local AI Hub MCP Instructions for Antigravity & Gemini",
         "",
@@ -1269,6 +1340,8 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
         lines.append(f"- **Search code & repository facts**: Call an advertised local_ai_repo action ({'|'.join(repo_actions)}) with the project root. Avoid unconstrained directory dumping.")
     if task_actions:
         lines.append(f"- **Semantic code review & second opinions**: Call exposed local_ai_task actions ({'|'.join(task_actions)}).")
+    if categorized_triggers:
+        lines.extend(["", *categorized_triggers])
     if active_tool_actions:
         lines.extend(["", "## Active MCP tools and profile-enabled actions", *active_tool_actions,
                       "", "This generated list reflects configuration and profile feature gates. Runtime authorization, task permissions, backend health, and quality gates are checked when an action runs."])
@@ -1287,12 +1360,12 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
 
 def write_all_generated(
     cfg: dict[str, Any],
-    target_root: Path,
+    target_root: Path | str,
     hub_python: Path | None = None,
     serena: Path | None = None,
 ) -> dict[str, list[str]]:
     """Generate all skill, instruction, MCP manifest, and schema files into target_root."""
-    target_root = target_root.resolve()
+    target_root = Path(target_root).resolve()
     python_bin = hub_python or Path(target_root / ".venv" / ("Scripts/python.exe" if Path(target_root / ".venv" / "Scripts").exists() else "bin/python"))
 
     results: dict[str, list[str]] = {

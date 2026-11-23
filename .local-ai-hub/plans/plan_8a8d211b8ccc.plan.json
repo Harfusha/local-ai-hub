@@ -4,7 +4,22 @@
   "id": "plan_8a8d211b8ccc",
   "lifecycle": "active",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+      }
+    },
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_hub_001": {
       "acceptance_criteria": [
@@ -19,22 +34,54 @@
       "next_action": "Rechecked on current master HEAD b439f75690e581ff75ea32894d5fed450374712d. `_external_gpu_reserved()` is defined and called inside AffinityScheduler.status() to refresh/reconcile external reservation state; it is not an unresolved symbol. `python -m pyflakes src/local_ai_hub/scheduler.py` exited 0. Focused reservation/status recovery tests passed 2: tests/test_scheduler_status_external_reservation.py and tests/test_scheduler_unknown_gpu_reaps_expired_external_reservation.py. scheduler.py SHA-256 80fa05c5030b77e530b6d553e8305ce86c23a0507affc3a593a9b1a9858021fb.",
       "order": 1,
       "title": "HUB-001 P0: CI pyflakes fail in scheduler",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_002": {
       "acceptance_criteria": [
         "clean git clone, checkout, git submodule status, and cleanup without error No url found for submodule path",
         "all fixture files are 100644 with 0 gitlinks"
       ],
-      "blocker": "Linux/macOS clean clone verification requires external runner; local Windows verification passed with 0 gitlinks and empty submodule status",
+      "blocker": "Direct macOS execution of the current standalone fixture clone, checkout and cleanup regression is missing. Windows and Linux cleanup are verified.",
       "clarifications": [],
       "depends_on": [],
       "description": "Ensure docs/agent-evaluation/fixtures/case132_patch_20261109 has regular files (100644), no unexpected gitlink (160000) or missing .gitmodules entry. Clean clone and submodule status verification.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Windows and offline Debian both passed full independent checkout and automatic cleanup at cc741b54dc04830900df81b5034e7f993140b3c5: 2,329 tracked paths, clean status, empty submodule status, all three fixture blobs 100644 and matching bytes. Current fixture tests passed 2/2 on each. Four historical macOS jobs passed checkout and submodule metadata but their committed test lacked the standalone clone; each later failed in generator. See docs/FINAL_COMPLETION_PLAN.md. Keep the direct macOS fixture/cleanup gate open.",
       "order": 2,
       "title": "HUB-002 P0: Gitlink fixture without submodule manifest",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_005": {
       "acceptance_criteria": [
@@ -50,7 +97,23 @@
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/test_preprocess_inventory_cache_identity.py --tb=short` — 6 passed. Coverage includes cache identity surviving git-map changes, lexical convergence, hash retry on concurrent file mutation, no-watcher edit invalidation, same relative path scoped by root, and restarted two-root index readback. Test SHA-256 927382c0a90566e5550b248bc3fa3face3fb4ff0d652d38fa58c3f2ae64d98c3.",
       "order": 5,
       "title": "HUB-005 P1: Preprocess cache identity / invalidation",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_006": {
       "acceptance_criteria": [
@@ -67,7 +130,23 @@
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/unit/test_hub_006_bounded_workers_admission.py --tb=short` — 4 passed (29.38s). Direct cases cover 100 parallel jobs with strict worker bounds, queue-limit backpressure, priority/starvation aging, and durable restart without task loss. Test SHA-256 99e11a167ff693d39127cd9b6720933fab975276ce6401f29be5a138dc4b0846.",
       "order": 6,
       "title": "HUB-006 P1: Bounded workers / admission",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_007": {
       "acceptance_criteria": [
@@ -86,7 +165,23 @@
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/unit/test_hub_007_atomic_lifecycle_crash_recovery.py --tb=short` — 7 passed in 4.54s. Covers five injected lifecycle failure points, unfinalized barrier recovery, stale fence, unknown state fail-closed, and semaphore crash/expiry recovery. Test SHA-256 ed6064b8a38662fdcb5a536be6fe39e1add6c70e7899693cbcc7789f9dadbbf2.",
       "order": 7,
       "title": "HUB-007 P1: Atomic state lifecycle / crash recovery",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_008": {
       "acceptance_criteria": [
@@ -96,16 +191,32 @@
         "Graceful fallback without OOM loop verified on critical VRAM pressure",
         "No automatic model pulls on missing model verified"
       ],
-      "blocker": "Fresh read-only Hub status shows version 6.1.0 online, no active model, nominal VRAM and GPU admission available; reservation status is free. Actual model unload cannot be observed because there is no loaded model, and the approved plan forbids triggering an unload/restart without a safe runtime authorization. Mocked lifecycle tests do not establish hardware/backend unload.",
+      "blocker": "Actual loaded-model unload still lacks permitted/current physical runtime observation. The one bounded GPU request ended outcome_unknown and must not be repeated or released.",
       "clarifications": [],
       "depends_on": [],
       "description": "GPU/CPU/NPU inference admission, external reservation coordination, actual model unload observation separately, and graceful VRAM fallback without OOM loop in scheduler.py, vram_balancer.py, and laya_lifecycle.py.",
       "kind": "code",
-      "next_action": "2026-11-18 fresh focused suite `python -m pytest tests/unit/test_hub_008_gpu_cpu_npu_admission_and_unload.py -q`: 5 passed in 1.51s. Budgeted sharing and external reservation integration: `python -m pytest tests/test_mixed_scheduler_integration.py tests/test_external_gpu_reservation_lifecycle.py -q` — 76 passed in 36.42s. Cases include measured-free-capacity co-admission, capacity lease semantics, shared internal/external fencing, reservation lifecycle and cleanup. Hub status: active_model=null, VRAM nominal, gpu_admission_state=available; reservation status free. Keep offline/source evidence distinct from actual runtime unload. To close HUB-008, get an authorized natural unload observation with exact loaded Hub revision and observe the backend model absent after unload.",
+      "next_action": "Fresh `.venv\\Scripts\\python.exe -m pytest tests/test_ollama_transport.py tests/unit/test_hub_008_gpu_cpu_npu_admission_and_unload.py -q` → 19 passed in 1.47s. `test_missing_ollama_model_fails_without_pull_request` now exercises real `OllamaRuntime.request`/stream adapter with a fake HTTP 404; exactly one `/api/generate` request is captured, and `prepare_model` raises `OllamaModelNotFoundError` without `/api/pull` or network access. Actual loaded-model unload remains NOT VERIFIED; no physical GPU or repeat of outcome_unknown operation.",
       "order": 8,
       "title": "HUB-008 P1: GPU/CPU/NPU inference admission & unload",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_009": {
       "acceptance_criteria": [
@@ -124,7 +235,23 @@
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/unit/test_hub_009_evidence_verification_integrity.py --tb=short` — 6 passed. Directly covers stale, wrong-scope/owner, deleted/missing artifact, tampered hash/revision, incomplete criteria rejection and strong source-revision/artifact-bound receipt schema. Test SHA-256 6cec568c03cbbdd99c0160f17f46bbc7a3a9477dd6537e3e6d4a7320e59d0f81.",
       "order": 9,
       "title": "HUB-009 P1: Evidence/verification integrity",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_010": {
       "acceptance_criteria": [
@@ -142,7 +269,23 @@
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: Hub 010 boundary suite passed 5 (loopback default, origin/Host, traversal, purge, redacted export); `tests/test_debug_traces.py` plus `tests/test_security_boundaries.py` passed 68; `tests/test_http_root_path_toctou.py` passed 1. This covers path TOCTOU separately; no live host or browser run. Current trace source separately checked and trace inspector tests passed 10.",
       "order": 10,
       "title": "HUB-010 P1: Local security and debug data protection",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_011": {
       "acceptance_criteria": [
@@ -160,7 +303,23 @@
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: the API registry, operation contracts, HTTP route acceptance and canonical route suites passed 432 tests (`--no-cache`). `python tools/surface_inventory.py --write-doc --task-id task_eefe699c115e` regenerated docs/API_COVERAGE.md and docs/API_COVERAGE.json (706 rows); subsequent `--check --task-id task_eefe699c115e` passed with no drift. `git diff --check` passed. Evidence is source/docs/test coverage, not runtime health.",
       "order": 11,
       "title": "HUB-011 P1: API schema and operation registry",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_012": {
       "acceptance_criteria": [
@@ -177,7 +336,23 @@
       "next_action": "",
       "order": 12,
       "title": "HUB-012 P2: Rozdělení monolitů v 5 nezávislých slices",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_013": {
       "acceptance_criteria": [
@@ -194,7 +369,23 @@
       "next_action": "",
       "order": 13,
       "title": "HUB-013 P2: Type safety rollout",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_014": {
       "acceptance_criteria": [
@@ -211,7 +402,23 @@
       "next_action": "",
       "order": 14,
       "title": "HUB-014 P2: SQLite repository boundaries",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_015": {
       "acceptance_criteria": [
@@ -228,7 +435,23 @@
       "next_action": "",
       "order": 15,
       "title": "HUB-015 P2: Tool schema / token budget guard",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_016": {
       "acceptance_criteria": [
@@ -245,7 +468,23 @@
       "next_action": "",
       "order": 16,
       "title": "HUB-016 P1: Frontend build-out a parity harness",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_017": {
       "acceptance_criteria": [
@@ -261,7 +500,23 @@
       "next_action": "",
       "order": 17,
       "title": "HUB-017 P1: Design system + responsive shell",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_018": {
       "acceptance_criteria": [
@@ -277,7 +532,23 @@
       "next_action": "",
       "order": 18,
       "title": "HUB-018 P1: Overview health/action redesign",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_019": {
       "acceptance_criteria": [
@@ -293,7 +564,23 @@
       "next_action": "",
       "order": 19,
       "title": "HUB-019 P1: Projects + indexing detail",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_020": {
       "acceptance_criteria": [
@@ -309,7 +596,23 @@
       "next_action": "",
       "order": 20,
       "title": "HUB-020 P1: Agent integrations diagnostics",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_021": {
       "acceptance_criteria": [
@@ -325,7 +628,23 @@
       "next_action": "",
       "order": 21,
       "title": "HUB-021 P1: Model manager and Laya Studio",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_022": {
       "acceptance_criteria": [
@@ -341,7 +660,23 @@
       "next_action": "",
       "order": 22,
       "title": "HUB-022 P1: Tasks/coordination/receipts experience",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_023": {
       "acceptance_criteria": [
@@ -357,7 +692,23 @@
       "next_action": "",
       "order": 23,
       "title": "HUB-023 P1: Settings Basic/Advanced and contextual help",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_024": {
       "acceptance_criteria": [
@@ -373,7 +724,23 @@
       "next_action": "",
       "order": 24,
       "title": "HUB-024 P2: Diagnostics, timelines and token savings",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_025": {
       "acceptance_criteria": [
@@ -390,7 +757,23 @@
       "next_action": "",
       "order": 25,
       "title": "HUB-025 P1: Browser-assisted setup wizard",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_026": {
       "acceptance_criteria": [
@@ -407,7 +790,23 @@
       "next_action": "",
       "order": 26,
       "title": "HUB-026 P1: Update / rollback assistant",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_027": {
       "acceptance_criteria": [
@@ -423,7 +822,23 @@
       "next_action": "",
       "order": 27,
       "title": "HUB-027 P1: Valid reproducible E2E / eval baseline",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_028": {
       "acceptance_criteria": [
@@ -439,7 +854,23 @@
       "next_action": "",
       "order": 28,
       "title": "HUB-028 P1: True local model capability matrix",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_hub_029": {
       "acceptance_criteria": [
@@ -455,7 +886,23 @@
       "next_action": "",
       "order": 29,
       "title": "HUB-029 P2: Docs and release onboarding",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
@@ -469,16 +916,32 @@
         "All foreign/pre-existing dirty changes preserved without destructive operations",
         "External platform blockers documented explicitly without fabricating passes (HUB-002, HUB-004)"
       ],
-      "blocker": "HUB-002: External Linux/macOS runner required for cross-platform clean clone proof (Windows clean clone verified, 0 gitlinks).",
+      "blocker": "HUB-002 direct macOS clean-clone/fixture regression remains unverified. Current Windows and Linux full clones/cleanup passed. HUB-008 actual model-unload observation remains unavailable without safe runtime authorization.",
       "clarifications": [],
       "depends_on": [],
       "description": "Complete the entire Local AI Hub roadmap HUB-001 through HUB-030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md.",
       "kind": "code",
-      "next_action": "HUB-001 through HUB-030 complete; superseded by second and third audit cycles.",
+      "next_action": "Reconcile every roadmap acceptance criterion against current-source receipts. Keep blocked until HUB-002 cross-platform and HUB-008 safe unload evidence are supplied or the criteria are legitimately re-scoped through the authorized plan workflow.",
       "order": 1,
       "title": "Local AI Hub HUB-001–030 Roadmap Execution",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-08-remove-hub-api-token-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "16452cd69cf48e58fa2415b6d25b5e34182486a652b18fe73eb1300ad9b2b8bd"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
   "title": "Local AI Hub HUB-001–030 Audit Roadmap Implementation"

@@ -83,7 +83,7 @@ def test_source_anchored_dataset_covers_bilingual_polyglot_plan() -> None:
         "docs/AUDIT_ROUND_3_2026-11-08.md",
     ]
     assert by_id["czech-cakephp-detection"]["expected_paths"] == [
-        "src/local_ai_hub/repo_tools.py",
+        "src/local_ai_hub/repo_tools_workspace.py",
     ]
     assert by_id["english-php8-outline"]["expected_paths"] == [
         "tests/test_php_js_ts_support.py",

@@ -1,0 +1,7 @@
+{
+  "name": "local-ai-hub",
+  "displayName": "Local AI Hub for Codex",
+  "version": "6.1.0",
+  "description": "Local AI Hub integration for Codex: AST indexing, Lossless Token Router, Agent OS memory, and local Qwen subagents.",
+  "author": "Local AI Hub Contributor"
+}

@@ -399,12 +399,10 @@ class LlamaCppManagedRuntime:
     def _write_preset(self, device: str | None = None) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         _, aliases = self._configured_routes()
-        cache_types = {"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+        cache_types = {"q4_0", "q4_1", "iq4_nl"}
         cache_options: list[str] = []
         for key, option in (("cache_type_k", "cache-type-k"), ("cache_type_v", "cache-type-v")):
-            value = self.llama_config.get(key)
-            if value is None:
-                continue
+            value = self.llama_config.get(key, "q4_0")
             if not isinstance(value, str) or value not in cache_types:
                 raise ValueError(f"Invalid llama.cpp {option} cache type")
             cache_options.append(f"{option} = {value}")

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import __version__
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.embeddings import EmbeddingModel
 from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPStdioClient

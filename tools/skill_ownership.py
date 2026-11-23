@@ -844,6 +844,65 @@ def _safe_tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
+def get_user_homes() -> list[Path]:
+    """Discover all user and MultiGravity profile home directories."""
+    homes: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_home(p: Path) -> None:
+        try:
+            resolved = p.resolve()
+            if resolved not in seen and p.exists() and p.is_dir():
+                seen.add(resolved)
+                homes.append(p)
+        except Exception:
+            pass
+
+    cur_home = Path.home()
+    add_home(cur_home)
+
+    if os.name == "nt":
+        username = os.environ.get("USERNAME")
+        system_drive = os.environ.get("SystemDrive", "C:")
+        if username:
+            add_home(Path(f"{system_drive}/Users/{username}"))
+        userprofile = os.environ.get("USERPROFILE")
+        if userprofile:
+            add_home(Path(userprofile))
+
+    # MultiGravity discovery: search cur_home and its ancestors
+    mg_profiles_dir: Path | None = None
+    for p in [cur_home, *cur_home.parents]:
+        cand = p / "Desktop" / "Multigravity" / "profiles"
+        if cand.is_dir():
+            mg_profiles_dir = cand
+            add_home(p)
+            break
+        if p.name.lower() == "profiles" and p.parent.name.lower() == "multigravity":
+            mg_profiles_dir = p
+            for anc in p.parents:
+                if (anc / "Desktop").is_dir():
+                    add_home(anc)
+                    break
+            break
+
+    env_mg = os.environ.get("MULTIGRAVITY_PROFILES") or os.environ.get("MULTIGRAVITY_HOME")
+    if env_mg:
+        p_env = Path(env_mg)
+        if p_env.name.lower() == "profiles" and p_env.is_dir():
+            mg_profiles_dir = p_env
+        elif (p_env / "profiles").is_dir():
+            mg_profiles_dir = p_env / "profiles"
+
+    if mg_profiles_dir and mg_profiles_dir.is_dir():
+        for child in mg_profiles_dir.iterdir():
+            if child.is_dir():
+                target = child / "home" if (child / "home").is_dir() else child
+                add_home(target)
+
+    return homes
+
+
 def _canonical(path: Path) -> str:
     return os.path.normcase(str(path.resolve(strict=False)))
 
@@ -879,6 +938,36 @@ def _manifest_read(manifest: Path) -> dict[str, dict[str, object]]:
         return {key: value for key, value in payload["skills"].items() if isinstance(value, dict)}
     except (OSError, ValueError, TypeError, AttributeError):
         return {}
+
+
+def owned_skill_targets(
+    manifest: Path, allowed_roots: list[Path],
+) -> list[tuple[Path, Path, str]]:
+    """Locate active records within the caller's independently authorized roots."""
+    _validate_manifest(manifest)
+    if not manifest.exists():
+        return []
+    directories = {os.path.normcase(os.path.abspath(root)): root for root in allowed_roots}
+    with _ownership_lock(manifest):
+        entries = _manifest_read(manifest)
+
+    targets = []
+    for key, entry in sorted(entries.items()):
+        name = entry.get("name")
+        digest = entry.get("sha256")
+        if (
+            not isinstance(name, str) or name in {"", ".", ".."}
+            or not isinstance(digest, str) or not _is_sha256(digest)
+            or "\x00" in name or "\x00" in key or Path(name).name != name
+        ):
+            continue
+        root = directories.get(str(Path(key).parent))
+        if root is None:
+            continue
+        target = root / name
+        if os.path.normcase(os.path.abspath(target)) == key:
+            targets.append((target, root, name))
+    return targets
 
 
 def _manifest_write(manifest: Path, entries: dict[str, dict[str, object]]) -> None:

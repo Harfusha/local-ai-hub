@@ -523,6 +523,8 @@ def test_repo_search_and_evidence_get_bind_routes_in_real_evidence_store(tmp_pat
 def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp_path, capture_fails):
     app = LocalAIApp.__new__(LocalAIApp)
     observations = []
+    eligibility = []
+    decisions = []
     app.config = {
         "server": {"state_dir": str(tmp_path)},
         "laya": {
@@ -534,7 +536,8 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
         },
     }
     app.telemetry = SimpleNamespace(
-        record_laya_decision=lambda *_args, **_kwargs: True,
+        record_laya_eligibility=lambda **event: eligibility.append(event) or True,
+        record_laya_decision=lambda metadata, **identity: decisions.append((metadata, identity)) or True,
         record_stage=lambda **event: observations.append(event),
     )
     app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
@@ -593,7 +596,11 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
                 reason_codes=("EVIDENCE_SUFFICIENT",),
                 metadata=lambda: {"success": True},
             )
-            runtime = SimpleNamespace(provider="torch", revision="revision-1")
+            runtime = SimpleNamespace(
+                provider="torch", revision="revision-1", latency_ms=18.0,
+                inference_latency_ms=15.0, adapter_queue_wait_ms=3.0,
+                fallback_reason=None,
+            )
             outcome = SimpleNamespace(decision=decision, runtime=runtime)
             try:
                 kwargs["outcome_recorder"](request, decision_input, outcome)
@@ -625,6 +632,15 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
     }
     assert result["capture_status"] == ("failed" if capture_fails else "captured")
     assert result["capture_error_type"] == ("OSError" if capture_fails else None)
+    assert len(eligibility) == 1
+    assert eligibility[0]["mode"] == "shadow"
+    assert eligibility[0]["category"] == "completion_gap"
+    assert len(decisions) == 1
+    assert decisions[0][0]["runtime_latency_ms"] == 18.0
+    assert decisions[0][0]["inference_latency_ms"] == 15.0
+    assert decisions[0][0]["queue_wait_ms"] == 3.0
+    assert decisions[0][0]["backend"] == "torch"
+    assert decisions[0][0]["fallback_used"] is False
     if not capture_fails:
         assert result["candidate"]["candidate_id"] == "laya-1"
     expected_event = {

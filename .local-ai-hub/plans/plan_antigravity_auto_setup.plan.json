@@ -4,7 +4,15 @@
   "id": "plan_antigravity_auto_setup",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+      }
+    }
+  ],
   "tasks": {
     "task_antigravity_install": {
       "acceptance_criteria": [
@@ -38,7 +46,16 @@
       "next_action": "Hotovo: Zive overeni Antigravity dolozno aktivni relaci; pravidla a skilly nacteny, MCP local-ai volani funkcni, 48 testu v test_antigravity_setup.py a test_plan_reconcile_steering.py prosel.",
       "title": "Automatic Antigravity setup",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+          }
+        }
+      ]
     }
   },
   "title": "Antigravity automatic setup"

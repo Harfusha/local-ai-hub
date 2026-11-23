@@ -1,6 +1,7 @@
 """Bounded thread/process serialization for atomic local file updates."""
 from __future__ import annotations
 
+from collections.abc import Hashable
 from contextlib import contextmanager
 import errno
 import logging
@@ -10,9 +11,11 @@ from pathlib import Path
 import threading
 import time
 from typing import Iterator
+from weakref import WeakValueDictionary
 
 
-_LOCKS = tuple(threading.RLock() for _ in range(64))
+_LOCKS: WeakValueDictionary[Hashable, threading.RLock] = WeakValueDictionary()
+_LOCKS_GUARD = threading.Lock()
 _HELD = threading.local()
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,7 +93,12 @@ def exclusive_file_update(
         identity = (directory.st_dev, directory.st_ino, path.name)
     key = (os.getpid(), identity)
     directory_key = (os.getpid(), directory.st_dev, directory.st_ino) if parent_fd is not None and os.name != "nt" else None
-    guard = _LOCKS[hash(directory_key if directory_key is not None else key[1]) % len(_LOCKS)]
+    lock_key = directory_key if directory_key is not None else key
+    with _LOCKS_GUARD:
+        guard = _LOCKS.get(lock_key)
+        if guard is None:
+            guard = threading.RLock()
+            _LOCKS[lock_key] = guard
     if not guard.acquire(timeout=max(0.0, timeout)):
         raise TimeoutError("file update lock timed out")
     descriptor = None

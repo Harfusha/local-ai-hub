@@ -4,7 +4,7 @@
 
 ## Target and acceptance still open
 
-Target project: `C:\Users\Adam\.local-ai-hub`  
+Target project: `%USERPROFILE%\.local-ai-hub`\
 Workspace: `.local-ai-hub-e498067d77ca`  
 Agent OS task: `task_5582c68e51ee`
 
@@ -38,7 +38,7 @@ The working checkout is `master`. Last Hub Git snapshot reported 14 modified pat
 
 ## Runtime mismatch: why the source fix is not live
 
-The service did not restart into the master checkout. The latest supervisor startup record points to the non Git release copy `C:\Users\Adam\.local-ai-hub-release-8567a6c9` and its `.venv`. Hub status was Online in `Active`. Hub source inspection of that release copy confirmed it still has the old 30 second actor connection timeout, the old slot ordering, and the old background generation gate. The master changes therefore were not loaded by the service restart.
+The service did not restart into the master checkout. The latest supervisor startup record points to the non Git release copy `%USERPROFILE%\.local-ai-hub-release-8567a6c9` and its `.venv`. Hub status was Online in `Active`. Hub source inspection of that release copy confirmed it still has the old 30 second actor connection timeout, the old slot ordering, and the old background generation gate. The master changes therefore were not loaded by the service restart.
 
 `python tools/service.py restart` returned `schtasks_stop_failed` even though it reported the Hub and supervisor stopped. A subsequent start returned `started`, but the supervisor later spawned from the release copy again. Do not repeat restarts as a workaround. Resume by inspecting the existing service registration and using the supported single service update path to load the master fixes into its managed runtime, preserving the current state directory, configuration, provider selection and `Active` mode. Do not patch or replace the non Git release directory blindly; first establish the supported update flow and exact file ownership.
 

@@ -47,6 +47,26 @@ def loads(value: str | bytes | bytearray | memoryview) -> Any:
     return json.loads(value)
 
 
+def loads_generated_json(value: str) -> Any:
+    text = value.strip()
+    thought_content: str | None = None
+    if "<thought>" in text and "</thought>" in text:
+        start = text.find("<thought>") + len("<thought>")
+        end = text.find("</thought>")
+        if end > start:
+            thought_content = text[start:end].strip()
+            text = (text[:text.find("<thought>")] + text[end + len("</thought>"): ]).strip()
+
+    lines = text.splitlines()
+    if (len(lines) >= 3 and lines[0].strip().casefold() in {"```", "```json"}
+            and lines[-1].strip() == "```"):
+        text = "\n".join(lines[1:-1]).strip()
+    data = loads(text)
+    if isinstance(data, dict) and thought_content and "architectural_reasoning" not in data:
+        data["architectural_reasoning"] = thought_content[:1000]
+    return data
+
+
 def safe_loads(value: Any, default: Any = None) -> Any:
     """Decode JSON or return default when input is not valid JSON text/bytes."""
     if not isinstance(value, (str, bytes, bytearray, memoryview)):

@@ -415,7 +415,19 @@ class ExternalGpuReservationStore:
             if len(matched) != 1:
                 return False
             remaining = [item for item in leases if item not in matched]
-            return self._write_capacity_leases({"schema_version": 1, "leases": remaining})
+            if not self._write_capacity_leases({"schema_version": 1, "leases": remaining}):
+                return False
+            reservation = self._read_unlocked()
+            reservation_generation = matched[0]["reservation_generation"]
+            if (
+                reservation is not None
+                and reservation["generation"] == reservation_generation
+                and reservation["owner"].startswith("embedding:")
+                and reservation["state"] == "idle"
+                and not any(item["reservation_generation"] == reservation_generation for item in remaining)
+            ):
+                return self._remove_unlocked(reservation_generation)
+            return True
 
     def release_orphaned_laya_capacity_lease(
         self, lease_id: str, owner: str, generation: str, *, consent: bool, audit_reason: str,

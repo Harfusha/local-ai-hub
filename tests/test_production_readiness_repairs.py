@@ -6,7 +6,7 @@ from pathlib import Path
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.services import is_retryable_local_backend_error
 
@@ -23,7 +23,7 @@ def test_memory_http_contract_can_round_trip_repository_identity(tmp_path: Path)
         provenance={"root": str(root), "repository_id": "repo-1"},
     )
     saved = store.record(record)
-    loaded = store.get(saved.record_id, root=str(root), root=str(root), repository_id="repo-1")
+    loaded = store.get(saved.record_id, root=str(root),  repository_id="repo-1")
     assert loaded is not None
     assert loaded.value == "kept"
 
@@ -44,7 +44,6 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope_id="repo-restart",
         key="restart-fact",
         root=str(tmp_path),
-        root=str(tmp_path),
         repository_id="repo-restart",
 
         semantic=False,
@@ -56,7 +55,6 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope=AgentScope.REPOSITORY,
         scope_id="repo-restart",
         root=str(tmp_path),
-        root=str(tmp_path),
         repository_id="repo-restart",
     )
     assert loaded is not None and loaded.value == "persisted"
@@ -65,7 +63,6 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope=AgentScope.REPOSITORY,
         scope_id="repo-restart",
         root=str(tmp_path),
-        root=str(tmp_path),
         repository_id="repo-restart",
     ) is True
     assert reopened.get(saved.record_id) is None
@@ -73,8 +70,8 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
 
 def test_relation_traverse_deduplicates_bidirectional_edge(tmp_path: Path) -> None:
     store = MemoryStore(AgentStateStore(tmp_path / "state.db", enabled=True))
-    store.record_relation("a", "depends_on", "b", root=str(tmp_path))
-    result = store.traverse_graph("a", max_depth=2, root=str(tmp_path))
+    store.record_relation("a", "depends_on", "b", root=str(tmp_path), repository_id="repo-production-readiness")
+    result = store.traverse_graph("a", max_depth=2, root=str(tmp_path), repository_id="repo-production-readiness")
     assert result["total_edges"] == 1
     assert len(result["edges"]) == 1
 

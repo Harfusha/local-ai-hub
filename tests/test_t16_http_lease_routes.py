@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from urllib.error import HTTPError
 
 from local_ai_hub import http_server
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.process_utils import run_hidden
 from local_ai_hub.resilience import RecoveryJournal

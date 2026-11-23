@@ -98,7 +98,7 @@ def test_bounded_edit_receives_prior_inspect_evidence(tmp_path):
         def code_query(self, root, query, limit=20):
             return {"success": True, "symbols": ["inspection FACT-TWO"]}
 
-        def fast_context(self, root, query, max_tokens):
+        def fast_context(self, request):
             return {"success": True, "evidence": ["edit FACT-THREE"]}
 
         def delegate_repo(self, args, **kwargs):

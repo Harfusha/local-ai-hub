@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 @pytest.mark.parametrize("error,level", [(OSError, logging.WARNING), (ZeroDivisionError, logging.ERROR)])
@@ -21,7 +21,7 @@ def test_receipt_persistence_failures_are_visible_without_fabricated_receipts(tm
     broker._record_command_verification(
         result, task_id="task-current", criterion="tests", command="python -m pytest",
         command_id="a" * 32, command_digest="b" * 64,
-        repository_revision="c" * 64, repository_root=str(tmp_path), root=str(tmp_path), duration_ms=1,
+        repository_revision="c" * 64, repository_root=str(tmp_path), duration_ms=1,
     )
 
     assert writes == []

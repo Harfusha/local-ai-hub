@@ -42,7 +42,6 @@ def make_task(tmp_path):
             GoalContract(goal="Fix parser identifier tokenization"),
             ScopeContext(repository_id=repository_id, task_id=task_id),
             task_id=task_id, repo_root=str(root),
-        root=str(root),
         )
         return tasks, memory, root, task, record
 

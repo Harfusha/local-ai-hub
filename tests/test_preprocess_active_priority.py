@@ -4,7 +4,7 @@ from contextlib import closing
 
 import pytest
 
-from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.preprocess import ProjectPreprocessor, _RetryablePreprocessingError
 
 
 @pytest.fixture
@@ -63,6 +63,17 @@ def test_cpu_and_gpu_selection_rebalance_at_state_priority(scheduler):
     assert instance._next_cpu_project()["root"] == "active"
     assert instance._next_gpu_project()["root"] == "active"
     assert priorities == [0, 0]
+
+
+def test_cpu_selection_survives_retryable_rebalance_failure(scheduler):
+    instance, connect = scheduler
+    add(connect, "active", "running", 9999, 9999)
+
+    def saturated(*_args, **_kwargs):
+        raise _RetryablePreprocessingError("preprocessing write queue is saturated", 30.0)
+
+    instance._write_retry = saturated
+    assert instance._next_cpu_project()["root"] == "active"
 
 
 def test_waiting_project_outside_admitted_slots_cannot_run_on_gpu(scheduler):

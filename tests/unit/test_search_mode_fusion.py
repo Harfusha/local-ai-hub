@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from local_ai_hub.search_modes import (
     default_agent_search_mode,
-    default_search_mode,
     expand_lexical_fallback_query,
     expand_semantic_query,
     fuse_search_results,
@@ -66,6 +67,38 @@ def test_hybrid_lexical_fallback_does_not_compute_or_claim_exact_counts(monkeypa
     assert result["lexical_count_exact"] is False
     assert result["has_more"] is None
     assert len(result["results"]) == 1
+
+
+@pytest.mark.parametrize("search_mode", ["rag", "hybrid"])
+@pytest.mark.parametrize("outcome", [
+    {"in_progress": True, "retryable": True, "retry_after_seconds": 1},
+    {"outcome_unknown": True, "retryable": False, "terminal": False, "cleanup_unconfirmed": True},
+    {"cancelled": True, "retryable": False, "terminal": True},
+    {"timed_out": True, "retryable": True, "terminal": True,
+     "operation_not_started": True, "request_not_sent": True, "scheduler_state": "pending"},
+])
+def test_repository_search_preserves_stopped_rag_outcome(tmp_path, monkeypatch, search_mode, outcome):
+    status = {"success": False, "error": "embedding stopped", "error_code": "scheduler_state",
+              "job_id": 17, "scheduler_state": "running", "index_revision": "rev-1", **outcome}
+    raw = {**status, "results": [{"text": "unverified text"}], "_lah_internal": "private",
+           "search_cache": {"hit": False, "coalesced": True}}
+    service = object.__new__(LocalAIServices)
+    service.config = {"features": {"rag": True, "reranker": False}}
+    service.rag = SimpleNamespace(
+        workspace_id=lambda _root: "repo:test",
+        require_workspace_root=lambda **_kwargs: None,
+        has_workspace_chunks=lambda **_kwargs: True,
+        search=lambda *_args, **_kwargs: raw,
+    )
+    monkeypatch.setattr(service, "_repo_search_lexical", lambda *_args, **_kwargs: pytest.fail("started lexical fallback"))
+
+    result = service.repo_search(str(tmp_path), "installation guide", search_mode=search_mode, limit=5)
+
+    assert {key: result.get(key) for key in status} == status
+    assert result["search_mode"] == search_mode and result["results"] == []
+    assert result["cache_hit"] is False and result["coalesced"] is True
+    assert result["coverage_complete"] is False and "_lah_internal" not in result
+    assert result.get("status_code", 200) == 200
 
 
 def test_hybrid_bounded_fallback_finds_matches_after_unrelated_path_prefix(tmp_path, monkeypatch):
@@ -1143,7 +1176,8 @@ def test_invalid_search_mode_rejects(monkeypatch):
     assert result["terminal"] is True
 
 
-def test_rag_candidates_are_checked_against_current_source_and_policy(tmp_path):
+@pytest.mark.parametrize("missing_candidate", [False, True], ids=["current", "deleted"])
+def test_rag_candidates_are_checked_against_current_source_and_policy(tmp_path, missing_candidate):
     source = tmp_path / "current.py"
     source.write_text("def install_hub():\n    return True\n", encoding="utf-8")
 
@@ -1164,10 +1198,13 @@ def test_rag_candidates_are_checked_against_current_source_and_policy(tmp_path):
         def search(self, query, **kwargs):
             assert kwargs["semantic_only"] is True
             assert kwargs["workspace"] == "repo:test"
-            return {"success": True, "index_revision": "rev-1", "reranked": False, "results": [
+            results = [
                 {"path": "current.py", "text": "def install_hub():\n    return True\n"},
                 {"path": "../outside.py", "text": "outside"},
-            ]}
+            ]
+            if missing_candidate:
+                results.insert(0, {"path": "deleted.py", "text": "deleted source"})
+            return {"success": True, "index_revision": "rev-1", "reranked": False, "results": results}
 
         def project_context(self, root):
             return None
@@ -1183,8 +1220,14 @@ def test_rag_candidates_are_checked_against_current_source_and_policy(tmp_path):
     rows, meta = service._repo_rag_search(str(tmp_path), "installation", 8)
 
     assert [row["path"] for row in rows] == ["current.py"]
+    assert meta["success"] is True
     assert meta["index_revision"] == "rev-1"
-    assert meta["candidate_freshness"] == "verified_against_current_sources"
+    assert meta["index_state"] == ("stale" if missing_candidate else "available")
+    assert meta["candidate_freshness"] == (
+        "partially_verified" if missing_candidate else "verified_against_current_sources"
+    )
+    assert meta["stale_candidate_reasons"]["source_read_failed"] == int(missing_candidate)
+    assert meta["stale_candidate_details"] == []
 
 
 def test_stale_rag_candidate_is_dropped_and_reported(tmp_path):

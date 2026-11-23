@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 def test_command_run_with_custom_env(tmp_path, monkeypatch):
     config = {
@@ -35,7 +35,7 @@ def test_command_run_with_custom_env(tmp_path, monkeypatch):
 
 
 def test_command_modules_come_from_assigned_checkout():
-    from local_ai_hub import commands, mcp_server
+    from local_ai_hub import command_broker as commands, mcp_server
 
     expected_src = Path(__file__).resolve().parents[2] / "src"
     for module in (commands, mcp_server):

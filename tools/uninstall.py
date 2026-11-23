@@ -22,6 +22,8 @@ if _skill_ownership_spec is None or _skill_ownership_spec.loader is None:
 _skill_ownership_module = importlib.util.module_from_spec(_skill_ownership_spec)
 _skill_ownership_spec.loader.exec_module(_skill_ownership_module)
 remove_owned_skill = _skill_ownership_module.remove_skill
+owned_skill_targets = _skill_ownership_module.owned_skill_targets
+get_user_homes = _skill_ownership_module.get_user_homes
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -493,28 +495,31 @@ def main() -> int:
     codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex")))
     clean_external_configurations(plan.get("external_ownership", []), install)
 
-    skills_to_clean = [
-        "local-ai-orchestrator",
-        "token-economizer",
-        "caveman",
-        "tool-orchestration",
-        "ollama-quality-routing",
+    skills_roots = [
+        codex_home / "skills",
+        home / ".claude" / "skills",
+        home / ".cursor" / "skills",
+        home / ".codeium" / "windsurf" / "skills",
+        home / ".copilot" / "skills",
     ]
+    for user_home in get_user_homes():
+        skills_roots.extend([
+            user_home / ".agents" / "skills",
+            user_home / ".codex" / "skills",
+            user_home / ".gemini" / "skills",
+            user_home / ".gemini" / "config" / "skills",
+        ])
     ownership_manifest = install / ".local-ai-hub-skill-ownership.json"
-    for skill in skills_to_clean:
-        for base in [
-            home / ".agents" / "skills",
-            codex_home / "skills",
-            home / ".claude" / "skills",
-            home / ".gemini" / "skills",
-            home / ".gemini" / "config" / "skills",
-        ]:
-            path = base / skill
-            if path.exists() or path.is_symlink() or getattr(path, "is_junction", lambda: False)():
-                try:
-                    print(remove_owned_skill(path, base, ownership_manifest, skill))
-                except ValueError as exc:
-                    print(f"preserved conflicting skill tree: {path} ({exc})")
+    try:
+        skill_targets = owned_skill_targets(ownership_manifest, skills_roots)
+    except (OSError, ValueError) as exc:
+        print(f"preserved skill trees: ownership inventory unavailable ({exc})")
+        skill_targets = []
+    for path, base, skill in skill_targets:
+        try:
+            print(remove_owned_skill(path, base, ownership_manifest, skill))
+        except ValueError as exc:
+            print(f"preserved conflicting skill tree: {path} ({exc})")
 
     if install.exists() and not args.keep_install:
         try:

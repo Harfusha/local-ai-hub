@@ -22,7 +22,7 @@ if overlay_root:
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.services import LocalAIServices
@@ -89,9 +89,9 @@ def test_path_leases_allow_disjoint_scopes_and_reject_overlap(tmp_path: Path) ->
     first: dict[str, object] = {}
     disjoint: dict[str, object] = {}
     try:
-        first = leases.claim_batch(owner="writer-a", root=str(root), root=str(root), paths=["src/a.py"])
-        disjoint = leases.claim_batch(owner="writer-b", root=str(root), root=str(root), paths=["src/b.py"])
-        overlapping = leases.claim_batch(owner="writer-b", root=str(root), root=str(root), paths=["src/a.py"])
+        first = leases.claim_batch(owner="writer-a", root=str(root), paths=["src/a.py"])
+        disjoint = leases.claim_batch(owner="writer-b", root=str(root), paths=["src/b.py"])
+        overlapping = leases.claim_batch(owner="writer-b", root=str(root), paths=["src/a.py"])
 
         assert first["success"] is True
         assert disjoint["success"] is True
@@ -111,7 +111,7 @@ def test_edit_lease_conflict_leaves_workspace_and_journal_unchanged(tmp_path: Pa
     held: dict[str, object] = {}
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
     try:
-        held = leases.claim_batch(owner="other-writer", root=str(root), root=str(root), paths=["owned.txt"])
+        held = leases.claim_batch(owner="other-writer", root=str(root), paths=["owned.txt"])
         assert held["success"] is True
         orchestrator.leases = leases
         with pytest.raises(RuntimeError, match="edit lease unavailable"):
@@ -1205,7 +1205,7 @@ def test_root_current_command_broker_namespace_guard_commits_real_write(tmp_path
         "commit", "--quiet", "-m", "broker fence fixture",
     )
 
-    source_path = source_root / "src" / "local_ai_hub" / "commands.py"
+    source_path = source_root / "src" / "local_ai_hub" / "command_broker.py"
     module_path = Path(sys.modules[CommandBroker.__module__].__file__).resolve()
     assert module_path == source_path.resolve()
 

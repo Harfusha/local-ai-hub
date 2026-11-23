@@ -1297,30 +1297,24 @@ class HardwareBenchmarkRunner:
         return {"success": True, **record}
 
     def _persist_record(self, record: dict[str, Any]) -> None:
-        try:
-            self.benchmarks_path.parent.mkdir(parents=True, exist_ok=True)
-            file_lock = getattr(self, "_file_lock", None)
-            if file_lock is None:
-                file_lock = threading.Lock()
-                self._file_lock = file_lock
-            with file_lock, exclusive_file_update(self.benchmarks_path):
-                history: list[dict[str, Any]] = []
-                if self.benchmarks_path.exists():
-                    try:
-                        history = json.loads(self.benchmarks_path.read_text(encoding="utf-8"))
-                        if not isinstance(history, list):
-                            history = []
-                    except Exception:
-                        history = []
-                history.append(record)
-                if len(history) > 50:
-                    history = history[-50:]
-                content = json_dumps(history, indent=2)
-                tmp_file = self.benchmarks_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
-                tmp_file.write_text(content, encoding="utf-8")
-                os.replace(tmp_file, self.benchmarks_path)
-        except Exception:
-            pass
+        self.benchmarks_path.parent.mkdir(parents=True, exist_ok=True)
+        file_lock = getattr(self, "_file_lock", None)
+        if file_lock is None:
+            file_lock = threading.Lock()
+            self._file_lock = file_lock
+        with file_lock, exclusive_file_update(self.benchmarks_path):
+            history: list[dict[str, Any]] = []
+            if self.benchmarks_path.exists():
+                history = json.loads(self.benchmarks_path.read_text(encoding="utf-8"))
+                if not isinstance(history, list):
+                    raise ValueError("benchmark history must be a JSON array")
+            history.append(record)
+            if len(history) > 50:
+                history = history[-50:]
+            content = json_dumps(history, indent=2)
+            tmp_file = self.benchmarks_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+            tmp_file.write_text(content, encoding="utf-8")
+            os.replace(tmp_file, self.benchmarks_path)
 
     def get_latest_summary(self) -> dict[str, Any]:
         if not self.benchmarks_path.exists():

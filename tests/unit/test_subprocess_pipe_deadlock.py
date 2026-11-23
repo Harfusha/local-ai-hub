@@ -2,7 +2,7 @@ import sys
 import subprocess
 import threading
 import time
-from local_ai_hub.commands import CommandBroker, _BoundedStreamBuffer
+from local_ai_hub.command_broker import CommandBroker, _BoundedStreamBuffer
 from local_ai_hub.process_utils import ProcessCancelledError, run_hidden
 
 def test_commands_pipe_drain_avoids_deadlock(tmp_path):

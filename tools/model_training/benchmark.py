@@ -23,8 +23,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _input_ids(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
-    value = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+def _input_ids(
+    tokenizer: Any, messages: list[dict[str, str]], *, add_generation_prompt: bool = True,
+) -> list[int]:
+    value = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=add_generation_prompt
+    )
     if isinstance(value, dict):
         value = value["input_ids"]
     elif hasattr(value, "input_ids"):
@@ -38,11 +42,25 @@ def _input_ids(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
 
 def _generate_one(
     model: Any, tokenizer: Any, row: dict[str, Any], *, adapter_enabled: bool,
-    device: str, max_new_tokens: int,
+    device: str, max_new_tokens: int, max_input_tokens: int,
 ) -> dict[str, Any]:
     import torch
 
     input_ids = _input_ids(tokenizer, row["messages"])
+    original_input_tokens = len(input_ids)
+    input_truncated = original_input_tokens > max_input_tokens
+    if input_truncated:
+        leading_system = []
+        for message in row["messages"]:
+            if message.get("role") != "system":
+                break
+            leading_system.append(message)
+        system_ids = _input_ids(tokenizer, leading_system, add_generation_prompt=False) if leading_system else []
+        if (len(system_ids) >= max_input_tokens
+                or input_ids[:len(system_ids)] != system_ids):
+            raise ValueError("cannot safely truncate benchmark prompt while preserving system messages")
+        tail_budget = max_input_tokens - len(system_ids)
+        input_ids = system_ids + input_ids[-tail_budget:]
     input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
     adapter_context = nullcontext() if adapter_enabled or not hasattr(model, "disable_adapter") else model.disable_adapter()
     if device == "cuda":
@@ -66,6 +84,8 @@ def _generate_one(
     last_token = int(output_ids[-1]) if output_length else None
     result = {
         "input_tokens": len(input_ids),
+        "original_input_tokens": original_input_tokens,
+        "input_truncated": input_truncated,
         "output_tokens": output_length,
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         "truncated": output_length >= max_new_tokens or (last_token is not None and last_token != tokenizer.eos_token_id),
@@ -89,6 +109,7 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_required_fact_recall": round(statistics.mean(float(row["required_fact_recall"]) for row in fact_rows), 4) if fact_rows else None,
         "forbidden_claim_hits": sum(int(row["forbidden_claim_count"]) for row in rows),
         "mean_input_tokens": round(statistics.mean(int(row["input_tokens"]) for row in rows), 2),
+        "input_truncations": sum(bool(row["input_truncated"]) for row in rows),
         "mean_output_tokens": round(statistics.mean(int(row["output_tokens"]) for row in rows), 2),
         "mean_latency_ms": round(statistics.mean(latencies), 2),
         "median_latency_ms": round(statistics.median(latencies), 2),
@@ -118,13 +139,16 @@ def benchmark_from_manifest(
         )
     dataset_summary = validate_dataset_pair(config["train_file"], config["evaluation_file"])
     evaluation_rows = _read_jsonl(Path(config["evaluation_file"]), split="evaluation")
-    training = config.get("training", {})
     benchmark_config = config.get("benchmark", {})
-    runtime = resolve_runtime(device=str(benchmark_config.get("device", training.get("device", "cuda"))))
-    quantization = str(training.get("quantization", "none"))
-    if quantization not in {"none", "4bit"}:
-        raise ValueError("training.quantization must be none or 4bit")
-    if quantization == "4bit" and runtime["device"] != "cuda":
+    max_cases = benchmark_config.get("max_cases")
+    if max_cases and isinstance(max_cases, int) and max_cases > 0:
+        evaluation_rows = evaluation_rows[:max_cases]
+    training = config.get("training", {})
+    runtime = resolve_runtime(device=str(benchmark_config.get("device", training.get("device", "cuda"))), precision=training.get("precision"))
+    quantization = str(training.get("quantization", "4bit"))
+    if quantization != "4bit":
+        raise ValueError("training.quantization must be 4bit")
+    if runtime["device"] != "cuda":
         raise ValueError("4bit QLoRA benchmark requires CUDA")
     adapter_dir = Path(adapter_path).resolve() if adapter_path is not None else None
     if adapter_dir is not None and not adapter_dir.is_dir():
@@ -142,6 +166,8 @@ def benchmark_from_manifest(
     except ImportError as exc:
         raise RuntimeError("benchmark needs torch, transformers, peft, and accelerate") from exc
 
+    quantization_format = "nf4"
+
     base_model = str(config["base_model"])
     local_files_only = not allow_model_download
     tokenizer = AutoTokenizer.from_pretrained(
@@ -157,7 +183,7 @@ def benchmark_from_manifest(
             raise RuntimeError("4bit QLoRA benchmark needs bitsandbytes and current transformers") from exc
         load_options["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
+            bnb_4bit_quant_type=quantization_format,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=runtime["dtype"],
         )
@@ -182,23 +208,34 @@ def benchmark_from_manifest(
     warmup_runs = int(benchmark_config.get("warmup_runs", 1))
     if not (1 <= max_new_tokens <= 8192 and 0 <= warmup_runs <= 5):
         raise ValueError("benchmark max_new_tokens or warmup_runs outside safe bounds")
+    context_limit = getattr(model.config, "max_position_embeddings", None)
+    if (isinstance(context_limit, bool) or not isinstance(context_limit, int)
+            or not max_new_tokens < context_limit <= 1_000_000):
+        context_limit = getattr(tokenizer, "model_max_length", None)
+    if (isinstance(context_limit, bool) or not isinstance(context_limit, int)
+            or not max_new_tokens < context_limit <= 1_000_000):
+        raise ValueError("benchmark needs a finite model context limit")
+    max_input_tokens = context_limit - max_new_tokens
     if warmup_runs and evaluation_rows:
         for enabled in ((False, True) if adapter_dir is not None else (False,)):
             for _ in range(warmup_runs):
                 _generate_one(
                     model, tokenizer, evaluation_rows[0], adapter_enabled=enabled,
                     device=runtime["device"], max_new_tokens=max_new_tokens,
+                    max_input_tokens=max_input_tokens,
                 )
     base_rows: list[dict[str, Any]] = []
     adapter_rows: list[dict[str, Any]] = []
     for case in evaluation_rows:
         base_result = _generate_one(
-            model, tokenizer, case, adapter_enabled=False, device=runtime["device"], max_new_tokens=max_new_tokens
+            model, tokenizer, case, adapter_enabled=False, device=runtime["device"],
+            max_new_tokens=max_new_tokens, max_input_tokens=max_input_tokens,
         )
         base_rows.append({"id": case["id"], "group_id": case["group_id"], **base_result})
         if adapter_dir is not None:
             adapter_result = _generate_one(
-                model, tokenizer, case, adapter_enabled=True, device=runtime["device"], max_new_tokens=max_new_tokens
+                model, tokenizer, case, adapter_enabled=True, device=runtime["device"],
+                max_new_tokens=max_new_tokens, max_input_tokens=max_input_tokens,
             )
             adapter_rows.append({"id": case["id"], "group_id": case["group_id"], **adapter_result})
             print(json.dumps({
@@ -243,6 +280,8 @@ def benchmark_from_manifest(
         "dataset": dataset_summary,
         "runtime": {key: value for key, value in runtime.items() if key != "dtype"},
         "quantization": quantization,
+        "quantization_format": quantization_format,
+        "max_input_tokens": max_input_tokens,
         "gpu": gpu_name,
         "torch": torch.__version__,
         "transformers": transformers.__version__,

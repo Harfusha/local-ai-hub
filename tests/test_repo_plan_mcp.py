@@ -82,7 +82,6 @@ def test_plan_action_ignores_shared_changed_paths_transport_metadata(monkeypatch
     result = mcp_server.local_ai_coord(
         action="plan_list",
         root=str(tmp_path),
-        root=str(tmp_path),
         changed_paths=["src/changed.py"],
     )
 
@@ -100,7 +99,6 @@ def test_plan_action_still_rejects_other_unrelated_arguments(monkeypatch, tmp_pa
 
     result = mcp_server.local_ai_coord(
         action="plan_list",
-        root=str(tmp_path),
         root=str(tmp_path),
         changed_paths=["src/changed.py"],
         id="not-a-plan-list-field",
@@ -122,7 +120,6 @@ def test_hub_client_drops_shared_changed_paths_before_plan_contract_validation(m
 
     result = client.coord(
         action="plan_list",
-        root=str(tmp_path),
         root=str(tmp_path),
         changed_paths=["src/changed.py"],
     )
@@ -182,7 +179,7 @@ def test_plan_edit_small_budget_tracks_real_file_write(monkeypatch, tmp_path):
     services.config = {"server": {"state_dir": str(tmp_path / "state")},
                        "security": {"allowed_roots": [str(root)]}}
     assert services.plan_init(root=str(root))["success"]
-    created = services.plan_create(root=str(root), root=str(root), plan_id="plan_release", title="Release")
+    created = services.plan_create(root=str(root),  plan_id="plan_release", title="Release")
 
     class Client:
         def coord(self, action, **kwargs):
@@ -198,7 +195,7 @@ def test_plan_edit_small_budget_tracks_real_file_write(monkeypatch, tmp_path):
         "max_response_tokens": 256, "response_profile": "compact",
     }))
     assert result.get("mutation_applied") is True, result
-    plan = services.plan_get(root=str(root), root=str(root), plan_id="plan_release")
+    plan = services.plan_get(root=str(root),  plan_id="plan_release")
     assert plan["plan"]["tasks"]["task_parser"]["description"] == "long " * 500
 
 
@@ -211,10 +208,10 @@ def test_plan_task_edit_stale_revision_does_not_write(monkeypatch, tmp_path):
     services.config = {"server": {"state_dir": str(tmp_path / "state")},
                        "security": {"allowed_roots": [str(root)]}}
     assert services.plan_init(root=str(root))["success"]
-    created = services.plan_create(root=str(root), root=str(root), plan_id="plan_cas", title="CAS")
+    created = services.plan_create(root=str(root),  plan_id="plan_cas", title="CAS")
 
     first = services.plan_task_edit(
-        root=str(root), root=str(root), plan_id="plan_cas", task_id="task_parser",
+        root=str(root),  plan_id="plan_cas", task_id="task_parser",
         task_data={"title": "Accepted"}, expected_revision=created["file_revision"],
         idempotency_key="cas-first",
     )
@@ -236,6 +233,6 @@ def test_plan_task_edit_stale_revision_does_not_write(monkeypatch, tmp_path):
 
     assert result["success"] is False
     assert result.get("mutation_applied") is not True
-    persisted = services.plan_get(root=str(root), root=str(root), plan_id="plan_cas")
+    persisted = services.plan_get(root=str(root),  plan_id="plan_cas")
     assert persisted["file_revision"] == first["file_revision"]
     assert persisted["plan"]["tasks"]["task_parser"]["title"] == "Accepted"

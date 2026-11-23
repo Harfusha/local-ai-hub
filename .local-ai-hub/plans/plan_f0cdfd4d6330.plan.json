@@ -4,7 +4,15 @@
   "id": "plan_f0cdfd4d6330",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+      }
+    }
+  ],
   "tasks": {
     "task_active_repository_priority": {
       "acceptance_criteria": [
@@ -19,7 +27,16 @@
       "kind": "code",
       "next_action": "Source and focused tests verified; activate through normal restart only after the existing preprocessing run can stop safely.",
       "title": "Priorita aktuálně používaných repozitářů",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+          }
+        }
+      ]
     },
     "task_dashboard_progress": {
       "acceptance_criteria": [
@@ -35,7 +52,16 @@
       "kind": "code",
       "next_action": "Restartovat Hub, ověřit živé GUI a obnovení preprocessingu.",
       "title": "Přestavět přehled preprocessingu",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+          }
+        }
+      ]
     },
     "task_receipt_bridge": {
       "acceptance_criteria": [
@@ -50,8 +76,17 @@
       "kind": "code",
       "next_action": "Získat dostupný důvěryhodný hostitelský kanál a jeho bezpečnostní kontrakt; pak implementovat ověření bez vytvoření nepravého brokerového záznamu.",
       "title": "Opravit cestu k ověřovacím záznamům",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+          }
+        }
+      ]
     }
   },
-  "title": "Přehled průběhu preprocessingu"
+  "title": "Preprocessing progress overview"
 }

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 class _RepoState:

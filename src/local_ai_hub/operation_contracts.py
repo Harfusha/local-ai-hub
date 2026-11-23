@@ -257,7 +257,7 @@ _TASK_ACTIONS = (
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
-_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release")
+_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "client_status", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
@@ -398,16 +398,17 @@ _ACTION_SCOPED_FIELDS = {
             name: frozenset({"context"})
             for name in (
                 "include_diagnostics", "clone_id", "worktree_id", "branch",
-                "repository_id", "session_id", "repository_revision",
+                "repository_id", "repository_revision",
             )
         },
+        "session_id": frozenset({"context", "solve"}),
         "steps": frozenset({"pipeline"}),
         "is_worktree": frozenset({"preprocess"}),
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
         "search_mode": frozenset({"search"}),
-        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log", "reachability_dead_code", "security_audit"}),
-        "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "glob", "structural_search"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log", "reachability_dead_code", "security_audit", "find_symbol", "references", "find_references"}),
+        "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "glob", "structural_search", "find_symbol", "references", "find_references"}),
         "match_offset": frozenset({"structural_search"}),
         "file_offset": frozenset({"structural_search"}),
         "expected_revision": frozenset({"structural_search"}),
@@ -530,6 +531,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "route": ("path",),
             "refactor_impact": ("path",),
             "type_stubs": ("path",),
+            "definition": ("query",),
         },
         non_empty={
             "patch": ("path",),
@@ -557,6 +559,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "route": ("path",),
             "refactor_impact": ("path",),
             "type_stubs": ("path",),
+            "definition": ("query",),
         },
         allowed={
             "git_history_search": (
@@ -576,7 +579,11 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "call_graph": ("root", "query", "path", "limit", "depth"),
             "ast_refactor": ("root", "path", "old_symbol", "new_symbol", "staged"),
             "context": ("root", "query", "workspace", "mode", "max_tokens", "token_budget", "task_id", "session_id", "phase", "focus", "preload_profile", "repository_revision", "changed_paths", "base", "staged", "guarded", "since_hash", "approval", "override_reason", "clone_id", "worktree_id", "branch", "repository_id", "include_diagnostics", "path_hints", "directory_hints", "exclude_paths", "force_include_paths"),
-            "solve": ("root", "task", "workspace", "mode", "max_tokens", "base", "staged"),
+            "solve": ("root", "task", "workspace", "mode", "max_tokens", "base", "staged", "task_id", "session_id"),
+            "definition": ("root", "query", "path"),
+            "find_symbol": ("root", "query", "limit", "offset", "path"),
+            "references": ("root", "query", "path", "limit", "offset"),
+            "find_references": ("root", "query", "path", "limit", "offset"),
             "delegate": ("root", "task", "workspace", "profile", "max_tokens"),
             "investigate": ("root", "query", "path", "include_code"),
             "secret_scan": ("root", "path", "staged"),
@@ -905,7 +912,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
             "gpu_reservation_status",
-            "leases", "task_get", "task_list", "memory_get", "memory_find",
+            "leases", "client_status", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
             "wait_for_event", "semaphore_status", "board_item_get", "board_item_list", "board_summary", "milestone_status", "session_briefing",
             "plan_list", "plan_get", "plan_validate", "plan_board_view",
@@ -959,6 +966,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("root", "name"),
             "session_briefing": ("root", "session_id", "include"),
             "task_claim": ("root", "task_id", "owner"),
+            "client_status": ("root",),
             "gpu_reservation_status": (),
             "gpu_reservation_release": ("generation", "consent", "audit_reason"),
             "gpu_reservation_release_authorized": ("consent", "audit_reason"),

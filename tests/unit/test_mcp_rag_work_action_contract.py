@@ -72,7 +72,7 @@ def test_canonical_rag_and_work_actions_reach_only_fake_client(isolated_mcp_wrap
 
     monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
     mcp_server.local_ai_rag(action="list")
-    mcp_server.local_ai_work(action="submit", root=str(tmp_path), root=str(tmp_path), task="bounded fixture task")
+    mcp_server.local_ai_work(action="submit", root=str(tmp_path), task="bounded fixture task")
 
     assert calls[0] == ("get", "/api/rag/workspaces")
     assert calls[1][0:2] == ("post", "/api/work-orders")

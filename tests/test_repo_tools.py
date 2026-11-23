@@ -669,6 +669,41 @@ def test_find_files_git_inventory_prefilters_pattern(tmp_path: Path):
     assert sorted(res["files"]) == ["alpha.py", "sub/gamma.py"]
 
 
+def test_find_files_fails_closed_when_inventory_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(_cfg(tmp_path))
+    monkeypatch.setattr(tools, "_git_files", lambda *_args, **_kwargs: repo_tools_module.GitFileInventory([], complete=False))
+
+    result = tools.find_files(str(repo), pattern="*.py")
+
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+
+def test_find_files_bounds_fallback_and_reports_incomplete_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(_cfg(tmp_path))
+    monkeypatch.setattr(tools, "_git_files", lambda *_args, **_kwargs: None)
+
+    def incomplete_inventory(_root, **kwargs):
+        assert kwargs["inventory_deadline"] > time.monotonic()
+        kwargs["inventory_status"]["reasons"].append("time_limit")
+        return iter(())
+
+    monkeypatch.setattr(tools, "_iter_files_with_stat", incomplete_inventory)
+    result = tools.find_files(str(repo), pattern="*.py")
+
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "time_limit" in result["error"]
+
+
 def test_exact_search_uses_expansion_candidates_without_scanning_unrelated_files(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -694,6 +729,72 @@ def test_exact_search_uses_expansion_candidates_without_scanning_unrelated_files
     assert result["results"][0]["path"] == "unicode.txt"
 
 
+def test_exact_search_preserves_line_separators_in_ripgrep_paths(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    filename = "part\u2028name.py"
+    (root / filename).write_text("needle\n", encoding="utf-8")
+    (root / "unrelated.py").write_text("pass\n", encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+    if tools._rg is None:
+        pytest.skip("ripgrep is required for path framing")
+
+    result = tools.search(str(root), "needle", exact_count=True)
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["total_matches"] == result["scanned_files"] == 1
+    assert [match["path"] for match in result["results"]] == [filename]
+
+
+def test_exact_search_uses_hub_policy_with_user_ripgrep_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "match.py").write_text("needle\n", encoding="utf-8")
+    ripgrep_config = tmp_path / "ripgrep.conf"
+    ripgrep_config.write_text("--glob=!*.py\n", encoding="utf-8")
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(ripgrep_config))
+    tools = RepositoryTools(_cfg(tmp_path))
+    if tools._rg is None:
+        pytest.skip("ripgrep is required for path policy")
+
+    result = tools.search(str(root), "needle", exact_count=True)
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["total_matches"] == result["scanned_files"] == 1
+    assert [match["path"] for match in result["results"]] == ["match.py"]
+
+
+@pytest.mark.parametrize(
+    ("source", "query"),
+    [
+        (b"\xef\xbb\xbfhello\n", "\ufeff"),
+        (b"hello \xff world\n", "\ufffd"),
+        (b"\xff\xfeneedle\n\x00", "needle"),
+        (b"\xfe\xffneedle\x00\n", "needle"),
+    ],
+)
+@pytest.mark.parametrize("accelerator", ["ripgrep", "git"])
+def test_exact_search_preserves_matches_from_utf8_decoding(
+    tmp_path: Path, source: bytes, query: str, accelerator: str,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "text.py").write_bytes(source)
+    config = _cfg(tmp_path)
+    if accelerator == "git":
+        config["search"]["use_ripgrep_if_available"] = False
+        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
+    tools = RepositoryTools(config)
+    if accelerator == "ripgrep" and tools._rg is None:
+        pytest.skip("ripgrep is required for this accelerator case")
+
+    result = tools.search(str(root), query, exact_count=True)
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert [row["path"] for row in result["results"]] == ["text.py"]
+
+
 def test_exact_search_prunes_ignored_directories_before_ripgrep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
@@ -712,7 +813,7 @@ def test_exact_search_prunes_ignored_directories_before_ripgrep(tmp_path: Path, 
     if tools._rg is None or shutil.which("rg") is None:
         pytest.skip("ripgrep is required for exact search candidate pruning")
 
-    original_run = subprocess.run
+    original_run = repo_tools_module.run_hidden
     ripgrep_calls: list[list[str]] = []
 
     def record_ripgrep(cmd, **kwargs):
@@ -720,7 +821,7 @@ def test_exact_search_prunes_ignored_directories_before_ripgrep(tmp_path: Path, 
             ripgrep_calls.append([str(part) for part in cmd])
         return original_run(cmd, **kwargs)
 
-    monkeypatch.setattr(repo_tools_module.subprocess, "run", record_ripgrep)
+    monkeypatch.setattr(repo_tools_module, "run_hidden", record_ripgrep)
     result = tools.search(str(repo), "needle", exact_count=True)
 
     assert result["success"] is True
@@ -729,6 +830,158 @@ def test_exact_search_prunes_ignored_directories_before_ripgrep(tmp_path: Path, 
     assert result["scanned_files"] == 1
     assert len(ripgrep_calls) == 1
     assert "!**/.venv/**" in ripgrep_calls[0]
+
+
+@pytest.mark.parametrize("configured, upper_bound", [(8.0, 8.0), (45.0, 45.0), (120.0, 60.0)])
+def test_exact_search_bounds_ripgrep_by_config_and_request_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: float, upper_bound: float,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "match.txt").write_text("needle\n", encoding="utf-8")
+    (root / "other.txt").write_text("unrelated\n", encoding="utf-8")
+    config = _cfg(tmp_path)
+    config["search"].update(ripgrep_timeout_seconds=configured, max_files=1)
+    tools = RepositoryTools(config)
+    tools._rg = "rg"
+    timeouts = []
+
+    def candidate_scan(cmd, **kwargs):
+        assert cmd[0] == "rg"
+        timeouts.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, b"./match.txt\0", b"")
+
+    monkeypatch.setattr(repo_tools_module, "run_hidden", candidate_scan)
+    result = tools.search(str(root), "needle", exact_count=True)
+
+    assert len(timeouts) == 1
+    assert upper_bound - 1 < timeouts[0] <= upper_bound
+    assert result["success"] is True
+    assert result["count_exact"] is True
+    assert result["total_matches"] == result["scanned_files"] == 1
+    assert [item["path"] for item in result["results"]] == ["match.txt"]
+
+
+def test_exact_search_git_ignore_uses_remaining_candidate_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "match.txt").write_text("needle\n", encoding="utf-8")
+    config = _cfg(tmp_path)
+    config["search"].update(ripgrep_timeout_seconds=55.0, git_files_timeout_seconds=15.0)
+    tools = RepositoryTools(config)
+    tools._rg = "rg"
+    tick = 100.0
+    timeouts = []
+
+    class Clock:
+        def monotonic(self):
+            return tick
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    def candidate_scan(cmd, **kwargs):
+        nonlocal tick
+        timeouts.append(kwargs["timeout"])
+        if cmd[0] == "rg":
+            tick += 55.0
+            return subprocess.CompletedProcess(cmd, 0, b"./match.txt\0", b"")
+        assert "check-ignore" in cmd
+        return subprocess.CompletedProcess(cmd, 1, b"", b"")
+
+    monkeypatch.setattr(repo_tools_module, "time", Clock())
+    monkeypatch.setattr(repo_tools_module, "run_hidden", candidate_scan)
+    result = tools.search(str(root), "needle", exact_count=True)
+
+    assert timeouts == [55.0, 5.0]
+    assert result["success"] is True and result["total_matches"] == 1
+
+
+@pytest.mark.parametrize("ripgrep_timed_out", [True, False])
+def test_exact_search_fails_closed_at_scan_bound_after_ripgrep_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ripgrep_timed_out: bool,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (root / name).write_text("needle\n", encoding="utf-8")
+    config = _cfg(tmp_path)
+    config["search"].update(ripgrep_timeout_seconds=45.0, max_files=1)
+    tools = RepositoryTools(config)
+    tools._rg = "rg"
+
+    def failed_scan(cmd, **kwargs):
+        if ripgrep_timed_out:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"], output=b"./a.txt\0")
+        return subprocess.CompletedProcess(cmd, 2, b"", b"file unreadable")
+
+    monkeypatch.setattr(repo_tools_module, "run_hidden", failed_scan)
+    reads: list[Path] = []
+    read_snapshot = tools._read_snapshot
+
+    def track_read(path, **kwargs):
+        reads.append(path)
+        return read_snapshot(path, **kwargs)
+
+    monkeypatch.setattr(tools, "_read_snapshot", track_read)
+    result = tools.search(str(root), "needle", exact_count=True)
+
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert result["results"] == []
+    assert reads == []
+    assert "1-file scan bound" in result["error"]
+    assert ("ripgrep reached its 45-second limit" in result["error"]) is ripgrep_timed_out
+    assert ("[search].ripgrep_timeout_seconds" in result["error"]) is ripgrep_timed_out
+
+
+def test_exact_search_fallback_counts_only_eligible_paths_toward_scan_bound(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "large.txt").write_text("needle\n" * 30, encoding="utf-8")
+    (root / "match.txt").write_text("needle\n", encoding="utf-8")
+    config = _cfg(tmp_path)
+    config["search"].update(max_files=1, use_ripgrep_if_available=False)
+    config["rag"]["max_file_bytes"] = 100
+
+    result = RepositoryTools(config).search(str(root), "needle", exact_count=True)
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["scanned_files"] == result["total_matches"] == 1
+    assert [row["path"] for row in result["results"]] == ["match.txt"]
+
+
+def test_exact_search_skips_oversized_ripgrep_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "at-cap.txt").write_bytes(b"needle\n" + b"x" * 93)
+    (root / "too-large.txt").write_bytes(b"needle\n" + b"x" * 94)
+    config = _cfg(tmp_path)
+    config["rag"]["max_file_bytes"] = 100
+    tools = RepositoryTools(config)
+    if tools._rg is None:
+        pytest.skip("ripgrep is required to inspect exact candidates")
+    real_run = repo_tools_module.run_hidden
+    candidate_outputs: list[bytes] = []
+
+    def record_candidates(command, **kwargs):
+        result = real_run(command, **kwargs)
+        if command[0] == tools._rg:
+            candidate_outputs.append(result.stdout)
+        return result
+
+    monkeypatch.setattr(repo_tools_module, "run_hidden", record_candidates)
+    result = tools.search(str(root), "needle", exact_count=True, force_include_paths=["too-large.txt"])
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert [row["path"] for row in result["results"]] == ["at-cap.txt"]
+    output, = candidate_outputs
+    assert [Path(raw.decode("utf-8")).name for raw in output.split(b"\0") if raw] == ["at-cap.txt"]
 
 
 def test_read_snapshot_with_max_bytes_reuses_verified_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

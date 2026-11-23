@@ -4,7 +4,36 @@
   "id": "plan_smart_polyglot_preprocessing",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-07-smart-polyglot-preprocessing-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "2d2b0b6c9aa1ae33a320961b0b449beba79f47d966d40cf68d5871781eda9748"
+      }
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-07-next-gen-preprocessing-improvements-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "86105408f74ac13258424a6ceab19cfd958ebeda052f8c50d10dad650064f12c"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-07-smart-polyglot-preprocessing.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "5a9c30caa33ccff04660bce8dde940aa9cc1d3fa746121df83fe0e9e2bbd50cc"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-07-next-gen-preprocessing-improvements.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "e1d960943d09dc961356186a32ff162d7ba5cbabfedb769a0786780f0acf8bd6"
+      }
+    }
+  ],
   "tasks": {},
   "title": "Smart, Fast and Polyglot Preprocessing Pipeline"
 }

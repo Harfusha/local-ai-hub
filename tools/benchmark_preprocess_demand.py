@@ -158,13 +158,20 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
             if not hot_files:
                 raise ValueError("query matched no files in the bounded repository sample")
             scope = "repository queue selection and deterministic context_pack_paths, no model inference"
+        indexed_sources = [(key, path, hashlib.sha256(text.encode("utf-8")).hexdigest(), text)
+                           for key, path, text in fts_rows]
+        hashes = {(key, path): digest for key, path, digest, _ in indexed_sources}
         with closing(sqlite3.connect(db)) as con:
-            con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, card_key TEXT, last_accessed_at REAL, PRIMARY KEY(root,path))")
+            con.execute("""CREATE TABLE file_refs(root TEXT,path TEXT,size INTEGER,card_key TEXT,last_accessed_at REAL,
+                                                  content_hash TEXT,needs_hash INTEGER,PRIMARY KEY(root,path))""")
+            con.execute("CREATE TABLE source_index(root TEXT,path TEXT,content_hash TEXT,text TEXT,PRIMARY KEY(root,path))")
             if root is None:
                 con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
                 con.executemany("INSERT INTO source_fts VALUES(?,?,?)", fts_rows)
+            con.executemany("INSERT INTO source_index VALUES(?,?,?,?)", indexed_sources)
             _ensure_file_refs_revision_tracking(con)
-            con.executemany("INSERT INTO file_refs VALUES(?,?,?,?,?)", file_rows)
+            con.executemany("INSERT INTO file_refs VALUES(?,?,?,?,?,?,0)",
+                            ((*row, hashes[(row[0], row[1])]) for row in file_rows))
             con.commit()
 
         def connect():

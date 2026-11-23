@@ -40,8 +40,8 @@ def test_lease_mutations_use_bounded_write_transactions(tmp_path, monkeypatch):
 
     monkeypatch.setattr(leases_module, "write_transaction", observed_transaction)
 
-    held = store.claim(owner="writer-a", root=str(tmp_path), root=str(tmp_path), paths=["src/a.py"])
-    blocked = store.claim(owner="writer-b", root=str(tmp_path), root=str(tmp_path), paths=["src/a.py"])
+    held = store.claim(owner="writer-a", root=str(tmp_path), paths=["src/a.py"])
+    blocked = store.claim(owner="writer-b", root=str(tmp_path), paths=["src/a.py"])
     renewed = store.renew(owner="writer-a", lease_id=held["lease_id"])
     released = store.release(owner="writer-a", lease_id=held["lease_id"])
     reaped = store.reap_expired()
@@ -62,7 +62,7 @@ def test_lease_mutations_use_bounded_write_transactions(tmp_path, monkeypatch):
 
 def test_expired_lease_does_not_block_new_claim(tmp_path):
     store = ScopeLeaseStore(tmp_path / "state")
-    held = store.claim(owner="writer-a", root=str(tmp_path), root=str(tmp_path), paths=["src/a.py"])
+    held = store.claim(owner="writer-a", root=str(tmp_path), paths=["src/a.py"])
     with closing(store._connect()) as connection:
         connection.execute(
             "UPDATE leases SET expires_at=0 WHERE lease_id=?",
@@ -70,7 +70,7 @@ def test_expired_lease_does_not_block_new_claim(tmp_path):
         )
         connection.commit()
 
-    replacement = store.claim(owner="writer-b", root=str(tmp_path), root=str(tmp_path), paths=["src/a.py"])
+    replacement = store.claim(owner="writer-b", root=str(tmp_path), paths=["src/a.py"])
 
     assert replacement["success"] is True
 

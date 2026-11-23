@@ -151,6 +151,29 @@ def _offline_services() -> LocalAIServices:
     return services
 
 
+@pytest.mark.parametrize(("source", "background"), [("preprocess:file-card", True), ("delegate:general", False)])
+def test_shared_generation_uses_the_scheduler_lane_for_its_source(source, background) -> None:
+    services = _offline_services()
+    services.runtime = SimpleNamespace(
+        is_online=lambda: True,
+        request=lambda *_args: {"response": "Generated response."},
+    )
+    services.inference_admission = lambda _action: nullcontext(None)
+    slots = []
+
+    def submit(_model, *, execute, **kwargs):
+        slots.append(kwargs.get("background", False))
+        return execute()
+
+    services.scheduler = SimpleNamespace(submit=submit)
+
+    result = services._generate("fast", "Fixture request", "", 32, 0.0,
+                                source=source, priority=0, internal=True, use_cache=False)
+
+    assert result["success"] is True, result
+    assert slots == [background]
+
+
 def test_vram_status_accessor_does_not_hide_unexpected_errors() -> None:
     services = _offline_services()
 
@@ -466,7 +489,8 @@ def test_generate_exposes_retryable_scheduler_timeout_metadata() -> None:
     assert services.scheduler.cancel_events[0].is_set()
 
 
-def test_generate_fallback_does_not_downgrade_model_tier() -> None:
+@pytest.mark.parametrize("allow_model_fallback", [True, False])
+def test_generate_fallback_does_not_downgrade_model_tier(allow_model_fallback) -> None:
     services = _offline_services()
     services.config["models"] = {
         "fast_code": "fast",
@@ -487,6 +511,8 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
             if model == "heavy":
                 return {
                     "_lah_repetition_loop_detected": True,
+                    "_lah_partial_response": True,
+                    "outcome_unknown": True,
                     "error": "model output repetition loop detected",
                 }
             return {"response": "No actionable defects found."}
@@ -507,12 +533,14 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
         0.0,
         source="review",
         priority=5,
+        allow_model_fallback=allow_model_fallback,
     )
 
-    assert result["success"] is True
-    assert result["fallback_used"] is True
-    assert result["model"] == "reasoning"
-    assert requested_models == ["heavy", "reasoning"]
+    assert result["success"] is allow_model_fallback
+    assert requested_models == (["heavy", "reasoning"] if allow_model_fallback else ["heavy"])
+    if allow_model_fallback:
+        assert result["fallback_used"] is True
+        assert result["model"] == "reasoning"
 
 
 def _scheduler_harness(*, max_queue: int = 4) -> AffinityScheduler:
@@ -560,17 +588,29 @@ def test_scheduler_rejects_global_queue_overflow() -> None:
     assert len(global_limited._pending) == 1
 
 
-def test_scheduler_pending_timeout_releases_queue_slot() -> None:
+@pytest.mark.parametrize(("requested", "effective"), [(None, 0.05), (0.01, 0.01), (0.5, 0.05)])
+def test_scheduler_pending_timeout_releases_queue_slot(requested, effective) -> None:
     scheduler = _scheduler_harness(max_queue=1)
 
     with pytest.raises(SchedulerTimeoutError) as timeout:
-        scheduler.submit("model", source="test", execute=lambda: {}, wait_timeout=0.05)
+        scheduler.submit("model", source="test", execute=lambda: {}, wait_timeout=requested)
 
     assert timeout.value.state == "pending"
+    assert timeout.value.wait_timeout == effective
     assert scheduler._pending == []
     assert scheduler._stats["cancelled_pending"] == 1
     replacement = scheduler.enqueue("model", source="test", execute=lambda: {})
     assert scheduler._pending == [replacement]
+
+
+def test_expired_pending_job_does_not_block_ready_background_job() -> None:
+    scheduler = _scheduler_harness()
+    now = time.monotonic()
+    expired = Job(id=1, model="model", source="test", priority=9, execute=lambda: {}, deadline=now)
+    ready = Job(id=2, model="model", source="test", priority=1, execute=lambda: {}, background=True)
+    scheduler._pending = [expired, ready]
+
+    assert scheduler._eligible_jobs(now) == [ready]
 
 
 def test_scheduler_priority_aging_eventually_serves_old_foreground_job() -> None:

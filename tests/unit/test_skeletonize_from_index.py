@@ -41,7 +41,7 @@ def test_registered_file_skeleton_does_not_read_or_parse_source(tmp_path, monkey
     monkeypatch.setattr(Path, 'read_bytes', forbidden)
     engine = DeterministicEngine.__new__(DeterministicEngine)
     engine.code_index = index
-    result = engine.skeletonize_code(root=str(tmp_path), root=str(tmp_path), path='source.py')
+    result = engine.skeletonize_code(root=str(tmp_path), path='source.py')
     assert result['success'] is True
     assert result['source'] == 'code_index'
     assert 'def calculate():' in result['skeleton_code']

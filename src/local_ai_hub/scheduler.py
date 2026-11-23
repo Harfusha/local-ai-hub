@@ -358,6 +358,7 @@ class AffinityScheduler:
             "caller_timeouts": 0,
             "cancelled_pending": 0,
             "switch_time_ms": 0.0,
+            "successful_switch_time_ms": 0.0,
             "background_submitted": 0,
             "background_dispatched": 0,
             "background_completed": 0,
@@ -615,6 +616,35 @@ class AffinityScheduler:
         except Exception:
             return False
 
+    def _is_gpu_resident_for_model(self, model: str) -> bool:
+        runtime = getattr(self, "runtime", None)
+        details = getattr(runtime, "loaded_model_details", None)
+        policy = getattr(runtime, "model_policy", None)
+        profile = getattr(policy, "profile", None)
+        if not callable(details) or not callable(profile):
+            return False
+        try:
+            required_context = profile(model).num_ctx
+            try:
+                rows = details(force_refresh=True)
+            except TypeError:
+                rows = details()
+        except Exception:
+            return False
+        if not isinstance(required_context, int) or isinstance(required_context, bool) or required_context <= 0:
+            return False
+        target = str(model or "").strip().casefold()
+        return any(
+            isinstance(row, dict)
+            and str(row.get("name", row.get("model", ""))).strip().casefold() == target
+            and isinstance(row.get("vram_bytes"), int) and not isinstance(row.get("vram_bytes"), bool)
+            and row["vram_bytes"] > 0
+            and type(row.get("cpu_bytes")) is int and row["cpu_bytes"] == 0
+            and isinstance(row.get("context_length"), int) and not isinstance(row.get("context_length"), bool)
+            and row["context_length"] >= required_context
+            for row in rows
+        ) if isinstance(rows, list) and target else False
+
     def _post_unload_vram_admission(self, model: str) -> dict[str, Any]:
         # Normal status is deliberately nonblocking. Admission after unloading
         # needs a fresh measurement, using the balancer's existing bounded,
@@ -791,10 +821,7 @@ class AffinityScheduler:
                 vram_fields.get("vram_admission_budget_bytes", vram_fields["vram_budget_bytes"]),
                 vram_fields["vram_available_bytes"] + reclaimable,
             )
-            if model_key == active_key and model_key:
-                incremental_required = 0
-                vram_estimate_source = "resident"
-            elif isinstance(estimates, dict):
+            if isinstance(estimates, dict):
                 estimate = estimates.get(model_key)
                 if isinstance(estimate, int) and not isinstance(estimate, bool) and estimate > 0:
                     incremental_required = estimate
@@ -804,6 +831,13 @@ class AffinityScheduler:
                 if configured_estimate is not None:
                     incremental_required = configured_estimate
                     vram_estimate_source = "configured"
+            if (
+                not shared_capacity_enforced
+                and (incremental_required is None or incremental_required > admission_budget)
+                and self._is_gpu_resident_for_model(model or "")
+            ):
+                incremental_required = 0
+                vram_estimate_source = "resident"
             vram_fields["vram_admission_budget_bytes"] = admission_budget
             if incremental_required is None:
                 vram_admission_state = "deferred" if can_defer_switch else "unknown"
@@ -881,6 +915,61 @@ class AffinityScheduler:
         except Exception:
             return {"items": {}, "truncated": False, "total": 0, "limit": self.cache_stats_max_items, "degraded": True}
 
+    def _queue_job_locked(
+        self,
+        model: str,
+        *,
+        source: str,
+        execute: Callable[[], dict[str, Any]],
+        priority: int,
+        background: bool,
+        cancel_event: threading.Event | None = None,
+        deadline: float | None = None,
+    ) -> Job:
+        self._external_gpu_reserved()
+        if self._internal_gpu_uncertain:
+            raise QueueFullError("previous GPU inference outcome is unknown; reservation retained",
+                                 reason="gpu_outcome_unknown", admission={"state": "rejected", "retryable": False})
+        now = time.monotonic()
+        blocked_until = self._model_blocked_until.get(model, 0.0)
+        if blocked_until > now:
+            self._stats["model_fast_rejections"] += 1
+            remaining = max(1, int(blocked_until - now + 0.999))
+            detail = self._model_last_error.get(model, "model preparation failed")
+            raise ModelUnavailableError(f"model {model!r} temporarily unavailable ({detail}); retry after ~{remaining}s")
+        if blocked_until:
+            self._model_blocked_until.pop(model, None)
+            self._model_last_error.pop(model, None)
+        admission = self._admission(background=background, model=model)
+        if admission["state"] == "rejected":
+            self._stats["queue_rejections"] += 1
+            reason = str(admission.get("reason", "resource_pressure"))
+            message = admission_rejection_message(reason, background=background)
+            raise QueueFullError(message, reason=reason, admission=admission)
+        if len(self._pending) >= self.max_queue:
+            self._stats["queue_rejections"] += 1
+            admission = {"state": "rejected", "reason": "queue_limit", "queue_age_ms": 0, "retryable": True}
+            raise QueueFullError("scheduler queue limit reached", admission=admission)
+        self._job_id += 1
+        trace_observer = observer()
+        trace_id = str(getattr(trace_observer, "trace_id", "") or "")
+        job = Job(
+            id=self._job_id, model=model, source=source, priority=priority, execute=execute,
+            background=background, trace_id=trace_id, admission=admission,
+            cancel_event=cancel_event, deadline=deadline,
+        )
+        self._pending.append(job)
+        if trace_observer is not None and trace_id:
+            try:
+                trace_observer.store.link(trace_id, scheduler_job_id=str(job.id))
+                trace_observer.event("scheduled", {"scheduler_job_id": job.id, "model": model, "background": background})
+            except Exception:
+                pass
+        self._stats["submitted"] += 1
+        if background:
+            self._stats["background_submitted"] += 1
+        return job
+
     def submit(
         self,
         model: str,
@@ -913,7 +1002,7 @@ class AffinityScheduler:
         effective_wait_timeout = (
             self.default_caller_wait_timeout
             if wait_timeout is None
-            else _safe_float(wait_timeout, default=self.default_caller_wait_timeout, min_val=0.05, max_val=self.max_caller_wait_timeout)
+            else min(wait_timeout, self.max_caller_wait_timeout)
         )
         request_deadline = time.monotonic() + effective_wait_timeout
         if background:
@@ -922,49 +1011,17 @@ class AffinityScheduler:
             priority = min(priority, 1)
         preempt_hook: Callable[[], bool | None] | None = None
         with self._cond:
-            self._external_gpu_reserved()
-            if self._internal_gpu_uncertain:
-                return {"success": False, "error": "previous GPU inference outcome is unknown; reservation retained",
-                        "error_code": "gpu_outcome_unknown", "outcome_unknown": True, "retryable": False}
-            now = time.monotonic()
-            blocked_until = self._model_blocked_until.get(model, 0.0)
-            if blocked_until > now:
-                self._stats["model_fast_rejections"] += 1
-                remaining = max(1, int(blocked_until - now + 0.999))
-                detail = self._model_last_error.get(model, "model preparation failed")
-                raise ModelUnavailableError(f"model {model!r} temporarily unavailable ({detail}); retry after ~{remaining}s")
-            if blocked_until:
-                self._model_blocked_until.pop(model, None)
-                self._model_last_error.pop(model, None)
-            admission = self._admission(background=background, model=model)
-            if admission["state"] == "rejected":
-                self._stats["queue_rejections"] += 1
-                reason = str(admission.get("reason", "resource_pressure"))
-                message = admission_rejection_message(reason, background=background)
-                raise QueueFullError(message, reason=reason, admission=admission)
-            if len(self._pending) >= self.max_queue:
-                self._stats["queue_rejections"] += 1
-                admission = {"state": "rejected", "reason": "queue_limit", "queue_age_ms": 0, "retryable": True}
-                raise QueueFullError("scheduler queue limit reached", admission=admission)
-            self._job_id += 1
-            trace_observer = observer()
-            trace_id = str(getattr(trace_observer, "trace_id", "") or "")
-            job = Job(
-                id=self._job_id, model=model, source=source, priority=priority, execute=execute,
-                background=background, trace_id=trace_id, admission=admission,
-                cancel_event=cancel_event, deadline=request_deadline,
-            )
-            self._pending.append(job)
-            if trace_observer is not None and trace_id:
-                try:
-                    trace_observer.store.link(trace_id, scheduler_job_id=str(job.id))
-                    trace_observer.event("scheduled", {"scheduler_job_id": job.id, "model": model, "background": background})
-                except Exception:
-                    pass
-            self._stats["submitted"] += 1
-            if background:
-                self._stats["background_submitted"] += 1
-            else:
+            try:
+                job = self._queue_job_locked(
+                    model, source=source, execute=execute, priority=priority,
+                    background=background, cancel_event=cancel_event, deadline=request_deadline,
+                )
+            except QueueFullError as exc:
+                if exc.reason == "gpu_outcome_unknown":
+                    return {"success": False, "error": str(exc), "error_code": exc.reason,
+                            "outcome_unknown": True, "retryable": False}
+                raise
+            if not background:
                 # Mark foreground intent before notifying the dispatcher. This closes
                 # the race where an idle GPU worker could acquire the GPU between a
                 # user request arriving and the foreground model beginning to load.
@@ -1109,41 +1166,7 @@ class AffinityScheduler:
         if background:
             priority = min(priority, 1)
         with self._cond:
-            if self._internal_gpu_uncertain:
-                raise QueueFullError("previous GPU inference outcome is unknown; reservation retained",
-                                     reason="gpu_outcome_unknown", admission={"state": "rejected", "retryable": False})
-            now = time.monotonic()
-            blocked_until = self._model_blocked_until.get(model, 0.0)
-            if blocked_until > now:
-                self._stats["model_fast_rejections"] += 1
-                remaining = max(1, int(blocked_until - now + 0.999))
-                detail = self._model_last_error.get(model, "model preparation failed")
-                raise ModelUnavailableError(f"model {model!r} temporarily unavailable ({detail}); retry after ~{remaining}s")
-            admission = self._admission(background=background, model=model)
-            if admission["state"] == "rejected":
-                self._stats["queue_rejections"] += 1
-                reason = str(admission.get("reason", "resource_pressure"))
-                message = ("insufficient VRAM for model admission" if reason == "vram_budget"
-                           else "resource pressure blocks background admission")
-                raise QueueFullError(message, reason=reason, admission=admission)
-            if len(self._pending) >= self.max_queue:
-                self._stats["queue_rejections"] += 1
-                admission = {"state": "rejected", "reason": "queue_limit", "queue_age_ms": 0, "retryable": True}
-                raise QueueFullError("scheduler queue limit reached", admission=admission)
-            self._job_id += 1
-            trace_observer = observer()
-            trace_id = str(getattr(trace_observer, "trace_id", "") or "")
-            job = Job(id=self._job_id, model=model, source=source, priority=priority, execute=execute, background=background, trace_id=trace_id, admission=admission)
-            self._pending.append(job)
-            if trace_observer is not None and trace_id:
-                try:
-                    trace_observer.store.link(trace_id, scheduler_job_id=str(job.id))
-                    trace_observer.event("scheduled", {"scheduler_job_id": job.id, "model": model, "background": background})
-                except Exception:
-                    pass
-            self._stats["submitted"] += 1
-            if background:
-                self._stats["background_submitted"] += 1
+            job = self._queue_job_locked(model, source=source, execute=execute, priority=priority, background=background)
             self._cond.notify_all()
             return job
 
@@ -1160,6 +1183,15 @@ class AffinityScheduler:
                 self._idle_maintenance_callbacks.append(callback)
 
     def _run_idle_maintenance_callbacks(self) -> None:
+        now = time.monotonic()
+        if now - getattr(self, "_last_external_gpu_reconcile", 0.0) >= 1.0:
+            self._last_external_gpu_reconcile = now
+            # Reap expired fences even when readiness prevents a new job from queueing.
+            try:
+                with self._cond:
+                    self._external_gpu_reserved()
+            except Exception:
+                logging.getLogger(__name__).exception("external GPU reservation reconciliation failed")
         with self._cond:
             callbacks = tuple(self._idle_maintenance_callbacks)
         for callback in callbacks:
@@ -1815,21 +1847,15 @@ class AffinityScheduler:
         with self._cond:
             self._stats["background_yields"] += 1
 
-    def _foreground_pending_jobs(self) -> list[Job]:
-        now = time.monotonic()
-        return [j for j in self._pending if not j.background and j.capacity_retry_at <= now]
-
-    def _background_pending_jobs(self) -> list[Job]:
-        now = time.monotonic()
-        return [j for j in self._pending if j.background and j.capacity_retry_at <= now]
-
     def _eligible_jobs(self, now: float) -> list[Job]:
-        foreground = self._foreground_pending_jobs()
+        ready = [job for job in self._pending if job.capacity_retry_at <= now
+                 and (job.deadline is None or now < job.deadline)]
+        foreground = [job for job in ready if not job.background]
         if foreground:
             return foreground
         if now - self._last_foreground_activity < self.background_idle_grace:
             return []
-        return self._background_pending_jobs()
+        return ready
 
     def _claim_idle_unload(self, now: float) -> str | None:
         """Caller holds _cond; reserve residency before releasing that lock."""
@@ -1905,13 +1931,17 @@ class AffinityScheduler:
                 self._cond.notify_all()
 
     def _dispatch_loop(self) -> None:
+        pending_initial_inventory: set[str] | None = None
         while self._running:
-            self._run_idle_maintenance_callbacks()
+            if pending_initial_inventory is None:
+                self._run_idle_maintenance_callbacks()
+            read_initial_inventory = False
             target_switch: str | None = None
             idle_unload: str | None = None
             selected: Job | None = None
             with self._cond:
                 while self._running:
+                    initial_inventory, pending_initial_inventory = pending_initial_inventory, None
                     now = time.monotonic()
                     if self._gpu_prepare_in_progress:
                         self._cond.wait(timeout=0.10)
@@ -1933,7 +1963,10 @@ class AffinityScheduler:
                         self._cond.wait(timeout=0.10)
                         continue
                     if eligible and self._active_model is None and self._inflight == 0:
-                        target_switch = self._choose_initial_model(eligible, now)
+                        if initial_inventory is None:
+                            read_initial_inventory = True
+                            break
+                        target_switch = self._choose_initial_model(eligible, now, loaded_models=initial_inventory)
                         if target_switch and self._capacity_sharing_active():
                             target_jobs = [job for job in eligible if job.model == target_switch]
                             if not any(self._claim_job_capacity(job) for job in target_jobs):
@@ -1985,6 +2018,11 @@ class AffinityScheduler:
                     with self._cond:
                         self._switching = False
                 break
+
+            if read_initial_inventory:
+                # Queue and ownership can change while this backend read is in flight.
+                pending_initial_inventory = self._read_initial_model_inventory()
+                continue
 
             if idle_unload is not None:
                 self._perform_idle_unload(idle_unload)
@@ -2041,18 +2079,31 @@ class AffinityScheduler:
             return self.max_parallel
         return max(1, min(self.max_parallel, self.model_policy.parallel_limit(self._active_model)))
 
-    def _choose_initial_model(self, jobs: list[Job], now: float) -> str | None:
-        loaded = set()
+    def _read_initial_model_inventory(self) -> set[str]:
         try:
-            loaded = set(self.runtime.loaded_models())
+            return set(self.runtime.loaded_models())
         except Exception:
-            loaded = set()
-        ordered = sorted(jobs, key=lambda j: (-j.priority, j.created_at))
-        top_priority = ordered[0].priority if ordered else 0
-        for job in ordered:
-            if job.model in loaded and (top_priority - job.priority <= 2):
-                return job.model
-        candidate = ordered[0] if ordered else None
+            return set()
+
+    def _choose_initial_model(
+        self, jobs: list[Job], now: float, *, loaded_models: set[str] | None = None,
+    ) -> str | None:
+        if loaded_models is None:
+            loaded_models = self._read_initial_model_inventory()
+        switch_count = max(0, int(self._stats.get("model_switches", 0)))
+        switch_cost = (
+            max(0.0, float(self._stats.get("successful_switch_time_ms", 0.0))) / switch_count / 30_000.0
+            if switch_count
+            else 0.0
+        )
+
+        def score(job: Job) -> tuple[float, int, float]:
+            wait_bonus = 0 if job.background else int(max(0.0, now - job.created_at) // 30.0)
+            effective_priority = min(9, job.priority + wait_bonus)
+            switch_penalty = 0.0 if job.model in loaded_models else switch_cost
+            return (effective_priority - switch_penalty, job.priority, -job.created_at)
+
+        candidate = max(jobs, key=score, default=None)
         if candidate and candidate.background and now - self._last_foreground_activity < self.background_switch_grace:
             return None
         return candidate.model if candidate else None
@@ -2343,6 +2394,9 @@ class AffinityScheduler:
             else:
                 if target != self._active_model:
                     self._stats["model_switches"] += 1
+                    self._stats["successful_switch_time_ms"] = round(
+                        float(self._stats.get("successful_switch_time_ms", 0.0)) + elapsed_ms, 1
+                    )
                 self._model_blocked_until.pop(target, None)
                 self._model_last_error.pop(target, None)
                 self._active_model = target
@@ -2400,8 +2454,16 @@ class AffinityScheduler:
         job.started_at = time.monotonic()
         execute_started = False
         try:
-            if job.cancel_event is not None and job.cancel_event.is_set():
-                job.error = "caller cancelled before execution"
+            cancelled = job.cancel_event is not None and job.cancel_event.is_set()
+            expired = job.deadline is not None and time.monotonic() >= job.deadline
+            if cancelled or expired:
+                outcome = "cancelled" if cancelled else "timed_out"
+                job.result = {
+                    "success": False, outcome: True, "operation_not_started": True,
+                    "request_not_sent": True, "terminal": True, "retryable": not cancelled,
+                    "error": "caller cancelled before execution" if cancelled else "caller timed out before execution",
+                    "error_code": "scheduler_caller_cancelled" if cancelled else "scheduler_caller_timeout",
+                }
             else:
                 execute_started = True
                 job.result = job.context.run(job.execute)
@@ -2463,7 +2525,7 @@ class AffinityScheduler:
                     job.gpu_outcome_unknown = True
                     if isinstance(job.result, dict) and not job.error:
                         job.result.update(success=False, outcome_unknown=True, terminal=True, retryable=False)
-                if job.gpu_capacity_lease is not None and (not uncertain or clean_cancel):
+                if job.gpu_capacity_lease is not None and (not execute_started or not uncertain or clean_cancel):
                     lease = job.gpu_capacity_lease
                     released = self.release_gpu_capacity_lease(
                         lease["lease_id"], lease["owner"], lease["generation"],
@@ -2698,16 +2760,19 @@ class AffinityScheduler:
             return result
         if action != "release":
             return {"success": False, "operation_not_started": True,
-                    "error": "unsupported GPU reservation operation"}
+                    "error": "unsupported GPU reservation operation", "status_code": 400,
+                    "terminal": True, "retryable": False}
         if (type(consent) is not bool or not consent
                 or not isinstance(generation, str) or not generation.strip()
                 or not isinstance(audit_reason, str) or not audit_reason.strip()):
             return {"success": False, "operation_not_started": True,
-                    "error": "gpu reservation release requires consent=true, generation, and audit_reason"}
+                    "error": "gpu reservation release requires consent=true, generation, and audit_reason",
+                    "status_code": 400, "terminal": True, "retryable": False}
         released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
         result = {"success": released, "mutation_applied": released, "generation": generation}
         if not released:
-            result["error"] = "lease is missing, active, unexpired, or changed"
+            result.update(error="lease is missing, active, unexpired, or changed",
+                          status_code=409, terminal=True, retryable=False)
         return result
 
     def is_running(self) -> bool:

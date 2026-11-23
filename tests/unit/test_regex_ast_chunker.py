@@ -78,6 +78,18 @@ def test_adjacent_small_functions_pack_without_splitting_units() -> None:
         assert "{ work_" in chunk
 
 
+def test_rag_store_bounds_oversized_ast_fallback_chunks() -> None:
+    store = RAGStore.__new__(RAGStore)
+    store.config = {"rag": {"chunk_chars": 16, "chunk_overlap_chars": 0}}
+    source = "x" * 40
+    store._python_ast_chunks = lambda *_args: [source]
+
+    chunks = store._chunks(source, path="large.py")
+
+    assert "".join(chunks) == source
+    assert all(len(chunk) <= 16 for chunk in chunks)
+
+
 @pytest.mark.parametrize("language", ["typescript", "go"])
 def test_long_braceless_source_is_returned_once(language) -> None:
     source = "const value = 1;\n" * 20 if language == "typescript" else "package p\n" + "var value = 1\n" * 20

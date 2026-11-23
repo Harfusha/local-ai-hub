@@ -147,6 +147,42 @@ def test_openvino_auto_candidates_prioritize_npu_then_gpu_then_cpu(monkeypatch: 
     assert accelerators.openvino_device_candidates(cfg, "GPU") == ["GPU.0"]
 
 
+def test_openvino_explicit_unavailable_device_does_not_route_to_another_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        accelerators,
+        "openvino_runtime",
+        lambda: {"installed": True, "available": True, "devices": ["CPU", "NPU"]},
+    )
+    cfg = {"openvino": {"enabled": True, "device_priority": ["NPU", "GPU", "CPU"]}}
+    assert accelerators.openvino_device_candidates(cfg, "GPU") == []
+    assert accelerators.openvino_device_candidates(cfg, "GPU.0") == []
+
+
+def test_explicit_openvino_device_requires_opt_in_for_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        accelerators,
+        "openvino_runtime",
+        lambda: {"installed": True, "available": True, "devices": ["CPU", "NPU"]},
+    )
+    cfg = {
+        "models": {
+            "embedding_backend": "openvino", "embedding_device": "GPU",
+            "reranker_backend": "openvino", "reranker_device": "GPU",
+        },
+        "openvino": {"enabled": True, "device_priority": ["NPU", "GPU", "CPU"]},
+    }
+    assert EmbeddingModel(cfg)._candidate_specs() == []
+    assert Reranker(cfg)._candidate_specs() == []
+
+    cfg["openvino"]["cpu_fallback"] = True
+    assert EmbeddingModel(cfg)._candidate_specs() == [("sentence-transformers", "cpu")]
+    assert Reranker(cfg)._candidate_specs() == [("torch", "cpu")]
+
+
 def test_managed_ollama_enables_igpu_only_when_profile_requests_it(tmp_path: Path) -> None:
     runtime = OllamaRuntime({
         "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
@@ -461,11 +497,11 @@ def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.
     assert result["computed"] == 1
     monkeypatch.setattr(reranker, "active_device", "NPU")
     npu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": reranker._cache_identity(), "q": "q", "d": "doc"}
+        {"identity": reranker._cache_identity(allow_cpu_fallback=False), "q": "q", "d": "doc"}
     )
     monkeypatch.setattr(reranker, "active_device", "GPU.0")
     gpu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": reranker._cache_identity(), "q": "q", "d": "doc"}
+        {"identity": reranker._cache_identity(allow_cpu_fallback=False), "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(npu_key) is None
     assert reranker.cache.get(gpu_key) == pytest.approx(2.0)

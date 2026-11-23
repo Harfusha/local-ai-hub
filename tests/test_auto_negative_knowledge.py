@@ -71,7 +71,7 @@ def test_find_negative_knowledge_by_query(store: IncidentStore, tmp_path: Path):
 
 
 def test_command_broker_skips_unscoped_known_pitfalls(tmp_path: Path):
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite")
     store = IncidentStore(state_store)
 

@@ -1,4 +1,6 @@
 """Deferred service boundary cases; inline fake provider, all state under tmp_path."""
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -6,6 +8,7 @@ import pytest
 from local_ai_hub.operational_mode import set_operational_mode
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub import resilience
 from local_ai_hub import services as services_module
 
 
@@ -45,6 +48,54 @@ def _service(tmp_path, response):
     service.stale_generation_cache = MagicMock()
     service.stale_generation_cache.get.return_value = {"success": True, "text": "STALE"}
     return service, runtime
+
+
+def test_open_model_circuits_return_retryable_failure_without_backend_call(tmp_path):
+    service, runtime = _service(tmp_path, {"done": True, "response": "unused"})
+    service.stale_generation_cache.get.return_value = None
+    service.breakers.allow = lambda _key: False
+
+    result = service._generate("requested", "prompt", "system", 32, 0.0, source="delegate:test", priority=5)
+
+    assert result["success"] is False
+    assert result["terminal"] is False
+    assert result["retryable"] is True
+    assert result["error_code"] == "model_circuit_open"
+    assert result["retry_after_seconds"] == service.breakers.cooldown_seconds
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize("interruption", ["preempted", "admission_paused"])
+def test_neutral_interruption_releases_half_open_probe(tmp_path, monkeypatch, interruption):
+    service, runtime = _service(tmp_path, {"done": True, "response": "healthy"})
+    tick = [10.0]
+    monkeypatch.setattr(resilience, "time", SimpleNamespace(monotonic=lambda: tick[0]))
+    key = "model:requested"
+    for _ in range(service.breakers.failure_threshold):
+        service.breakers.failure(key)
+    tick[0] += service.breakers.cooldown_seconds + 1.0
+
+    def preempt(*_args, execute, cancel_event, **_kwargs):
+        cancel_event.set()
+        return execute()
+
+    rejection = {"success": False, "error": "inference admission paused", "error_code": "admission_paused"}
+    with monkeypatch.context() as interrupted:
+        if interruption == "preempted":
+            interrupted.setattr(service.scheduler, "submit", preempt)
+        else:
+            interrupted.setattr(service, "inference_admission", lambda _action: nullcontext(rejection), raising=False)
+        result = service._generate("requested", "prompt", "system", 32, 0.0, source="delegate:test", priority=5)
+
+    assert result["success"] is False
+    assert runtime.calls == []
+    state = service.breakers.status()[key]
+    assert state["failures"] == service.breakers.failure_threshold
+    assert not state["half_open_probe"]
+
+    recovered = service._generate("requested", "prompt", "system", 32, 0.0, source="delegate:test", priority=5)
+    assert recovered["success"] is True
+    assert runtime.calls == ["requested"]
 
 
 @pytest.mark.parametrize("state", [{"_lah_partial_response": True}, {"outcome_unknown": True, "cleanup_unconfirmed": True}])

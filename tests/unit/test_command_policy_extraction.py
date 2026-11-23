@@ -15,7 +15,7 @@ from local_ai_hub.command_policy import (
 )
 from local_ai_hub.command_git import classify_git_command
 from local_ai_hub.command_validation import _validation_classification
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_command_broker_keeps_compatibility_aliases_for_extracted_policy():

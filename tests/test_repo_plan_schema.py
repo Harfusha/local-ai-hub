@@ -8,9 +8,12 @@ import pytest
 
 from local_ai_hub.project_config import resolve_project_config
 from local_ai_hub.repo_plan.schema_validation import SCHEMA_PATH
-from local_ai_hub.repo_plan import (
+from local_ai_hub.repo_plan.models import (
     PlanLifecycle,
     RepoPlan,
+)
+
+from local_ai_hub.repo_plan.schema_validation import (
     RepoPlanValidationError,
     parse_plan_json,
     serialize_plan_json,

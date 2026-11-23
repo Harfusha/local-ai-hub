@@ -100,12 +100,14 @@ class FeatureSet:
         # Code-intelligence backends
         self.code_intelligence: bool = self.repo and bool(feat.get("code_intelligence", True)) and bool(ci.get("enabled", True))
         self.serena: bool = self.code_intelligence and bool(ci.get("serena_enabled", True))
-        # Preprocessing & Subagents & Agent OS & Dashboard
+        # Preprocessing & Subagents & Agent OS & Dashboard & Laya
         self.preprocessing: bool = self.repo and bool(feat.get("preprocessing", True)) and bool(prep.get("enabled", True))
         self.subagents: bool = self.tasks and bool(feat.get("subagents", True)) and bool(sub.get("enabled", True))
         self.agent_os: bool = self.coord and bool(feat.get("agent_os", True))
         self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(mon.get("dashboard_enabled", True))
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
+        laya_cfg = _tbl("laya")
+        self.laya: bool = bool(laya_cfg.get("enabled", True))
         # load_config resolves auto-detection and overrides into `_hardware`.
         # Prefer that effective profile; raw user config is a conservative
         # fallback for isolated builders and hand-authored test fixtures.
@@ -304,7 +306,17 @@ class FeatureSet:
             lines.append("- `local_ai_work(action=\"submit\")` only for explicit, qualified closed delegation; primary agent reviews handoff")
         elif self.work_orchestrator:
             lines.append("- `local_ai_work`: existing work status, wait, get and cancel actions only; new work submission is unavailable at this profile")
-        lines.extend(self.specialized_trigger_lines())
+        for spec_line in self.specialized_trigger_lines():
+            if any(spec_line.startswith(prefix) for prefix in (
+                "- `local_ai_status`:",
+                "- `local_ai_repo`: every non-trivial",
+                "- `local_ai_rag`:",
+                "- `local_ai_artifact`:",
+                "- `local_ai_coord`: substantial task",
+                "- `local_ai_work`: manage known",
+            )):
+                continue
+            lines.append(spec_line)
         return lines
 
     def specialized_trigger_lines(self) -> list[str]:

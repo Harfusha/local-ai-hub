@@ -43,9 +43,8 @@ def _encode_example(tokenizer: Any, row: dict[str, Any], max_length: int) -> tup
     answer = full[len(prefix) :]
     if not answer:
         raise ValueError(f"empty assistant target in dataset row {row['id']}")
-    if len(answer) > max_length:
-        raise ValueError(f"assistant target exceeds max_length in dataset row {row['id']}")
-    prefix = prefix[-(max_length - len(answer)) :] if len(prefix) + len(answer) > max_length else prefix
+    if len(answer) > max_length or len(prefix) + len(answer) > max_length:
+        raise ValueError(f"prompt and assistant target exceed max_length in dataset row {row['id']}; refusing to remove system instructions or source context")
     input_ids = prefix + answer
     labels = [-100] * len(prefix) + answer
     return input_ids, labels
@@ -68,11 +67,11 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
         return train_laya_from_config(config, allow_model_download=allow_model_download)
     dataset_summary = validate_dataset_pair(config["train_file"], config["evaluation_file"])
     training = config.get("training", {})
-    runtime = resolve_runtime(device=str(training.get("device", "cuda")))
-    quantization = str(training.get("quantization", "none"))
-    if quantization not in {"none", "4bit"}:
-        raise ValueError("training.quantization must be none or 4bit")
-    if quantization == "4bit" and runtime["device"] != "cuda":
+    runtime = resolve_runtime(device=str(training.get("device", "cuda")), precision=training.get("precision"))
+    quantization = str(training.get("quantization", "4bit"))
+    if quantization != "4bit":
+        raise ValueError("training.quantization must be 4bit")
+    if runtime["device"] != "cuda":
         raise ValueError("4bit QLoRA requires CUDA")
     output_dir = Path(config["output_dir"])
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -85,6 +84,8 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("training needs torch, transformers, peft, and accelerate") from exc
+
+    quantization_format = "nf4"
 
     base_model = str(config["base_model"])
     is_local = Path(base_model).exists()
@@ -109,7 +110,7 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
             raise RuntimeError("4bit QLoRA needs bitsandbytes and current transformers/peft") from exc
         load_options["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
+            bnb_4bit_quant_type=quantization_format,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=runtime["dtype"],
         )
@@ -127,11 +128,15 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
     model.config.use_cache = False
     checkpointing = bool(training.get("gradient_checkpointing", True))
     if quantization == "4bit":
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=checkpointing)
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False} if checkpointing else None,
+        )
     if checkpointing:
         if quantization != "4bit":
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-            model.enable_input_require_grads()
+        model.enable_input_require_grads()
     lora = config.get("lora", {})
     lora_config = LoraConfig(
         r=int(lora.get("r", 8)),
@@ -145,27 +150,35 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
     model.train()
     train_rows = [json.loads(line) for line in Path(config["train_file"]).read_text(encoding="utf-8").splitlines() if line.strip()]
     encoded = [
-        _encode_example(tokenizer, row, int(training.get("max_length", 2048)))
+        _encode_example(tokenizer, row, int(training.get("max_length", 8192)))
         for row in train_rows
     ]
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable:
         raise RuntimeError("LoRA produced no trainable parameters")
     try:
-        optimizer = torch.optim.AdamW(
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.PagedAdamW8bit(
             trainable,
             lr=float(training.get("learning_rate", 2e-4)),
-            fused=bool(runtime["fused_optimizer"]),
         )
-        optimizer_fused = bool(runtime["fused_optimizer"])
-    except (TypeError, RuntimeError):
-        optimizer = torch.optim.AdamW(trainable, lr=float(training.get("learning_rate", 2e-4)))
-        optimizer_fused = False
+        optimizer_type = "paged_adamw_8bit"
+    except Exception:
+        try:
+            optimizer = torch.optim.AdamW(
+                trainable,
+                lr=float(training.get("learning_rate", 2e-4)),
+                fused=bool(runtime["fused_optimizer"]),
+            )
+            optimizer_type = "adamw_fused"
+        except (TypeError, RuntimeError):
+            optimizer = torch.optim.AdamW(trainable, lr=float(training.get("learning_rate", 2e-4)))
+            optimizer_type = "adamw_standard"
     scaler = torch.amp.GradScaler("cuda", enabled=runtime["device"] == "cuda" and dtype_name == "fp16")
     batch_size = int(training.get("batch_size", 1))
     accumulation = int(training.get("gradient_accumulation_steps", 4))
     epochs = int(training.get("epochs", 3))
-    max_length = int(training.get("max_length", 2048))
+    max_length = int(training.get("max_length", 8192))
     if not (1 <= batch_size <= 32 and 1 <= accumulation <= 128 and 1 <= epochs <= 20 and 16 <= max_length <= 32768):
         raise ValueError("training batch/accumulation/epoch/max_length is outside safe bounds")
     seed = int(training.get("seed", 20261110))
@@ -181,6 +194,14 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
     for epoch in range(epochs):
         indices = list(range(len(encoded)))
         random.Random(seed + epoch).shuffle(indices)
+        # Sequence Length Bucketing: group similar length sequences into buckets of 32 to minimize padding waste & memory spikes
+        bucket_size = 32
+        bucketed_indices = []
+        for b_start in range(0, len(indices), bucket_size):
+            b_chunk = indices[b_start : b_start + bucket_size]
+            b_chunk.sort(key=lambda idx, _enc=encoded: len(_enc[idx][0]))
+            bucketed_indices.extend(b_chunk)
+        indices = bucketed_indices
         loss_total = 0.0
         loss_count = 0
         optimizer.zero_grad(set_to_none=True)
@@ -206,10 +227,19 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
                 if runtime["device"] == "cuda"
                 else nullcontext()
             )
+            target_len = int((labels_tensor != -100).sum(dim=1).max().item())
+            logits_to_keep = target_len + 1
             with amp_context:
-                result = model(input_ids=input_tensor, attention_mask=attention, labels=labels_tensor)
-            scaler.scale(result.loss).backward()
-            loss_total += float(result.loss.detach().float().cpu())
+                out = model(input_ids=input_tensor, attention_mask=attention, logits_to_keep=logits_to_keep)
+                shift_logits = out.logits[:, :-1, :].contiguous().float()
+                shift_labels = labels_tensor[:, -target_len:].contiguous()
+                loss = torch.nn.functional.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    ignore_index=-100,
+                )
+            scaler.scale(loss).backward()
+            loss_total += float(loss.detach().float().cpu())
             loss_count += 1
             pending += 1
             is_last_batch = batch_start + batch_size >= len(indices)
@@ -248,11 +278,13 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
         "dataset": dataset_summary,
         "runtime": {key: value for key, value in runtime.items() if key != "dtype"},
         "quantization": quantization,
+        "quantization_format": quantization_format,
         "gpu": gpu,
         "torch": torch.__version__,
         "transformers": __import__("transformers").__version__,
         "peft": __import__("peft").__version__,
-        "optimizer_fused": optimizer_fused,
+        "optimizer_type": optimizer_type,
+        "optimizer_fused": optimizer_type == "adamw_fused",
         "seed": seed,
         "training": {key: value for key, value in training.items()},
         "lora": {key: value for key, value in lora.items()},

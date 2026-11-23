@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 
 from local_ai_hub.async_jobs import AsyncJobManager
+from local_ai_hub.execution_pool import ExecutionPool
 
 
 class _DummyScheduler:
@@ -124,3 +125,30 @@ def test_n05_async_burst_worker_threads_bounded(tmp_path: Path):
         assert max_running_observed <= max_workers, f"Observed {max_running_observed} concurrent workers > limit {max_workers}"
     finally:
         manager.close()
+
+
+def test_n05_dispatch_uses_shared_bounded_io_pool(tmp_path: Path):
+    pool = ExecutionPool(cpu_workers=1, io_workers=2, inference_workers=1)
+    submitted_categories = []
+    submit = pool.submit
+
+    def track_submit(category, fn, /, *args, **kwargs):
+        submitted_categories.append(category)
+        return submit(category, fn, *args, **kwargs)
+
+    pool.submit = track_submit
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path)}, "async_jobs": {"max_workers": 2}},
+        _DummyScheduler(),
+        _SlowArtifacts(tmp_path / "async_jobs.sqlite3"),
+        lambda action, payload: {"success": True},
+        execution_pool=pool,
+    )
+    try:
+        submitted = manager.submit("reason", {"prompt": "bounded dispatch"})
+        result = manager.wait(submitted["job_id"], timeout_seconds=5.0)
+        assert result["success"] is True
+        assert submitted_categories.count("io") >= 2  # dispatch and job execution
+    finally:
+        manager.close()
+        pool.shutdown(wait=True, cancel_futures=True)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub import commands as command_module
+from local_ai_hub import command_broker as command_module
 from local_ai_hub import http_server
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract
@@ -18,7 +18,7 @@ from local_ai_hub.project_config import resolve_project_context
 
 
 def _setup(tmp_path: Path, task_id: str) -> tuple[LocalAIApp, Path, str]:
-    expected_commands = (Path(__file__).parents[1] / "src/local_ai_hub/commands.py").resolve()
+    expected_commands = (Path(__file__).parents[1] / "src/local_ai_hub/command_broker.py").resolve()
     assert Path(command_module.__file__).resolve() == expected_commands
     repo = tmp_path / "repo"
     repo.mkdir()

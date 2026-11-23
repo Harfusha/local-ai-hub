@@ -103,6 +103,7 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
         scope_id="session-cascade",
         key="key1",
         value="val1",
+        provenance={"root": str(tmp_path), "repository_id": "repo-enhancements"},
     ))
     rec2 = store.record(MemoryRecord.create(
         kind=MemoryKind.DECISION,
@@ -110,11 +111,12 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
         scope_id="session-cascade",
         key="key2",
         value="val2",
+        provenance={"root": str(tmp_path), "repository_id": "repo-enhancements"},
     ))
-    store.record_relation(rec1.record_id, "relates_to", rec2.record_id, root=str(tmp_path))
+    store.record_relation(rec1.record_id, "relates_to", rec2.record_id, root=str(tmp_path), repository_id="repo-enhancements")
 
     # Check relation exists
-    relations = store.find_relations(source_entity=rec1.record_id, root=str(tmp_path))
+    relations = store.find_relations(source_entity=rec1.record_id, root=str(tmp_path), repository_id="repo-enhancements")
     assert len(relations) >= 1
 
     # Delete rec1 -> relation must be cleaned
@@ -124,7 +126,7 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
         scope_id="session-cascade",
     )
     assert deleted is True
-    relations_after = store.find_relations(source_entity=rec1.record_id, root=str(tmp_path))
+    relations_after = store.find_relations(source_entity=rec1.record_id, root=str(tmp_path), repository_id="repo-enhancements")
     assert len(relations_after) == 0
 
 

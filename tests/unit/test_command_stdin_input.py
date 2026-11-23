@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_command_receives_piped_stdin(tmp_path: Path):

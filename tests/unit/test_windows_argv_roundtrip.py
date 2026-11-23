@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.windows_argv import parse_windows_command_line
 
 

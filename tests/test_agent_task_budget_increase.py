@@ -172,7 +172,7 @@ def test_unverified_authorization_identity_cannot_increase_budget(budget_case, i
 
 
 def budget_broker(case):
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
     policy, state, _ = case
     broker = CommandBroker.__new__(CommandBroker)
     broker.set_policy_engine(policy)

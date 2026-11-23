@@ -385,6 +385,31 @@ def test_transient_circuit_is_isolated_to_failed_root(tmp_path: Path):
         ext.close()
 
 
+def test_query_serena_uses_code_index_before_waiting_on_cooldown_lock(tmp_path: Path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    class CodeIndex:
+        def find_symbol(self, root, query, **kwargs):
+            return {"success": True, "symbols": [{"name": query}]}
+
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True, "failure_threshold": 1},
+    }, code_index=CodeIndex())
+    resolved_root = str(root.resolve())
+    ext._record_failure("serena", TimeoutError("soft timeout"), operation="search", root=resolved_root)
+    monkeypatch.setattr(ext, "_backend_operation", lambda *args, **kwargs: pytest.fail("cooldown must bypass the lock"))
+    try:
+        result = ext.query_serena(resolved_root, "find_symbol", query="needle")
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert result["fallback_used"] is True
+    assert result["degraded_reason"] == "serena_circuit_cooldown"
+
+
 def test_index_timeout_is_counted_as_retryable_failure(tmp_path: Path):
     class Telemetry:
         def __init__(self):
@@ -571,7 +596,7 @@ def test_query_serena_soft_timeout_fallback_to_code_index(tmp_path: Path, monkey
 
 @pytest.mark.parametrize(
     ("action", "expected_soft_timeout"),
-    [("search", 2.0), ("pattern", 2.0), ("find_symbol", 4.0)],
+    [("search", 1.0), ("pattern", 1.0), ("find_symbol", 4.0)],
 )
 def test_query_serena_bounds_optional_search_timeout(
     tmp_path: Path, monkeypatch, action: str, expected_soft_timeout: float,

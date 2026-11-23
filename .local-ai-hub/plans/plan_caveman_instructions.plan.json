@@ -4,7 +4,15 @@
   "id": "plan_caveman_instructions",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+      }
+    }
+  ],
   "tasks": {
     "task_caveman_cli": {
       "acceptance_criteria": [],
@@ -17,7 +25,16 @@
       "next_action": "Hotovo: Backup-first kompresni pipeline, semanticka kontrola a bezpecne obnoveni implementovany v caveman_instructions.py a CLI; runtime integrace v services.py aktivni; 19 unit testu v test_caveman_compression.py prosel.",
       "title": "Complete Caveman compression and repair task binding",
       "work_phase": "integration",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+          }
+        }
+      ]
     }
   },
   "title": "Caveman instruction compression"

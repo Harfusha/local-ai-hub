@@ -4,7 +4,15 @@
   "id": "plan_sqlite_unify_and_performance_20261108",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_audit_loops": {
       "acceptance_criteria": [
@@ -19,7 +27,16 @@
       "kind": "code",
       "next_action": "Audit dokončen: aktuální inventář obsahuje 80 while True v 38 souborech src; všechny jsou klasifikované. 76 mají bezpečný deadline/cancel, konečný EOF/limit/pokus nebo řízený worker/daemon lifecycle. Čtyři follow-up rizika s vlastníkem a akcí: tiered_ollama.py:188 — Hub runtime maintainer; omezit lock wait nebo doložit bounded volající. mcp_http.py:48 — HTTP MCP maintainer; ověřit ASGI read timeout a doplnit deadline, pokud chybí. laya_lifecycle.py:103 — aktivní `Zmapovat integraci Laya`; doložit bounded load/close a probuzení při shutdown, jinak přidat timeout. reranker.py:323 — retrieval/reranker maintainer; ověřit caller budget a doplnit timeout/cancel, pokud chybí nadřazený bound. Zdrojový kód se neměnil.",
       "title": "Prověrka 80 smyček while True",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_logging": {
       "acceptance_criteria": [
@@ -33,7 +50,16 @@
       "kind": "code",
       "next_action": "Audit dokončen: všech 29 print() v src jsou záměrné CLI výstupy nebo host-hook stdout protokol. Neprovádět převod na logger; zachovat rozhraní.",
       "title": "Nahradit print logováním",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_plan_rules": {
       "acceptance_criteria": [
@@ -48,7 +74,16 @@
       "kind": "code",
       "next_action": "Dokončeno. Existující smoke/tmp/temp ignore pravidla zachována; přidáno `plans/*ephemeral*.plan.json` do `.local-ai-hub/.gitignore` a pravidla trvalých versus transientních ID do `docs/WORKTREE_INTEGRATION.md`. Cílený `git check-ignore --no-index -v` vypsal smoke/ephemeral/tmp vzory a nevypsal běžný projektový plán. Kořenový `.gitignore` zůstal beze změny; žádné cizí dirty soubory upraveny.",
       "title": "Pravidla správy generovaných plánů",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_sqlite_unify": {
       "acceptance_criteria": [
@@ -63,7 +98,16 @@
       "kind": "code",
       "next_action": "Verified on current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `connect_sqlite` exposes `read_only`, `uri`, and `wal`, read-only connections set query_only, and focused `python -m pytest -q tests/test_sqlite_support.py --tb=short` passed 10 tests in 1.42s (current file SHA dc48ab7a080b647d3bd7bdbfcbff6f80595fe20ff59bbea3565975a80c9b3321). Earlier bounded inventory found only the centralized sqlite3.connect in sqlite_support.py. No source change made.",
       "title": "Sjednotit SQLite připojení přes továrnu",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_test_suite": {
       "acceptance_criteria": [
@@ -79,7 +123,16 @@
       "kind": "code",
       "next_action": "Current source already registers `slow`/`fast` markers in pyproject.toml and dynamically excludes slow cases under `-m fast`; explicit daemon/acceptance/resource paths receive `slow`. Verification on current HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/test_daemon_lifecycle_hardening.py --tb=short` (unfiltered selected-file mode) and the same file with `-m slow` each yielded 68 passed, 4 skipped; `python -m pytest -q tests/test_test_environment_isolation.py -m fast --tb=short` yielded 1 passed. The four skips are Windows/Linux/POSIX-specific process cases and remain platform-blocked, not passing. The 17,500+ full suite was not run.",
       "title": "Pomalé testy a rychlá testovací sada",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_verify": {
       "acceptance_criteria": [],
@@ -90,8 +143,17 @@
       "kind": "code",
       "next_action": "After implementation and shared-source ownership settle, run bounded targeted validation plus fresh release_check, compileall and selftest at the final source state; retain critical cohort flakiness and platform gates distinctly.",
       "title": "Finální verifikace a testy",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "SQLite továrna a optimalizace"
+  "title": "SQLite factory and performance optimization"
 }

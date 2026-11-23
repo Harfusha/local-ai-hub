@@ -1,6 +1,6 @@
 """Offline wheel/sdist capability proof, not approval of a production release.
 
-Run directly with a Python having local setuptools>=75 and wheel, or via pytest.
+Run directly with the local build dependencies declared in pyproject.toml plus packaging, or via pytest.
 T19_PACKAGE_SOURCE_ROOT selects live source bytes (defaults to this worktree).
 No Git export, daemon, network, global installation, or user configuration.
 Temporary artifacts are retained; the printed receipt locates hashes and logs.
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -23,6 +22,8 @@ import tomllib
 import unittest
 from unittest import mock
 import zipfile
+
+from packaging.requirements import Requirement
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -305,16 +306,18 @@ def _verify_package(source: Path, scratch: Path) -> dict:
                 raise unittest.SkipTest(
                     f"isolated local {name} unavailable; no network/global install; {receipt_path}"
                 )
-        setuptools_major = int(receipt["toolchain"]["setuptools"].split(".")[0])
-        if setuptools_major < 75:
-            receipt["status"] = "skipped"
-            raise unittest.SkipTest(f"setuptools>=75 required; {receipt_path}")
         snapshot = scratch / "source"
         identities = _snapshot(source, snapshot)
         receipt["source_files"] = identities
         receipt["source_snapshot_sha256"] = _sha(json.dumps(identities, sort_keys=True).encode())
         project = tomllib.loads((snapshot / "pyproject.toml").read_text(encoding="utf-8"))
         assert project["build-system"]["build-backend"] == "setuptools.build_meta"
+        for specifier in project["build-system"]["requires"]:
+            requirement = Requirement(specifier)
+            installed = receipt["toolchain"].get(requirement.name)
+            if installed is None or installed not in requirement.specifier:
+                receipt["status"] = "skipped"
+                raise unittest.SkipTest(f"{requirement} required; {receipt_path}")
         version = project["project"]["version"]
         version_nodes = ast.parse((snapshot / "src/local_ai_hub/__init__.py").read_text(encoding="utf-8")).body
         declared = next(ast.literal_eval(n.value) for n in version_nodes if isinstance(n, ast.Assign)

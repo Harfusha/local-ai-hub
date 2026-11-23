@@ -39,7 +39,7 @@ Reuse fresh repository evidence before adaptive retrieval or native broad discov
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
 - For large plans, query `plan_board_view` with the exact `task_id`, use the card's `plan_file_revision`, and fetch exact plan-file slices only when needed; avoid full-plan responses.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub call or error is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.

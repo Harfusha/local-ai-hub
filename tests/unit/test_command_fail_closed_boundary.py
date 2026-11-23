@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker, CommandInvocation
+from local_ai_hub.command_broker import CommandBroker, CommandInvocation
 
 
 def _broker(monkeypatch, classification=None):

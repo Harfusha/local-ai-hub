@@ -5,10 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
-from contextlib import closing
+import stat
+from collections.abc import Iterable, Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
+
+# The training CLI runs from the checkout in its own environment.
+from src.local_ai_hub.file_locks import exclusive_file_update
 
 from .teacher_cards import build_messages, load_roots
 
@@ -22,6 +28,18 @@ _SYNTHETIC_CARD_MODELS = {
 _MAX_EXPORT_ROWS = 100_000
 _MAX_EXPORT_BYTES = 512 * 1024 * 1024
 _MAX_ROOTS_PER_QUERY = 900
+_STAGING_PREFIX = ".card-export-"
+_STAGING_NAME = re.compile(re.escape(_STAGING_PREFIX) + r"[0-9a-f]{64}", re.IGNORECASE)
+_STAGED_FILES = ("dataset.tmp", "manifest.tmp", "retrieval-cases.tmp")
+
+_FILE_CARD_ROWS = """SELECT f.root,f.path,f.content_hash,f.needs_hash,c.card_json,c.model,c.analyzer_version,
+                           c.content_hash AS card_source_hash,s.content_hash AS source_hash
+                    FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key
+                    LEFT JOIN source_index s ON s.root=f.root AND s.path=f.path
+                    WHERE f.root IN ({placeholders})
+                    ORDER BY f.root,f.path,c.card_key"""
+
+
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -109,6 +127,17 @@ def _card_identity(root_id: str, card_kind: str, card_key: str, card_json: str) 
     return card, card_hash, row_id
 
 
+def _current_file_card_hash(record: sqlite3.Row, format: str) -> str | None:
+    source_hash = record["content_hash"]
+    if not isinstance(source_hash, str) or not source_hash:
+        return None
+    if record["needs_hash"] != 0 or record["card_source_hash"] != source_hash:
+        return None
+    if format == "card-training" and record["source_hash"] != source_hash:
+        return None
+    return source_hash
+
+
 def _card_row(
     *, root_id: str, card_kind: str, card_key: str, card_json: str,
     card_model: str, card_version: str,
@@ -148,26 +177,69 @@ def _card_row(
     }
 
 
-def _atomic_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        for row in rows:
-            stream.write(_canonical(row) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+def _regular_owned_file(info: os.stat_result) -> bool:
+    return (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+            and not getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+def _prepare_staging(output: Path) -> Path:
+    key = _sha256(os.path.normcase(output.name).encode("utf-8"))
+    staging = output.parent / (_STAGING_PREFIX + key)
+    staging.mkdir(mode=0o700, exist_ok=True)
+    info = staging.lstat()
+    if (not stat.S_ISDIR(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise ValueError("card export staging path is not a regular directory")
+    owner = staging / "owner"
+    identity = f"local-ai-hub existing card export staging v1\n{key}\n".encode("ascii")
+    try:
+        info = owner.lstat()
+    except FileNotFoundError:
+        if next(staging.iterdir(), None) is not None:
+            raise ValueError("card export staging directory has no ownership marker") from None
+        with owner.open("xb") as stream:
+            stream.write(identity)
+            stream.flush()
+            os.fsync(stream.fileno())
+    else:
+        if not _regular_owned_file(info) or info.st_size != len(identity) or owner.read_bytes() != identity:
+            raise ValueError("card export staging ownership marker is invalid")
+
+    interrupted = []
+    for name in _STAGED_FILES:
+        path = staging / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not _regular_owned_file(info):
+            raise ValueError("card export staging file is unsafe")
+        interrupted.append(path)
+    for path in interrupted:
+        path.unlink()
+    return staging
+
+
+@contextmanager
+def _stage_bytes(path: Path, chunks: Iterable[bytes]) -> Iterator[str]:
+    created = False
+    digest = hashlib.sha256()
+    try:
+        with path.open("xb") as stream:
+            created = True
+            for chunk in chunks:
+                stream.write(chunk)
+                digest.update(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        yield digest.hexdigest()
+    finally:
+        if created:
+            path.unlink(missing_ok=True)
+
+
+def _json_bytes(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
 
 
 def _file_sha256(path: Path) -> str:
@@ -179,7 +251,7 @@ def _file_sha256(path: Path) -> str:
 
 
 def _benchmark_inputs(
-    *, output: Path, state_root: Path, format: str, dataset_sha256: str,
+    *, output: Path, staging: Path, state_root: Path, format: str, dataset_sha256: str,
     benchmark_cases_file: Path | str | None = None,
     benchmark_root: Path | str | None = None,
     rows: list[dict[str, Any]] | None = None,
@@ -267,7 +339,7 @@ def _benchmark_inputs(
             relative_case_path = cases_path.relative_to(root_path).as_posix()
         except ValueError:
             relative_case_path = cases_path.name
-        case_output = output.with_name(output.stem + "-retrieval-cases.json")
+        case_output = staging / "retrieval-cases.json"
         if (case_output.is_symlink()
                 or (hasattr(case_output, "is_junction") and case_output.is_junction())):
             return {**result, "retrieval_evaluation": {
@@ -281,8 +353,9 @@ def _benchmark_inputs(
             + " Filtered to cases whose expected paths exist in the selected root's already-exported cards."
         ).strip()
         subset_data["cases"] = resolved_cases
-        _atomic_json(case_output, subset_data)
-        subset_sha256 = _file_sha256(case_output)
+        staged_cases = staging / "retrieval-cases.tmp"
+        with _stage_bytes(staged_cases, (_json_bytes(subset_data),)) as subset_sha256:
+            staged_cases.replace(case_output)
         result["retrieval_evaluation"] = {
             "prepared": retrieval_ready,
             "status": (
@@ -366,48 +439,44 @@ def _benchmark_inputs(
     }
 
 
-def _merge_resume(
-    path: Path,
-    new_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if not path.exists():
-        return new_rows
-    if path.stat().st_size > _MAX_EXPORT_BYTES:
-        raise ValueError("existing card export exceeds configured byte limit")
-    current_rows = {row["id"]: row for row in new_rows}
-    eligible_ids = set(current_rows)
-    old_rows: list[dict[str, Any]] = []
+def _validate_resume_output(path: Path, manifest_path: Path, format: str) -> None:
+    manifest = None
     try:
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if not isinstance(row, dict) or not isinstance(row.get("id"), str):
-                raise ValueError(f"existing output line {line_number} has no row identity")
-            if row["id"] not in eligible_ids:
-                continue
-            provenance = row.get("provenance")
-            if not isinstance(provenance, dict):
-                raise ValueError(f"existing output line {line_number} has no provenance")
-            if provenance.get("source") != "existing_hub_preprocess_card":
-                continue
-            current = current_rows[row["id"]]
-            current_provenance = current.get("provenance")
-            if (not isinstance(current_provenance, dict)
-                    or _canonical(row) != _canonical(current)):
-                continue
-            old_rows.append(row)
-    except (OSError, json.JSONDecodeError) as exc:
+        if manifest_path.exists():
+            if not manifest_path.is_file() or manifest_path.stat().st_size > _MAX_EXPORT_BYTES:
+                raise ValueError("existing card export manifest is not a bounded file")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+                    or manifest.get("dataset_kind") != "existing_hub_preprocess_cards"
+                    or manifest.get("format") != format):
+                raise ValueError("existing card export manifest does not match the requested format")
+        if not path.exists():
+            return
+        if not path.is_file() or path.stat().st_size > _MAX_EXPORT_BYTES:
+            raise ValueError("existing card export is not a bounded file")
+        if manifest is not None and _file_sha256(path) == manifest.get("dataset_sha256"):
+            return
+
+        # A crash between replacing the dataset and its manifest leaves a complete JSONL file.
+        content_field, content_type = ("messages", list) if format == "card-training" else ("text", str)
+        seen: set[str] = set()
+        with path.open(encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                provenance = row.get("provenance") if isinstance(row, dict) else None
+                if (not isinstance(provenance, dict) or provenance.get("source") != "existing_hub_preprocess_card"
+                        or not isinstance(row.get("id"), str) or not row["id"]
+                        or not isinstance(row.get(content_field), content_type)):
+                    raise ValueError(f"existing card export line {line_number} has unrecognized provenance or format")
+                if row["id"] in seen or len(seen) >= _MAX_EXPORT_ROWS:
+                    raise ValueError("existing card export has duplicate rows or exceeds the row limit")
+                seen.add(row["id"])
+        if not seen and manifest is None:
+            raise ValueError("cannot resume an empty existing card export without its manifest")
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot resume existing card export: {exc}") from exc
-    by_id = {row["id"]: row for row in old_rows}
-    if len(by_id) != len(old_rows):
-        raise ValueError("existing card export contains duplicate row IDs")
-    for row in new_rows:
-        previous = by_id.get(row["id"])
-        if previous is not None and _canonical(previous) != _canonical(row):
-            raise ValueError("existing card export row conflicts with current indexed card")
-        by_id[row["id"]] = row
-    return [by_id[key] for key in sorted(by_id)]
 
 
 def list_existing_card_candidates(
@@ -430,6 +499,7 @@ def list_existing_card_candidates(
               "missing_source_pairs": 0, "deterministic_cards_skipped": 0}
     database = state_root / "preprocess.sqlite3"
     with closing(_index_connection(database)) as connection:
+        connection.execute("BEGIN")
         roots, root_count = _authorized_roots(connection, roots_file)
         stored_roots = sorted(roots.values())
         if len(stored_roots) > _MAX_ROOTS_PER_QUERY:
@@ -437,12 +507,7 @@ def list_existing_card_candidates(
         if not stored_roots:
             raise ValueError("no authorized roots found in the preprocessing index")
         placeholders = ",".join("?" for _ in stored_roots)
-        query = f"""SELECT f.root,f.path,f.content_hash,f.needs_hash,c.card_key,c.card_json,
-                          c.model,c.analyzer_version,s.content_hash AS source_hash
-                   FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key
-                   LEFT JOIN source_index s ON s.root=f.root AND s.path=f.path
-                   WHERE f.root IN ({placeholders}) AND f.card_key IS NOT NULL
-                   ORDER BY f.root,f.path,c.card_key"""
+        query = _FILE_CARD_ROWS.format(placeholders=placeholders)
         for record in connection.execute(query, stored_roots):
             root_key, root_id = _root_identity(record["root"])
             if root_key not in roots:
@@ -452,11 +517,8 @@ def list_existing_card_candidates(
                 counts["deterministic_cards_skipped"] += 1
                 continue
             path = str(record["path"])
-            source_hash = str(record["content_hash"] or "")
-            if format == "card-training" and (
-                int(record["needs_hash"] or 0) != 0 or not source_hash
-                or record["source_hash"] != source_hash
-            ):
+            source_hash = _current_file_card_hash(record, format)
+            if source_hash is None:
                 counts["missing_source_pairs"] += 1
                 continue
             _, card_hash, row_id = _card_identity(root_id, "file", path, str(record["card_json"]))
@@ -535,27 +597,58 @@ def export_existing_cards(
     if not state_root.is_dir():
         raise ValueError("state_dir must be an existing real directory")
     requested_output = Path(output_path)
+    if not requested_output.is_absolute():
+        requested_output = state_root / requested_output
     if requested_output.is_symlink() or (hasattr(requested_output, "is_junction") and requested_output.is_junction()):
         raise ValueError("card dataset output cannot be a symlink or junction")
-    output = (requested_output if requested_output.is_absolute() else state_root / requested_output).resolve(strict=False)
+    output = requested_output.resolve(strict=False)
     if output == state_root or not output.is_relative_to(state_root):
         raise ValueError("card dataset output must remain inside configured state_dir")
+    if any(_STAGING_NAME.fullmatch(part) for part in output.relative_to(state_root).parts):
+        raise ValueError("card dataset output cannot be inside the private card export directory")
+    database = state_root / "preprocess.sqlite3"
+    index_paths = {database.with_name(database.name + suffix) for suffix in ("", "-wal", "-shm", "-journal")}
+    if output in index_paths:
+        raise ValueError("card dataset output cannot replace the preprocessing index or its side files")
+    if output.name.casefold().endswith(".export.lock"):
+        raise ValueError("card dataset output cannot replace an export lock")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_file_update(output.with_name(output.name + ".export")):
+        return _export_existing_cards_locked(
+            state_root=state_root, database=database, output=output, format=format, roots_file=roots_file,
+            resume=resume, benchmark_cases_file=benchmark_cases_file, benchmark_root=benchmark_root,
+        )
+
+
+def _export_existing_cards_locked(
+    *, state_root: Path, database: Path, output: Path, format: str, roots_file: Path | str | None,
+    resume: bool, benchmark_cases_file: Path | str | None, benchmark_root: Path | str | None,
+) -> dict[str, Any]:
+    if output.is_symlink() or (hasattr(output, "is_junction") and output.is_junction()):
+        raise ValueError("card dataset output cannot be a symlink or junction")
     manifest_path = output.with_name(output.name + ".manifest.json")
     if manifest_path.is_symlink() or (hasattr(manifest_path, "is_junction") and manifest_path.is_junction()):
         raise ValueError("card dataset manifest cannot be a symlink or junction")
-    candidate_listing = list_existing_card_candidates(
-        state_dir=state_root, roots_file=roots_file, format=format,
-    )
-    eligible_ids = {candidate["row_id"] for candidate in candidate_listing["candidates"]}
     if (output.exists() or manifest_path.exists()) and not resume:
-        raise ValueError(f"output exists; pass resume=True to merge missing rows: {output}")
+        raise ValueError(f"output exists; pass resume=True to rebuild it from the current index: {output}")
+    if resume:
+        _validate_resume_output(output, manifest_path, format)
+    staging = _prepare_staging(output)
 
-    database = state_root / "preprocess.sqlite3"
     rows: list[dict[str, Any]] = []
     output_bytes = 0
     counts = {"file_cards": 0, "module_cards": 0, "project_cards": 0, "missing_source_pairs": 0,
              "deterministic_cards_skipped": 0}
+
+    def append_row(row: dict[str, Any]) -> None:
+        nonlocal output_bytes
+        output_bytes += len(_canonical(row).encode("utf-8")) + 1
+        if len(rows) >= _MAX_EXPORT_ROWS or output_bytes > _MAX_EXPORT_BYTES:
+            raise ValueError("existing card export exceeds configured row or byte limit")
+        rows.append(row)
+
     with closing(_index_connection(database)) as connection:
+        connection.execute("BEGIN")
         roots, root_count = _authorized_roots(connection, roots_file)
         stored_roots = sorted(roots.values())
         if len(stored_roots) > _MAX_ROOTS_PER_QUERY:
@@ -564,12 +657,7 @@ def export_existing_cards(
             raise ValueError("no authorized roots found in the preprocessing index")
         placeholders = ",".join("?" for _ in stored_roots)
 
-        query = f"""SELECT f.root,f.path,f.content_hash,f.needs_hash,c.card_key,c.card_json,
-                          c.model,c.analyzer_version,s.content_hash AS source_hash
-                   FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key
-                   LEFT JOIN source_index s ON s.root=f.root AND s.path=f.path
-                   WHERE f.root IN ({placeholders}) AND f.card_key IS NOT NULL
-                   ORDER BY f.root,f.path,c.card_key"""
+        query = _FILE_CARD_ROWS.format(placeholders=placeholders)
         for record in connection.execute(query, stored_roots):
             root_key, root_id = _root_identity(record["root"])
             if root_key not in roots:
@@ -578,19 +666,13 @@ def export_existing_cards(
             if model in _SYNTHETIC_CARD_MODELS:
                 counts["deterministic_cards_skipped"] += 1
                 continue
-            candidate_row_id = _card_identity(
-                root_id, "file", str(record["path"]), str(record["card_json"])
-            )[2]
-            if candidate_row_id not in eligible_ids:
+            source_hash = _current_file_card_hash(record, format)
+            if source_hash is None:
+                counts["missing_source_pairs"] += 1
                 continue
             card_json = str(record["card_json"])
             source_text = ""
-            source_hash = str(record["content_hash"] or "")
             if format == "card-training":
-                if (int(record["needs_hash"] or 0) != 0 or not source_hash
-                        or record["source_hash"] != source_hash):
-                    counts["missing_source_pairs"] += 1
-                    continue
                 source_record = connection.execute(
                     "SELECT text,content_hash FROM source_index WHERE root=? AND path=?",
                     (record["root"], record["path"]),
@@ -606,11 +688,8 @@ def export_existing_cards(
                 card_version=str(record["analyzer_version"] or ""),
                 path=str(record["path"]), source_hash=source_hash, source_text=source_text,
             )
-            output_bytes += len(_canonical(exported).encode("utf-8")) + 1
-            rows.append(exported)
+            append_row(exported)
             counts["file_cards"] += 1
-            if len(rows) > _MAX_EXPORT_ROWS or output_bytes > _MAX_EXPORT_BYTES:
-                raise ValueError("existing card export exceeds configured row or byte limit")
 
         if format == "embedding-corpus":
             for record in connection.execute(
@@ -620,16 +699,12 @@ def export_existing_cards(
                 root_key, root_id = _root_identity(record["root"])
                 if root_key in roots:
                     card_key = str(record["module"])
-                    row_id = _card_identity(root_id, "module", card_key, str(record["card_json"]))[2]
-                    if row_id not in eligible_ids:
-                        continue
                     card_json = str(record["card_json"])
                     exported = _card_row(
                         root_id=root_id, card_kind="module", card_key=card_key,
                         card_json=card_json, card_model="", card_version=str(record["revision_hash"]),
                     )
-                    output_bytes += len(_canonical(exported).encode("utf-8")) + 1
-                    rows.append(exported)
+                    append_row(exported)
                     counts["module_cards"] += 1
             for record in connection.execute(
                 f"SELECT root,revision_hash,card_json FROM project_cards WHERE root IN ({placeholders}) ORDER BY root",
@@ -638,47 +713,40 @@ def export_existing_cards(
                 root_key, root_id = _root_identity(record["root"])
                 if root_key in roots:
                     card_json = str(record["card_json"])
-                    row_id = _card_identity(root_id, "project", "project", card_json)[2]
-                    if row_id not in eligible_ids:
-                        continue
                     exported = _card_row(
                         root_id=root_id, card_kind="project", card_key="project",
                         card_json=card_json, card_model="", card_version=str(record["revision_hash"]),
                     )
-                    output_bytes += len(_canonical(exported).encode("utf-8")) + 1
-                    rows.append(exported)
+                    append_row(exported)
                     counts["project_cards"] += 1
-            if len(rows) > _MAX_EXPORT_ROWS or output_bytes > _MAX_EXPORT_BYTES:
-                raise ValueError("existing card export exceeds configured row or byte limit")
 
-    if not rows and not (resume and format == "card-training"):
+    if not rows and not (resume and output.is_file()):
         raise ValueError("no eligible existing Hub cards were found for this export format")
-    if resume and format != "card-training":
-        rows = _merge_resume(output, rows)
-    if len(rows) > _MAX_EXPORT_ROWS or sum(len(_canonical(row).encode("utf-8")) + 1 for row in rows) > _MAX_EXPORT_BYTES:
-        raise ValueError("existing card export exceeds configured row or byte limit")
-    payload = "".join(_canonical(row) + "\n" for row in rows).encode("utf-8")
-    dataset_sha256 = _sha256(payload)
-    manifest = {
-        "schema_version": 1,
-        "dataset_kind": "existing_hub_preprocess_cards",
-        "format": format,
-        "data_class": "local_scoped" if format == "card-training" else "existing_local",
-        "source": "already_indexed_preprocess_cards",
-        "project_count": root_count,
-        "row_count": len(rows),
-        "group_count": len({row["group_id"] for row in rows}),
-        "counts": counts,
-        "dataset_sha256": dataset_sha256,
-        "model_calls": 0,
-        "preprocessing_started": False,
-        "benchmark_inputs": _benchmark_inputs(
-            output=output, state_root=state_root, format=format, dataset_sha256=dataset_sha256,
-            benchmark_cases_file=benchmark_cases_file, benchmark_root=benchmark_root, rows=rows,
-        ),
-    }
-    _atomic_jsonl(output, rows)
-    _atomic_json(manifest_path, manifest)
+    chunks = ((_canonical(row) + "\n").encode("utf-8") for row in rows)
+    dataset_file = staging / "dataset.tmp"
+    manifest_file = staging / "manifest.tmp"
+    with _stage_bytes(dataset_file, chunks) as dataset_sha256:
+        manifest = {
+            "schema_version": 1,
+            "dataset_kind": "existing_hub_preprocess_cards",
+            "format": format,
+            "data_class": "local_scoped" if format == "card-training" else "existing_local",
+            "source": "already_indexed_preprocess_cards",
+            "project_count": root_count,
+            "row_count": len(rows),
+            "group_count": len({row["group_id"] for row in rows}),
+            "counts": counts,
+            "dataset_sha256": dataset_sha256,
+            "model_calls": 0,
+            "preprocessing_started": False,
+            "benchmark_inputs": _benchmark_inputs(
+                output=output, staging=staging, state_root=state_root, format=format, dataset_sha256=dataset_sha256,
+                benchmark_cases_file=benchmark_cases_file, benchmark_root=benchmark_root, rows=rows,
+            ),
+        }
+        with _stage_bytes(manifest_file, (_json_bytes(manifest),)):
+            dataset_file.replace(output)
+            manifest_file.replace(manifest_path)
     return {
         "success": True,
         "format": format,

@@ -10,7 +10,6 @@ import tomllib
 import pytest
 
 import local_ai_hub.config as config_module
-import local_ai_hub.file_locks as file_locks
 
 
 def test_runtime_reset_serializes_before_waiting_update(tmp_path: Path, monkeypatch):
@@ -27,36 +26,18 @@ def test_runtime_reset_serializes_before_waiting_update(tmp_path: Path, monkeypa
     writer_role = threading.local()
     real_exclusive_update = config_module.exclusive_file_update
 
-    class ObservedRLock:
-        def __init__(self, lock):
-            self.lock = lock
-
-        def acquire(self, *args, **kwargs):
-            if getattr(writer_role, "value", None) == "update":
-                probe_acquired = self.lock.acquire(blocking=False)
-                update_probe_acquired.append(probe_acquired)
-                if probe_acquired:
-                    self.lock.release()
-                update_lock_attempt.set()
-            return self.lock.acquire(*args, **kwargs)
-
-        def release(self):
-            return self.lock.release()
-
-    if os.name == "nt":
-        identity = os.path.normcase(str(target.resolve()))
-    else:
-        parent = target.parent.stat()
-        identity = (parent.st_dev, parent.st_ino, target.name)
-    lock_index = hash(identity) % len(file_locks._LOCKS)
-    locks = list(file_locks._LOCKS)
-    locks[lock_index] = ObservedRLock(locks[lock_index])
-    monkeypatch.setattr(file_locks, "_LOCKS", tuple(locks))
-
     @contextmanager
     def hold_reset_lock(path, **kwargs):
+        role = getattr(writer_role, "value", None)
+        if role == "update":
+            try:
+                with real_exclusive_update(path, timeout=0):
+                    update_probe_acquired.append(True)
+            except TimeoutError:
+                update_probe_acquired.append(False)
+            update_lock_attempt.set()
         with real_exclusive_update(path, **kwargs):
-            if getattr(writer_role, "value", None) == "reset":
+            if role == "reset":
                 reset_inside_lock.set()
                 if not release_reset.wait(timeout=4):
                     raise TimeoutError("test did not release reset writer")

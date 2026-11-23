@@ -4,7 +4,15 @@
   "id": "plan_audit_round6_fixes_20261108",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_c01_c05_proof_immutability": {
       "acceptance_criteria": [
@@ -20,7 +28,16 @@
       "kind": "code",
       "next_action": "Laya reviews C01/C05 in its existing task; close only with current production-path evidence for artifact identity, immutable execution record hash/readback and adoption. Audit does not edit or run Laya-owned tests.",
       "title": "P0-B: Proof immutability a adopce úloh (C01, C05)",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_c02_c03_pipeline_contracts": {
       "acceptance_criteria": [
@@ -34,7 +51,16 @@
       "kind": "code",
       "next_action": "Fresh scoped verification on current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/test_audit_round6_regressions.py::test_t6_02_critic_failure_in_quality_mode tests/test_audit_round6_regressions.py::test_t6_03_explorer_high_confidence_without_evidence_cannot_skip_worker --tb=short` passed 2 tests in 1.04s. Pipeline source SHA-256 84247e70207c125b8511f8a66356dbdce1d533a9dd85e06c646e2b20c68ebfbf; regression test SHA-256 05a2692f1bb5d3d5460f1135561b95ed2df13e0857576dd0fde13eb720d158db. This is focused contract evidence only; broad suite/release gates remain separate.",
       "title": "P1-A: Pipeline stage contracts a confidence gate (C02, C03)",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_c04_gpu_lease_lifecycle": {
       "acceptance_criteria": [
@@ -52,7 +78,16 @@
       "next_action": "Stability confirms runtime task ownership, loaded code revision, model/PID/VRAM/reservation state and provides a bounded focused runtime window for C04 lifecycle acceptance. Keep C04 in progress; no further GPU/runtime action or lease release here.",
       "title": "P0-A: GPU lease lifecycle, unnecessary reservations, and stale outcome recovery",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_c06_c07_preprocess_retry_schema": {
       "acceptance_criteria": [
@@ -67,7 +102,16 @@
       "kind": "code",
       "next_action": "Stability confirms current source revision/window and provides fresh focused C06/C07 evidence; keep current source claims separate from live GPU/runtime proof.",
       "title": "P1-B: Preprocessing retry a schema validace (C06, C07)",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_c08_c09_c10_c11_c13_c14_p2_fixes": {
       "acceptance_criteria": [
@@ -78,15 +122,24 @@
         "Task search backfill kontroluje digest před rekurzivním trigram parse",
         "Benchmark persist_record je atomický pod zámkem souboru"
       ],
-      "blocker": "C10 approved source/test acceptance now verified after fallback correction. Current agent_incidents.py SHA-256 8ebd82fb74ac732da0b5c7dcc4f5135d91fba8acf693f4e5f3e46fc94eede2c5; tests/test_audit_round6_regressions.py SHA-256 93a9c1500641ab2d97b37ba25a15bf4a389352f7f7432344ac6ff5a4c5160a53. Fresh focused selection of tests/test_auto_negative_knowledge.py and the two T6-10 regressions passed 6 tests in 9.46s. Regression preserves 'backoff' search for SQLite locks while asserting exactly one FTS-ranked query; FTS-available empty results no longer trigger recent fallback. Spec requires query-local FTS and focused tests, not a live user DB query; no user DB was read or changed. Remaining blockers: C08 live backend/model proof and C13 startup fast-path/owner integration; grouped P2 task remains in progress.",
+      "blocker": "C08 live backend/model proof; C09/C13 Stability-owner acceptance; cross-platform and release gates. Current focused Round 6 regression file passes; no live inference/runtime proof.",
       "clarifications": [],
       "depends_on": [],
-      "description": "P2 C08/C09/C10/C11/C13/C14. C10 query-local FTS5 is implemented and focused-verified: 8 passed; source SHA BD392A3A228E11F7713E55D2E856AEED2061F9130983CAEDF1D3E3585C4555DB; test SHA F5AC173BDD18BFF929073B70B80A167021E101793D6FBE7DB607CF21A537A47D. Spec: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md. Stability owner reports a stable copy of agent_state.sqlite3 with WAL/SHM sidecars contains no persistent FTS objects and no agent_incidents table; no cleanup needed on that copy. Live operational DB was not modified, so its state remains unverified. C11 focused follow-up: static_exports.py named_export_status source SHA 5fb85ca388ce47cd34c53b8e17eda6213921aa5fe3c1b22faa19fa7c6979c7ed; tests/test_static_exports.py SHA 9c3c28eaf2676429d1242e46f86912618acb474ea891baba610868c58762fcce. Focused static export tests passed 12 tests; targeted pyflakes passed. C13 historical source computes _search_grams(fields) before unchanged-document compare; regression does not assert parser skip. Shared AgentTaskStore startup path is under Stability review after acknowledged handoff; current-source disposition pending. C14: cross-process regression added. RED reproduced loss (9/33 records retained) with four independent processes; implementation now wraps read/append/temp-write/os.replace in exclusive_file_update in addition to per-runner thread lock. GREEN: two targeted C14 tests passed. Current source SHA 21538c7d63e20448d211f2212f5a1715dc12189bb533f9e957b8765679589f19; regression file at the time of the initial run SHA f80f93db229c549cae7c1922d9e60eb8985c1fea8aecb2eeca39cf2ddbf9f3f5. Fresh rerun on current HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99 and current regression file SHA 8f1f6e98a02aab534b3283a87ea9bea565f89e1d8b95a6ecb896a6789e8de167: both single-runner and cross-process C14 tests passed (2 passed in 1.20s).\n\nFresh primary C11 verification on HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: `python -m pytest -q tests/test_static_exports.py` passed 11 tests in 0.37s; targeted pyflakes exited 0. C08 current source `services.py` SHA 5838aaf8496a9cd2b6b955a3864b8781f2ccec28a30b64e087c55983fc43364d gates tuner observation on success. T6-08 retains the AST guard and adds a service-level `_generate` regression using fake policy, scheduler, and runtime. A synthetic failed backend response records no tuner sample; a successful Ollama-shaped response records exactly one. Fresh focused C08/C09/C14 run passed 5 tests in 2.37s on T6 file SHA 05a2692f1bb5d3d5460f1135561b95ed2df13e0857576dd0fde13eb720d158db. This is fake-runtime service evidence, not a live model/backend run. C09 current `automation.py` SHA 8726c0ff1d73c7c252936b14c1a2a30d0137f424e6023eb5df8d6fdb9b8d8d0d places backend factory and close outside the broker lock. T6-09 covers factory, explicit close, and expired-session reap; another thread acquires `broker.lock` during each cleanup path. C14 current-file single-runner and four-process tests were included in the same fresh run and passed. C13 current `agent_tasks.py` SHA ff1e3d6fdf90ce921fa6a1a30c90ec49d0cd4c804ccf59b14f3658f521f42027 still computes trigram sets before the unchanged-document skip. Stability proposed per-task searchable-fields digest metadata and transactional invalidation; implementation and accepted design remain with Stability.",
+      "description": "P2 covers C08/C09/C10/C11/C13/C14; acceptance criteria below remain authoritative. Current dirty master HEAD cc741b54dc04830900df81b5034e7f993140b3c5: C13 agent_tasks.py SHA-256 a02fe9cbd538181cb4618da9b9c8c3aa7907dd4b9fd4869d2d741ab8c36fe019 checks source, stored-field and trigram digests before JSON decoding and trigram rebuild. Its regression test SHA-256 5ec9f085c3f87d4a5fc76d14b5f1bf3f7acaaab31833a6847280b13272dfd6c2 instruments both parsing helpers; focused test passed 1 in 0.83s. Stability owner review/startup integration remains pending; digest validation still scans stored grams. C14 current benchmark.py SHA-256 6f5fe56b6f6714aa7dda26498317996e63afd83b64ed51c7d3468ef6fd07ffe0 wraps read/append/temp-write/replace in exclusive_file_update. Current T6-14 regression test SHA-256 5ec9f085c3f87d4a5fc76d14b5f1bf3f7acaaab31833a6847280b13272dfd6c2: all 17 tests in the complete Round 6 regression file passed on this current HEAD; additionally, the T6-14 subset passed 3 tests and cross-process case passed five additional consecutive runs. Earlier 32/33 loss predates this current source evidence and did not recur. Historical focused evidence: C10 FTS tests passed; C11 static export tests passed 11; C08/C09 synthetic tests passed on earlier HEADs. Remaining gates: live C08 backend/model proof, C09 owner integration, C13 Stability review/startup acceptance, plus broader Round 6 and release acceptance.",
       "kind": "code",
-      "next_action": "Continue the already-sent C08/C09/C13 Stability handoff; do not duplicate it. On HEAD b439f75690e581ff75ea32894d5fed450374712d, C13 source agent_tasks.py SHA-256 1544e8009eac9911e29696a4a0271d4a3d8bacc239346f6c793359b2f6f75b46 checks source_digest and stored fields_digest before JSON decoding/_searchable_task_fields; it still scans stored grams to validate grams_digest/count. Fresh `python -m pytest --no-cache -q tests/test_audit_round6_regressions.py -k t6_13`: 1 passed, 15 deselected. Existing test does not instrument the recursive parse skip, so keep acceptance open for Stability review. C14 source SHA-256 21538c7d63e20448d211f2212f5a1715dc12189bb533f9e957b8765679589f19; regression file SHA-256 93a9c1500641ab2d97b37ba25a15bf4a389352f7f7432344ac6ff5a4c5160a53. Full Round 6 file had 15 passed/1 failed because C14 retained 32/33 records. Four immediate isolated reruns passed; cause remains unconfirmed and `_persist_record` suppresses exceptions. C08 live backend/model proof remains open. Do not close grouped P2 or broad T6 gates from these focused results.",
+      "next_action": "Fresh `python -m pytest tests/test_audit_round6_regressions.py -q`: 17 passed in 6.31s on HEAD cc741b54dc04830900df81b5034e7f993140b3c5. Current file SHA-256 df7d23299fdb2a524233d281d8645ec1604e96db5869314878f0c4c1e2dc02a9. Current sources: agent_incidents.py 8ebd82fb74ac732da0b5c7dcc4f5135d91fba8acf693f4e5f3e46fc94eede2c5; agent_tasks.py 4c7d85ba565afbdeDE5c5d0552c8cff399cf6cb0fe2abfebc32451518f543943; benchmark.py 6f5fe56b6f6714aa7dda26498317996e63afd83b64ed51c7d3468ef6fd07ffe0. This supersedes stored test/source hashes for the changed files. Keep group open for C08 live backend/model proof and C09/C13 Stability owner acceptance; broad Round 6, cross-platform and release acceptance remain outstanding.",
       "title": "P2: Optimalizace a opravy stability (C08-C11, C13-C14)",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_c12_gpu_offload_admission": {
       "acceptance_criteria": [
@@ -100,7 +153,16 @@
       "kind": "code",
       "next_action": "Stop GPU actions. Stability confirms the internal reservation owner and reconciles the qwen2.5-coder:14b residency/admission telemetry with request req_db72edb6ca24. Then review the VRAM admission rejection and supply an owner-approved bounded run that returns actual loaded_model_details residency/offload evidence. Keep C12 open; do not infer that the loaded model or free VRAM status establishes safe admission.",
       "title": "P1-C: Background GPU admission offload kontrola (C12)",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_regression_test_suite_round6": {
       "acceptance_criteria": [
@@ -115,8 +177,17 @@
       "next_action": "Fresh validation on current HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest --no-cache -q tests/test_audit_round6_regressions.py` passed 16 tests in 8.38s. `python tools/release_check.py --allow-installed` passed; default release_check rejected managed/runtime files as expected. Separately, `tests/test_external_gpu_reservation_lifecycle.py` passed 48 tests in 1.80s (local lifecycle only). These results do not establish broad regression, clean-SHA, installed, platform or hardware acceptance. Keep task open; run final required gates only after checkout stabilizes.",
       "title": "Regresní testovací matice T6-01 až T6-14",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "Audit Round 6: Opravy a regresní testy (commit 2176b0e)"
+  "title": "Audit Round 6: fixes and regression tests (commit 2176b0e)"
 }

@@ -72,7 +72,7 @@ class _Services:
     def code_query(self, root, query, limit=20):
         return {"success": True, "symbols": []}
 
-    def fast_context(self, root, query, max_tokens):
+    def fast_context(self, request):
         return {"success": True, "evidence": []}
 
     def repo_diff(self, root, base="HEAD", staged=False, max_tokens=5000):

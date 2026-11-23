@@ -4,7 +4,15 @@
   "id": "plan_audit_round4_fixes_20261108",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_t01_evidence_integrity": {
       "acceptance_criteria": [],
@@ -15,7 +23,16 @@
       "kind": "code",
       "next_action": "Fresh current-HEAD revalidation: `python -m pytest -q tests/test_audit_round4_regressions.py::test_t4_06_evidence_text_mismatch_fails_validation tests/test_audit_round4_regressions.py::test_t4_10_evidence_validation_streams_requested_lines tests/test_audit_round4_regressions.py::test_t4_01_evidence_store_path_confinement --tb=short` — 3 passed in 0.57s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Current evidence.py SHA-256 a4a8a809c2e9c6d835db7571e8454030c03c12dbeeee0dc669251c6219ab143d; regression test SHA-256 b8fa9bf504392cfae2e12a41163358bf2e16591e382edff08e745b5b15ada9f2. Confirms forged-snippet rejection and basic path traversal rejection. Windows symlink coverage remains skipped because this host cannot create the required symlink; broad suite/live runtime remain deferred.",
       "title": "A01+A17 — EvidenceStore: source_verified a path confinement",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t02_evidence_hash_streaming": {
       "acceptance_criteria": [],
@@ -26,7 +43,16 @@
       "kind": "code",
       "next_action": "Implemented 1 MiB streaming, shared 4 MiB bound, regular-file check, and before/after file identity validation. Prior boundary test verifies exact limit succeeds and limit+1 is rejected; prior focused evidence tests: 12 passed, 1 skipped (host symlink support unavailable). Fresh current-HEAD targeted check includes `test_t4_10_evidence_validation_streams_requested_lines`: combined A01/A02/A17 regression selection 3 passed in 0.57s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Current evidence.py SHA-256 a4a8a809c2e9c6d835db7571e8454030c03c12dbeeee0dc669251c6219ab143d; regression test SHA-256 b8fa9bf504392cfae2e12a41163358bf2e16591e382edff08e745b5b15ada9f2. Broad suite/runtime remain deferred.",
       "title": "A02 — EvidenceStore: inkrementální hashování souborů",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t03_worktree_locking": {
       "acceptance_criteria": [],
@@ -37,7 +63,16 @@
       "kind": "code",
       "next_action": "Implemented unknown lock status, target-worktree lock query, exact Git metadata validation for fallback and zombie unlock. Historical focused tests: tests/unit/test_worktrees_extended.py + tests/unit/test_worktree_lock_cleanup.py, 10 passed. Affected paths src/local_ai_hub/worktrees.py and tests/unit/test_worktrees_extended.py. Broader suite remains deferred. Fresh current-HEAD revalidation: `python -m pytest -q tests/unit/test_worktrees_extended.py tests/unit/test_worktree_lock_cleanup.py --tb=short` — 10 passed in 4.28s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Source SHA-256 d27eafe47db731f6fec2d0213fa860c17bc2921de5f86d85086814e4096af7b6; test SHAs 9d4f5d3d88d0f2e7b285683c43af0c5f95799e12eda89c85f4f96dd6789e3f1d and 6e5ab2424de743e4bf0f0f99ced8d22489531bdae52b45fdefd9868e916d2e59.",
       "title": "A03+A04 — Worktrees: zjišťování a ruční odemykání zámků",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t04_stash_ownership": {
       "acceptance_criteria": [],
@@ -48,7 +83,16 @@
       "kind": "code",
       "next_action": "Fresh current-HEAD revalidation: `python -m pytest -q tests/unit/test_transaction_stash_restore_hook.py --tb=short` — 10 passed in 5.62s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Current source SHA-256 cc81c9b9d378aa651334a0451caa95a080d58aa218adb33544aaece04de77b63; test SHA-256 c5b65385464fd7c7369752c681af0960b43d458b4c50ea173d64303a36cef9c6. This refreshes older candidate evidence; broader suite remains deferred to stable window.",
       "title": "A05 — TransactionStashHook: identita vlastního stashe",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t05_learning_state_machine": {
       "acceptance_criteria": [
@@ -64,7 +108,16 @@
       "next_action": "Fresh 2026-11-18 focused suite: python -m pytest -q --tb=short tests/test_agent_learning.py tests/unit/test_agent_learning_edge_cases.py tests/unit/test_agent_learning_hardening_wave21.py — 55 passed. agent_learning.py SHA-256 91379abc5d6bfd14e96c303409093756459a740392f53096d6ff828e3c315fb0 confirms direct PROMOTED rejection and verifier-required promotion. app.py SHA-256 6dcace6d21ee4784dd130417c9b34cfc7bfe3a5128f828294cb0b0ee2f0c7eb3 confirms current constructor omits verifier. State-machine source gate verified; app/issuer acceptance blocked until safe Laya-owned integration window.",
       "title": "A06 — LearningStore: vynucené stavové přechody",
       "work_phase": "verification",
-      "work_status": "blocked"
+      "work_status": "blocked",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t06_learning_atomicity": {
       "acceptance_criteria": [
@@ -79,7 +132,16 @@
       "kind": "code",
       "next_action": "Event append plus learning projection share one BEGIN IMMEDIATE transaction via append_in_transaction(strict_idempotency=True). Create, advance, promote and rollback use the atomic helper; duplicate transition retry returns the existing projection. Four injected failure points roll back both. Historical focused validation: 27 passed, 15 deselected across learning/storage/audit selections. Fresh current-HEAD validation: `python -m pytest -q tests/test_agent_learning.py::test_learning_transition_rolls_back_event_and_projection_on_failure tests/test_agent_learning.py::test_learning_transition_retry_is_idempotent tests/test_agent_learning.py::test_slo_success_rate_uses_bounded_sliding_window tests/test_agent_learning.py::test_slo_window_persists_success_failure_and_minimum_sample_counts --tb=short` — 7 passed in 0.91s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Source SHA-256 3ee91a1273e6de15b0518460652e700af9b4eac434d7c4eb2e8c0f9a61eb34a1; test SHA-256 89b95151366511cee3fdf97665fa010d6eae6adf47f99c5a7b33b796aaf57035. Broad suite and live runtime remain unverified.",
       "title": "A07 — LearningStore: atomický zápis event+projekce",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t07_slo_success_rate": {
       "acceptance_criteria": [
@@ -94,7 +156,16 @@
       "kind": "code",
       "next_action": "Added bounded rolling success window (window_size up to 64), persisted window count/success/failure counts and exact bit history in numeric metrics. min_samples gates aggregate success-rate rollback; observation success also requires zero error_count. Historical validation: rolling failures override earlier successes and persisted counts; 29 passed, 15 deselected across learning/storage/audit selections. Fresh current-HEAD validation included `test_slo_success_rate_uses_bounded_sliding_window` and `test_slo_window_persists_success_failure_and_minimum_sample_counts` in the 7-case A07/A08 selection: 7 passed in 0.91s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Source SHA-256 3ee91a1273e6de15b0518460652e700af9b4eac434d7c4eb2e8c0f9a61eb34a1; test SHA-256 89b95151366511cee3fdf97665fa010d6eae6adf47f99c5a7b33b796aaf57035. Broad suite/runtime remain deferred.",
       "title": "A08 — LearningStore: SLO min_success_rate jako agregace",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t08_contract_mapping": {
       "acceptance_criteria": [
@@ -109,7 +180,16 @@
       "kind": "code",
       "next_action": "Contract mappings require a shared method+endpoint, operationId, DTO declaration/reference, or explicit frontend import of the backend module. Unlinked frontend/backend candidates produce an insufficient_evidence warning; basename similarity is ignored. TypeScript under backend/server/API path markers is not treated as frontend. Historical focused evidence: seven A09 cases passed; combined A06-A09 selection: 36 passed, 14 deselected; git diff --check clean. Fresh current-HEAD validation: `python -m pytest -q tests/test_audit_round4_regressions.py::test_t4_08_contract_mapping_skips_unrelated_files tests/test_audit_round4_regressions.py::test_t4_08_contract_mapping_requires_link_evidence_even_for_matching_stems tests/test_audit_round4_regressions.py::test_t4_08_typescript_backend_is_not_classified_as_frontend tests/test_audit_round4_regressions.py::test_t4_08_contract_mapping_requires_shared_endpoint_evidence tests/test_audit_round4_regressions.py::test_t4_08_contract_mapping_accepts_explicit_contract_links --tb=short` — 7 passed in 0.57s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Source SHA-256 e30ff0529d6b79fd8d3261a95074be7abcaa6c1c952d9d906cf95400d23a4976; regression test SHA-256 b8fa9bf504392cfae2e12a41163358bf2e16591e382edff08e745b5b15ada9f2. Broad suite and live runtime remain unverified.",
       "title": "A09 — ConsistencyGuard: párování backend/frontend kontraktů",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t09_guard_reuse": {
       "acceptance_criteria": [
@@ -124,7 +204,16 @@
       "next_action": "Verified on master HEAD b439f75690e581ff75ea32894d5fed450374712d. agent_consistency.py SHA-256 e30ff0529d6b79fd8d3261a95074be7abcaa6c1c952d9d906cf95400d23a4976: check_drift accepts precomputed reuse_candidates and calls find_reuse_candidates only when omitted. Current services.py SHA-256 054f22539cd2b65978f64c558b5808ff74551b677f197affa9a537d54d363c4a computes diff_analysis_status once, passes same candidates, and returns analysis_status. Fresh focused suite: python -m pytest tests/test_agent_consistency.py tests/unit/test_agent_consistency_edge_cases.py tests/unit/test_agent_consistency_hardening_wave21.py -q — 77 passed in 76.81s; added direct missing/partial status regression and ran it fresh — 1 passed. Current services.py is pre-existing dirty worktree content; no production edits made.",
       "title": "A10+A11 — ConsistencyGuard: recyklace reuse candidates a analysis_status",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t10_fencing_contention": {
       "acceptance_criteria": [],
@@ -136,7 +225,16 @@
       "next_action": "A12 benchmark complete in isolated TemporaryDirectory: two independent project roots, slow commit_guard held 300 ms, 5 rounds x 40 renewals per setup. Shared DB p50/p95/p99 25.09/43.53/328.60 ms; separate DB per project 25.47/43.71/48.96 ms; 0 SQLITE_BUSY/operation errors across 200 renewals each. Existing `python -m pytest tests/test_work_fencing.py -q`: 14 passed, 1 skipped (Windows symlink privilege unavailable). Measured p99 supports per-project DB isolation as a candidate; no production routing change was made. Same-repository worktree behavior remains governed by canonical project coordination ID and requires verification with any future integration change.",
       "title": "A12 — Work fencing: izolace SQLite per projekt",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t11_snapshot_optimization": {
       "acceptance_criteria": [
@@ -150,7 +248,16 @@
       "kind": "code",
       "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d validation: `python -m pytest --no-cache -q tests/test_command_transaction_snapshot.py tests/unit/test_transaction_snapshot_cycle_guard.py` — 36 passed in 42.37s. Existing NTFS synthetic benchmark remains bounded evidence only (500 × 32 KiB fixture); no production-project throughput claim.",
       "title": "A13 — Transaction snapshot: snížení I/O průchodů",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t12_quality_receipts": {
       "acceptance_criteria": [
@@ -166,7 +273,16 @@
       "kind": "code",
       "next_action": "Fresh current-HEAD validation: `py -3.11 -m pytest -q tests/test_model_quality.py tests/unit/test_model_quality_and_probe_edge_cases.py tests/unit/test_model_quality_hardening_wave20.py --tb=short` — 16 passed in 0.60s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Source SHA-256 67b5c9fb05439fb89692adfc5b3039316c20da30f8da3c0b0a33bb4701364288; test SHAs 8f7b3eaae50c063fbaa3f6389aae20a252e68c14efc6cde13e2377161ad92562, 0f9cd26760821af7d3d447eb1b64432321676656346fb80dbb03922d430e8f6e, b9c29fef786a8427f001a97386690eb9115c145abe4c12c0a7d3d48e3e241df2. Broad suite/runtime remain unverified.",
       "title": "A14 — Model quality: silné evaluation receipts",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t13_lint_completeness": {
       "acceptance_criteria": [],
@@ -177,7 +293,16 @@
       "kind": "code",
       "next_action": "Fresh current-HEAD validation: `py -3.11 -m pytest -q tests/test_speculative_lint.py tests/unit/test_speculative_lint_edge_cases.py --tb=short` — 10 passed in 0.77s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Source SHA-256 66d0ac43fcce85caaa9137bbafefe2946487be68a54389724420944a31924db1; test SHAs 1fdb3da09e730ec76d3ea0fa19667c7db62dc16858f4c266995a2eab69ef4d52 and 2eed89deae598a9ad4d374532882eff5b05ee3750d61eee4ad4606b3944943e6. Broad suite/runtime remain unverified.",
       "title": "A15 — SpeculativeLint: explicitní příznak zkrácení",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_t14_audit_contracts": {
       "acceptance_criteria": [],
@@ -188,8 +313,17 @@
       "kind": "code",
       "next_action": "Fresh current-HEAD validation: `py -3.11 -m pytest -q tests/test_agent_consistency.py::test_completion_audit_marks_non_boolean_pass_receipt_invalid tests/test_agent_consistency.py::test_completion_audit_marks_missing_pass_field_invalid --tb=short` — 2 passed in 0.68s at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99. Current source SHA-256 e30ff0529d6b79fd8d3261a95074be7abcaa6c1c952d9d906cf95400d23a4976; test SHA-256 67aa5b0f3d6aecf7229cb6a3a7d475c38d02398ebe71ab9830cdd0f21244d5d9. Strict receipt behavior confirmed; broad suite/runtime remain unverified.",
       "title": "A16 — completion_audit(): typově přísné boolean výsledky",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "Audit Round 4: Opravy (commit 2176b0e)"
+  "title": "Audit Round 4: fixes (commit 2176b0e)"
 }

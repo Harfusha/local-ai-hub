@@ -13,7 +13,7 @@ from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, ScopeCon
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def _git(repo: Path, *args: str) -> str:

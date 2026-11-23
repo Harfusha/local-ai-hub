@@ -45,7 +45,7 @@ def _response_facts(nodes: list[ast.AST], methods: dict | None = None, seen: fro
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "_send" and len(node.args) > 1:
                 result = node.args[1]
                 if isinstance(result, ast.Call):
-                    producers.add(ast.unparse(result.func))
+                    producers.add(ast.unparse(result.func).removeprefix("services_module."))
                 elif isinstance(result, ast.Name):
                     producers.add("local:" + result.id)
                 for item in ast.walk(result):
@@ -59,10 +59,10 @@ def _response_facts(nodes: list[ast.AST], methods: dict | None = None, seen: fro
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 if any(isinstance(target, ast.Name) and target.id in {"response", "result", "data", "report", "page"} for target in targets):
-                    producers.add(ast.unparse(node.value.func))
+                    producers.add(ast.unparse(node.value.func).removeprefix("services_module."))
             if isinstance(node, ast.Return):
                 if isinstance(node.value, ast.Call):
-                    producers.add(ast.unparse(node.value.func))
+                    producers.add(ast.unparse(node.value.func).removeprefix("services_module."))
                 if isinstance(node.value, ast.Dict):
                     fields.update(key.value for key in node.value.keys if isinstance(key, ast.Constant) and isinstance(key.value, str))
     return {"literal_response_fields": sorted(fields), "response_producers": sorted(producers), "action_literals": sorted(actions)}
@@ -92,9 +92,26 @@ def collect_surface(root: Path) -> dict[str, dict]:
         for path in rule.paths:
             rows[f"POST {path}"] = {"source": "src/local_ai_hub/http_route_registry.py", "handler": rule.route_id}
 
-    tree = ast.parse((root / "src/local_ai_hub/http_server.py").read_text(encoding="utf-8"))
-    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
-    methods = {node.name: node for node in handler.body if isinstance(node, ast.FunctionDef)}
+    handler_files = [
+        root / "src/local_ai_hub/http_routes_api.py",
+        root / "src/local_ai_hub/http_api_get.py",
+        root / "src/local_ai_hub/http_routes_post.py",
+        root / "src/local_ai_hub/http_admin.py",
+        root / "src/local_ai_hub/http_api_post.py",
+        root / "src/local_ai_hub/http_routes_ui.py",
+        root / "src/local_ai_hub/http_server.py",
+    ]
+    methods = {}
+    for hf in handler_files:
+        if hf.is_file():
+            tree = ast.parse(hf.read_text(encoding="utf-8"), filename=str(hf))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    for member in node.body:
+                        if isinstance(member, ast.FunctionDef):
+                            methods[member.name] = member
+                elif isinstance(node, ast.FunctionDef):
+                    methods.setdefault(node.name, node)
     analysis_tree = ast.parse((root / "src/local_ai_hub/http_post_repository_analysis.py").read_text(encoding="utf-8"))
     external_analysis = next(node for node in analysis_tree.body if isinstance(node, ast.FunctionDef) and node.name == "handle_post_repository_analysis")
     for rule in POST_ROUTE_REGISTRY:

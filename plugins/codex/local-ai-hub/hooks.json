@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python -m local_ai_hub.repo_plan.host_hooks --root . --host codex",
+        "timeout": 5
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "command": "python -m local_ai_hub.repo_plan.host_hooks --root . --host codex",
+        "timeout": 5
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "python -m local_ai_hub.repo_plan.host_hooks --root . --host codex",
+        "timeout": 5
+      }
+    ]
+  }
+}

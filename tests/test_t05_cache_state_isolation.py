@@ -129,7 +129,7 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         key="identity-marker",
         value="keep until owner deletes",
         source="test",
-        provenance={"root": str(root), "worktree_id": "t05-worktree"},
+        provenance={"root": str(root), "repository_id": str(root), "worktree_id": "t05-worktree"},
     )
     memories._save_record(record)
     related = MemoryRecord.create(
@@ -139,11 +139,11 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         key="related-marker",
         value="linked memory",
         source="test",
-        provenance={"root": str(root), "worktree_id": "t05-worktree"},
+        provenance={"root": str(root), "repository_id": str(root), "worktree_id": "t05-worktree"},
     )
     memories._save_record(related)
-    memories.record_relation(record.record_id, "relates_to", related.record_id, root=str(root))
-    original_relations = memories.find_relations(source_entity=record.record_id, root=str(root))
+    memories.record_relation(record.record_id, "relates_to", related.record_id, root=str(root), repository_id=str(root))
+    original_relations = memories.find_relations(source_entity=record.record_id, root=str(root), repository_id=str(root))
     assert original_relations
 
     assert memories.delete(record.record_id) is False
@@ -151,7 +151,6 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="another-worktree",
-        root=str(root),
         root=str(root),
         worktree_id="another-worktree",
     ) is False
@@ -171,16 +170,14 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
         root=str(root),
-        root=str(root),
         worktree_id="t05-worktree",
     ).value == "keep until owner deletes"
-    assert memories.find_relations(source_entity=record.record_id, root=str(root)) == original_relations
+    assert memories.find_relations(source_entity=record.record_id, root=str(root), repository_id=str(root)) == original_relations
 
     assert memories.delete(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
-        root=str(root),
         root=str(root),
         worktree_id="t05-worktree",
     ) is True
@@ -189,10 +186,9 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
         root=str(root),
-        root=str(root),
         worktree_id="t05-worktree",
     ) is None
-    assert memories.find_relations(source_entity=record.record_id, root=str(root)) == []
+    assert memories.find_relations(source_entity=record.record_id, root=str(root), repository_id=str(root)) == []
 
 
 def test_sqlite_cache_recovers_corruption_after_first_initialization(tmp_path):

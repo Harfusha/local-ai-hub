@@ -84,6 +84,54 @@ def test_failed_code_index_prune_keeps_file_reference_for_retry(tmp_path):
         assert con.execute("SELECT COUNT(*) FROM file_refs").fetchone()[0] == 1
 
 
+def test_missing_file_prune_splits_large_project_into_bounded_batches(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "pre.sqlite"
+    paths = [f"missing-{i}.py" for i in range(300)]
+    with closing(sqlite3.connect(db)) as con:
+        for table in ("file_refs", "source_index"):
+            con.execute(f"CREATE TABLE {table}(root TEXT,path TEXT)")
+            con.executemany(f"INSERT INTO {table} VALUES(?, ?)", [(str(root), path) for path in paths])
+        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
+        con.executemany(
+            "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
+            [(str(root), path, "indexed source text") for path in paths],
+        )
+        for table in ("module_cards", "project_cards", "hot_query_state", "task_capsules"):
+            con.execute(f"CREATE TABLE {table}(root TEXT)")
+        con.commit()
+
+    batches = []
+    sql_statements = []
+
+    class RecordingIndex:
+        def _remove_indexed_paths(self, _root, batch):
+            batches.append(len(batch))
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.set_trace_callback(sql_statements.append)
+        return con
+
+    def write(callback):
+        with closing(connect()) as con:
+            callback(con)
+            con.commit()
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock, pre._stats_lock = threading.RLock(), threading.RLock()
+    pre._connect, pre._write_retry, pre._stats = connect, write, {}
+    pre.code_index, pre.deterministic = RecordingIndex(), None
+
+    assert pre._prune_missing_file_refs(str(root)) == len(paths)
+    assert batches == [128, 128, 44]
+    assert sum(statement.lstrip().upper().startswith("DELETE FROM SOURCE_FTS") for statement in sql_statements) == 3
+    with closing(connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM file_refs").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM source_fts").fetchone()[0] == 0
+
+
 def test_partial_index_never_claims_complete_dependency_graph(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()

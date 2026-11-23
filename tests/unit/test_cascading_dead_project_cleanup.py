@@ -85,10 +85,7 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
             "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
             (str(dead_root), "stale.md", "hash", large, now),
         )
-        con.execute(
-            "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-            (str(dead_root), "stale.md", large),
-        )
+        preprocessor._insert_fts_rows(con, [(str(dead_root), "stale.md", large)])
         con.commit()
     with closing(sqlite3.connect(code_index.db_path)) as con:
         con.execute(

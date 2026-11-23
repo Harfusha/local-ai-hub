@@ -9,7 +9,9 @@ import pytest
 
 from local_ai_hub.client import HubClient
 from local_ai_hub.operation_contracts import operation_input_schema, validate_operation_arguments
-from local_ai_hub.repo_plan import RepoPlanConflictError
+from local_ai_hub.repo_plan.schema_validation import (
+    RepoPlanConflictError,
+)
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
 from local_ai_hub.services import LocalAIServices
 

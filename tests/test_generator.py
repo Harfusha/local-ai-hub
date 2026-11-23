@@ -29,6 +29,15 @@ from local_ai_hub.features import FeatureSet
 
 
 class TestSkillGeneration:
+    def test_full_single_owner_contract_lives_in_skill_and_policy_points_to_it(self):
+        config = {"ollama": {"enabled": True}, "hardware": {"profile": "high"}}
+        skill = generate_skill_markdown(config)
+        policy = generate_global_policy(config)
+
+        assert "one Local AI Hub installation on one PC serves one human" in skill
+        assert "Load `local-ai-orchestrator` for full ownership, scope" in policy
+        assert "Whisper transcription uses CPU by default" in skill
+
     def test_enabled_backend_skill_contains_all_core_components(self):
         skill = generate_skill_markdown({"ollama": {"enabled": True}, "hardware": {"profile": "high"}, "features": {"local_semantic_analysis": True}})
         assert "local_ai_repo" in skill
@@ -158,11 +167,12 @@ class TestSkillReferences:
         skill = generate_skill_markdown(cfg)
         policy = generate_global_policy(cfg)
 
-        for generated in (skill, refs["tools.md"], refs["workflows.md"], policy):
+        for generated in (skill, refs["tools.md"], refs["workflows.md"]):
             normalized = generated.lower()
             assert "semantic delegation is on-demand" in normalized
             assert "never blocked by mandatory local handoffs" in normalized
             assert "local_ai_status" not in generated
+        assert "local_ai_status" not in policy
 
     @pytest.mark.parametrize(
         "cfg",
@@ -211,23 +221,24 @@ class TestGlobalPolicyGeneration:
         assert 'mode="bounded"' in install_section
 
     def test_tiered_instructions_promote_only_exposed_actions(self):
-        low = generate_global_policy({"hardware": {"profile": "low"}})
-        balanced = generate_global_policy({"features": {"search_summaries": True, "local_semantic_analysis": True}, "hardware": {"profile": "balanced"}})
-        high = generate_global_policy({"features": {"local_semantic_analysis": True, "local_vision": True, "local_code_generation": True, "bounded_local_work": True}, "hardware": {"profile": "high"}})
+        low = generate_skill_markdown({"hardware": {"profile": "low"}})
+        balanced = generate_skill_markdown({"features": {"search_summaries": True, "local_semantic_analysis": True}, "hardware": {"profile": "balanced"}})
+        high = generate_skill_markdown({"features": {"local_semantic_analysis": True, "local_vision": True, "local_code_generation": True, "bounded_local_work": True}, "hardware": {"profile": "high"}})
 
         assert 'local_ai_task(action="compress")' in low
         assert 'local_ai_task(action="reason")' not in low
         assert 'summarize_results=true' not in low
-        assert "tier-available semantic actions only" in balanced
+        assert 'local_ai_task(action="reason")' in balanced
         assert 'summarize_results=true' in balanced
         assert 'local_ai_work(action="submit"' not in balanced
         assert 'local_ai_work(action="submit"' in high
-        gated_high = generate_global_policy({"hardware": {"profile": "high"}})
+        gated_high = generate_skill_markdown({"hardware": {"profile": "high"}})
         assert 'local_ai_task(action="reason")' not in gated_high
         assert 'local_ai_work(action="submit"' not in gated_high
 
     def test_policy_reuses_fresh_evidence_and_keeps_exact_lookups_bounded(self):
-        generated = (generate_global_policy({}), generate_skill_markdown({}))
+        generated = (generate_skill_markdown({}),)
+        assert "local-ai-orchestrator" in generate_global_policy({})
 
         for content in generated:
             policy = content.lower()
@@ -244,7 +255,7 @@ class TestGlobalPolicyGeneration:
         assert "local_ai_repo" in policy
 
     def test_policy_preserves_batch_replace_safety_rules(self):
-        policy = generate_global_policy({"features": {"batch_replacement": True}})
+        policy = generate_skill_markdown({"features": {"batch_replacement": True}})
         assert "batch_replace" in policy
         assert "dry_run=true" in policy
         assert "exact-match once" in policy
@@ -252,7 +263,7 @@ class TestGlobalPolicyGeneration:
         assert "no auto-commit" in policy
 
     def test_policy_semantic_delegation_on_demand(self):
-        policy = generate_global_policy({"ollama": {"enabled": True}})
+        policy = generate_skill_markdown({"ollama": {"enabled": True}})
         normalized = policy.lower()
 
         assert "semantic delegation is on-demand" in normalized
@@ -268,6 +279,14 @@ class TestGlobalPolicyGeneration:
 
 
 class TestTokenEconomyPolicyGeneration:
+    def test_policy_is_compact_and_points_to_full_skill(self):
+        policy = generate_token_economy_policy({"ollama": {"enabled": True}})
+
+        assert len(policy.encode("utf-8")) <= 1000
+        assert "`local-ai-orchestrator`" in policy
+        assert "full reference" in policy
+        assert "Compress repo snapshots" not in policy
+
     @pytest.mark.parametrize(
         "cfg",
         [
@@ -280,12 +299,12 @@ class TestTokenEconomyPolicyGeneration:
 
         assert "- Active `" not in policy
 
-    def test_policy_keeps_local_task_wording_when_enabled(self):
+    def test_policy_uses_live_schema_without_stale_action_list(self):
         policy = generate_token_economy_policy({"ollama": {"enabled": True}})
 
-        assert "- Active `" in policy
-        assert "profile; use only exposed `local_ai_task` actions:" in policy
-        assert "`compress`" in policy
+        assert "Use only live Hub actions." in policy
+        assert "- Active `" not in policy
+        assert "`local_ai_task` actions:" not in policy
 
 
 class TestMcpSchemasGeneration:
@@ -457,13 +476,15 @@ class TestWriteAllGenerated:
         assert (tmp_path / "generated" / "schemas" / "local_ai_repo.json").exists()
 
 
-def test_high_profile_generated_policy_fits_antigravity_rule_cap(tmp_path: Path):
+@pytest.mark.parametrize("profile", [None, "high"], ids=["default", "high"])
+def test_generated_policy_fits_antigravity_rule_cap(tmp_path: Path, profile: str | None):
     from local_ai_hub.config import deep_merge
     from local_ai_hub.hardware import profile_overrides
 
     config = tomllib.loads((ROOT / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8"))
-    config = deep_merge(config, profile_overrides("high"))
-    config.setdefault("hardware", {})["profile"] = "high"
+    if profile:
+        config = deep_merge(config, profile_overrides(profile))
+        config.setdefault("hardware", {})["profile"] = profile
 
     write_all_generated(config, tmp_path)
 

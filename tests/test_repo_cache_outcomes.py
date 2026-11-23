@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from local_ai_hub.cache import MemoryLRUCache, SingleFlightCache, SingleFlightGroup, stable_hash
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.process_utils import canonical_root
+from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
 
 
@@ -253,6 +258,69 @@ def test_foreground_refresh_skips_active_background_preprocessing(tmp_path: Path
     assert services.deterministic.calls == 0
 
 
+@pytest.mark.parametrize("failure", ["read", "partial_batch"])
+def test_code_query_retries_failed_foreground_refresh_without_caching_old_symbols(tmp_path, monkeypatch, failure):
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "target.py"
+    target.write_text("def old_beacon(): return 1\n", encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    repo_tools = RepositoryTools(config)
+    index = CodeIndex(config, repo_tools)
+    assert index.update_file(str(root), "target.py")["success"] is True
+    target.write_text("def new_beacon(): return 22\n", encoding="utf-8")
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.repo_tools = repo_tools
+    services.code_index = index
+    services.deterministic = services.learner = None
+    services._touch_project = lambda _root: None
+    services._index_refresh_lock = threading.Lock()
+    services._index_refresh_state = {}
+    services.flight_group = SingleFlightGroup()
+    cache = MemoryLRUCache()
+    previous_key = stable_hash({
+        "op": "code-index", "root": canonical_root(str(root)), "state": "edited-revision",
+        "params": {"query": "beacon", "terms": ["beacon"], "limit": 24, "offset": 0, "include_code": False},
+    })
+    cache.set(previous_key, {"success": True, "symbols": [{"name": "old_beacon"}]})
+    services.repo_flight = SingleFlightCache(cache)
+    services._repo_cache_state = lambda _root: {
+        "kind": "git", "fingerprint": "edited-revision", "changed_paths": ["target.py"],
+    }
+    hash_file = repo_tools._hash_file_only
+    attempts = []
+
+    def read_after_one_failure(path):
+        attempts.append(path)
+        if failure == "read" and len(attempts) == 1:
+            raise PermissionError("temporary read failure")
+        return hash_file(path)
+
+    monkeypatch.setattr(repo_tools, "_hash_file_only", read_after_one_failure)
+    if failure == "partial_batch":
+        update_batch = index.update_files_batch
+
+        def update_after_one_failure(root, items):
+            if len(attempts) == 1:
+                return {"success": True, "coverage_complete": False}
+            return update_batch(root, items)
+
+        monkeypatch.setattr(index, "update_files_batch", update_after_one_failure)
+
+    with closing(index):
+        first = services.code_query(str(root), "beacon")
+        retry = services.code_query(str(root), "beacon")
+        cached = services.code_query(str(root), "beacon")
+
+    assert [item["name"] for item in first["symbols"]] == ["old_beacon"]
+    assert [item["name"] for item in retry["symbols"]] == ["new_beacon"]
+    assert first["stale"] is True and first["degraded"] is True
+    assert "_cacheable" not in first
+    assert retry["cache_hit"] is False and cached["cache_hit"] is True
+    assert len(attempts) == 2
+
+
 def test_foreground_refresh_never_syncs_watcher_owned_index(tmp_path: Path):
     class _Index:
         def __init__(self):
@@ -283,6 +351,80 @@ def test_foreground_refresh_never_syncs_watcher_owned_index(tmp_path: Path):
     assert services.deterministic.calls == 0
 
 
+def test_code_queries_share_foreground_refresh_for_same_revision(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "target.py"
+    target.write_text("def old_beacon(): return 1\n", encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    repo_tools = RepositoryTools(config)
+    index = CodeIndex(config, repo_tools)
+    assert index.update_file(str(root), "target.py")["success"] is True
+    target.write_text("def new_beacon(): return 22\n", encoding="utf-8")
+
+    workers = 6
+    arrived = set()
+    arrivals_lock = threading.Lock()
+    all_arrived = threading.Event()
+    update_started = threading.Event()
+    release_update = threading.Event()
+    reads = []
+    updates = []
+
+    def mark_arrival():
+        with arrivals_lock:
+            arrived.add(threading.get_ident())
+            if len(arrived) == workers:
+                all_arrived.set()
+
+    class ObservedFlight(SingleFlightGroup):
+        def do(self, key, fn, timeout_seconds=None):
+            mark_arrival()
+            return super().do(key, fn, timeout_seconds=timeout_seconds)
+
+    read = repo_tools._hash_file_only
+    update = index.update_files_batch
+
+    def read_file(path):
+        reads.append(path)
+        mark_arrival()
+        return read(path)
+
+    def update_batch(root, items):
+        updates.append(items)
+        update_started.set()
+        assert release_update.wait(10)
+        return update(root, items)
+
+    monkeypatch.setattr(repo_tools, "_hash_file_only", read_file)
+    monkeypatch.setattr(index, "update_files_batch", update_batch)
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.repo_tools = repo_tools
+    services.code_index = index
+    services.deterministic = services.learner = None
+    services._touch_project = lambda _root: None
+    services._index_refresh_lock = threading.Lock()
+    services._index_refresh_state = {}
+    services.flight_group = ObservedFlight()
+    services.repo_flight = SingleFlightCache(MemoryLRUCache())
+    services._repo_cache_state = lambda _root: {
+        "kind": "git", "fingerprint": "same-revision", "changed_paths": ["target.py"],
+    }
+
+    with closing(index), ThreadPoolExecutor(max_workers=workers) as pool:
+        first = pool.submit(services.code_query, str(root), "beacon", 1)
+        try:
+            assert update_started.wait(10)
+            queries = [pool.submit(services.code_query, str(root), "beacon", size) for size in range(2, workers + 1)]
+            assert all_arrived.wait(10)
+        finally:
+            release_update.set()
+        results = [future.result(timeout=10) for future in [first, *queries]]
+
+    assert len(reads) == len(updates) == 1
+    assert all([row["name"] for row in result["symbols"]] == ["new_beacon"] for result in results)
+
+
 def test_foreground_refresh_updates_only_previously_indexed_code_paths(tmp_path: Path):
     class _CodeIndex:
         def __init__(self):
@@ -302,6 +444,7 @@ def test_foreground_refresh_updates_only_previously_indexed_code_paths(tmp_path:
     services = LocalAIServices.__new__(LocalAIServices)
     services._index_refresh_lock = threading.Lock()
     services._index_refresh_state = {}
+    services.flight_group = SingleFlightGroup()
     for relative in ("src/used.py", "src/new.py"):
         target = tmp_path / relative
         target.parent.mkdir(exist_ok=True)

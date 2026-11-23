@@ -17,7 +17,9 @@ from local_ai_hub.agent_tasks import (
 )
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.repo_plan import RepoPlanWorkspace
+from local_ai_hub.repo_plan.workspace import (
+    RepoPlanWorkspace,
+)
 from local_ai_hub.repo_plan.agent_bridge import (
     TaskBindingManager,
     reconcile_contract_revision,

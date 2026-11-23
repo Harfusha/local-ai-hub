@@ -96,9 +96,9 @@ def test_wait_event_loopback_mcp_delivery(tmp_path, monkeypatch):
                 "timeout": 5, "filter": {"token": None},
             })))
             assert ready.wait(3), "waiter did not register"
-            first = client.coord(action="pubsub_publish", root=str(tmp_path), root=str(tmp_path), topic="integration", message={}, publisher="test")
+            first = client.coord(action="pubsub_publish", root=str(tmp_path), topic="integration", message={}, publisher="test")
             assert first["success"] is True
-            second = client.coord(action="pubsub_publish", root=str(tmp_path), root=str(tmp_path), topic="integration", message=payload, publisher="test")
+            second = client.coord(action="pubsub_publish", root=str(tmp_path), topic="integration", message=payload, publisher="test")
             assert second["success"] is True
             contents, result = waiting.result(timeout=6)
         assert result["success"] is True, result

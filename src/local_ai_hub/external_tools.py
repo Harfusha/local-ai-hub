@@ -688,6 +688,12 @@ class ExternalCodeIntelligence:
         health["failure_active"] = True
         self._root_failures[key] = self._root_failures.get(key, 0) + 1
         self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
+        if isinstance(exc, MCPSoftTimeoutError):
+            # A stalled MCP transport affects every root; cool down before each pays the timeout.
+            self._cooldown_until[backend] = max(
+                self._cooldown_until.get(backend, 0.0),
+                time.monotonic() + self.cooldown_seconds,
+            )
         if self._root_failures[key] >= self.failure_threshold:
             self._root_cooldown_until[key] = time.monotonic() + self.cooldown_seconds
         if emit_telemetry and self.telemetry is not None:
@@ -1086,12 +1092,23 @@ class ExternalCodeIntelligence:
     def query_serena(self, root: str, action: str, query: str = "", path: str = "", limit: int = 20, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
         request_started = time.monotonic()
         root = self._root(root)
+        if not self._allowed("serena", root):
+            self.query_failures += 1
+            if self.code_index is not None:
+                return self._fallback_code_index(
+                    root, action, query, path, limit, reason="serena_circuit_cooldown",
+                )
+            return {
+                "success": False, "skipped": True, "backend": "serena",
+                "error": "Serena circuit cooldown", "fallback_used": False,
+                "degraded_reason": "serena_circuit_cooldown",
+            }
         eff_soft_timeout = float(soft_timeout) if soft_timeout is not None else self.soft_timeout
         if timeout is not None and eff_soft_timeout is not None:
             eff_soft_timeout = min(eff_soft_timeout, float(timeout))
         if action in {"search", "pattern"}:
             # Serena is optional for indexed search; cap its wait before falling back.
-            eff_soft_timeout = min(eff_soft_timeout, 2.0)
+            eff_soft_timeout = min(eff_soft_timeout, 1.0)
         soft_deadline = request_started + eff_soft_timeout if eff_soft_timeout > 0 else None
         lock_wait = min(eff_soft_timeout, 8.0) if eff_soft_timeout > 0 else (float(timeout) if timeout is not None else 60.0)
         try:

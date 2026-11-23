@@ -107,7 +107,7 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag", "worker_pool"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag", "worker_pool", "training_capture"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
@@ -226,6 +226,9 @@ def validate_config(data: dict[str, Any]) -> None:
     laya = data.get("laya", {})
     if type(laya.get("enabled", True)) is not bool:
         raise ConfigError("laya.enabled must be boolean")
+    laya_mode = str(laya.get("mode", "shadow")).strip().lower()
+    if laya_mode not in {"shadow", "advisory"}:
+        raise ConfigError("laya.mode must be shadow or advisory")
     _number(laya, "idle_unload_seconds", minimum=600, maximum=600, label="laya.idle_unload_seconds")
     idle_unload_seconds = laya.get("idle_unload_seconds") if isinstance(laya, dict) else None
     if isinstance(idle_unload_seconds, (int, float)) and not isinstance(idle_unload_seconds, bool) and not math.isfinite(float(idle_unload_seconds)):
@@ -279,11 +282,11 @@ def validate_config(data: dict[str, Any]) -> None:
         backend = llama_cpp.get("backend", "auto")
         if not isinstance(backend, str) or backend not in {"auto", "cuda"}:
             raise ConfigError("llama_cpp.backend must be auto or cuda")
-        cache_types = {"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+        cache_types = {"q4_0", "q4_1", "iq4_nl"}
         for cache_key in ("cache_type_k", "cache_type_v"):
             cache_type = llama_cpp.get(cache_key)
             if cache_type is not None and (not isinstance(cache_type, str) or cache_type not in cache_types):
-                raise ConfigError(f"llama_cpp.{cache_key} must be a supported llama.cpp KV cache type")
+                raise ConfigError(f"llama_cpp.{cache_key} must use a supported 4-bit llama.cpp KV cache type")
         if "managed_model_sha256" in llama_cpp:
             digest = llama_cpp["managed_model_sha256"]
             if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):

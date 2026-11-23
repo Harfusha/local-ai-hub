@@ -118,10 +118,10 @@ def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_pat
     def fake_run(command, **_kwargs):
         if command[0] == "rg":
             search_calls.append(command)
-            return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
         return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(repo_tools, "run_hidden", fake_run)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "server": {"state_dir": str(tmp_path / "state")},
@@ -170,12 +170,12 @@ def test_exact_search_uses_complete_ascii_ripgrep_candidates_without_git_invento
 
     def fake_ripgrep(command, **_kwargs):
         rg_calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
 
     def unexpected_git_inventory(*_args, **_kwargs):
         raise AssertionError("complete ripgrep candidates should skip Git inventory")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", fake_ripgrep)
+    monkeypatch.setattr(repo_tools, "run_hidden", fake_ripgrep)
     monkeypatch.setattr(repo_tools, "popen_managed", unexpected_git_inventory)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
@@ -217,7 +217,7 @@ def test_git_exact_search_uses_git_grep_candidates_for_tracked_and_untracked(
             stderr=b"",
         )
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", fake_git_grep)
+    monkeypatch.setattr(repo_tools, "run_hidden", fake_git_grep)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {
@@ -252,7 +252,7 @@ def test_complete_git_grep_candidates_skip_full_git_inventory(tmp_path, monkeypa
     def unexpected_inventory(*_args, **_kwargs):
         raise AssertionError("complete git grep candidates should skip full inventory")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", fake_git_grep)
+    monkeypatch.setattr(repo_tools, "run_hidden", fake_git_grep)
     monkeypatch.setattr(repo_tools, "popen_managed", unexpected_inventory)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
@@ -271,8 +271,63 @@ def test_complete_git_grep_candidates_skip_full_git_inventory(tmp_path, monkeypa
     assert [item["path"] for item in result["results"]] == ["match.py"]
 
 
+def test_exact_search_falls_back_when_git_grep_capture_is_truncated(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    for name in ("first.py", "second.py"):
+        (tmp_path / name).write_text("needle\n", encoding="utf-8")
+    incomplete = SimpleNamespace(
+        returncode=0, stdout=b"first.py\0", stderr=b"", stdout_truncated=True,
+    )
+
+    def git_grep(*_args, **_kwargs):
+        return incomplete
+
+    monkeypatch.setattr(repo_tools, "run_hidden", git_grep, raising=False)
+    monkeypatch.setattr(
+        repo_tools, "popen_managed", lambda *_args, **_kwargs: _Process(b"first.py\0second.py\0"),
+    )
+    tools = RepositoryTools({"search": {"use_ripgrep_if_available": False}})
+
+    result = tools.search(str(tmp_path), "needle", exact_count=True)
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["total_matches"] == 2
+    assert [row["path"] for row in result["results"]] == ["first.py", "second.py"]
+
+
+@pytest.mark.parametrize(
+    ("output", "capture_status"),
+    [
+        (b"first.py\0", {"stdout_truncated": True}),
+        (b"first.py\0", {"stderr_truncated": True}),
+        (b"first.py", {}),
+    ],
+)
+def test_exact_search_rejects_incomplete_ripgrep_capture(tmp_path, monkeypatch, output, capture_status):
+    for name in ("first.py", "second.py"):
+        (tmp_path / name).write_text("needle\n", encoding="utf-8")
+    incomplete = SimpleNamespace(returncode=0, stdout=output, stderr=b"", **capture_status)
+    calls = []
+
+    def candidate_scan(_command, **kwargs):
+        calls.append(kwargs)
+        return incomplete
+
+    monkeypatch.setattr(repo_tools, "run_hidden", candidate_scan)
+    tools = RepositoryTools({"search": {"prefer_git": False}})
+    tools._rg = "rg"
+
+    result = tools.search(str(tmp_path), "needle", exact_count=True)
+
+    assert result["success"] is True and result["count_exact"] is True
+    assert result["total_matches"] == 2
+    assert [row["path"] for row in result["results"]] == ["first.py", "second.py"]
+    assert [call["max_output_bytes"] for call in calls] == [repo_tools.MAX_EXACT_GIT_PATH_BYTES]
+
+
 def test_ripgrep_candidates_are_preferred_and_skip_git_inventory_safely(tmp_path, monkeypatch):
     real_run = repo_tools.subprocess.run
+    real_run_hidden = repo_tools.run_hidden
     real_run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
     (tmp_path / ".gitignore").write_text(
         "tracked_ignored.py\nignored_untracked.py\n", encoding="utf-8",
@@ -288,15 +343,15 @@ def test_ripgrep_candidates_are_preferred_and_skip_git_inventory_safely(tmp_path
         if command[0] == "rg":
             return SimpleNamespace(
                 returncode=0,
-                stdout="match.py\ntracked_ignored.py\nignored_untracked.py\n",
-                stderr="",
+                stdout=b"match.py\0tracked_ignored.py\0ignored_untracked.py\0",
+                stderr=b"",
             )
-        return real_run(command, **kwargs)
+        return real_run_hidden(command, **kwargs)
 
     def unexpected_inventory(*_args, **_kwargs):
         raise AssertionError("complete ripgrep candidates should skip full Git inventory")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(repo_tools, "run_hidden", fake_run)
     monkeypatch.setattr(repo_tools, "popen_managed", unexpected_inventory)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
@@ -363,7 +418,7 @@ def test_exact_search_does_not_narrow_ripgrep_for_more_than_sixteen_terms(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(repo_tools, "popen_managed", fake_git)
-    monkeypatch.setattr(repo_tools.subprocess, "run", incomplete_ripgrep)
+    monkeypatch.setattr(repo_tools, "run_hidden", incomplete_ripgrep)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {"use_ripgrep_if_available": True},
@@ -390,10 +445,10 @@ def test_exact_search_uses_simple_czech_ripgrep_candidates(tmp_path, monkeypatch
     def run_query(command, **_kwargs):
         if command[0] == "rg":
             search_calls.append(command)
-            return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
         return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", run_query)
+    monkeypatch.setattr(repo_tools, "run_hidden", run_query)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {"use_ripgrep_if_available": True},
@@ -419,7 +474,7 @@ def test_exact_search_keeps_multi_character_unicode_folds_on_git_scan(tmp_path, 
         rg_calls.append(True)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", unexpected_ripgrep)
+    monkeypatch.setattr(repo_tools, "run_hidden", unexpected_ripgrep)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {"use_ripgrep_if_available": True},
@@ -447,9 +502,9 @@ def test_exact_ascii_query_matching_unicode_lower_expansion_adds_ripgrep_candida
         rg_calls.append(args)
         # The extra source-character pattern makes ripgrep's candidate set complete.
         assert "İ" in args
-        return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", expansion_aware_ripgrep)
+    monkeypatch.setattr(repo_tools, "run_hidden", expansion_aware_ripgrep)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {"use_ripgrep_if_available": True},

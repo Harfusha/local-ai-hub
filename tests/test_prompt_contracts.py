@@ -89,8 +89,8 @@ def test_integrated_profile_prompt_is_bounded_and_explicit():
     assert len(package.user) < 5000
     assert "integrated" in package.system
     assert "E1" in package.user
-    assert "Nevymýšlej" in package.user
-    assert "Konkrétní závěr" in package.user
+    assert "Do not invent files" in package.user
+    assert "concise answer with evidence and material limitations" in package.user
 
 
 def test_specialized_diff_review_has_static_contract():
@@ -119,6 +119,32 @@ def test_default_review_prompt_matches_consistency_validator_contract():
     assert '"citation"' in response
     assert "SUMMARY:" not in response
     assert len(package.system) < 2200
+
+
+def test_reason_and_review_prompts_require_concise_evidence_bound_output():
+    reason = build_prompt(operation="reason", model="qwen2.5-coder:7b", task="Diagnose the failure.")
+    review = build_prompt(operation="review", model="qwen2.5-coder:7b", task="Review the change.")
+
+    assert "short conclusion" in reason.system
+    assert "one verification step" in reason.system
+    assert "one concise sentence per finding" in review.system
+    assert '"findings"' in review.user.split("REQUIRED RESPONSE:\n", 1)[1]
+
+
+def test_explicit_task_output_shape_takes_precedence_over_default_response():
+    package = build_prompt(
+        operation="explore",
+        model="qwen2.5-coder:7b",
+        task="Return only the version string.",
+        context="README.md:3 says Local AI Hub 6.1.0.",
+    )
+
+    response = package.user.split("REQUIRED RESPONSE:\n", 1)[1]
+    assert "Answer TASK directly in its requested format." in response
+    assert "concise answer with evidence and material limitations" in response
+    assert "1. SUMMARY:" not in response
+    assert package.user.rstrip().endswith("TASK:\nReturn only the version string.")
+    assert "follow it exactly without adding sections" in package.system
 
 
 def test_compress_prompt_returns_only_compressed_context():

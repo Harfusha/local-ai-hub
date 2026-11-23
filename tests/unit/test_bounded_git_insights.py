@@ -213,7 +213,7 @@ def test_mcp_hotspots_forwards_only_canonical_window_and_limit(monkeypatch, tmp_
     )
 
     result = mcp_server._local_ai_repo_impl(
-        action="hotspots", root=str(tmp_path), root=str(tmp_path), days=9, limit=7,
+        action="hotspots", root=str(tmp_path), days=9, limit=7,
     )
     assert result == {"success": True}
     assert calls == [("/api/repo/hotspots", {"root": str(tmp_path), "days": 9, "limit": 7})]
@@ -231,7 +231,7 @@ def test_mcp_git_history_search_forwards_max_commits_without_generic_limit(monke
     )
 
     result = mcp_server._local_ai_repo_impl(
-        action="git_history_search", root=str(tmp_path), root=str(tmp_path), query="needle", max_commits=1,
+        action="git_history_search", root=str(tmp_path), query="needle", max_commits=1,
     )
 
     assert result == {"success": True}
@@ -255,7 +255,7 @@ def test_mcp_git_log_accepts_omitted_path_and_maps_limit_to_max_commits(monkeypa
         SimpleNamespace(post=lambda route, payload, **_kwargs: calls.append((route, payload)) or {"success": True}),
     )
 
-    result = mcp_server.local_ai_repo(action="git_log", root=str(tmp_path), root=str(tmp_path), limit=1)
+    result = mcp_server.local_ai_repo(action="git_log", root=str(tmp_path), limit=1)
 
     assert result == {"success": True}
     assert calls == [(
@@ -276,7 +276,7 @@ def test_mcp_hotspots_does_not_forward_retired_aliases(monkeypatch, tmp_path, le
         SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs))),
     )
     result = mcp_server._local_ai_repo_impl(
-        action="hotspots", root=str(tmp_path), root=str(tmp_path), **legacy,
+        action="hotspots", root=str(tmp_path), **legacy,
     )
     assert result["success"] is False
     assert calls == []
@@ -296,7 +296,7 @@ def test_direct_mcp_impl_rejects_history_and_hotspot_fields_outside_actions(
         SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs))),
     )
     result = mcp_server._local_ai_repo_impl(
-        action="route" if field == "limit" else "code_index", root=str(tmp_path), root=str(tmp_path), **{field: value},
+        action="route" if field == "limit" else "code_index", root=str(tmp_path), **{field: value},
     )
     assert result["success"] is False
     assert calls == []

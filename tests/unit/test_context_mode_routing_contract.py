@@ -65,7 +65,6 @@ def test_context_rejects_retired_or_noncanonical_mode_before_request(
     result = mcp_server._local_ai_repo_impl(
         action="context",
         root=str(tmp_path),
-        root=str(tmp_path),
         query="find the context contract",
         mode=mode,
     )

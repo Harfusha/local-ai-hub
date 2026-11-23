@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import stat
 import threading
 import time
@@ -55,7 +56,7 @@ class SinglePassIngestCache:
         return norm
 
     @staticmethod
-    def _source_signature(base: Path, rel_path: str) -> tuple[int, int, int, int, int] | None:
+    def _source_signature(base: Path, rel_path: str, repo_tools: Any) -> tuple[int, int, int, int, int] | None:
         """Conservatively identify stable regular files for repeat ingest reads.
 
         A missing, non-regular or symlinked source is never trusted from metadata
@@ -70,7 +71,12 @@ class SinglePassIngestCache:
             info = candidate.stat(follow_symlinks=False)
             if not stat.S_ISREG(info.st_mode):
                 return None
-            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            change_time_reader = getattr(repo_tools, "_windows_change_time", None)
+            change_time = change_time_reader(candidate) if callable(change_time_reader) else None
+            if os.name == "nt" and change_time is None:
+                return None
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                    change_time if change_time is not None else info.st_ctime_ns)
         except (OSError, ValueError):
             return None
 
@@ -283,7 +289,7 @@ class SinglePassIngestCache:
             elif expected_hash is None:
                 # The common case must not reread the entire file in every
                 # parallel caller after the first single-flight ingest finishes.
-                current_signature = self._source_signature(base, normalized)
+                current_signature = self._source_signature(base, normalized, repo_tools)
                 if current_signature is not None and current_signature == cached.source_signature:
                     cached = ensure_current(cached)
                     if cached is not None:
@@ -333,9 +339,11 @@ class SinglePassIngestCache:
 
         try:
             target = base / Path(normalized)
-            signature_before = self._source_signature(base, normalized)
+            signature_before = self._source_signature(base, normalized, repo_tools)
             c_hash, lines = repo_tools._read_snapshot(target)
-            signature_after = self._source_signature(base, normalized)
+            if expected_hash and c_hash != expected_hash:
+                c_hash, lines = repo_tools._read_snapshot(target, force=True)
+            signature_after = self._source_signature(base, normalized, repo_tools)
             source_signature = (
                 signature_after if signature_before is not None and signature_before == signature_after else None
             )

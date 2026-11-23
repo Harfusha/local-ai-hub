@@ -1,5 +1,6 @@
 """Lock files must not follow links into unrelated files."""
 
+from concurrent.futures import ThreadPoolExecutor
 import os
 import subprocess
 import threading
@@ -101,6 +102,28 @@ def test_thread_contention_times_out_without_losing_owner(tmp_path):
     assert not thread.is_alive()
     with exclusive_file_update(path):
         pass
+
+
+def test_distinct_lock_paths_with_colliding_buckets_can_overlap(tmp_path):
+    directory = tmp_path.stat()
+    buckets = {}
+    # Pick two distinct paths that shared a lock in the old 64-bucket table.
+    for index in range(65):
+        path = tmp_path / f"task-{index}"
+        identity = (os.path.normcase(str(path.resolve())) if os.name == "nt"
+                    else (directory.st_dev, directory.st_ino, path.name))
+        first = buckets.setdefault(hash(identity) % 64, path)
+        if first != path:
+            break
+    assert first != path
+
+    def acquire_second():
+        with exclusive_file_update(path, timeout=1.0):
+            assert path.with_suffix(".lock").is_file()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with exclusive_file_update(first):
+            pool.submit(acquire_second).result(timeout=5)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows descriptor contract")

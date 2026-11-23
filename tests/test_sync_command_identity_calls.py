@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 @pytest.mark.parametrize("method_name", ["_run_private_transaction", "patch_and_verify"])

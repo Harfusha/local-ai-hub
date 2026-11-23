@@ -42,6 +42,18 @@ def _playwright_runtime() -> tuple[Path, Path, Path]:
     return node, package, candidates[-1]
 
 
+def test_update_wizard_confirms_release_and_reads_result_after_reload(tmp_path: Path) -> None:
+    node, playwright_package, chromium = _playwright_runtime()
+    html_path = tmp_path / "dashboard.html"
+    html_path.write_text(DASHBOARD_HTML, encoding="utf-8")
+    runner = Path(__file__).parent / "fixtures" / "dashboard_mode_playwright_t18.cjs"
+    result = subprocess.run(
+        [str(node), str(runner), str(html_path), "--updates-only"], capture_output=True, text=True, timeout=45,
+        env={**os.environ, "T18_PLAYWRIGHT_PACKAGE": str(playwright_package), "T18_CHROMIUM_EXECUTABLE": str(chromium)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_dashboard_mode_dom_auth_and_error_projection(tmp_path: Path) -> None:
     if not _ROOT_SOURCE:
         pytest.skip("set T18_ROOT_SOURCE to pin the current root source")

@@ -97,7 +97,7 @@ class EvidenceStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
+        return connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
 
     @staticmethod
     def _hash_source_file(path: Path) -> str:

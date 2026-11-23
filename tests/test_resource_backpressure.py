@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,6 +88,61 @@ def test_async_vram_rejection_is_not_mislabeled_as_background():
             scheduler.enqueue("fast", source="manual", execute=lambda: {"success": True}, background=False)
         assert exc_info.value.admission["reason"] == "vram_budget"
         assert "VRAM" in str(exc_info.value) and "background" not in str(exc_info.value)
+    finally:
+        scheduler.close()
+
+
+@pytest.mark.parametrize(("cpu_bytes", "context_length", "expected"), [
+    (0, 16384, "admitted"),
+    (512 * 1024 * 1024, 16384, "rejected"),
+    (0, 8192, "rejected"),
+])
+def test_vram_admission_recognizes_only_gpu_resident_model_with_sufficient_context(
+    cpu_bytes: int, context_length: int, expected: str,
+) -> None:
+    scheduler = _scheduler(None, {
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+        "throttle_background": False, "vram_total_mb": 8192,
+        "vram_available_mb": 512,
+    }, max_loaded_models=2)
+    scheduler._model_vram_bytes = {"fast": 3 * 1024 * 1024 * 1024}
+    scheduler._active_model = "other"
+    scheduler.runtime.loaded_model_details = lambda **_kwargs: [{
+        "name": "fast", "size_bytes": 6 * 1024**3,
+        "vram_bytes": 6 * 1024**3 - cpu_bytes,
+        "cpu_bytes": cpu_bytes, "context_length": context_length,
+    }]
+    scheduler.runtime.model_policy = SimpleNamespace(
+        profile=lambda _model: SimpleNamespace(num_ctx=16384),
+    )
+    try:
+        result = scheduler._admission(background=False, model="fast")
+        assert result["vram_admission"] == expected
+        if expected == "admitted":
+            assert result["vram_incremental_required_bytes"] == 0
+            assert result["vram_estimate_source"] == "resident"
+    finally:
+        scheduler.close()
+
+
+def test_stale_active_model_does_not_bypass_vram_admission() -> None:
+    scheduler = _scheduler(None, {
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+        "throttle_background": False, "vram_total_mb": 8192,
+        "vram_available_mb": 512,
+    })
+    scheduler._model_vram_bytes = {"fast": 3 * 1024 * 1024 * 1024}
+    scheduler._active_model = "fast"
+    scheduler.runtime.loaded_model_details = lambda **_kwargs: []
+    scheduler.runtime.model_policy = SimpleNamespace(
+        profile=lambda _model: SimpleNamespace(num_ctx=16384),
+    )
+    try:
+        result = scheduler._admission(background=False, model="fast")
+        assert result["vram_admission"] == "rejected"
+        assert result["vram_incremental_required_bytes"] == 3 * 1024 * 1024 * 1024
     finally:
         scheduler.close()
 
@@ -363,12 +419,7 @@ def test_async_cancel_reports_unknown_when_tree_cleanup_is_unconfirmed(tmp_path,
 
 
 def test_async_worker_records_unknown_when_process_tree_cleanup_fails(tmp_path, monkeypatch) -> None:
-    manager = AsyncJobManager(
-        {"server": {"state_dir": str(tmp_path / "state")}},
-        scheduler=None,
-        artifacts=None,
-        executor=lambda _action, _payload: {"success": True},
-    )
+    import threading
 
     class _ManagedProcess:
         pid = 12347
@@ -384,10 +435,28 @@ def test_async_worker_records_unknown_when_process_tree_cleanup_fails(tmp_path, 
         def terminate(self):
             raise AssertionError("managed process tree must not fall back to a leader signal")
 
+    job_id = ""
+    attempt_started = threading.Event()
+    manager = None
+
+    def execute(_action, _payload):
+        assert job_id
+        manager.register_process(job_id, _ManagedProcess())
+        attempt_started.set()
+        return {"success": True}
+
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        scheduler=None,
+        artifacts=None,
+        executor=execute,
+    )
+
     monkeypatch.setattr(async_jobs, "terminate_tree", lambda *_args, **_kwargs: False)
     try:
         submitted = manager.submit("reason", {"task": "cleanup"}, dispatch_delay_seconds=1.0)
-        manager.register_process(submitted["job_id"], _ManagedProcess())
+        job_id = submitted["job_id"]
+        assert attempt_started.wait(timeout=3.0), "async executor did not start"
         result = manager.wait(submitted["job_id"], timeout_seconds=3.0)
         assert result["state"] == "outcome_unknown"
         assert result["outcome_unknown"] is True

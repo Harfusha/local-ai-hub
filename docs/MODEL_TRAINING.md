@@ -35,7 +35,7 @@ python -m venv .venv-model-training
 & .\.venv-model-training\Scripts\python.exe -m pip install -r tools/model_training/requirements.txt
 ```
 
-For 4-bit QLoRA, install `tools/model_training/requirements-qlora.txt` in the same environment. QLoRA requires CUDA and fails explicitly if its backend is missing. The current [bitsandbytes installation guide](https://huggingface.co/docs/bitsandbytes/installation) lists Windows x86-64 CUDA builds including CUDA 12.8 and SM120. Full-precision LoRA remains the default for the preprocessing matrix.
+Preprocessing and causal-model training always use 4-bit QLoRA NF4 and CUDA. Inference uses native NVFP4 model artifacts where the selected backend provides them. Install `tools/model_training/requirements-qlora.txt` in the same environment. Missing 4-bit support fails explicitly. Laya's native trainer does not expose quantized training in the installed API and remains a separate unsupported path until that backend changes.
 
 ## Existing Preprocessing Cards
 
@@ -54,6 +54,10 @@ $stateDir = "$env:USERPROFILE\.local-ai-hub\state" # Replace with configured ser
 ```
 
 The exporter skips known deterministic cards, uses only existing indexed cards, and does not regenerate cards. Resume rebuilds from rows still indexed. To restrict it to specific projects, copy `tools/model_training/examples/roots.example.json`, use absolute paths and stable IDs, and pass `--roots <file>` instead of `--all-indexed`. Missing or stale indexed source/card pairs are skipped and counted.
+
+Only one export can write to a given output path at a time. A competing run waits up to five seconds for the lock. The `.export.lock` file can remain after the run, and the OS releases the lock when the process exits. After an interrupted export, `--resume` rebuilds the dataset and publishes a fresh manifest. The manifest's `dataset_sha256` identifies the published JSONL bytes.
+
+Each output has a private artifacts directory. Once the lock is acquired, the exporter removes staging files left by an earlier run only if the directory's ownership marker matches. The manifest's `prepared_cases` and `prepared_cases_sha256` identify the optional retrieval benchmark subset for that specific output.
 
 Create train and held-out files by project group:
 
@@ -180,7 +184,7 @@ The saved `checkpoint/` is Laya's native full fine-tuned checkpoint and loads wi
 
 - CUDA is required by default. A CUDA request never falls back silently to CPU; set `training.device` to `cpu` only when CPU training is intentional.
 - CUDA precision selects BF16 when supported, otherwise FP16. Built-in SDPA and fused AdamW are used when available and recorded in the run receipt.
-- Gradient checkpointing and configurable micro-batches/accumulation limit VRAM use. Set `training.quantization` to `4bit` for QLoRA on generic causal decision models; it requires the optional bitsandbytes environment. Laya uses its own full-fine-tuning recipe and AMP settings.
+- Gradient checkpointing and configurable micro-batches/accumulation limit VRAM use. `training.quantization` must be `4bit` NF4 for QLoRA. Laya uses its own full-fine-tuning recipe and currently does not satisfy this quantization requirement.
 - Models run sequentially to avoid competing for the same GPU. The scaffold does not manage or terminate other GPU processes.
 
 ## Hugging Face Distribution

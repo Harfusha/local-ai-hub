@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 import subprocess
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
 
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.project_config import PathHint, resolve_project_context
 from local_ai_hub.repo_tools import RepositoryTools
 
 
@@ -183,9 +186,83 @@ def test_candidate_paths_filter_exclusions_and_prioritize_configured_entry_point
             ]
         }
 
+        def unexpected_revision(_root: str) -> str:
+            pytest.fail("configured paths do not need to hash the inventory")
+
+        pre._external_revision = unexpected_revision
         paths = pre.candidate_paths(str(root), "needle")
 
         assert paths == ["src/entry.py", "vendor/forced.py"]
+    finally:
+        pre.close()
+
+
+def test_candidate_paths_load_revision_only_for_applicable_saved_hints(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    paths = ["first.py", "second.py"]
+    for name in paths:
+        (root / name).write_text("needle\n", encoding="utf-8")
+
+    pre = _preprocessor(tmp_path)
+    try:
+        pre.lookup = lambda *_args, **_kwargs: {"files": [{"path": name} for name in paths]}
+        context = resolve_project_context(root, pre.state_dir)
+        actual_revision = pre._external_revision
+        revisions = []
+        revision_requested = Event()
+        inventory_committed = Event()
+
+        def counted_revision(path: str) -> str:
+            if revisions:
+                revision_requested.set()
+                assert inventory_committed.wait(timeout=5)
+            revision = actual_revision(path)
+            revisions.append(revision)
+            return revision
+
+        pre._external_revision = counted_revision
+        revision = actual_revision(str(root))
+        for evidence, scope, digest in (
+            ("other-scope", "other", context.config_digest),
+            ("other-config", "candidate_paths", "old-config"),
+            ("current", "candidate_paths", context.config_digest),
+        ):
+            context.save_path_hint(
+                PathHint(
+                    path="second.py",
+                    purpose="preprocess_search",
+                    scope=scope,
+                    evidence_id=evidence,
+                    provenance="verified_search",
+                    repository_revision=revision,
+                    config_digest=digest,
+                )
+            )
+            if evidence != "current":
+                assert pre.candidate_paths(str(root), "needle") == paths
+                assert revisions == []
+
+        assert pre.candidate_paths(str(root), "needle") == paths[::-1]
+        assert revisions == [revision]
+
+        # Publish a newer inventory after the next search discovers the saved hint.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            search = executor.submit(pre.candidate_paths, str(root), "needle")
+            try:
+                assert revision_requested.wait(timeout=5)
+                with closing(pre._connect()) as con:
+                    con.execute(
+                        "INSERT INTO file_refs (root,path,content_hash,size,generation,updated_at) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (str(root.resolve()), "first.py", "new-hash", 7, 1, 0),
+                    )
+                    con.commit()
+            finally:
+                inventory_committed.set()
+            assert search.result(timeout=5) == paths
+        assert revisions == [revision, actual_revision(str(root))]
+        assert revisions[1] != revision
     finally:
         pre.close()
 

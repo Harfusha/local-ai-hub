@@ -6,5 +6,6 @@ pytest==8.3.5
 pyflakes==3.2.0
 coverage==7.6.12
 psutil==7.0.0
-setuptools==75.8.2
+# Same setuptools pin as release-build-requirements.txt.
+setuptools==84.2.0
 wheel==0.45.1

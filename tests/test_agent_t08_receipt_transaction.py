@@ -9,7 +9,7 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.sqlite_support import connect_sqlite
 from local_ai_hub.project_config import resolve_project_context
 from local_ai_hub.process_utils import hidden_run_kwargs

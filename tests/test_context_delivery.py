@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from local_ai_hub.services import LocalAIServices, generation_cache_key
 from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest, GuardWarning
+from local_ai_hub.agent_context import ContextRequest
 from local_ai_hub.json_utils import dumps as json_dumps
 from pathlib import Path
 
@@ -774,8 +775,8 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         assert hybrid_calls[-1]["quality_first"] is False
 
         fast_calls = []
-        app.services.fast_context = lambda root, query, max_tokens: (
-            fast_calls.append((root, query, max_tokens)) or
+        app.services.fast_context = lambda request: (
+            fast_calls.append((request.root, request.task_id, request.token_budget)) or
             {"success": True, "context": "deterministic fast evidence", "context_source": "deterministic-fast"}
         )
         hybrid_count = len(hybrid_calls)
@@ -838,7 +839,7 @@ def test_deterministic_context_continuation_uses_adaptive_mode():
     }
     services._repo_cached = lambda _op, _root, _params, compute: compute()
 
-    result = services.fast_context("C:/repo", "find route", 2000)
+    result = services.fast_context(ContextRequest(task_id="find route", root="C:/repo", token_budget=2000))
 
     assert result["context_source"] == "deterministic-fast"
     assert result["degraded"] is True
@@ -847,17 +848,18 @@ def test_deterministic_context_continuation_uses_adaptive_mode():
 
 
 def test_shipped_mcp_entrypoint_defaults_context_to_adaptive_and_telemetry_to_process():
-    source = (ROOT / "src/local_ai_hub/mcp_server.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/local_ai_hub/mcp_tools_repo.py").read_text(encoding="utf-8")
+    client = (ROOT / "src/local_ai_hub/mcp_client_adapter.py").read_text(encoding="utf-8")
 
     assert '"mode": mode,' in source
-    assert 'scope: str = "process"' in source
-    assert 'scope={scope}' in source
+    assert 'scope: str = "process"' in client
+    assert 'scope={scope}' in client
 
     assert not (ROOT / "mcp").exists()
 
 
 def test_shipped_mcp_status_uses_lightweight_live_endpoint_by_default():
-    source = (ROOT / "src/local_ai_hub/mcp_server.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/local_ai_hub/mcp_tools_status.py").read_text(encoding="utf-8")
 
     assert 'CLIENT.get("/api/live/status?light=1")' in source
     assert 'CLIENT.get(f"/api/live/status?light=1&scope={scope}")' not in source
@@ -865,7 +867,7 @@ def test_shipped_mcp_status_uses_lightweight_live_endpoint_by_default():
 
 
 def test_context_http_endpoint_defaults_to_adaptive():
-    source = (ROOT / "src/local_ai_hub/http_server.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/local_ai_hub/http_api_post.py").read_text(encoding="utf-8")
 
     assert 'payload.get("mode", "adaptive")' in source
 

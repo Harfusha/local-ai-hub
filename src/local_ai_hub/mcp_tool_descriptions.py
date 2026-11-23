@@ -69,6 +69,14 @@ def describe_task(
     if "compress" in semantic_actions:
         semantic_labels.append("semantic compression")
     semantic_summary = ", ".join(semantic_labels)
+    benchmark_hints = []
+    if "benchmark" in supported_actions:
+        benchmark_hints.append("`benchmark` reads stored results only")
+    if "hardware_benchmark" in supported_actions:
+        benchmark_hints.append(
+            "`hardware_benchmark` accepts `model`, `prompt`, `max_tokens`, and `context_tokens` (4096–32768), but no `timeout_seconds`"
+        )
+    benchmark_note = f"Action inputs are strict: {'; '.join(benchmark_hints)}. " if benchmark_hints else ""
     if not local_enabled:
         return (
             "Local inference is disabled on this installation for this tool."
@@ -82,9 +90,13 @@ def describe_task(
         return (
             "Bounded local-model worker. The current schema action enum is authoritative; disabled actions are unavailable. "
             f"{'Exposed work includes ' + semantic_summary + '. ' if semantic_summary else ''}"
+            f"{benchmark_note}"
             "For compress, pass source in `text` and optional instructions in `task`; `max_tokens` targets generated output, `max_response_tokens` bounds the response envelope. "
+            "On token/context limits or `output_truncated`, trim optional context or output, narrow the diff/artifact, continue from deterministic evidence; never replay an unchanged request or use partial output. "
+            "For async jobs, call `result` only after the job is terminal; while it is in progress, use one bounded `wait` or `status` and do independent work instead of repeating `result`. "
             "An empty active_model does not establish that no models are installed. "
             "Use deterministic/indexed tools for exact facts, symbols, diff and tests. "
+            "For host commands or operations without an exposed Hub action (for example `git worktree list`), skip Hub and use the authorized native tool directly. "
             f"{semantic_handoff_contract(bool(semantic_actions), features.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Codex retains ownership of native subagent orchestration; that does not replace direct Hub endpoint use by the main agent. "
@@ -101,13 +113,17 @@ def describe_task(
         )
     return (
         "Bounded local-model worker for the main agent."
+        f" {benchmark_note}"
         f" {'Exposed work includes ' + semantic_summary + '.' if semantic_summary else 'Semantic actions are currently gated.'}"
         " For compress, pass source in `text` and optional instructions in `task`; `max_tokens` targets generated output, `max_response_tokens` bounds the response envelope."
+        " On token/context limits or `output_truncated`, trim optional context or output, narrow the diff/artifact, continue from deterministic evidence; never replay an unchanged request or use partial output."
+        " For async jobs, call `result` only after the job is terminal; while it is in progress, use one bounded `wait` or `status` and do independent work instead of repeating `result`."
         " An empty active_model does not establish that no models are installed."
         f" Route preprocessing through `{features.background_model}`, quick tasks through `{features.fast_model}`, complex tasks through `{features.smart_model}`, and the hardest reasoning through `{features.reasoning_model}`."
         " Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Use deterministic/indexed tools for exact facts, symbols, diff and tests; use only actions exposed by the current schema."
+        " For host commands or operations without an exposed Hub action (for example `git worktree list`), skip Hub and use the authorized native tool directly; no Hub error or fallback flag is needed."
         f"{semantic_handoff_contract(bool(semantic_actions), features.status)}"
         " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
         " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
@@ -197,6 +213,18 @@ def describe_coord(
     specialized_note: Callable[[str], str],
 ) -> str:
     supported = set(features.supported_coord_actions())
+    argument_note = (
+        " Action arguments are strict despite the shared schema: `plan_list` requires `root` and defaults to five results; set `limit` or narrow with `query` for a bounded wider lookup; `plan_get` requires `root` and `plan_id`; for large plans prefer `plan_board_view` with the exact task ID; after a response-budget rejection, narrow the query or page, or raise `max_response_tokens` for the same exact-task read; never replay the unchanged oversized request or repeat the same rejected cap;"
+        " `task_checkpoint` requires `root`, `task_id`, and `checkpoint`; use the Agent OS `task_id` returned by `task_create` for the same root, never a plan task ID. When supplied memory has items or warnings, `checkpoint.state_data.memory_audit.used_ids` must list IDs actually used; if none were used, `checkpoint.state_data.memory_audit.not_used_reason` must be nonempty. A reason elsewhere fails validation. Omit `max_response_tokens` unless the complete memory receipt is known to fit. A budget rejection means persistence did not start; do not replay the same capped request."
+        " `task_create` requires a non-empty `goal`; use only canonical scope/status values (`in_progress` is invalid). `plan_task_edit.task_id` must be the exact ID from `plan_board_view`, never a title or slug. `plan_bind_task` requires an execution task with a persisted real `session_id`; do not invent one or bind before persistence."
+        " `plan_task_edit` requires `root`, `plan_id`, `task_id`, `task_data`, and `expected_revision`;"
+        " `task_data` accepts only title, description, kind, work_status, depends_on, clarifications, acceptance_criteria, next_action, blocker, order, accountable_role, work_phase, spec_refs, scope, results, and deliveries; it has no free-form `notes` field."
+        " On a revision conflict, reload with `plan_get`, reapply the intended changes, and use its current revision; never resend the stale payload. If a `plan_task_edit` response has `mutation_applied=true` with `projection_incomplete` or a response-budget error, the edit already happened: do not retry it; read the current plan and verify its `file_revision` matches before another edit. Omit `blocker` when there is no blocker, and `clarifications` entries must be objects, not strings."
+        " `plan_board_view` requires `root`, takes `plan_id`, and uses `query` for the exact task ID. Do not send generic `phase` or `summary`."
+        " `plan_reconcile_steering` requires a matching persisted task session; pass `task_id`, `steering_id`, current `expected_revision` and `expected_spec_revision`, `spec_rel_path`, `spec_content`, and `acceptance_criteria` (`summary` is optional). Do not call it before the real task/session binding exists."
+        " For plan data, `lifecycle` is draft|active|paused|completed|cancelled|archived; each `spec_refs` item needs `path` and a verified `revision` shaped as `{kind:'git_commit',commit:<40-or-64-lowercase-hex>}` or `{kind:'working',content_sha256:<64-lowercase-hex>}`; each `depends_on` item is `{plan_id,task_id}`. Do not invent revision hashes."
+        " If no exposed coordination action covers the requested operation, skip Hub and use the authorized native tool directly; do not call a nearby Hub action to check support."
+    )
     laya_note = (
         " Typed Laya proposals use curate_dataset with laya_operation={action:'evaluate_decision', task_id, decision:{category,evidence_ids,options,state,training_content}}. The authorized Agent OS task must carry a real session_id; Hub verifies evidence and returns decision.suggestion plus the deterministic baseline. Proposal stays shadow-only."
         if "curate_dataset" in supported else ""
@@ -219,6 +247,7 @@ def describe_coord(
         return (
             f"{purpose} with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
             f"{actions_note(actions)}"
+            f"{argument_note}"
             f"{reservation_note}"
             f"{scheduler_release_note}"
             f"{plan_coord_note()}"
@@ -246,6 +275,7 @@ def describe_coord(
     return (
         "Cross-agent coordination for ownership, checkpoints, and verification receipts."
         f"{actions_note(features.supported_coord_actions())}"
+        f"{argument_note}"
         f"{plan_coord_note()}"
         f"{laya_note}"
         f"{agent_os_note}"
@@ -266,23 +296,34 @@ def describe_repo(
     specialized_note: Callable[[str], str],
 ) -> str:
     local_enabled = features.tasks and features.has_any_model()
+    argument_note = (
+        " Action arguments are strict despite the shared schema: `solve` takes `task`, `context` takes `query`,"
+        " `find_symbol` takes `query` with optional `limit`/`offset` like `code_index`; `definition` requires `query` and accepts optional `path` like `declaration`; `git_diff` takes `path` or revision fields;"
+        " `solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`, plus real root-bound `task_id`/`session_id` for shadow capture. Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`; put the complete semantic request in `task`."
+        " do not pass `focus` or `changed_paths` unless that action allows them."
+        " When an Agent OS task is already bound, pass its real `task_id` and `session_id` when available to context/solve for eligible Laya shadow capture; never invent identity."
+        " Each `path_hints` item requires non-empty `path`, `purpose`, and `scope`; provide only verified values, otherwise omit hints."
+    )
     if not local_enabled:
         return tier_repo_description(
             "Primary repository worker for repository navigation, symbols, and impact."
             " Local inference is disabled on this installation."
+            f"{argument_note}"
             " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
             " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
-            " Native fallback requires terminal=true and retryable=false."
+            " If no exposed Hub action covers an operation (for example `git worktree list`), skip Hub and use the authorized native tool directly; no Hub error or fallback flag is needed."
+            " After calling an advertised Hub action, use native fallback only when its result explicitly has terminal=true and retryable=false."
             " Use when: indexed repository evidence is needed."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it."
         )
     if lean_schemas:
         return tier_repo_description(
-            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Reuse fresh sufficient evidence; use bounded indexed/source lookup directly for exact facts. When non-trivial work lacks sufficient fresh evidence, adaptive context fuses deterministic/indexed evidence, Serena, bounded lexical search and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields require dashboard detailed diagnostics; extra_fields cannot enable them. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code, preprocess (idempotent registration of a stable repository root; do not force-refresh or poll)."
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Reuse fresh sufficient evidence; use bounded indexed/source lookup directly for exact facts. When non-trivial work lacks sufficient fresh evidence, adaptive context fuses deterministic/indexed evidence, Serena, bounded lexical search and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields require dashboard detailed diagnostics; extra_fields cannot enable them. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. After calling an advertised Hub action, use native fallback only when its result explicitly has terminal=true and retryable=false. For `review_diff`, prefer Hub-computed root/base/path scope with `diff_tokens`; supplied raw `diff` bypasses that bound. If a fragment exceeds the 512-token review budget and cannot be split safely, narrow by path/diff or exclude generated/minified files; never replay unchanged input. If review exceeds 32 segments, narrow by path or split files. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code, preprocess (idempotent registration of a stable repository root; do not force-refresh or poll)."
             " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
             " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
+            f"{argument_note}"
         )
 
     description = (
@@ -296,7 +337,7 @@ def describe_repo(
         " Reuse fresh sufficient evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. Use `context` in adaptive mode only when non-trivial planning, editing, review or testing lacks sufficient fresh evidence; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + features.fast_model + '` for quick tasks, `' + features.smart_model + '` for complex work, and `' + features.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
-        " `review_diff` and `security_audit` are targeted local checks. MCP `review_diff` uses adaptive delivery with a 30-second latency budget; if deferred, follow the returned job ID through exposed `local_ai_task` status/wait/result actions and wait once without replaying the review."
+        " `review_diff` and `security_audit` are targeted local checks. MCP `review_diff` uses adaptive delivery with a 30-second latency budget; if deferred, follow the returned job ID through exposed `local_ai_task` status/wait/result actions and wait once without replaying the review. Prefer Hub-computed `root`/`base`/optional `path` with `diff_tokens`; supplied raw `diff` bypasses that bound. An unsplittable fragment above the 512-token budget requires narrower paths/diff or excluding generated/minified files. If review exceeds 32 segments, narrow by path or split files instead of replaying unchanged input."
         f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if local_enabled else ''}"
         f"{semantic_handoff_contract(local_enabled, features.status)}"
         " Codex separately decides whether to use native Codex subagents;"
@@ -307,8 +348,10 @@ def describe_repo(
         " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
         " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
         " degraded/stale means verify only the affected slice."
-        " Native fallback requires terminal=true and retryable=false."
+        " If no exposed Hub action covers an operation (for example `git worktree list`), skip Hub and use the authorized native tool directly; no Hub error or fallback flag is needed."
+        " After calling an advertised Hub action, use native fallback only when its result explicitly has terminal=true and retryable=false."
         " Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely."
+        f"{argument_note}"
         " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
         " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
         f"{actions_note(features.supported_repo_actions())}"

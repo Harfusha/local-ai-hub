@@ -102,6 +102,31 @@ def test_search_candidate_limit_bounds_parallel_path_validation(tmp_path, monkey
     assert len(validated) == 8
 
 
+@pytest.mark.parametrize("priority_terms", [("needle",), ()])
+def test_search_candidate_priority_keeps_stable_top_k(tmp_path, priority_terms):
+    from local_ai_hub.project_config import ProjectSettings
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    names = ["needle-two.py", "other.py", "needle-one.py", "needle.py"]
+    paths = []
+    for name in names:
+        path = root / name
+        path.write_text("needle", encoding="utf-8")
+        paths.append(path)
+
+    tools = RepositoryTools({"search": {"prefer_git_files": False}})
+    result = list(tools._iter_project_search_files(
+        root, ProjectSettings(), max_depth=8,
+        git_inventory=repo_tools.GitFileInventory(paths, complete=True),
+        candidate_limit=2,
+        candidate_priority_terms=priority_terms,
+        candidate_path_priority=lambda path: 0 if path in {"needle-one.py", "needle.py"} else 1,
+    ))
+
+    assert result == [paths[2], paths[3]]
+
+
 @pytest.mark.parametrize(
     ("cap_name", "cap_value"),
     [("MAX_EXACT_GIT_PATHS", 1), ("MAX_EXACT_GIT_PATH_BYTES", 1)],

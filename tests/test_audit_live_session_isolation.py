@@ -18,7 +18,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from local_ai_hub import http_server, mcp_server
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.client import HubClient
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 @pytest.fixture

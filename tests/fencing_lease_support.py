@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from local_ai_hub.work_fencing import WorkAttemptFence
-from local_ai_hub.commands import CommandInvocation
+from local_ai_hub.command_broker import CommandInvocation
 
 
 class FakeFencingLeaseStore:

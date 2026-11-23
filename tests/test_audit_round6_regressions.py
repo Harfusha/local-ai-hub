@@ -249,15 +249,19 @@ def test_t6_06_preprocess_transient_error_leaves_card_null(tmp_path: Path):
 # ==============================================================================
 # T6-07: Background GPU Schema Validation
 # ==============================================================================
-def test_t6_07_background_gpu_invalid_json_fails(tmp_path: Path):
-    """C07: Background GPU generation with invalid JSON must return success=False."""
+@pytest.mark.parametrize(
+    ("output", "expected_success"),
+    [("Not valid JSON!", False), ('```json\n{"purpose":"ok"}\n```', True)],
+)
+def test_t6_07_background_gpu_parses_generated_json(tmp_path: Path, output: str, expected_success: bool):
+    """Background GPU accepts complete JSON fences and rejects malformed output."""
     scheduler = SimpleNamespace(acquire_background_gpu=lambda _: True, release_background_gpu=lambda: None)
     worker = IdleGPUWorker(
         {"server": {"state_dir": str(tmp_path)}, "models": {"background_code": "model"}},
         scheduler,
     )
     worker.runtime = SimpleNamespace(
-        request_interruptible=lambda *a, **kw: {"response": "Not valid JSON!"},
+        request_interruptible=lambda *a, **kw: {"response": output, "done": True},
     )
     task = {
         "prompt": "describe",
@@ -265,9 +269,15 @@ def test_t6_07_background_gpu_invalid_json_fails(tmp_path: Path):
         "schema": {"type": "object", "required": ["purpose"]},
         "max_tokens": 100,
     }
-    result = worker._generate_one(task, preemptible=False)
-    assert result["success"] is False
-    assert "Invalid JSON" in result["error"] or "missing required keys" in result["error"]
+    result = worker._generate_one(task, preemptible=False, preprocessing=True)
+    assert result["model"] == worker.model
+    assert result["success"] is expected_success
+    if expected_success:
+        assert result["data"] == {"purpose": "ok"}
+    else:
+        assert "Invalid JSON" in result["error"]
+        assert result["error_code"] == "invalid_preprocess_json"
+        assert result["_lah_backend_completed"] is True
 
 
 # ==============================================================================
@@ -859,3 +869,15 @@ def test_t6_14_benchmark_persist_atomic_across_processes(tmp_path: Path):
         for worker_id in range(worker_count)
         for index in range(records_per_worker)
     }
+
+
+def test_t6_14_benchmark_persist_does_not_replace_corrupt_history(tmp_path: Path):
+    benchmarks_path = tmp_path / "benchmarks.json"
+    original = "{invalid history"
+    benchmarks_path.write_text(original, encoding="utf-8")
+    runner = HardwareBenchmarkRunner(benchmarks_path=benchmarks_path)
+
+    with pytest.raises(json.JSONDecodeError):
+        runner._persist_record({"model": "new", "tokens_per_second": 1.0})
+
+    assert benchmarks_path.read_text(encoding="utf-8") == original

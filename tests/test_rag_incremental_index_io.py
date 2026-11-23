@@ -58,6 +58,10 @@ def test_full_index_recovers_missing_chunks_with_unchanged_file_metadata(tmp_pat
     ws = store.workspace_id(str(root))
     first = store.index(str(root))
     assert first["success"] is True
+    query = "document whose chunk rows"
+    assert store.search(query, use_reranker=False, workspace=ws)["success"] is True
+    cached = store.search(query, use_reranker=False, workspace=ws)
+    assert cached["search_cache"]["hit"] is True
     with closing(store._connect()) as con:
         original_file = con.execute(
             "SELECT mtime_ns,size,content_hash FROM files WHERE workspace=? AND path=?",
@@ -74,6 +78,10 @@ def test_full_index_recovers_missing_chunks_with_unchanged_file_metadata(tmp_pat
     assert repaired["success"] is True
     assert repaired["changed_files"] == 1
     assert repaired["unchanged_files"] == 1
+    refreshed = store.search(query, use_reranker=False, workspace=ws)
+    assert refreshed["success"] is True
+    assert refreshed["search_cache"]["hit"] is False
+    assert any("chunk rows" in item["text"] for item in refreshed["results"])
     with closing(store._connect()) as con:
         current_file = con.execute(
             "SELECT mtime_ns,size,content_hash FROM files WHERE workspace=? AND path=?",
@@ -742,6 +750,31 @@ def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path)
     assert result["processed_paths"] == []
     assert "guide.md" in result["read_uncertain_paths"]
     assert store.indexed_paths(workspace=ws, paths=["guide.md"]) == set()
+
+
+def test_content_override_may_omit_one_terminal_newline(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "guide.md").write_text("current and correct text\n", encoding="utf-8")
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    ws = store.workspace_id(str(repo))
+
+    result = store.index_paths_step(
+        str(repo), workspace=ws, paths=["guide.md"],
+        content_overrides={"guide.md": "current and correct text"},
+    )
+
+    assert result["success"] is True
+    assert result["processed_paths"] == ["guide.md"]
+    assert result["read_uncertain_paths"] == []
+    assert store.indexed_paths(workspace=ws, paths=["guide.md"]) == {"guide.md"}
 
 
 def test_reindex_deletes_fts_paths_in_one_workspace_scan(tmp_path, monkeypatch):

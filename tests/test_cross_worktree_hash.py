@@ -1,6 +1,7 @@
 import time
 import threading
 import hashlib
+import json
 from contextlib import closing
 from pathlib import Path
 import subprocess
@@ -101,6 +102,8 @@ def test_new_clean_worktree_hashes_actual_bytes(tmp_path: Path):
 
 def test_new_worktree_links_existing_content_card_across_app_release(tmp_path: Path, monkeypatch):
     config = _config(tmp_path)
+    model = "configured-model"
+    config["preprocessing"]["model"] = model
     root = tmp_path / "repo"
     root.mkdir()
     (root / "app.py").write_text("value = 1\n", encoding="utf-8")
@@ -111,12 +114,18 @@ def test_new_worktree_links_existing_content_card_across_app_release(tmp_path: P
     try:
         _insert_project_for_inventory(pre, root)
         now = time.time()
+        content_hash = hashlib.sha256((root / "app.py").read_bytes()).hexdigest()
+        card_key = pre._content_card_key(content_hash)
+        card_json = json.dumps({
+            "purpose": "Stored source facts", "symbols": [], "dependencies": [],
+            "side_effects": [], "risks": [], "tests": [], "keywords": [],
+        })
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?)",
                 (
-                    "card-existing", hashlib.sha256((root / "app.py").read_bytes()).hexdigest(), "test",
-                    preprocess_module.PREPROCESS_ANALYZER_VERSION, "{}", now, now, 0,
+                    card_key, content_hash, model,
+                    preprocess_module.PREPROCESS_ANALYZER_VERSION, card_json, now, now, 0,
                 ),
             )
             con.commit()
@@ -129,12 +138,12 @@ def test_new_worktree_links_existing_content_card_across_app_release(tmp_path: P
                 "SELECT card_key FROM file_refs WHERE root=? AND path='app.py'",
                 (str(root),),
             ).fetchone()[0]
-        assert card == "card-existing"
+        assert card == card_key
     finally:
         pre.close()
 
 
-def test_file_card_cache_hits_share_one_database_connection(tmp_path: Path):
+def test_file_card_cache_hits_share_one_writer_transaction(tmp_path: Path, monkeypatch):
     config = _config(tmp_path)
     root = tmp_path / "repo"
     root.mkdir()
@@ -151,25 +160,36 @@ def test_file_card_cache_hits_share_one_database_connection(tmp_path: Path):
                 )
                 con.execute(
                     "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,0)",
-                    (f"card-{name}", digest, "test", preprocess_module.PREPROCESS_ANALYZER_VERSION, "{}", now, now),
+                    (f"card-{name}", digest, "deterministic", preprocess_module.PREPROCESS_ANALYZER_VERSION, "{}", now, now),
                 )
             items = con.execute("SELECT * FROM file_refs WHERE root=? ORDER BY path", (str(root),)).fetchall()
             con.commit()
 
         pre._find_next_files = lambda *_args: items
         original_connect = pre._connect
+        original_write = pre._write_retry
         connection_count = 0
+        transaction_count = 0
 
         def counted_connect():
             nonlocal connection_count
             connection_count += 1
             return original_connect()
 
-        pre._connect = counted_connect
-        assert pre._step_file_card({"root": str(root), "force_refresh": 0}) is True
-        pre._connect = original_connect
+        def counted_write(operation, **kwargs):
+            def record(con):
+                nonlocal transaction_count
+                transaction_count += 1
+                return operation(con)
+            return original_write(record, **kwargs)
 
-        assert connection_count == 1
+        with monkeypatch.context() as patch:
+            patch.setattr(pre, "_connect", counted_connect)
+            patch.setattr(pre, "_write_retry", counted_write)
+            assert pre._step_file_card({"root": str(root), "force_refresh": 0}) is True
+
+        assert connection_count == 0
+        assert transaction_count == 1
         with closing(pre._connect()) as con:
             cards = con.execute(
                 "SELECT path,card_key FROM file_refs WHERE root=? ORDER BY path",

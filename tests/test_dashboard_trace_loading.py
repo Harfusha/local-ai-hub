@@ -98,6 +98,80 @@ assert.match(rowsOut.at(-1),/Trace available/);
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_trace_kind_filter_preserves_request_history_during_navigation():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required to exercise dashboard trace polling")
+    start = DASHBOARD_HTML.index("function renderTraceList(")
+    source = DASHBOARD_HTML[start:DASHBOARD_HTML.index("function renderVersionBadge(", start)]
+    harness = r"""
+const assert=require('node:assert/strict');
+let active='work',lastTraces=[],filteredTraceSummaries=null,traceSummaryPoll=null;
+const kind={value:'async_job',addEventListener(type,callback){this[type]=callback}};
+const nodes={traceKind:kind,traceSummary:{},workRetained:{},traceSideSummary:{},traceSidebarList:{}};
+const $=id=>nodes[id]||null;
+const document={visibilityState:'visible',querySelector:()=>({id:active})};
+const requests=[];
+const apiFetch=(url,options)=>new Promise(resolve=>requests.push({url,signal:options.signal,resolve}));
+const updateTraceSummaries=items=>{lastTraces=items;renderTraceList(lastTraces);return {changed:true}};
+const activeTraceId='',rows=()=>{},workVisible=items=>items,esc=String,humanLabel=String,n=String;
+const traceStatus=()=> 'done',traceContextLabel=()=>'',traceProjectLabel=()=>'';
+const result=(items,ok=true)=>({ok,json:async()=>({success:true,items})});
+const httpTrace={request_id:'req-1',trace_id:'trace-http',kind:'api_request'};
+const filteredTrace={trace_id:'trace-job',kind:'async_job'};
+"""
+    scenario = r"""
+(async()=>{
+  const first=pollTraces();
+  assert.equal(requests[0].url,'/api/debug-traces?limit=200');
+  requests[0].resolve(result([httpTrace]));await first;
+
+  active='traceInspector';
+  const filtered=kind.change();
+  assert.equal(requests[1].url,'/api/debug-traces?limit=200&kind=async_job');
+  requests[1].resolve(result([filteredTrace]));await filtered;
+  assert.deepEqual(lastTraces,[httpTrace]);
+  assert.deepEqual(filteredTraceSummaries.items,[filteredTrace]);
+  assert.match(nodes.traceSidebarList.innerHTML,/data-trace-page-id="trace-job"/);
+  assert.equal(nodes.workRetained.textContent,'1');
+
+  let finishJson;
+  const stale=pollTraces();
+  requests[2].resolve({ok:true,json:()=>new Promise(resolve=>{finishJson=resolve})});
+  await Promise.resolve();
+  active='work';
+  const fresh=pollTraces();
+  assert.equal(requests[2].signal.aborted,true);
+  assert.equal(requests[3].url,'/api/debug-traces?limit=200');
+  finishJson({success:true,items:[{trace_id:'stale-job'}]});
+  assert.equal(await stale,false);
+  assert.deepEqual(lastTraces,[httpTrace]);
+  assert.deepEqual(filteredTraceSummaries.items,[filteredTrace]);
+
+  active='reliability';
+  assert.equal(await pollTraces(),false);
+  assert.equal(requests.length,4);
+  requests[3].resolve(result([],false));
+  assert.equal(await fresh,false);
+  assert.deepEqual(lastTraces,[httpTrace]);
+
+  const disabled=pollTraces();
+  requests[4].resolve({ok:true,json:async()=>({success:true,enabled:false,items:[]})});
+  assert.deepEqual(await disabled,{changed:true});
+  assert.deepEqual(lastTraces,[]);
+  assert.equal(filteredTraceSummaries,null);
+  assert.doesNotMatch(nodes.traceSidebarList.innerHTML,/trace-job/);
+  process.stdout.write('ok');
+})().catch(e=>{console.error(e);process.exitCode=1});
+"""
+    result = subprocess.run(
+        [node, "-"], input=harness + source + scenario, capture_output=True, text=True,
+        timeout=8, **hidden_run_kwargs(),
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout == "ok"
+
+
 def test_selected_trace_replaces_initial_or_previous_content_while_loading():
     _trace_scenario("""
 await openTrace('selected');

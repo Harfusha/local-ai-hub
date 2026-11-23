@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from local_ai_hub import commands
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub import command_broker as commands
+from local_ai_hub.command_broker import CommandBroker
 
 
 class _VerificationStore:

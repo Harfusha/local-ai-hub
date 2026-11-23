@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker, simulate_patch
+from local_ai_hub.command_broker import CommandBroker, simulate_patch
 
 
 def _git(cwd: Path, *args: str) -> str:

@@ -118,6 +118,69 @@ def test_adaptive_relevance_bounds_optional_model_request_time():
     assert captured.get("request_timeout_seconds") == 3.0
 
 
+def test_adaptive_relevance_skips_model_while_scheduler_has_pending_work():
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.consistency_guard = _Guard()
+    service.config = {"models": {"fast_code": "qwen2.5-coder:3b"}}
+    service.scheduler = SimpleNamespace(pending_count=lambda: 1)
+    calls = []
+    service._generate = lambda *_args, **_kwargs: calls.append(1)
+    service._repo_cached = lambda _op, _root, _params, compute: compute()
+    request = SimpleNamespace(
+        root="C:/repo",
+        task_id="task-1",
+        session_id="session-1",
+        phase="edit",
+        preload_profile="default",
+        focus=(),
+        changed_paths=(),
+        query="inspect code",
+        token_budget=512,
+    )
+
+    result = service._adaptive_relevance(
+        request, ({"evidence_id": "evidence-1", "path": "src/main.py"},), "rev-1", "mem-1"
+    )
+
+    assert result["success"] is False
+    assert result["degraded_reason"] == "backend_busy"
+    assert calls == []
+
+
+def test_adaptive_relevance_skips_optional_model_switch():
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.consistency_guard = _Guard()
+    service.config = {
+        "models": {"context_relevance_model": "qwen2.5-coder:3b"}
+    }
+    service.scheduler = SimpleNamespace(
+        pending_count=lambda: 0,
+        active_model=lambda: "qwen3.5:9b-nvfp4",
+    )
+    calls = []
+    service._generate = lambda *_args, **_kwargs: calls.append(1)
+    service._repo_cached = lambda _op, _root, _params, compute: compute()
+    request = SimpleNamespace(
+        root="C:/repo",
+        task_id="task-1",
+        session_id="session-1",
+        phase="edit",
+        preload_profile="default",
+        focus=(),
+        changed_paths=(),
+        query="inspect code",
+        token_budget=512,
+    )
+
+    result = service._adaptive_relevance(
+        request, ({"evidence_id": "evidence-1", "path": "src/main.py"},), "rev-1", "mem-1"
+    )
+
+    assert result["success"] is False
+    assert result["degraded_reason"] == "backend_model_mismatch"
+    assert calls == []
+
+
 def test_adaptive_relevance_cools_down_after_queue_full(monkeypatch):
     from local_ai_hub import services as services_module
 

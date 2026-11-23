@@ -1,0 +1,164 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Approved design: docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+  "id": "plan_managed_autoupdates",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+      "revision": {
+        "content_sha256": "b782ea6ec62a8e1e58e80e1198fea77e22167ceecfe4b2ca0feaee8a2a0657e5",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-19-managed-autoupdates.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "3ba309bb5fed144d3e2548521c72b73b02ef42e9716f978b777250664320d8bd"
+      }
+    }
+  ],
+  "tasks": {
+    "task_migrations": {
+      "acceptance_criteria": [
+        "Ordered registered migrations preserve data and failed activation restores prior state, code and service."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "",
+      "kind": "code",
+      "next_action": "",
+      "title": "Apply consecutive offline migrations and recover",
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+          "revision": {
+            "content_sha256": "b782ea6ec62a8e1e58e80e1198fea77e22167ceecfe4b2ca0feaee8a2a0657e5",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-19-managed-autoupdates.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "3ba309bb5fed144d3e2548521c72b73b02ef42e9716f978b777250664320d8bd"
+          }
+        }
+      ]
+    },
+    "task_updater": {
+      "acceptance_criteria": [
+        "Only a verified newer stable candidate is applied to a managed install with exclusive ownership."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "",
+      "kind": "code",
+      "next_action": "",
+      "title": "Update managed installs in a service window",
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+          "revision": {
+            "content_sha256": "b782ea6ec62a8e1e58e80e1198fea77e22167ceecfe4b2ca0feaee8a2a0657e5",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-19-managed-autoupdates.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "3ba309bb5fed144d3e2548521c72b73b02ef42e9716f978b777250664320d8bd"
+          }
+        }
+      ]
+    },
+    "task_verify": {
+      "acceptance_criteria": [
+        "A release command generates consistent SemVer metadata and publishes only through existing CI gates.",
+        "An opt-in unattended updater checks verified stable releases and preserves the installed configuration and state.",
+        "Updates apply all supported consecutive offline migrations in order, retain verified backups and refuse an unknown upgrade path.",
+        "Fresh targeted tests exercise versioning, release selection, migration success and recovery on a synthetic install.",
+        "Dashboard offers the verified update, requires explicit confirmation, launches the pinned update outside the service, and shows its result after restart.",
+        "Verify the isolated release/update/migration chain and report precisely which real GitHub Actions steps were exercised without a new repository."
+      ],
+      "blocker": null,
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_37d11cf31eb696154951_aa432b29eae6980298c238af064a2e68_r2",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+              "revision": {
+                "content_sha256": "65ae4761de00aa5c7fbecf5a32071e52320efcee7e363bf04bd230b54d210161",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User requested end-to-end release/update validation and approved the dashboard wizard. Do not create a new GitHub repository.",
+          "supersedes": []
+        }
+      ],
+      "depends_on": [],
+      "description": "",
+      "kind": "code",
+      "next_action": "Master dabdc1d4 passed CI 44554148803 including package and installed-wheel MCP. Continue monitoring verification draft run 44534282414 attempt 2 and candidate run 44554239377. Their code and migrations are identical; git diff between tags contains only the telemetry and lock fixture tests. On the first verified draft, authenticate and hash the actual release assets and run both Windows installations.\n\nLocal migration-report verification 2026-11-19: a typed migration failure carries the verified original backup into update backups and setup migration.backups. Early failures and partial backups report an empty list. Focused Windows and offline Debian each passed 89 tests with one skip. A real offline Debian updater run applied a synthetic 6.1.1 wheel, failed its second migration as injected, and reported the exact verified backup while restoring ready 6.1.0 with schema 6, original records and byte-identical config. Local evidence is in docs/FINAL_COMPLETION_PLAN.md and %TEMP%\\lah-migration-backup-report-q5bek_g4. This verification covers the local source patch and leaves hosted candidate and live dashboard gates open.\n\nManaged-update observer verification 2026-11-19: the CLI bounds observation at 45 minutes while preserving an installer still at work. Atomic attempt staging blocks replay and retains its log and any late report. Invalid or missing reports also leave the attempt recoverable. Windows 71 passed/1 symlink skip, offline Debian 72 passed with checksum-verified Node. Standalone native CLI probes shortened observation to 0.1 s, returned before fixture completion, then verified the late success report, blocked replay and byte-identical dashboard status report. Prelaunch digest failure removed staging. Local release, dashboard syntax and 708 API operations passed. Evidence: docs/FINAL_COMPLETION_PLAN.md and %TEMP%\\lah-update-observer-proof-0c10gfyu.\n\nLocal update publication verification 2026-11-19. The updater holds the attempt guard through final status publication, retains the installer's result on report-write failure and removes read-only Git objects on Windows before releasing staging. The focused suite passed 73 tests on Windows with one symlink privilege skip and 74 on offline Debian. Two-process CLI probes used a real local Git checkout on both platforms and confirmed that a competitor leaves the installed report byte-identical and staging is released. Working-checkout release validation passed. Evidence is in docs/FINAL_COMPLETION_PLAN.md and %TEMP%\\lah-update-publication-proof-5c0l0u_1.\n\nFresh GitHub Actions recheck 2026-11-19 16:56 UTC: master run 44554148803 is completed/success at dabdc1d49f955b4cf20c30f96b2603bd8eda772a. Older master run 44534232796 failed only its full integration suite at Python 3.14 on 745f913c; older draft run 44534282414 failed only full Windows/Python 3.11 integration on e1f26dee. Newer candidate run 44554239377 remains in_progress at 9cbb811e; all reported jobs have passed except Windows/Python 3.11 integration still running. No workflow was started. Keep this task in progress until that candidate is terminal and candidate-specific artifact/install checks are done.\n\nFresh terminal recheck 2026-11-19 17:12 UTC: candidate run 44554239377 at 9cbb811e531f0b52dcf8e27293a20d857fabe296 completed FAILURE. Only failing step: full integration suite on Windows/Python 3.11; package/publication skipped. The JUnit artifact exists but unauthenticated GitHub REST download returned 401, so failing test names are unknown. Do not infer cases or launch the full suite locally; inspect authenticated artifact or an explicitly scoped repro when available. Latest master run 44554148803 remains success at dabdc1d49f955b4cf20c30f96b2603bd8eda772a. Keep task in progress; no workflow or release was started.\nFresh current-working-checkout targeted tests 2026-11-19: `python -m pytest --no-cache -q tests/test_update_install.py tests/test_auto_update.py tests/test_dashboard_updates.py tests/test_prepare_release.py` → 40 passed in 3.22 s. These are local/source tests only; no real installation, publication, restart, or client/dashboard acceptance.\nFresh public CI recheck 2026-11-19 ~17:40 UTC: master run 44571634051 at a65d870e59f3646b0c7cb092bb4a856439862114 concluded failure; its Jobs API listed successful jobs except macOS/Python 3.12 integration and platform-smoke cancelled, with package/publish skipped and no failed step shown. Cause remains unknown. Newer master run 44575429814 at 2a8fb26f8bf66e4f015bd7591355155bc4cbed67 is queued. Earlier candidate run 44554239377 remains failed Windows/Python 3.11 integration with JUnit artifact unavailable unauthenticated (401). Local 40 targeted tests do not clear hosted candidate/install/dashboard gates.",
+      "title": "Verify and document operational workflow",
+      "work_phase": "verification",
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+          "revision": {
+            "content_sha256": "b782ea6ec62a8e1e58e80e1198fea77e22167ceecfe4b2ca0feaee8a2a0657e5",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-19-managed-autoupdates.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "3ba309bb5fed144d3e2548521c72b73b02ef42e9716f978b777250664320d8bd"
+          }
+        }
+      ]
+    },
+    "task_versioning": {
+      "acceptance_criteria": [
+        "One bump prepares synchronized SemVer metadata and CI publishes only a verified tag."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "",
+      "kind": "code",
+      "next_action": "",
+      "title": "Automate release versioning",
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-19-managed-autoupdates-design.md",
+          "revision": {
+            "content_sha256": "b782ea6ec62a8e1e58e80e1198fea77e22167ceecfe4b2ca0feaee8a2a0657e5",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-19-managed-autoupdates.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "3ba309bb5fed144d3e2548521c72b73b02ef42e9716f978b777250664320d8bd"
+          }
+        }
+      ]
+    }
+  },
+  "title": "Local AI Hub automatic releases and updates"
+}

@@ -646,7 +646,7 @@ def test_missing_file_prune_rolls_back_when_required_source_fts_table_is_missing
             con.execute("DROP TABLE source_fts")
             con.commit()
 
-        with pytest.raises(sqlite3.OperationalError, match="no such table: source_fts"):
+        with pytest.raises(sqlite3.OperationalError, match=r"no such table: (?:main\.)?source_fts"):
             pre._prune_missing_file_refs(str(root))
 
         with closing(pre._connect()) as con:
@@ -904,7 +904,7 @@ def test_repo_pipeline_composite_action(tmp_path: Path, monkeypatch):
         {"action": "affected_tests", "path": "src/foo.py"},
         {"action": "security_audit"},
     ]
-    res = mcp_mod._local_ai_repo_impl(action="pipeline", root=str(tmp_path), root=str(tmp_path), steps=steps)
+    res = mcp_mod._local_ai_repo_impl(action="pipeline", root=str(tmp_path),  steps=steps)
     assert res["success"] is True
     assert res["pipeline"] is True
     assert res["steps_total"] == 2

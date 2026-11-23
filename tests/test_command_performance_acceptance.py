@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from local_ai_hub.commands import CommandBroker, CommandInvocation
+from local_ai_hub.command_broker import CommandBroker, CommandInvocation
 from local_ai_hub.repo_state import RepoStateTracker
 
 

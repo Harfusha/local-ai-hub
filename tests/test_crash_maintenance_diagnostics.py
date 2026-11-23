@@ -30,11 +30,19 @@ def idle_preprocessor(tmp_path):
     instance.cleanup_orphaned_indexes = lambda: None
     with closing(sqlite3.connect(instance.db_path)) as con:
         con.execute("PRAGMA journal_mode=WAL")
-        con.execute("CREATE TABLE content_cards(card_key TEXT PRIMARY KEY, accessed_at REAL)")
-        con.execute("CREATE TABLE file_refs(card_key TEXT)")
+        con.execute("CREATE TABLE content_cards(card_key TEXT PRIMARY KEY, accessed_at REAL, content_hash TEXT, card_json TEXT, analyzer_version TEXT, model TEXT)")
+        con.execute("CREATE TABLE content_lexical(content_hash TEXT PRIMARY KEY, text TEXT, updated_at REAL)")
+        con.execute("CREATE TABLE source_index(content_hash TEXT, text_origin TEXT)")
+        con.execute("CREATE TABLE file_refs(card_key TEXT, root TEXT, path TEXT, needs_hash INTEGER, content_hash TEXT)")
+        con.execute("CREATE TABLE projects(root TEXT PRIMARY KEY, phase TEXT, status TEXT, paused INTEGER)")
         old = time.time() - 40 * 86400
-        con.executemany("INSERT INTO content_cards VALUES (?, ?)", [("orphan", old), ("used", old)])
-        con.execute("INSERT INTO file_refs VALUES ('used')")
+        con.executemany("INSERT INTO content_cards(card_key,accessed_at) VALUES (?, ?)", [("orphan", old), ("used", old)])
+        con.executemany(
+            "INSERT INTO content_lexical VALUES (?, 'content', ?)",
+            [("expired", old), ("active", old), ("recent", time.time())],
+        )
+        con.execute("INSERT INTO source_index VALUES ('active', 'source')")
+        con.execute("INSERT INTO file_refs(card_key) VALUES ('used')")
         con.commit()
     return instance
 
@@ -45,6 +53,7 @@ def test_idle_maintenance_commits_pruning_before_checkpoint(tmp_path, caplog):
         assert instance._run_idle_database_maintenance()
     with closing(sqlite3.connect(instance.db_path)) as con:
         assert con.execute("SELECT card_key FROM content_cards").fetchall() == [("used",)]
+        assert con.execute("SELECT content_hash FROM content_lexical ORDER BY content_hash").fetchall() == [("active",), ("recent",)]
     assert "maintenance skipped" not in caplog.text
     assert instance._stats["db_maintenance_runs"] == 1
 

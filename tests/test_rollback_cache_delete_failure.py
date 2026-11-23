@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_rollback_reports_suppressed_sqlite_cache_delete_failure(

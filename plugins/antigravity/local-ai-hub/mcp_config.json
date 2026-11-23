@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "local-ai": {
+      "command": "python",
+      "args": ["-m", "local_ai_hub.mcp_server"],
+      "cwd": "C:\\Users\\Adam\\.local-ai-hub",
+      "env": {
+        "LOCAL_AI_AGENT": "antigravity",
+        "LOCAL_AI_AGENT_PROFILE": "antigravity",
+        "PYTHONPATH": "C:\\Users\\Adam\\.local-ai-hub\\src"
+      }
+    }
+  }
+}

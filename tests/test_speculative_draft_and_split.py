@@ -5,7 +5,7 @@ import subprocess
 from unittest.mock import MagicMock
 from local_ai_hub import deterministic as deterministic_module
 from local_ai_hub.deterministic import DeterministicEngine
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.token_accounting import finalize_tool_accounting
 

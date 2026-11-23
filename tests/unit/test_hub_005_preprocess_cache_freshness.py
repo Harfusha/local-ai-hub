@@ -92,7 +92,7 @@ def test_cross_root_isolation_with_identical_filenames(tmp_path: Path):
     assert cache.get("index.py", root=str(proj_b), content_hash=hb) is not None
 
 
-def test_get_or_ingest_with_expected_hash_invalidates_stale_cache(tmp_path: Path):
+def test_get_or_ingest_with_expected_hash_invalidates_stale_cache(tmp_path: Path, monkeypatch):
     f = tmp_path / "target.py"
     f.write_text("val = 1\n", encoding="utf-8")
     h1 = hashlib.sha256(f.read_bytes()).hexdigest()
@@ -100,6 +100,8 @@ def test_get_or_ingest_with_expected_hash_invalidates_stale_cache(tmp_path: Path
     cache = SinglePassIngestCache(max_entries=10)
     tools = RepositoryTools({})
 
+    identity, _ = tools._cache_identity(f, f.stat())
+    monkeypatch.setattr(tools, "_cache_identity", lambda _path, _stat: (identity, False))
     ingested1 = cache.get_or_ingest(tmp_path, "target.py", tools, expected_hash=h1)
     assert ingested1.content_hash == h1
 
@@ -111,7 +113,7 @@ def test_get_or_ingest_with_expected_hash_invalidates_stale_cache(tmp_path: Path
     ingested2 = cache.get_or_ingest(tmp_path, "target.py", tools, expected_hash=h2)
     assert ingested2.content_hash == h2
     assert ingested2.text == "val = 2"
-    assert cache.get("target.py", root=str(tmp_path), root=str(tmp_path), content_hash=h1) is None
+    assert cache.get("target.py", root=str(tmp_path), content_hash=h1) is None
 
 
 def test_e2e_two_projects_shared_preprocessor_no_watcher_invalidation(tmp_path: Path):
@@ -138,9 +140,9 @@ def test_e2e_two_projects_shared_preprocessor_no_watcher_invalidation(tmp_path: 
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("CREATE TABLE projects(root TEXT PRIMARY KEY, phase TEXT, generation INTEGER)")
         con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, rag_hash TEXT, card_key TEXT, needs_hash INTEGER, updated_at REAL, PRIMARY KEY(root, path))")
-        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, updated_at REAL, PRIMARY KEY(root, path))")
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, updated_at REAL, text_origin TEXT, PRIMARY KEY(root, path))")
         con.execute("CREATE TABLE source_fts(root TEXT, path TEXT, content TEXT)")
-        con.execute("CREATE TABLE content_cards(content_hash TEXT, analyzer_version TEXT, card_key TEXT)")
+        con.execute("CREATE TABLE content_cards(content_hash TEXT, analyzer_version TEXT, card_key TEXT, model TEXT, card_json TEXT, hits INTEGER)")
         con.execute("INSERT INTO projects VALUES(?, 'hash', 1)", (str(proj_a),))
         con.execute("INSERT INTO projects VALUES(?, 'hash', 1)", (str(proj_b),))
         con.execute("INSERT INTO file_refs VALUES(?, 'service.py', ?, '', NULL, 0, 0)", (str(proj_a), ha1))

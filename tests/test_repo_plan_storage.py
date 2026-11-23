@@ -4,10 +4,13 @@ import threading
 
 import pytest
 
-from local_ai_hub.repo_plan import (
+from local_ai_hub.repo_plan.storage import (
     OperationIntent,
-    RepoPlanConflictError,
     RepoPlanStorage,
+)
+
+from local_ai_hub.repo_plan.schema_validation import (
+    RepoPlanConflictError,
 )
 from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
 

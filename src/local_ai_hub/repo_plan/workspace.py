@@ -34,6 +34,7 @@ from .storage import OperationIntent, RepoPlanStorage, _guard_storage_paths, get
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
+_BOARD_DESCRIPTION_MAX_CHARS = 2048
 
 
 @contextmanager
@@ -310,6 +311,10 @@ class RepoPlanWorkspace:
                 if query_clean not in searchable:
                     continue
 
+            try:
+                updated_at = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
             tasks = data.get("tasks", {})
             plans.append({
                 "id": data.get("id"),
@@ -320,7 +325,7 @@ class RepoPlanWorkspace:
                 "task_count": len(tasks),
                 "file_revision": rev,
                 "rel_path": rel_path,
-                "updated_at": path.stat().st_mtime,
+                "updated_at": updated_at,
             })
             if len(plans) >= limit:
                 break
@@ -736,13 +741,15 @@ class RepoPlanWorkspace:
                 )
                 # File declarations and result references are not current verifier receipts.
                 verified = False
+                description_truncated = len(desc) > _BOARD_DESCRIPTION_MAX_CHARS
 
                 board_card = {
                     "task_id": tid,
                     "plan_id": pid,
                     "plan_title": plan_title,
                     "title": title,
-                    "description": desc,
+                    "description": desc[:_BOARD_DESCRIPTION_MAX_CHARS] if description_truncated else desc,
+                    "description_truncated": description_truncated,
                     "kind": tdata.get("kind", "code"),
                     "accountable_role": tdata.get("accountable_role"),
                     "work_status": work_status,

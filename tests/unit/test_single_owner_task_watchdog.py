@@ -101,7 +101,7 @@ def test_warmup_preserves_task_and_actual_session_without_tenant(tmp_path, monke
     assert request.session_id == "chat-one"
     assert "tenant" not in vars(request)
     with pytest.raises(TypeError, match="tenant"):
-        instance.schedule_task_context_warmup(task, root=str(tmp_path), root=str(tmp_path), tenant=None)
+        instance.schedule_task_context_warmup(task, root=str(tmp_path), tenant=None)
 
 
 @pytest.mark.parametrize("change", ["revision", "root", "terminal", "gaming", "degraded", "authorization"])

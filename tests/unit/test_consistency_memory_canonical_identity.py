@@ -32,12 +32,12 @@ def test_missing_coordination_identity_cannot_write_repository_memory(monkeypatc
 @pytest.mark.parametrize("value", [None, "", False])
 def test_retired_tenant_fields_are_rejected_at_request_boundary(tmp_path, retired, value):
     with pytest.raises(TypeError):
-        ConsistencyRequest(root=str(tmp_path), root=str(tmp_path), **{retired: value})
+        ConsistencyRequest(root=str(tmp_path), **{retired: value})
 
 
 def test_invalid_project_identity_cannot_write_repository_memory(monkeypatch, tmp_path):
     guard, writes = make_guard(monkeypatch, tmp_path, None)
-    request = ConsistencyRequest(root=str(tmp_path), root=str(tmp_path), task_id="task-current", session_id="session-current")
+    request = ConsistencyRequest(root=str(tmp_path), task_id="task-current", session_id="session-current")
     assert guard.record_finding(request, finding="claim") is None
     assert writes == []
 
@@ -45,7 +45,7 @@ def test_invalid_project_identity_cannot_write_repository_memory(monkeypatch, tm
 def test_writer_uses_resolved_repository_identity_and_preserves_task_context(monkeypatch, tmp_path):
     guard, writes = make_guard(monkeypatch, tmp_path, "repository-current")
     request = ConsistencyRequest(
-        root=str(tmp_path), root=str(tmp_path), task_id="task-current", session_id="session-current"
+        root=str(tmp_path), task_id="task-current", session_id="session-current"
     )
     record = guard.record_finding(request, finding="claim")
     assert len(writes) == 1

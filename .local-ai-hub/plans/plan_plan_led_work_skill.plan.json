@@ -4,7 +4,15 @@
   "id": "plan_plan_led_work_skill",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_continuity_protocol": {
       "acceptance_criteria": [
@@ -20,7 +28,16 @@
       "kind": "code",
       "next_action": "No remaining implementation work.",
       "title": "Add clarification, continuity, and progress protocol",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_global_skill": {
       "acceptance_criteria": [
@@ -36,7 +53,16 @@
       "kind": "code",
       "next_action": "Requested install is complete; resolve retained GPU state before any future semantic review.",
       "title": "Create and install plan-led-work skill",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_ledger_and_done_reuse": {
       "acceptance_criteria": [
@@ -52,7 +78,16 @@
       "kind": "code",
       "next_action": "No remaining code or prompt updates.",
       "title": "Add requirement ledger and verified-done reuse",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_wire_existing_hub_actions": {
       "acceptance_criteria": [
@@ -69,7 +104,16 @@
       "kind": "code",
       "next_action": "Implementation and focused verification complete. Keep the project plan active until an exposed Hub receipt-gate action can close its Agent OS task; do not infer completion from plan status.",
       "title": "Wire skill to existing Hub operations and verify",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
   "title": "Plan-led work skill and Hub installation"

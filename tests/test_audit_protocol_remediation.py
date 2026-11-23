@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.task_context import build_context_request
 
@@ -24,6 +24,23 @@ def test_status_reports_explain_dependency_degradation(monkeypatch, detail):
     assert result["hub_online"] is True
     assert result["degraded"] is True
     assert result["dependency_status"] == {"accelerators": failed}
+
+
+def test_status_preserves_stale_snapshot_reason_for_degraded_result(monkeypatch):
+    from local_ai_hub import mcp_server as module
+    raw = {
+        "success": False, "hub_online": True, "degraded": True,
+        "snapshot_cached": True, "snapshot_stale": True, "status_age_ms": 250,
+    }
+    monkeypatch.setattr(module.CLIENT, "get", lambda *args, **kwargs: raw)
+
+    result = module.local_ai_status(detail="brief")
+
+    assert result["success"] is False
+    assert result["hub_online"] is True
+    assert result["snapshot_cached"] is True
+    assert result["snapshot_stale"] is True
+    assert result["status_age_ms"] == 250
 
 
 @pytest.mark.parametrize("field", ["task_id", "session_id", "repository_id", "clone_id", "worktree_id", "branch"])

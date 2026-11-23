@@ -4,7 +4,22 @@
   "id": "plan_537b2483a0ca",
   "lifecycle": "completed",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-09-exclusive-preprocessing-mode.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "43b19acb652b9f0b28d9817155dd0f91efa5d704e65733265b55ee1602550131"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-09-exclusive-preprocessing-mode.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "56aab5770a185aab0cea3d3c7b133b7444d4062865fd55a462ea1dfd4611f1ce"
+      }
+    }
+  ],
   "tasks": {
     "task_exclusive_preprocessing": {
       "acceptance_criteria": [
@@ -23,8 +38,24 @@
       "next_action": "Dokončit focused validation of doubled per-profile limits and reconcile remaining independent runtime blockers.",
       "title": "Čtvrtý activity mode pro výhradní preprocessing",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-09-exclusive-preprocessing-mode.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "43b19acb652b9f0b28d9817155dd0f91efa5d704e65733265b55ee1602550131"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-09-exclusive-preprocessing-mode.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "56aab5770a185aab0cea3d3c7b133b7444d4062865fd55a462ea1dfd4611f1ce"
+          }
+        }
+      ]
     }
   },
-  "title": "Výhradní režim preprocessingu"
+  "title": "Exclusive preprocessing mode"
 }

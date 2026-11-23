@@ -13,9 +13,9 @@ from unittest import mock
 
 import pytest
 
-from local_ai_hub import commands as commands_module
+from local_ai_hub import command_broker as commands_module
 from local_ai_hub.agent_policy import PolicyEngine
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.process_utils import hidden_run_kwargs
 from local_ai_hub.services import LocalAIServices
 
@@ -962,7 +962,7 @@ def test_stop_daemon_does_not_report_success_while_process_is_alive(tmp_path: Pa
         "_log_closed": False,
     }
 
-    with mock.patch("local_ai_hub.commands.terminate_tree"):
+    with mock.patch("local_ai_hub.command_broker.terminate_tree"):
         result = broker.stop_daemon("stuck", task_id="daemon-test")
 
     assert result["success"] is False

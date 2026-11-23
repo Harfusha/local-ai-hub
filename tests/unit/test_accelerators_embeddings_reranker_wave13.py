@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
+import local_ai_hub.accelerators as accelerators
 from local_ai_hub.accelerators import (
     accelerator_status,
     openvino_cache_dir,
@@ -19,7 +20,8 @@ def test_accelerator_status_malformed_config() -> None:
     assert isinstance(status, dict)
     assert "embedding" in status
     assert "reranker" in status
-    assert status["embedding"]["backend"] == "sentence-transformers"
+    assert status["embedding"]["backend"] == "auto"
+    assert status["embedding"]["candidates"] == [("sentence-transformers", "cpu")]
 
     # Embedded null byte in cache_dir
     assert openvino_cache_dir({"openvino": {"cache_dir": "bad\0cache"}}) is None
@@ -148,3 +150,129 @@ def test_embedding_encode_discovers_accelerator_candidates_once_per_request() ->
 
     assert result["success"] is True
     assert embedding._candidate_specs.call_count == 1
+
+
+def test_explicit_cuda_embedding_does_not_add_cpu_fallback() -> None:
+    embedding = EmbeddingModel({
+        "models": {"embedding_backend": "sentence-transformers", "embedding_device": "cuda"},
+    })
+
+    assert embedding._candidate_specs() == [("sentence-transformers", "cuda")]
+
+
+def test_automatic_embedding_route_keeps_cpu_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    embedding = EmbeddingModel({"models": {"embedding_backend": "auto", "embedding_device": "auto"}})
+    monkeypatch.setattr(
+        "local_ai_hub.embeddings.automatic_embedding_candidates",
+        lambda _config: [("sentence-transformers", "cuda:0")],
+    )
+
+    assert embedding._candidate_specs() == [
+        ("sentence-transformers", "cuda:0"),
+        ("sentence-transformers", "cpu"),
+    ]
+
+
+def test_explicit_openvino_embedding_cpu_fallback_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("local_ai_hub.embeddings.openvino_device_candidates", lambda *_args: ["NPU"])
+    strict = EmbeddingModel({"models": {"embedding_backend": "openvino", "embedding_device": "NPU"}})
+    fallback = EmbeddingModel({
+        "models": {"embedding_backend": "openvino", "embedding_device": "NPU"},
+        "openvino": {"cpu_fallback": True},
+    })
+
+    assert strict._candidate_specs() == [("openvino", "NPU")]
+    assert fallback._candidate_specs() == [("openvino", "NPU"), ("sentence-transformers", "cpu")]
+
+
+def test_explicit_openvino_reranker_cpu_fallback_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("local_ai_hub.reranker.openvino_device_candidates", lambda *_args: ["NPU"])
+    strict = Reranker({"models": {"reranker_backend": "openvino", "reranker_device": "NPU"}})
+    fallback = Reranker({
+        "models": {"reranker_backend": "openvino", "reranker_device": "NPU"},
+        "openvino": {"cpu_fallback": True},
+    })
+
+    assert strict._candidate_specs() == [("openvino", "NPU")]
+    assert fallback._candidate_specs() == [("openvino", "NPU"), ("torch", "cpu")]
+
+
+def test_embedding_status_exposes_fallback_reason(tmp_path: Path) -> None:
+    embedding = EmbeddingModel({"server": {"state_dir": str(tmp_path)}})
+    embedding._fallback_reason = "OpenVINO/NPU model load failed"
+
+    assert embedding.status()["fallback_reason"] == "OpenVINO/NPU model load failed"
+
+
+def test_reranker_status_exposes_fallback_reason(tmp_path: Path) -> None:
+    reranker = Reranker({"server": {"state_dir": str(tmp_path)}})
+    reranker._fallback_reason = "OpenVINO/NPU model load failed"
+
+    assert reranker.status()["fallback_reason"] == "OpenVINO/NPU model load failed"
+
+
+def test_accelerator_status_reports_explicit_backend_and_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(accelerators, "openvino_runtime", lambda: {"available": False, "devices": []})
+    monkeypatch.setattr(accelerators, "openvino_device_candidates", lambda *_args: ["NPU"])
+    monkeypatch.setattr(accelerators, "automatic_embedding_candidates", lambda _config: [("openvino", "NPU")])
+    monkeypatch.setattr(accelerators, "_onnx_providers", lambda: set())
+    monkeypatch.setattr(accelerators, "_torch_gpu_route", lambda: None)
+
+    status = accelerator_status({
+        "models": {
+            "embedding_backend": "sentence-transformers", "embedding_device": "cuda",
+            "reranker_backend": "torch", "reranker_device": "cpu",
+        },
+    })
+
+    assert status["embedding"]["candidates"] == [("sentence-transformers", "cuda")]
+    assert status["reranker"]["candidates"] == [("torch", "cpu")]
+
+
+def test_accelerator_status_respects_auto_device_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(accelerators, "openvino_runtime", lambda: {"available": False, "devices": []})
+    monkeypatch.setattr(accelerators, "openvino_device_candidates", lambda *_args: ["NPU"])
+    monkeypatch.setattr(accelerators, "automatic_embedding_candidates", lambda _config: [("openvino", "NPU")])
+    monkeypatch.setattr(accelerators, "_onnx_providers", lambda: set())
+    monkeypatch.setattr(accelerators, "_torch_gpu_route", lambda: None)
+
+    status = accelerator_status({
+        "models": {
+            "embedding_backend": "auto", "embedding_device": "cpu",
+            "reranker_backend": "auto", "reranker_device": "cpu",
+        },
+    })
+
+    assert status["embedding"]["candidates"] == [("sentence-transformers", "cpu")]
+    assert status["reranker"]["candidates"] == [("torch", "cpu")]
+
+
+@pytest.mark.parametrize(
+    ("backend", "device", "openvino_config", "expected_fallback"),
+    [
+        ("torch", "cuda", None, False),
+        ("auto", "auto", None, True),
+        ("torch", "cpu", None, True),
+        ("openvino", "NPU", None, False),
+        ("openvino", "NPU", {"cpu_fallback": True}, True),
+    ],
+)
+def test_reranker_default_cpu_fallback_matches_route_policy(
+    tmp_path: Path, backend: str, device: str,
+    openvino_config: dict[str, bool] | None, expected_fallback: bool,
+) -> None:
+    config = {
+        "server": {"state_dir": str(tmp_path)},
+        "models": {"reranker_backend": backend, "reranker_device": device},
+    }
+    if openvino_config is not None:
+        config["openvino"] = openvino_config
+    reranker = Reranker(config)
+    captured: dict[str, object] = {}
+    reranker._needs_gpu_admission = lambda: False
+    reranker._rerank_without_admission = lambda *_args, **kwargs: (
+        captured.update(kwargs) or {"success": True, "results": []}
+    )
+
+    assert reranker.rerank("query", ["document"])["success"] is True
+    assert captured["allow_cpu_fallback"] is expected_fallback

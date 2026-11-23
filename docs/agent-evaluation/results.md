@@ -6,6 +6,44 @@
 - **CASE133:** Protocol PASS in chat `01a1d585-ae04-7742-b313-665c6e1abe27`: six ordered read-only actions, one call each, then one final. All six returned 503 before dispatch (`req_0488f6d61af0`, `req_ff6c59a70825`, `req_5f3e673982f4`, `req_9ad926e2bb06`, `req_6d29ce53cadb`, `req_c98cb4d88e31`). Audit payloads and coverage were NOT_RETURNED. Result: content NOT_VERIFIED; 503 is not a product failure.
 - **CASE136:** Latest protocol retest `01a1d39f-fbf7-7133-a43e-10b9eedee0e6` FAILS the one-final requirement: transcript contains two `final_answer` messages and zero repo calls. All 16 branches were NOT_RUN because harness supplied no disposable Git root/revisions, fresh complete alpha-index proof, two authorized indexed roots/project IDs, or semantic readiness. Initial thread `01a1d579-bd2b-7d33-a062-d695de23e4a4` also had no repo calls. Do not retry before prerequisites exist.
 
+### Active catalog status normalization — 2026-11-18
+
+The rows below normalize the latest recorded case-specific evidence for active IDs that had no explicit row in the numeric status tables. These are evidence classifications, not new prompt runs; the referenced details remain in the case/round entries below. `PARTIAL` includes any observed failed branch and does not imply an overall pass.
+
+| Active ID | Status | Latest recorded scope and limit |
+|---:|---|---|
+| 106 | PASS | Round 239: two-sentence save/backup distinction; no tools needed. |
+| 108 | PARTIAL | Round 237: dashboard page and local status only; protected APIs NOT_RUN. |
+| 109 | NOT_RUN | Round 240: no isolated checkout/state; negative guard only. |
+| 110 | PASS | CASE110: focused deferred-commit regression passed; broader runtime behavior not claimed. |
+| 112 | PASS | CASE112: focused dead-code cache refresh regression passed. |
+| 113 | PASS | CASE113: route consistency test only; installed models/inference NOT_VERIFIED. |
+| 114 | PARTIAL | Round 241: status/list/source/path denial observed; get/slice and symlink branches NOT_RUN. |
+| 115 | PARTIAL | Rounds 242–244: navigation/symbol evidence mixed with incomplete search coverage, degraded context and definition 404. |
+| 116 | PARTIAL | Round 245: scoped static inventory incomplete; endpoint payloads partly agent-reported. |
+| 117 | NOT_RUN | Round 246: required root, baseline and isolated state absent. |
+| 118 | PARTIAL | Rounds 247–248: initial missing-enum guard failed; corrected negative branch passed; remaining branches unverified. |
+| 119 | PARTIAL | Missing-baseline review: prohibited calls were observed; other branches NOT_RUN. |
+| 120 | NOT_RUN | Prerequisite review: disposable repo, inert image and audio absent. |
+| 121 | PARTIAL | Corrected run stopped safely but emitted two final answers; earlier run violated root scope. |
+| 122 | PARTIAL | Nonempty checkpoint read-back passed for one branch; isolated task/session artifact and other branches remain unverified. |
+| 123 | PARTIAL | Round 251: selected synthetic key/status filters observed; other branches and physical deletion remain unverified. |
+| 124 | NOT_RUN | Rounds 252–253: plan creation stopped on Git-context error; no plan/revision/archive lifecycle verified. |
+| 125 | PARTIAL | Falsey pubsub values passed; user-key checks partial; semaphore omitted-TTL branch failed. |
+| 126 | PARTIAL | Selected worktree release branches reported and Git state checked; raw MCP responses and broader fencing remain unverified. |
+| 127 | PARTIAL | Read-only reservation-status branch observed; release/data branches NOT_RUN. |
+| 128 | NOT_RUN | Missing disposable output and expired/dead-owner fixture; safe-stop only. |
+| 129 | PARTIAL | Falsey-vs-missing lexical branches passed; full action/source inventory incomplete, retired-field server branch NOT_RUN. |
+| 130 | PARTIAL | Protocol/output shape passed in a retest; evidence-provenance contract failed. |
+| 131 | PARTIAL | Protocol pass only; required independent indexed roots and content evidence absent. |
+| 132 | PARTIAL | Ordered-call protocol passed; semantic payloads lack raw MCP evidence. |
+| 133 | PARTIAL | Ordered protocol passed; six actions returned 503 before dispatch, so content NOT_VERIFIED. |
+| 134 | PARTIAL | Four-call protocol passed; content/runtime identity remains incomplete. |
+| 135 | PARTIAL | One-call protocol passed; endpoint values remain agent-reported/NOT_VERIFIED. |
+| 136 | PARTIAL | Latest protocol failed one-final requirement; all 16 practical branches NOT_RUN. |
+
+The older 001–105 status table remains an explicitly historical snapshot. This normalization fills missing explicit rows; it does not make the 123-case catalog a fresh practical acceptance run.
+
 ### GPT-6 Luna prompt audit — 2026-11-08
 
 This is a historical snapshot from the first audit on 2026-11-08, not the current catalog count or final status. It supersedes older “all NOT_RUN” summaries only for evidence available at that time. Later numbered rounds below add or revise scenarios, execute isolated mutations, and report further tests and limitations; use those rounds rather than this snapshot for current case results. In particular, the statement below that no valid MCP mutation was called does not apply to later CASE122 checkpoint runs.

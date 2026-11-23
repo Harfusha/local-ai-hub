@@ -4,7 +4,15 @@
   "id": "plan_technical_audit_v6_20261108",
   "lifecycle": "draft",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_p0_ci_pyflakes": {
       "acceptance_criteria": [
@@ -18,7 +26,16 @@
       "next_action": "",
       "title": "P0-1: Opravit CI pyflakes varování",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p0_model_timeout": {
       "acceptance_criteria": [
@@ -33,7 +50,16 @@
       "next_action": "",
       "title": "P0-2: Opravit regresní test test_owned_model_timeout_reports_bounded_worker_stderr",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p0_upgrade_contract": {
       "acceptance_criteria": [
@@ -48,7 +74,16 @@
       "next_action": "",
       "title": "P0-3: Sjednotit upgrade kontrakt v6.0.0",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p1_ab_evaluation": {
       "acceptance_criteria": [
@@ -66,7 +101,16 @@
       "next_action": "Keep P1-5 open and report the 306-file pair as a bounded, negative observation. Close only if exact run-bound environment provenance and comparable validation-quality evidence already exist in the retained artifacts; do not rerun or bypass native host policy without explicit authorization.",
       "title": "P1-5: Provést A/B evaluaci reálné úspory tokenů a latence Hubu",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p1_feature_defaults": {
       "acceptance_criteria": [
@@ -81,7 +125,16 @@
       "next_action": "Verified current README/defaults parity. README.md SHA-256 49b4ca8046eae4c7378e363f30ad9a6905353e6fcae8e1101f27dc5e6112c161; defaults.toml SHA-256 2d2e52da45bd342a9dcfa801d769b64b82757ba2bd9f58da0c8fc48c35ab1b05; tests/test_audit_round1_feature_defaults.py SHA-256 3d559d460ba358543159989515103c0db258b0394d41e8582b6dfa2eb0ae3527. `python -m pytest --no-cache -q tests/test_audit_round1_feature_defaults.py --tb=short` passed 1 test. README accurately says enriched_search/batch_replacement/diagnostic_artifacts enabled and local_diagnostic_dispatch disabled; the test parses TOML and locks this mapping.",
       "title": "P1-1: Sjednotit feature defaults",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "done",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p1_fingerprint_profile": {
       "acceptance_criteria": [
@@ -96,7 +149,16 @@
       "next_action": "",
       "title": "P1-2: Profilovat a optimalizovat Git fingerprint na vyhledávací cestě",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p1_gpu_admission": {
       "acceptance_criteria": [
@@ -111,7 +173,16 @@
       "next_action": "Stability owner to reconcile runtime reservation/model state and trace the full admission path for enforced desktop-growth bounds. Do not replay failed Wishflix index or start new indexing while VRAM pressure is unknown/balancer degraded. If source lacks a bound, implement under Stability ownership; then run approved concurrent-desktop admission stress gate and retain context, TTFT, throughput, VRAM, and reservation receipts. Keep P1-6 open until criterion #2 is evidenced; do not pull 4B.",
       "title": "P1-6: Zátěžové testy GPU admission a model routingu",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p1_query_classification": {
       "acceptance_criteria": [
@@ -126,7 +197,16 @@
       "next_action": "",
       "title": "P1-3: Zlepšit klasifikaci dotazů v search_modes",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p1_rag_lifecycle": {
       "acceptance_criteria": [
@@ -141,7 +221,16 @@
       "next_action": "",
       "title": "P1-4: Stabilizovat RAG embedding space a GPU reservation lifecycle",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p2_modularize": {
       "acceptance_criteria": [
@@ -149,15 +238,24 @@
         "Regression tests pass before and after extraction"
       ],
       "accountable_role": "primary",
-      "blocker": "CASE131 lacks two independent indexed roots and isolated Hub state; CASE136 lacks its complete alpha-index, disposable diff branches, cross-project inputs, and qualified backend. CASE132/134/135 must not be rerun. P1-5/P1-6 and Stability integration remain open; broad pytest, pyflakes, compileall, release and runtime checks require the stable shared window.",
+      "blocker": "CASE131 lacks two independent indexed roots and isolated Hub state; CASE136 lacks complete alpha-index, disposable diff branches, cross-project inputs and qualified backend. CASE132/134/135 must not be rerun. Higher-level integration remains Stability-owned; P1-5/P1-6 and broad audit/eval/release gates remain open.",
       "clarifications": [],
       "depends_on": [],
       "description": "Continue P2-3 deterministic-service modularization. R169-R202 evidence and hashes are in the result docs. R197 bounded schema scanning; R198 Git history search; R199 Git output parsing/deduplication; R200 history filter validation; R201 query intent-noise filtering; R202 batch-replace dirty-hunk parser. R197 passed 23 focused; R198 28 + 3 checks; R199 29; R200 30 + 3; R201 8; R202 4. search_git_history is 37/25; query 114/64; batch_replace 99/58. deterministic.py reports 131 functions / 54 high-risk. Impact freshness remains incomplete and risks UNKNOWN; full gates and Stability integration stay open.",
       "kind": "code",
-      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d verification of the R208/R209 extractions: `python -m pytest --no-cache -q tests/unit/test_code_index_parse_blobs.py tests/unit/test_code_index_candidate_parse.py` — 5 passed in 1.06s. Exact source slices confirm load_parse_blobs and parse_index_candidate are called by CodeIndex.update_files_batch (code_index.py SHA 5f30bec42376e23abd8a167aa976ce69c79759e148d61651b01ce38998bb75cf). Current higher-level callers are preprocess.py SHA a6e008ed5108c1275cf7727813c308cb8d9c5aff22e94b98a253b14b7eca2991 at line 4650 and services.py SHA 054f22539cd2b65978f64c558b5808ff74551b677f197affa9a537d54d363c4a at 4836/4847; both are Stability-owned dirty paths, so no integration test or source mutation was performed there. P2-3 remains open pending stable-window integration proof and remaining audit/eval matrix.",
+      "next_action": "Fresh focused current dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5 verification of R208/R209 extractions: `python -m pytest --no-cache -q tests/unit/test_code_index_parse_blobs.py tests/unit/test_code_index_candidate_parse.py --tb=short` — 5 passed in 1.20s. Current clean code_index.py SHA-256 5f30bec42376e23abd8a167aa976ce69c79759e148d61651b01ce38998bb75cf; test hashes c9122fcc418f9b6ef8ac862e4ed8e54bde353776cdb3d06ecd9d91b405d15df9 and 3b53495cd8141e836840401472204434b60b01d517aea03e23bf47ca9734738d. Unit extraction evidence only; Stability-owned preprocess/services integration and CASE131/136 remain open.",
       "title": "P2-3: Postupně rozdělit velké moduly",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p2_opencode_e2e": {
       "acceptance_criteria": [
@@ -175,7 +273,16 @@
       "next_action": "No OpenCode E2E or branch integration in this goal. Revisit only under a separately authorized OpenCode task.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
       "work_phase": "verification",
-      "work_status": "cancelled"
+      "work_status": "cancelled",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     },
     "task_p2_sqlite_factory": {
       "acceptance_criteria": [
@@ -190,8 +297,17 @@
       "next_action": "",
       "title": "P2-2: Sjednotit SQLite přístup přes sqlite_support.py",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "completed",
+      "spec_refs": [
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
-  "title": "Technický audit v6.0.0 a prioritizovaný plán oprav (commit 2176b0e)"
+  "title": "Technical audit v6.0.0 and prioritized fix plan (commit 2176b0e)"
 }

@@ -37,7 +37,7 @@ from local_ai_hub.agent_tasks import (
     TaskStore,
 )
 from local_ai_hub.agent_blackboard import BlackboardStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.process_utils import canonical_root
 

@@ -84,9 +84,9 @@ def test_generated_catalog_covers_canonical_http_post_routes_and_auth_fields():
         )
         assert "canonical method/path selection precedes body parsing" in contract["route_invariants"]
         assert "direct route dispatch is listed in route_state_boundary" in contract["state_boundary"]
-        assert "src/local_ai_hub/http_server.py:2782" in row["evidence"]
-        assert "src/local_ai_hub/http_server.py:3005" in row["evidence"]
-        assert "src/local_ai_hub/http_server.py:5816" in row["evidence"]
+        assert any("src/local_ai_hub/http_routes_api.py:973" in e or "src/local_ai_hub/http_server.py:2782" in e for e in row["evidence"])
+        assert any("src/local_ai_hub/http_routes_api.py:1036" in e or "src/local_ai_hub/http_server.py:3005" in e for e in row["evidence"])
+        assert any("src/local_ai_hub/http_routes_api.py:3561" in e or "src/local_ai_hub/http_server.py:5816" in e for e in row["evidence"])
         binding = contract["dispatch_scope_binding"]
         assert binding["status"] in {"observed", "not_observed"}
         assert bool(binding["guards"]) is (binding["status"] == "observed")
@@ -107,7 +107,7 @@ def test_generated_catalog_covers_canonical_http_post_routes_and_auth_fields():
         else:
             assert "remains unverified" in row["scope_boundary"]
         if binding["status"] == "observed":
-            assert any(source.startswith("src/local_ai_hub/http_server.py:") for source in row["evidence"])
+            assert any(source.startswith(("src/local_ai_hub/http_server.py:", "src/local_ai_hub/http_routes_post.py:")) for source in row["evidence"])
         assert "required_fields" in contract
         assert "side_effects" in contract
         assert "response_contract" in contract
@@ -140,8 +140,8 @@ def test_http_post_route_dispatch_uses_route_ids_and_named_boundaries():
     rows = {row["name"]: row for row in _coverage_rows() if row.get("surface") == "HTTP POST"}
 
     coord_dispatch = rows["/api/coord/board_item_create"]["contract"]["route_dispatch"]
-    assert "APP.services.board_item_create" in coord_dispatch["targets"]
-    assert "src/local_ai_hub/http_server.py:" in " ".join(rows["/api/coord/board_item_create"]["evidence"])
+    assert any("APP.services.board_item_create" in t for t in coord_dispatch["targets"])
+    assert any("http_routes_post.py:" in e or "http_server.py:" in e for e in rows["/api/coord/board_item_create"]["evidence"])
 
     git_dispatch = rows["/api/git/status"]["contract"]["route_dispatch"]
     assert "_handle_post_repository_analysis" in git_dispatch["handler_boundaries"]

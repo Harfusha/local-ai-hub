@@ -115,6 +115,7 @@ def _status_preprocessor(tmp_path: Path, project_count: int = 70) -> tuple[Proje
     pre = object.__new__(ProjectPreprocessor)
     pre.db_path = main_db
     pre.cfg = {"exclusive": {"enrich_stub_cards": False}}
+    pre.config = {"preprocessing": pre.cfg}
 
     def connect_main() -> sqlite3.Connection:
         con = sqlite3.connect(main_db)

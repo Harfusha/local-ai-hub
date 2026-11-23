@@ -17,11 +17,9 @@ import threading
 import time
 from contextlib import closing
 from collections import deque
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from .trace_context import current as current_trace_context
 from .operation_contracts import operation_actions
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .http_route_registry import (
@@ -672,17 +670,22 @@ _LAYA_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _LAYA_DECISION_FIELDS = frozenset({
     "decision_id", "success", "mode", "status", "category", "repository_id", "task_id",
     "session_id", "suggestion", "reason_codes", "evidence_ids", "model_estimate",
-    "uncertainty", "execution_verification",
+    "uncertainty", "execution_verification", "runtime_latency_ms", "inference_latency_ms",
+    "queue_wait_ms", "backend", "fallback_used", "fallback_reason",
 })
+_LAYA_DECISION_BASE_FIELDS = _LAYA_DECISION_FIELDS - {
+    "runtime_latency_ms", "inference_latency_ms", "queue_wait_ms", "backend",
+    "fallback_used", "fallback_reason",
+}
+_LAYA_ELIGIBILITY_FIELDS = frozenset({"decision_id", "mode", "category"})
 
 
-def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[str, Any]:
-    if scope != "window":
-        return {
-            "available": False,
-            "scope": scope,
-            "reason": "process_identity_not_recorded",
-        }
+def _laya_decision_report(
+    rows: list[tuple[Any, ...]],
+    eligible_rows: list[tuple[Any, ...]] | None = None,
+    *,
+    scope: str,
+) -> dict[str, Any]:
     mode_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
     status_counts: dict[str, int] = {}
@@ -695,6 +698,15 @@ def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[st
             "abstentions": 0,
             "errors": 0,
             "skips": 0,
+            "eligible_decisions": 0,
+            "latencies": [],
+            "inference_latencies": [],
+            "queue_waits": [],
+            "backends": {},
+            "fallback_used": 0,
+            "fallback_not_used": 0,
+            "fallback_unknown": 0,
+            "fallback_reasons": {},
             "coverage": {"available": False, "reason": "eligible_decision_count_not_recorded"},
             "latency_ms": {"available": False, "reason": "runtime_latency_not_recorded"},
             "backend": {"available": False, "reason": "runtime_backend_not_recorded"},
@@ -703,20 +715,61 @@ def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[st
         for mode in ("shadow", "advisory")
     }
     invalid_records = 0
-    truncated = len(rows) > 1000
+    truncated = len(rows) > 1000 or len(eligible_rows or []) > 1000
+    eligible_counts: dict[str, int] = {}
+    eligible_ids: dict[str, tuple[str, str]] = {}
+    for (metrics_json,) in (eligible_rows or [])[:1000]:
+        try:
+            eligible = json.loads(metrics_json)
+            if not isinstance(eligible, dict) or set(eligible) != _LAYA_ELIGIBILITY_FIELDS:
+                raise ValueError("invalid stored Laya eligibility")
+            mode = eligible["mode"]
+            category = eligible["category"]
+            if mode not in {"shadow", "advisory"} or category not in _LAYA_DECISION_OPTIONS:
+                raise ValueError("invalid stored Laya eligibility")
+            decision_id = eligible["decision_id"]
+            if not isinstance(decision_id, str) or not _LAYA_IDENTIFIER.fullmatch(decision_id):
+                raise ValueError("invalid stored Laya eligibility")
+            identity = (mode, category)
+            previous = eligible_ids.get(decision_id)
+            if previous is not None:
+                if previous != identity:
+                    raise ValueError("conflicting stored Laya eligibility")
+                continue
+            eligible_ids[decision_id] = identity
+            eligible_counts[mode] = eligible_counts.get(mode, 0) + 1
+        except (TypeError, ValueError, json.JSONDecodeError):
+            invalid_records += 1
+    decision_ids: dict[str, tuple[str, str]] = {}
     for (metrics_json,) in rows[:1000]:
         try:
             metadata = json.loads(metrics_json)
-            if not isinstance(metadata, dict) or set(metadata) != _LAYA_DECISION_FIELDS:
+            if not isinstance(metadata, dict) or frozenset(metadata) not in {
+                _LAYA_DECISION_FIELDS, _LAYA_DECISION_BASE_FIELDS,
+            }:
                 raise ValueError("invalid stored Laya metadata")
+            legacy_runtime_fields = set(metadata) == _LAYA_DECISION_BASE_FIELDS
+            if legacy_runtime_fields:
+                metadata = {
+                    **metadata,
+                    "runtime_latency_ms": None,
+                    "inference_latency_ms": None,
+                    "queue_wait_ms": None,
+                    "backend": None,
+                    "fallback_used": None,
+                    "fallback_reason": None,
+                }
             mode = metadata["mode"]
             category = metadata["category"]
+            decision_id = metadata["decision_id"]
             status = metadata["status"]
             reason_codes = metadata["reason_codes"]
             if isinstance(reason_codes, str):
                 reason_codes = json.loads(reason_codes)
             if mode not in {"shadow", "advisory"}:
                 raise ValueError("invalid stored Laya mode")
+            if not isinstance(decision_id, str) or not _LAYA_IDENTIFIER.fullmatch(decision_id):
+                raise ValueError("invalid stored Laya decision id")
             if category not in _LAYA_DECISION_OPTIONS or status not in _LAYA_DECISION_STATUSES:
                 raise ValueError("invalid stored Laya category or status")
             if (
@@ -726,9 +779,39 @@ def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[st
                 or len(set(reason_codes)) != len(reason_codes)
             ):
                 raise ValueError("invalid stored Laya reason codes")
+            for field in ("runtime_latency_ms", "inference_latency_ms", "queue_wait_ms"):
+                value = metadata[field]
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value)) or not 0 <= float(value) <= 86_400_000
+                ):
+                    raise ValueError("invalid stored Laya latency")
+            backend = metadata["backend"]
+            if backend is not None and (
+                not isinstance(backend, str) or not _LAYA_IDENTIFIER.fullmatch(backend)
+            ):
+                raise ValueError("invalid stored Laya backend")
+            fallback_used = metadata["fallback_used"]
+            if fallback_used is not None and type(fallback_used) is not bool:
+                raise ValueError("invalid stored Laya fallback flag")
+            fallback_reason = metadata["fallback_reason"]
+            if fallback_reason is not None and (
+                not isinstance(fallback_reason, str)
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", fallback_reason)
+            ):
+                raise ValueError("invalid stored Laya fallback reason")
+            if (fallback_used is True) != (fallback_reason is not None):
+                raise ValueError("inconsistent stored Laya fallback metadata")
         except (TypeError, ValueError, json.JSONDecodeError):
             invalid_records += 1
             continue
+        identity = (mode, category)
+        previous = decision_ids.get(decision_id)
+        if previous is not None:
+            if previous != identity:
+                invalid_records += 1
+            continue
+        decision_ids[decision_id] = identity
         mode_counts[mode] = mode_counts.get(mode, 0) + 1
         category_counts[category] = category_counts.get(category, 0) + 1
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -741,15 +824,85 @@ def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[st
         mode_summary["abstentions"] += status == "abstain"
         mode_summary["errors"] += status == "error"
         mode_summary["skips"] += status == "skipped"
+        mode_summary["eligible_decisions"] = eligible_counts.get(mode, 0)
+        for field, target in (
+            ("runtime_latency_ms", "latencies"),
+            ("inference_latency_ms", "inference_latencies"),
+            ("queue_wait_ms", "queue_waits"),
+        ):
+            if metadata[field] is not None:
+                mode_summary[target].append(float(metadata[field]))
+        if metadata["backend"] is not None:
+            backends = mode_summary["backends"]
+            backends[metadata["backend"]] = backends.get(metadata["backend"], 0) + 1
+        if metadata["fallback_used"] is True:
+            mode_summary["fallback_used"] += 1
+            reasons = mode_summary["fallback_reasons"]
+            reason = metadata["fallback_reason"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+        elif metadata["fallback_used"] is False:
+            mode_summary["fallback_not_used"] += 1
+        else:
+            mode_summary["fallback_unknown"] += 1
         mode_reasons = mode_summary["counts_by_reason_code"]
         for reason_code in reason_codes:
             mode_reasons[reason_code] = mode_reasons.get(reason_code, 0) + 1
-    for mode_summary in by_mode.values():
+    for mode, mode_summary in by_mode.items():
+        eligible = eligible_counts.get(mode, 0)
+        mode_summary["eligible_decisions"] = eligible
+        recorded_eligible = sum(
+            1 for decision_id, identity in decision_ids.items()
+            if identity[0] == mode and eligible_ids.get(decision_id) == identity
+        )
+        if not truncated and eligible > 0:
+            mode_summary["coverage"] = {
+                "available": True,
+                "eligible_decisions": eligible,
+                "recorded_decisions": recorded_eligible,
+                "rate": round(recorded_eligible / eligible, 4),
+            }
+        elif truncated:
+            mode_summary["coverage"] = {
+                "available": False, "reason": "laya_window_truncated",
+            }
+        elif eligible < mode_summary["records"]:
+            mode_summary["coverage"] = {
+                "available": False, "reason": "eligible_count_incomplete",
+            }
+        runtime_values = mode_summary.pop("latencies")
+        inference_values = mode_summary.pop("inference_latencies")
+        queue_values = mode_summary.pop("queue_waits")
+        if runtime_values or inference_values or queue_values:
+            mode_summary["latency_ms"] = {
+                "available": True,
+                "samples": len(runtime_values),
+                "mean": round(sum(runtime_values) / len(runtime_values), 2) if runtime_values else None,
+                "max": round(max(runtime_values), 2) if runtime_values else None,
+                "inference_samples": len(inference_values),
+                "inference_mean": round(sum(inference_values) / len(inference_values), 2) if inference_values else None,
+                "queue_wait_samples": len(queue_values),
+                "queue_wait_mean": round(sum(queue_values) / len(queue_values), 2) if queue_values else None,
+            }
+        if mode_summary["backends"]:
+            mode_summary["backend"] = {"available": True, "counts": dict(sorted(mode_summary["backends"].items()))}
+        mode_summary.pop("backends")
+        if mode_summary["fallback_used"] + mode_summary["fallback_not_used"]:
+            mode_summary["fallbacks"] = {
+                "available": True,
+                "used": mode_summary["fallback_used"],
+                "not_used": mode_summary["fallback_not_used"],
+                "unknown": mode_summary["fallback_unknown"],
+                "reasons": dict(sorted(mode_summary["fallback_reasons"].items())),
+            }
+        mode_summary.pop("fallback_used")
+        mode_summary.pop("fallback_not_used")
+        mode_summary.pop("fallback_unknown")
+        mode_summary.pop("fallback_reasons")
         for field in ("counts_by_category", "counts_by_status", "counts_by_reason_code"):
             mode_summary[field] = dict(sorted(mode_summary[field].items()))
     return {
         "available": True,
-        "scope": "window",
+        "scope": scope,
         "records": sum(status_counts.values()),
         "counts_by_mode": dict(sorted(mode_counts.items())),
         "counts_by_category": dict(sorted(category_counts.items())),
@@ -760,7 +913,13 @@ def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[st
     }
 
 
-class TelemetryStore:
+from .telemetry_aggregates import TelemetryAggregateMixin
+from .telemetry_queries import TelemetryQueryMixin
+from .telemetry_events import TelemetryEventMixin
+from .telemetry_writer import TelemetryWriterMixin
+
+
+class TelemetryStore(TelemetryAggregateMixin, TelemetryQueryMixin, TelemetryEventMixin, TelemetryWriterMixin):
     """Low-overhead, metadata-only observability store.
 
     Foreground callers never write SQLite directly. Events are queued and flushed in
@@ -806,8 +965,21 @@ class TelemetryStore:
         flush_interval_seconds: float = 0.5,
         queue_size: int = 10000,
         live_buffer_size: int = 2500,
+        mode: str = "full",
     ):
         self.enabled = bool(enabled)
+        self.mode = str(mode or "full").strip().lower()
+        if not self.enabled or self.mode == "off":
+            self.enabled = False
+            self.mode = "off"
+        self._minimal_stats = {
+            "requests_total": 0,
+            "errors_total": 0,
+            "tokens_total": 0,
+            "input_tokens_total": 0,
+            "output_tokens_total": 0,
+            "start_time": time.time(),
+        }
         self.max_events = max(100, int(max_events))
         self.retention_days = max(1, int(retention_days))
         self.rollup_retention_days = max(self.retention_days, int(rollup_retention_days))
@@ -854,7 +1026,7 @@ class TelemetryStore:
         self._summary_cache: dict[Any, dict[str, Any]] = {}
         self._thread: threading.Thread | None = None
         state_dir.mkdir(parents=True, exist_ok=True)
-        if self.enabled:
+        if self.enabled and self.mode != "minimal":
             self._init_db_with_recovery()
             self._thread = threading.Thread(target=self._writer_loop, name="local-ai-telemetry", daemon=True)
             self._thread.start()
@@ -883,7 +1055,7 @@ class TelemetryStore:
         if not self.path.exists():
             return
         uri = f"{self.path.as_uri()}?mode=ro"
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 10.0
         interrupted = False
 
         def stop_long_scan() -> int:
@@ -913,9 +1085,9 @@ class TelemetryStore:
                     structured = columns.intersection({"metrics_json"})
                     for column in structured:
                         quoted_column = '"' + column.replace('"', '""') + '"'
-                        rows = con.execute(f"SELECT substr({quoted_column},1,1048577) FROM {quoted_table} LIMIT 250001")
+                        rows = con.execute(f"SELECT substr({quoted_column},1,1048577) FROM {quoted_table} LIMIT 500001")
                         for row_number, (raw,) in enumerate(rows, 1):
-                            if row_number > 250000:
+                            if row_number > 500000:
                                 raise RuntimeError(
                                     "telemetry structured-record preflight exceeded its bound; explicit offline conversion required; database preserved"
                                 )
@@ -1129,2336 +1301,53 @@ class TelemetryStore:
             con.execute("CREATE INDEX IF NOT EXISTS idx_events_savings_created ON events(event_type, savings_source, created_at)")
             con.commit()
 
-    @staticmethod
-    def _clean_event(event: dict[str, Any]) -> dict[str, Any]:
-        retired = _retired_tenant_field(event)
-        if retired:
-            raise ValueError(retired)
-        created = float(event.get("created_at", time.time()))
-        queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
-        event_type = _safe_metadata(event.get("event_type", "inference"), 40)
-        db_wait_ms, db_wait_measured = _phase_timing(event, "db_wait_ms")
-        exec_ms, exec_measured = _phase_timing(event, "exec_ms")
-        serialization_ms, serialization_measured = _phase_timing(event, "serialization_ms")
-        # Route labels are safe only when exact-listed, regardless of event kind.
-        # This keeps useful action labels in tool-result events without exposing IDs.
-        preserve_route = True
-        # Error categories are composed sanitized labels, not MCP selectors.
-        # Continue redacting paths/secrets without treating component:operation
-        # (for example inference:generate) as an unknown tool route.
-        preserve_action_route = not (event_type == "error" and ":" in str(event.get("action", "")))
-        safe_root = ""
-        if event.get("root"):
-            raw_root = str(event["root"]).replace("\\", "/").rstrip("/")
-            safe_root = Path(raw_root).name if raw_root else ""
-        return {
-            "created_at": created,
-            "event_type": event_type,
-            "agent": _safe_metadata(event.get("agent", ""), 80),
-            "request_id": _safe_request_id(event.get("request_id", ""), 96),
-            "trace_id": _safe_metadata(event.get("trace_id", ""), 96),
-            "action": _safe_metadata(event.get("action", "unknown"), preserve_route=preserve_action_route),
-            "stage": _safe_metadata(event.get("stage", ""), 80),
-            "task_type": _safe_metadata(event.get("task_type", ""), 80),
-            "complexity": _safe_metadata(event.get("complexity", ""), 40),
-            "route": _safe_metadata(event.get("route", ""), 120, preserve_route=preserve_route),
-            "model": _safe_metadata(event.get("model", "") or ""),
-            "cache_hit": 1 if event.get("cache_hit") else 0,
-            "coalesced": 1 if event.get("coalesced") else 0,
-            "cache_layer": _safe_metadata(event.get("cache_layer", ""), 80),
-            "input_tokens": max(0, int(event.get("input_tokens", 0) or 0)),
-            "cache_read_tokens": max(0, int(event.get("cache_read_tokens", 0) or 0)),
-            "output_tokens": max(0, int(event.get("output_tokens", 0) or 0)),
-            "avoided_cloud_tokens": max(0, int(event.get("avoided_cloud_tokens", 0) or 0)),
-            "duration_ms": _bounded_number(event.get("duration_ms", 0)),
-            "queue_wait_ms": queue_wait_ms,
-            "queue_age_ms": _bounded_number(event.get("queue_age_ms", queue_wait_ms)),
-            "wait_count": max(0, int(event.get("wait_count", 0) or 0)),
-            "wait_duration_ms": max(0.0, float(event.get("wait_duration_ms", 0) or 0)),
-            "service_ms": max(0.0, float(event.get("service_ms", 0) or 0)),
-            "load_duration_ms": max(0.0, float(event.get("load_duration_ms", 0) or 0)),
-            "success": 1 if event.get("success", True) else 0,
-            "status_code": max(0, int(event.get("status_code", 0) or 0)),
-            "degraded": 1 if event.get("degraded") else 0,
-            "retry_count": max(0, int(event.get("retry_count", 0) or 0)),
-            "fallback_used": 1 if event.get("fallback_used") else 0,
-            "bypass_reason": _safe_metadata(event.get("bypass_reason", ""), 80),
-            "terminal": _outcome_flag(event, "terminal"),
-            "retryable": _outcome_flag(event, "retryable"),
-            "receipt_count": _receipt_count(event),
-            "error_type": _safe_metadata(event.get("error_type", ""), 120),
-            "error_fingerprint": _safe_metadata(event.get("error_fingerprint", ""), 32),
-            "tool_calls": max(0, int(event.get("tool_calls", 0) or 0)),
-            "evidence_count": max(0, int(event.get("evidence_count", 0) or 0)),
-            "response_bytes": max(0, int(event.get("response_bytes", 0) or 0)),
-            "gross_avoided_cloud_tokens": max(0, int(event.get("gross_avoided_cloud_tokens", 0) or 0)),
-            "gross_input_tokens_avoided": max(0, int(event.get("gross_input_tokens_avoided", 0) or 0)),
-            "gross_output_tokens_avoided": max(0, int(event.get("gross_output_tokens_avoided", 0) or 0)),
-            "agent_protocol_tokens": max(0, int(event.get("agent_protocol_tokens", 0) or 0)),
-            "tool_request_tokens": max(0, int(event.get("tool_request_tokens", 0) or 0)),
-            "tool_response_tokens": max(0, int(event.get("tool_response_tokens", 0) or 0)),
-            "tool_schema_tokens": max(0, int(event.get("tool_schema_tokens", 0) or 0)),
-            "local_compute_tokens_avoided": max(0, int(event.get("local_compute_tokens_avoided", 0) or 0)),
-            "net_cloud_token_delta": int(event.get("net_cloud_token_delta", 0) or 0),
-            "cloud_token_overhead": max(0, int(event.get("cloud_token_overhead", 0) or 0)),
-            "net_after_schema_token_delta": int(event.get("net_after_schema_token_delta", 0) or 0),
-            "schema_adjusted_overhead": max(0, int(event.get("schema_adjusted_overhead", 0) or 0)),
-            "savings_source": _clean_savings_source(event.get("savings_source", "")),
-            "input_savings_source": _clean_savings_source(event.get("input_savings_source", "")),
-            "output_savings_source": _clean_savings_source(event.get("output_savings_source", "")),
-            "savings_breakdown_json": _clean_savings_breakdown(event.get("savings_breakdown_json", ""))[:2000],
-            "preprocessed_hit": 1 if event.get("preprocessed_hit") else 0,
-            "root": _safe_metadata(safe_root, 64) if safe_root else "",
-            "db_wait_ms": db_wait_ms,
-            "exec_ms": exec_ms,
-            "serialization_ms": serialization_ms,
-            "db_wait_measured": db_wait_measured,
-            "exec_measured": exec_measured,
-            "serialization_measured": serialization_measured,
-        }
 
-    def _publish_live(self, kind: str, payload: dict[str, Any]) -> None:
-        retired = _retired_tenant_field(payload)
-        if retired:
-            raise ValueError(retired)
-        allowed = {
-            "created_at", "event_type", "agent", "request_id", "trace_id",
-            "action", "stage", "task_type", "complexity", "route", "model",
-            "cache_hit", "coalesced", "cache_layer", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms",
-            "service_ms", "load_duration_ms", "success", "status_code", "degraded",
-            "retry_count", "fallback_used", "bypass_reason", "queue_age_ms", "terminal", "retryable", "receipt_count",
-            "error_type", "error_fingerprint",
-            "tool_calls", "evidence_count", "response_bytes", "component", "operation",
-            "fingerprint", "retryable", "recovered", "name", "metrics_json",
-            "preprocessed_hit", "root",
-            "db_wait_ms", "exec_ms", "serialization_ms",
-            "db_wait_measured", "exec_measured", "serialization_measured",
-        }
-        event = {k: v for k, v in payload.items() if k in allowed}
-        event["kind"] = kind
-        event.setdefault("created_at", time.time())
-        with self._live_lock:
-            self._live_seq += 1
-            event["seq"] = self._live_seq
-            self._live_events.append(event)
 
-    def live(self, after: int = 0, limit: int = 200, compact: bool = True) -> dict[str, Any]:
-        limit = max(1, min(int(limit), 1000))
-        with self._live_lock:
-            raw_events = [e for e in self._live_events if int(e.get("seq", 0)) > int(after)]
-            if len(raw_events) > limit:
-                raw_events = raw_events[-limit:]
-            cursor = self._live_seq
-            oldest = int(self._live_events[0].get("seq", 0)) if self._live_events else cursor
-        if compact:
-            events = [
-                {k: v for k, v in e.items() if not (k in _LIVE_OMIT_EMPTY and (v in ("", 0, 0.0, -1, None)))}
-                for e in raw_events
-            ]
-        else:
-            events = [dict(e) for e in raw_events]
-        return {"success": True, "cursor": cursor, "oldest": oldest, "events": events}
 
-    def _enqueue(self, kind: str, payload: dict[str, Any]) -> bool:
-        if not self.enabled:
-            return False
-        # Reserve the queue sequence before publishing the item.  The writer
-        # thread may consume a freshly queued item immediately; incrementing
-        # afterwards lets flush() observe processed >= queued and return before
-        # the item is actually visible in SQLite.
-        with self._stats_lock:
-            self._stats["attempted"] += 1
-            self._stats["queued"] += 1
-            self._stats["accepted"] += 1
-            try:
-                self._queue.put_nowait((kind, payload))
-            except queue.Full:
-                # Observability must never become a back-pressure source for foreground work.
-                self._stats["queued"] -= 1
-                self._stats["accepted"] -= 1
-                self._stats["dropped"] += 1
-                self._stats["rejected_overflow"] += 1
-                return False
-            # Keep accepted queue order aligned with the live feed. The writer can
-            # dequeue now, but cannot publish completion stats until this lock releases.
-            self._publish_live(kind, payload)
-            return True
 
-    def record_live(self, kind: str = "live", **event: Any) -> None:
-        retired = _retired_tenant_field(event)
-        if retired:
-            raise ValueError(retired)
-        if not self.enabled:
-            return
-        ctx = current_trace_context()
-        for key in ("request_id", "trace_id", "agent"):
-            if not event.get(key) and ctx.get(key):
-                event[key] = ctx[key]
-        self._publish_live(kind, self._clean_event(event))
 
-    def dashboard_report(self, days: int = 30, ttl_seconds: float = 5.0, *, scope: str = "window") -> dict[str, Any]:
-        """Cached persistent report used by the realtime dashboard.
 
-        Most dashboard polls are RAM-only; at most one thread refreshes the SQLite
-        aggregate every few seconds. This keeps counters stable across hub restarts.
-        """
-        bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
-        _, scope = self._scope_cutoff(bounded_days, scope)
-        key = (bounded_days, scope)
-        now = time.monotonic()
-        with self._dashboard_lock:
-            cached = self._dashboard_cache.get(key)
-            cached_at = self._dashboard_cache_at.get(key, 0.0)
-            if cached and now - cached_at < max(1.0, float(ttl_seconds)):
-                return self._refresh_dashboard_report_writer(cached)
-            try:
-                report = self.report(bounded_days, recent_errors=12, scope=scope, _flush=False)
-                report["recent_http"] = self.recent_http(50, _flush=False)
-                report["summary"] = {**report.get("summary", {}), "data_available": self.enabled, "stale": False}
-            except Exception:
-                report = dict(cached) if cached else {"summary": {"enabled": self.enabled}}
-                report["summary"] = {
-                    **report.get("summary", {}), "data_available": False,
-                    "stale": bool(cached), "degraded": True,
-                }
-                if cached:
-                    report = self._refresh_dashboard_report_writer(report)
-            self._dashboard_cache[key] = report
-            self._dashboard_cache_at[key] = now
-            while len(self._dashboard_cache) > _DASHBOARD_CACHE_LIMIT:
-                oldest_key = min(self._dashboard_cache_at, key=self._dashboard_cache_at.get)
-                self._dashboard_cache.pop(oldest_key, None)
-                self._dashboard_cache_at.pop(oldest_key, None)
-            return dict(report)
 
-    def _refresh_dashboard_report_writer(self, report: dict[str, Any]) -> dict[str, Any]:
-        """Refresh cached dashboard writer evidence without querying SQLite."""
-        refreshed = dict(report)
-        summary = refreshed.get("summary")
-        if isinstance(summary, dict):
-            refreshed["summary"] = self._refresh_cached_writer_status(
-                summary, summary.get("writer", {})
-            )
-        return refreshed
 
-    def realtime_summary(self, *, scope: str = "process", light: bool = False) -> dict[str, Any]:
-        with self._live_lock:
-            window_events = len(self._live_events)
-            inference_count = 0
-            started: dict[str, dict[str, Any]] = {}
-            finished: set[str] = set()
-            for event in self._live_events:
-                if event.get("event_type") == "inference":
-                    inference_count += 1
-                request_id = str(event.get("request_id") or "")
-                if not request_id:
-                    continue
-                if event.get("event_type") == "request_start":
-                    started[request_id] = event
-                elif event.get("event_type") == "http":
-                    finished.add(request_id)
-        now_wall = time.time()
-        active_requests = []
-        for request_id, event in started.items():
-            if request_id in finished:
-                continue
-            active_requests.append({
-                "request_id": request_id[:12], "agent": str(event.get("agent") or "")[:40],
-                "action": str(event.get("action") or "")[:100],
-                "age_ms": max(0, int((now_wall - float(event.get("created_at", now_wall) or now_wall)) * 1000)),
-            })
-        active_requests.sort(key=lambda item: int(item.get("age_ms", 0)), reverse=True)
-        active_requests = active_requests[:24]
 
-        report = self.dashboard_report(30, scope=scope) if self.enabled else {"summary": {}}
-        history = report.get("summary", {}) if isinstance(report, dict) else {}
-        return {
-            "enabled": self.enabled,
-            "data_available": bool(history.get("data_available", self.enabled and "net_cloud_token_delta_est" in history)),
-            "stale": bool(history.get("stale", False)),
-            "writer": history.get("writer", {}),
-            "summary_cache_stale": bool(history.get("summary_cache_stale", False)),
-            "scope": str(history.get("scope", scope) or scope),
-            "process_started_at": history.get("process_started_at") if scope == "process" else None,
-            "window_events": window_events, "live_inference_events": inference_count,
-            "inference_events": int(history.get("events", inference_count) or 0),
-            "cache_hits": int(history.get("cache_hits", 0) or 0),
-            "cache_hit_rate": float(history.get("cache_hit_rate", 0.0) or 0.0),
-            "generation_cache_hits": int(history.get("generation_cache_hits", history.get("cache_hits", 0)) or 0),
-            "generation_cache_hit_rate": float(history.get("generation_cache_hit_rate", history.get("cache_hit_rate", 0.0)) or 0.0),
-            "preprocessed_query_hits": int(history.get("preprocessed_query_hits", 0) or 0),
-            "preprocessed_query_events": int(history.get("preprocessed_query_events", 0) or 0),
-            "preprocessed_query_hit_rate": float(history.get("preprocessed_query_hit_rate", 0.0) or 0.0),
-            "sessions": [] if light else history.get("sessions", []),
-            "cache_domains": history.get("cache_domains", {}),
-            "cache_reuse_breakdown": history.get("cache_reuse_breakdown", {}),
-            "http_outcomes": history.get("http_outcomes", {}),
-            "net_cloud_token_delta_est": int(history.get("net_cloud_token_delta_est", 0) or 0),
-            "realistic_net_cloud_token_delta_est": int(history.get("realistic_net_cloud_token_delta_est", history.get("net_cloud_token_delta_est", 0)) or 0),
-            "cloud_token_overhead_est": int(history.get("cloud_token_overhead_est", 0) or 0),
-            "gross_cloud_tokens_avoided_est": int(history.get("gross_cloud_tokens_avoided_est", 0) or 0),
-            "gross_input_cloud_tokens_avoided_est": int(history.get("gross_input_cloud_tokens_avoided_est", 0) or 0),
-            "gross_output_cloud_tokens_avoided_est": int(history.get("gross_output_cloud_tokens_avoided_est", 0) or 0),
-            "agent_protocol_tokens_est": int(history.get("agent_protocol_tokens_est", 0) or 0),
-            "agent_tool_request_tokens_est": int(history.get("agent_tool_request_tokens_est", 0) or 0),
-            "agent_tool_response_tokens_est": int(history.get("agent_tool_response_tokens_est", 0) or 0),
-            "tool_schema_tokens_exposure_est": int(history.get("tool_schema_tokens_exposure_est", 0) or 0),
-            "net_after_schema_token_delta_est": int(history.get("net_after_schema_token_delta_est", 0) or 0),
-            "schema_adjusted_overhead_est": int(history.get("schema_adjusted_overhead_est", 0) or 0),
-            "local_compute_tokens_avoided_est": int(history.get("local_compute_tokens_avoided_est", 0) or 0),
-            "token_savings_breakdown": history.get("token_savings_breakdown", {}),
-            "tool_accounting_events": int(history.get("tool_accounting_events", 0) or 0),
-            "accounting_boundary_incomplete": bool(history.get("accounting_boundary_incomplete", False)),
-            "token_accounting_storage": history.get("token_accounting_storage", "retained_process_events"),
-            "estimated_savings_usd": history.get("estimated_savings_usd"),
-            "realistic_savings_usd": history.get("realistic_savings_usd"),
-            "estimated_input_savings_usd": history.get("estimated_input_savings_usd"),
-            "estimated_output_savings_usd": history.get("estimated_output_savings_usd"),
-            "estimated_savings_pricing_mode": str(history.get("estimated_savings_pricing_mode", "unknown")),
-            "cloud_input_token_cost_usd_per_million": history.get("cloud_input_token_cost_usd_per_million"),
-            "cloud_output_token_cost_usd_per_million": history.get("cloud_output_token_cost_usd_per_million"),
-            "cloud_cache_read_token_cost_usd_per_million": history.get("cloud_cache_read_token_cost_usd_per_million"),
-            "cloud_cache_write_token_cost_usd_per_million": history.get("cloud_cache_write_token_cost_usd_per_million"),
-            "active_pricing_profile": str(history.get("active_pricing_profile", self.pricing_profile)),
-            "pricing_profiles": history.get("pricing_profiles", CLOUD_PRICING_PROFILES),
-            "realistic_savings_breakdown": history.get("realistic_savings_breakdown", {}),
-            "dynamic_depth_tokens": int(history.get("dynamic_depth_tokens", 25000) or 25000),
-            "call_categories": history.get("call_categories", {}),
-            "fallback_count": int(history.get("fallback_count", 0) or 0),
-            "degraded_count": int(history.get("degraded_count", 0) or 0),
-            "retry_count": int(history.get("retry_count", 0) or 0),
-            "failures": int(history.get("failures", 0) or 0),
-            "failure_rate": float(history.get("failure_rate", 0.0) or 0.0),
-            "p50_duration_ms": float(history.get("p50_duration_ms", 0.0) or 0.0),
-            "p95_duration_ms": float(history.get("p95_duration_ms", 0.0) or 0.0),
-            "p99_duration_ms": float(history.get("p99_duration_ms", 0.0) or 0.0),
-            "aggregate_duration_scope": str(history.get("aggregate_duration_scope", "") or ""),
-            "cohorts": history.get("cohorts", {}),
-            "avg_queue_wait_ms": float(history.get("avg_queue_wait_ms", 0.0) or 0.0),
-            "ollama_inference_calls": int(history.get("ollama_inference_calls", 0) or 0),
-            "ollama_calls_avoided_est": int(history.get("ollama_calls_avoided_est", 0) or 0),
-            "cache_layers": report.get("cache_layers", []) if isinstance(report, dict) else [],
-            "http_tail_latency": report.get("http_tail_latency", {}) if isinstance(report, dict) else {},
-            "http": history.get("http", {}),
-            "tool_adoption": history.get("tool_adoption", {}),
-            "by_model": report.get("by_model", []) if isinstance(report, dict) else [],
-            "by_agent": report.get("by_agent", []) if isinstance(report, dict) else [],
-            "execution_routes": report.get("execution_routes", []) if isinstance(report, dict) else [],
-            "recent_errors": report.get("error_fingerprints", []) if isinstance(report, dict) else [],
-            "hotspots": report.get("hotspots", []) if isinstance(report, dict) else [],
-            "active_request_count": len(active_requests), "active_requests": active_requests,
-            "live_cursor": self._live_seq,
-            "recent_http": report.get("recent_http", []) if isinstance(report, dict) else [],
-            "window": history.get("window", {"scope": scope}),
-            "counts": history.get("counts", {}),
-            "routes": [] if light else history.get("routes", []),
-            "cache": [] if light else history.get("cache", []),
-            "bypass": [] if light else history.get("bypass", []),
-            "errors": history.get("errors", {}),
-            "queue": history.get("queue", {}),
-            "detail": {} if light else history.get("detail", {}),
-            "decision_grade": {} if light else history.get("decision_grade", {}),
-        }
 
-    def record(self, **event: Any) -> bool:
-        retired = _retired_tenant_field(event)
-        if retired:
-            raise ValueError(retired)
-        ctx = current_trace_context()
-        for key in ("request_id", "trace_id", "agent"):
-            if not event.get(key) and ctx.get(key):
-                event[key] = ctx[key]
-        return self._enqueue("event", self._clean_event(event))
 
-    def record_http(self, **event: Any) -> None:
-        event["event_type"] = "http"
-        self.record(**event)
 
-    def record_stage(self, **event: Any) -> None:
-        event["event_type"] = "stage"
-        self.record(**event)
 
-    def record_tool_accounting(self, event: dict[str, Any]) -> bool:
-        """Record one agent-visible MCP call without storing arguments or output.
 
-        Signed net deltas are stored independently from inference context reduction.
-        Gross savings, protocol cost and schema exposure remain separate so the
-        dashboard can explain the accounting without double counting.
-        """
-        if not isinstance(event, dict):
-            raise TypeError("tool accounting event must be an object")
-        retired = _retired_tenant_field(event)
-        if retired:
-            raise ValueError(retired)
-        tool_name = event.get("tool")
-        if isinstance(tool_name, str) and tool_name[:160] == "local_ai_telemetry":
-            return False
-        breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
-        clean_breakdown_json = _clean_savings_breakdown(breakdown)
-        clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}
-        primary = max(clean_breakdown.items(), key=lambda kv: kv[1], default=("", 0))[0]
-        gross = max(0, int(event.get("gross_cloud_tokens_avoided_est", 0) or 0))
-        input_source = _clean_savings_source(event.get("input_savings_source", ""))
-        output_source = _clean_savings_source(event.get("output_savings_source", ""))
-        gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
-        gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
-        accepted = self.record(
-            event_type="tool_accounting",
-            agent=str(event.get("agent", ""))[:80],
-            action=str(event.get("tool", "unknown"))[:160],
-            success=True,
-            tool_calls=1,
-            input_tokens=max(0, int(event.get("agent_tool_request_tokens_est", 0) or 0)),
-            output_tokens=max(0, int(event.get("agent_tool_response_tokens_est", 0) or 0)),
-            avoided_cloud_tokens=0,
-            gross_avoided_cloud_tokens=gross,
-            gross_input_tokens_avoided=gross_input,
-            gross_output_tokens_avoided=gross_output,
-            agent_protocol_tokens=max(0, int(event.get("agent_protocol_tokens_est", 0) or 0)),
-            tool_request_tokens=max(0, int(event.get("agent_tool_request_tokens_est", 0) or 0)),
-            tool_response_tokens=max(0, int(event.get("agent_tool_response_tokens_est", 0) or 0)),
-            tool_schema_tokens=max(0, int(event.get("tool_schema_tokens_est", 0) or 0)),
-            local_compute_tokens_avoided=max(0, int(event.get("local_compute_tokens_avoided_est", 0) or 0)),
-            net_cloud_token_delta=int(event.get("net_cloud_token_delta_est", 0) or 0),
-            cloud_token_overhead=max(0, int(event.get("cloud_token_overhead_est", 0) or 0)),
-            net_after_schema_token_delta=int(event.get("net_after_schema_token_delta_est", 0) or 0),
-            schema_adjusted_overhead=max(0, int(event.get("schema_adjusted_overhead_est", 0) or 0)),
-            savings_source=primary,
-            input_savings_source=input_source,
-            output_savings_source=output_source,
-            savings_breakdown_json=json_dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
-        )
-        return accepted
 
-    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> bool:
-        event.update({"event_type": "system", "action": action, "success": success, "duration_ms": duration_ms})
-        return self.record(**event)
 
-    def record_error(
-        self,
-        component: str,
-        operation: str,
-        error: Any,
-        *,
-        request_id: str = "",
-        agent: str = "",
-        error_type_override: str = "",
-        error_code_override: str = "",
-        retryable: bool = False,
-        recovered: bool = False,
-    ) -> str:
-        retired = _retired_tenant_field({"component": component, "operation": operation})
-        if retired:
-            raise ValueError(retired)
-        if not self.enabled:
-            return ""
-        ctx = current_trace_context()
-        request_id = request_id or str(ctx.get("request_id") or "")
-        agent = agent or str(ctx.get("agent") or "")
-        error_type = error_type_override or (type(error).__name__ if isinstance(error, BaseException) else "Error")
-        safe_request_id = _safe_error_metadata(request_id, 96)
-        safe_agent = _safe_error_metadata(agent, 80)
-        safe_component = _safe_error_metadata(component, 120)
-        safe_operation = _safe_operation_metadata(operation)
-        safe_error_type = _safe_error_metadata(error_type, 120)
-        safe_error_code = error_code_override if error_code_override in _SAFE_ERROR_CODE_MESSAGES else _safe_error_code(error)
-        message = (
-            f"{safe_error_type}: {_SAFE_ERROR_CODE_MESSAGES[error_code_override]}"
-            if error_code_override in _SAFE_ERROR_CODE_MESSAGES
-            else _safe_error_message(error, error_type_override=safe_error_type)
-        )[:96]
-        fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
-        payload = {
-            "created_at": time.time(), "request_id": safe_request_id, "agent": safe_agent,
-            "component": safe_component, "operation": safe_operation, "error_type": safe_error_type,
-            "fingerprint": fp, "safe_message": message, "retryable": 1 if retryable else 0,
-            "recovered": 1 if recovered else 0,
-        }
-        self._enqueue("error", payload)
-        self.record(
-            event_type="error", agent=safe_agent, request_id=safe_request_id,
-            action=(
-                safe_operation
-                if safe_component == "http" and safe_operation in _SAFE_HTTP_ROUTE_LABELS
-                else f"{safe_component}:{safe_operation}"
-            ), success=False,
-            error_type=safe_error_type, error_fingerprint=fp,
-        )
-        return fp
 
-    def session_start(self, pid: int | None = None, version: str = "") -> int:
-        if not self.enabled:
-            return 0
-        now = time.time()
-        pid = os.getpid() if pid is None else int(pid)
-        self._current_pid = pid
-        self._current_version = str(version)
-        self.process_started_at = now
-        with closing(self._connect()) as con:
-            cur = con.execute(
-                "INSERT INTO process_sessions (pid, version, started_at, last_heartbeat, exit_clean) VALUES (?, ?, ?, ?, 0)",
-                (pid, str(version), now, now),
-            )
-            con.commit()
-            session_id = int(cur.lastrowid or 0)
-        self._current_session_id = session_id
-        return session_id
 
-    def session_heartbeat(self) -> None:
-        if not self.enabled or not self._current_session_id:
-            return
-        now = time.time()
-        try:
-            with closing(self._connect()) as con:
-                con.execute(
-                    "UPDATE process_sessions SET last_heartbeat=? WHERE id=?",
-                    (now, self._current_session_id),
-                )
-                con.commit()
-        except Exception:
-            pass
 
-    def session_stop(self) -> None:
-        if not self.enabled or not self._current_session_id:
-            return
-        now = time.time()
-        try:
-            with closing(self._connect()) as con:
-                con.execute(
-                    "UPDATE process_sessions SET stopped_at=?, last_heartbeat=?, exit_clean=1 WHERE id=?",
-                    (now, now, self._current_session_id),
-                )
-                con.commit()
-        except Exception:
-            pass
-        self._current_session_id = None
 
-    def sessions(self, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        cutoff = time.time() - max(1, int(days)) * 86400
-        now = time.time()
-        session_limit = max(1, min(int(limit), 100))
-        with closing(self._connect()) as con:
-            session_rows = con.execute(
-                "SELECT id,pid,version,started_at,stopped_at,last_heartbeat,exit_clean "
-                "FROM process_sessions WHERE started_at>=? ORDER BY started_at DESC LIMIT ?",
-                (cutoff, session_limit),
-            ).fetchall()
-            if not session_rows:
-                return []
 
-            sessions = []
-            for row in session_rows:
-                sid, _pid, _version, _started_at, stopped_at, last_heartbeat, exit_clean = row
-                if sid == self._current_session_id and stopped_at is None:
-                    status = "active"
-                    end_time = now
-                elif exit_clean:
-                    status = "clean_stop"
-                    end_time = stopped_at if stopped_at is not None else last_heartbeat
-                else:
-                    status = "crashed"
-                    end_time = stopped_at if stopped_at is not None else last_heartbeat
-                sessions.append((*row, status, end_time))
 
-            aggregates = (
-                "COUNT(*), COALESCE(SUM(cache_hit),0), "
-                "COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),0), "
-                "COALESCE(SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END),0), "
-                "COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN net_cloud_token_delta ELSE 0 END),0), "
-                "COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)"
-            )
-            branches = []
-            parameters = []
-            for position, session in enumerate(sessions):
-                # position is generated locally; all database values remain bound.
-                branches.append(
-                    f"SELECT {position}, {aggregates} FROM events "
-                    "WHERE created_at>=? AND created_at<=?"
-                )
-                parameters.extend((session[3], session[8]))
-            aggregate_sql = " UNION ALL ".join(branches)
-            aggregate_rows = con.execute(aggregate_sql, parameters).fetchall()
 
-        aggregates_by_position = {int(row[0]): row[1:] for row in aggregate_rows}
-        result = []
-        for position, session in enumerate(sessions):
-            (sid, pid, version, started_at, stopped_at, last_heartbeat, exit_clean,
-             status, end_time) = session
-            (total, total_cache_hits, inf_events, inf_cache_hits,
-             avoided_tokens, failures) = aggregates_by_position[position]
-            duration_seconds = max(0.0, float(end_time - started_at))
-            total_events = int(total or 0)
-            total_cache_hits = int(total_cache_hits or 0)
-            inf_events = int(inf_events or 0)
-            inf_cache_hits = int(inf_cache_hits or 0)
-            avoided_tokens = int(avoided_tokens or 0)
-            failures = int(failures or 0)
-            if inf_events > 0:
-                hit_rate = round(inf_cache_hits / inf_events, 4)
-            elif total_events > 0:
-                hit_rate = round(total_cache_hits / total_events, 4)
-            else:
-                hit_rate = 0.0
 
-            result.append({
-                "session_id": sid,
-                "pid": pid,
-                "version": version,
-                "started_at": started_at,
-                "stopped_at": stopped_at,
-                "last_heartbeat": last_heartbeat,
-                "duration_seconds": round(duration_seconds, 1),
-                "exit_clean": int(exit_clean),
-                "status": status,
-                "events": total_events,
-                "cache_hits": inf_cache_hits if inf_events > 0 else total_cache_hits,
-                "cache_hit_rate": hit_rate,
-                "tokens_saved": avoided_tokens,
-                "failures": failures,
-            })
-        return result
 
-    def record_snapshot(self, name: str, metrics: dict[str, Any]) -> None:
-        retired = _retired_tenant_field(metrics)
-        if retired:
-            raise ValueError(retired)
-        if not self.enabled:
-            return
-        # Snapshot payloads are internal numeric/status metrics only. Bound size to
-        # keep observability from becoming an accidental generic data store.
-        safe: dict[str, Any] = {}
-        for key, value in metrics.items():
-            if isinstance(value, (bool, int, float)) or value is None:
-                safe[str(key)[:80]] = value
-            elif isinstance(value, str) and len(value) <= 160:
-                safe[str(key)[:80]] = value
-        self._enqueue("snapshot", {"created_at": time.time(), "name": str(name)[:80], "metrics_json": json_dumps(safe, separators=(",", ":"))[:8000]})
 
-    def record_laya_decision(
-        self,
-        metadata: dict[str, Any],
-        *,
-        repository_id: str,
-        task_id: str | None,
-        session_id: str,
-    ) -> bool:
-        """Persist one validated Laya decision projection in existing snapshots.
 
-        This accepts only the side-effect-free decision contract's metadata. It is
-        intentionally not an inference or candidate-text API. Identity arguments
-        must come from the server-bound request context, never from caller payload.
-        """
-        if not isinstance(metadata, dict) or set(metadata) != _LAYA_DECISION_FIELDS:
-            raise ValueError("invalid Laya decision metadata fields")
-        server_task_id = task_id
-        for field, value in (
-            ("repository_id", repository_id),
-            ("session_id", session_id),
-        ):
-            if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
-                raise ValueError(f"invalid server-bound Laya {field}")
-        if server_task_id is not None and (
-            not isinstance(server_task_id, str) or not _LAYA_IDENTIFIER.fullmatch(server_task_id)
-        ):
-            raise ValueError("invalid server-bound Laya task_id")
-        for field in ("decision_id", "repository_id", "session_id"):
-            value = metadata[field]
-            if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
-                raise ValueError(f"invalid Laya {field}")
-        task_id = metadata["task_id"]
-        if task_id is not None and (
-            not isinstance(task_id, str) or not _LAYA_IDENTIFIER.fullmatch(task_id)
-        ):
-            raise ValueError("invalid Laya task_id")
-        if (
-            metadata["repository_id"] != repository_id
-            or metadata["task_id"] != server_task_id
-            or metadata["session_id"] != session_id
-        ):
-            raise ValueError("Laya metadata identity does not match server-bound context")
-        mode = metadata["mode"]
-        status = metadata["status"]
-        category = metadata["category"]
-        if not isinstance(mode, str) or mode not in {"shadow", "advisory"}:
-            raise ValueError("invalid Laya mode")
-        if not isinstance(status, str) or status not in _LAYA_DECISION_STATUSES:
-            raise ValueError("invalid Laya status")
-        if not isinstance(category, str) or category not in _LAYA_DECISION_OPTIONS:
-            raise ValueError("invalid Laya category")
-        if type(metadata["success"]) is not bool:
-            raise ValueError("invalid Laya success flag")
-        if metadata["success"] is not (status in {"success", "abstain"}):
-            raise ValueError("inconsistent Laya success status")
-        if type(metadata["model_estimate"]) is not bool:
-            raise ValueError("invalid Laya model_estimate flag")
-        if metadata["model_estimate"] is not (status in {"success", "abstain"}):
-            raise ValueError("inconsistent Laya model_estimate status")
-        expected_uncertainty = "UNCALIBRATED" if metadata["model_estimate"] else "NOT_APPLICABLE"
-        if metadata["uncertainty"] != expected_uncertainty:
-            raise ValueError("invalid Laya uncertainty")
-        if metadata["execution_verification"] != "NOT_VERIFIED":
-            raise ValueError("Laya execution provenance is not verified")
 
-        suggestion = metadata["suggestion"]
-        if status == "success":
-            if not isinstance(suggestion, str) or suggestion not in _LAYA_DECISION_OPTIONS[category]:
-                raise ValueError("invalid Laya suggestion")
-        elif suggestion is not None:
-            raise ValueError("non-success Laya decision cannot include a suggestion")
 
-        reason_codes = metadata["reason_codes"]
-        evidence_ids = metadata["evidence_ids"]
-        if not isinstance(reason_codes, list) or len(reason_codes) > 8:
-            raise ValueError("invalid Laya reason_codes")
-        if not isinstance(evidence_ids, list) or len(evidence_ids) > 64:
-            raise ValueError("invalid Laya evidence_ids")
-        if any(not isinstance(code, str) or code not in _LAYA_REASON_CODES for code in reason_codes):
-            raise ValueError("invalid Laya reason_codes")
-        if len(set(reason_codes)) != len(reason_codes):
-            raise ValueError("invalid Laya reason_codes")
-        if status != "success" and not reason_codes:
-            raise ValueError("non-success Laya decision requires a reason code")
-        if any(not isinstance(item, str) or not _LAYA_IDENTIFIER.fullmatch(item) for item in evidence_ids):
-            raise ValueError("invalid Laya evidence_ids")
-        if len(set(evidence_ids)) != len(evidence_ids):
-            raise ValueError("invalid Laya evidence_ids")
 
-        safe = dict(metadata)
-        safe["reason_codes"] = json_dumps(reason_codes, separators=(",", ":"))
-        safe["evidence_ids"] = json_dumps(evidence_ids, separators=(",", ":"))
-        encoded = json_dumps(safe, separators=(",", ":"), sort_keys=True)
-        if len(encoded) > 8000:
-            raise ValueError("Laya decision metadata exceeds snapshot limit")
-        if not self.enabled:
-            return False
-        return self._enqueue(
-            "snapshot",
-            {"created_at": time.time(), "name": "laya_decision", "metrics_json": encoded},
-        )
 
-    def record_evaluation(
-        self,
-        *,
-        task_id: str,
-        cohort: str,
-        quality_pass: bool | None = None,
-        test_pass: bool | None = None,
-        duration_ms: float = 0.0,
-    ) -> dict[str, Any]:
-        task_id = str(task_id).strip()
-        if not task_id or len(task_id) > 96 or not re.fullmatch(r"[A-Za-z0-9._:-]+", task_id):
-            return {"success": False, "error": "task_id must be an opaque identifier up to 96 characters", "terminal": True}
-        if cohort not in {"hub_on", "hub_off"}:
-            return {"success": False, "error": "cohort must be hub_on or hub_off", "terminal": True}
-        if quality_pass is not None and not isinstance(quality_pass, bool):
-            return {"success": False, "error": "quality_pass must be boolean", "terminal": True}
-        if test_pass is not None and not isinstance(test_pass, bool):
-            return {"success": False, "error": "test_pass must be boolean", "terminal": True}
-        self.record_snapshot("agent_evaluation", {
-            "task_id": task_id,
-            "cohort": cohort,
-            "quality_pass": quality_pass,
-            "test_pass": test_pass,
-            "duration_ms": max(0.0, float(duration_ms)),
-        })
-        return {"success": True, "task_id": task_id, "cohort": cohort}
 
-    def record_request_evaluation(self, evaluation: Any, *, duration_ms: float) -> dict[str, Any]:
-        """Persist request-attached A/B metadata with measured server duration."""
-        if not isinstance(evaluation, dict):
-            return {"success": False, "error": "evaluation must be an object", "terminal": True}
-        try:
-            measured = max(0.0, float(duration_ms))
-        except (TypeError, ValueError):
-            return {"success": False, "error": "duration_ms must be numeric", "terminal": True}
-        result = self.record_evaluation(
-            task_id=evaluation.get("task_id", ""),
-            cohort=evaluation.get("cohort", ""),
-            quality_pass=evaluation.get("quality_pass"),
-            test_pass=evaluation.get("test_pass"),
-            duration_ms=measured,
-        )
-        if result.get("success"):
-            result["duration_ms"] = measured
-        return result
 
-    @staticmethod
-    def _evaluation_summary(rows: list[tuple[Any, ...]]) -> dict[str, Any]:
-        latest: dict[tuple[str, str], dict[str, Any]] = {}
-        for _created_at, raw_metrics in rows:
-            try:
-                metrics = json.loads(raw_metrics)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(metrics, dict):
-                continue
-            task_id = metrics.get("task_id")
-            cohort = metrics.get("cohort")
-            if not isinstance(task_id, str) or cohort not in {"hub_on", "hub_off"}:
-                continue
-            latest[(task_id, cohort)] = metrics
-        matched = [
-            task_id for task_id in {key[0] for key in latest}
-            if (task_id, "hub_on") in latest and (task_id, "hub_off") in latest
-        ]
-        cohorts: dict[str, dict[str, Any]] = {}
-        for cohort in ("hub_on", "hub_off"):
-            records = [latest[(task_id, cohort)] for task_id in matched]
-            durations = [float(item.get("duration_ms", 0) or 0) for item in records]
-            quality = [item["quality_pass"] for item in records if isinstance(item.get("quality_pass"), bool)]
-            tests = [item["test_pass"] for item in records if isinstance(item.get("test_pass"), bool)]
-            cohorts[cohort] = {
-                "records": len(records),
-                "avg_duration_ms": round(sum(durations) / len(durations), 1) if durations else 0.0,
-                "quality_evaluated": len(quality),
-                "quality_pass_rate": round(sum(quality) / len(quality), 4) if quality else None,
-                "tests_evaluated": len(tests),
-                "test_pass_rate": round(sum(tests) / len(tests), 4) if tests else None,
-            }
-        gate = {"verdict": "hold", "reason": "insufficient_matched_tasks", "minimum_matched_tasks": 10}
-        if len(matched) >= 10:
-            on, off = cohorts["hub_on"], cohorts["hub_off"]
-            evidence_complete = on["quality_evaluated"] == len(matched) and off["quality_evaluated"] == len(matched) and on["tests_evaluated"] == len(matched) and off["tests_evaluated"] == len(matched)
-            if not evidence_complete:
-                gate = {"verdict": "hold", "reason": "missing_quality_or_test_evidence", "minimum_matched_tasks": 10}
-            elif on["quality_pass_rate"] < off["quality_pass_rate"] or on["test_pass_rate"] < off["test_pass_rate"]:
-                gate = {"verdict": "hold", "reason": "quality_or_test_regression", "minimum_matched_tasks": 10}
-            elif on["avg_duration_ms"] < off["avg_duration_ms"]:
-                gate = {"verdict": "promote", "reason": "quality_test_safe_and_faster", "minimum_matched_tasks": 10}
-            else:
-                gate = {"verdict": "hold", "reason": "no_duration_improvement", "minimum_matched_tasks": 10}
-        return {
-            "verdict": "comparison_ready" if matched else "insufficient_evidence",
-            "matched_tasks": len(matched),
-            "cohorts": cohorts,
-            "gate": gate,
-        }
 
-    def _insert_event_batch(self, con: sqlite3.Connection, events: list[dict[str, Any]]) -> None:
-        if not events:
-            return
-        cols = self._EVENT_COLUMNS
-        placeholders = ",".join("?" for _ in cols)
-        con.executemany(
-            f"INSERT INTO events({','.join(cols)}) VALUES({placeholders})",
-            [tuple(event[col] for col in cols) for event in events],
-        )
-        # Compact daily aggregates survive raw-event pruning.
-        grouped: dict[tuple[Any, ...], list[float]] = {}
-        for e in events:
-            day = datetime.fromtimestamp(e["created_at"], tz=timezone.utc).strftime("%Y-%m-%d")
-            key = (day, e["event_type"], e["action"], e["agent"], e["model"], e["cache_layer"], e["success"])
-            agg = grouped.setdefault(key, [0, 0.0, 0.0] + [0] * 19)
-            agg[0] += 1; agg[1] += e["duration_ms"]; agg[2] += e["queue_wait_ms"]
-            agg[3] += e["input_tokens"]; agg[4] += e["cache_read_tokens"]; agg[5] += e["output_tokens"]; agg[6] += e["avoided_cloud_tokens"]
-            agg[7] += e["cache_hit"]; agg[8] += e["fallback_used"]; agg[9] += e["degraded"]
-            agg[10] += e["gross_avoided_cloud_tokens"]
-            agg[11] += e["gross_input_tokens_avoided"]; agg[12] += e["gross_output_tokens_avoided"]
-            agg[13] += e["agent_protocol_tokens"]; agg[14] += e["tool_schema_tokens"]
-            agg[15] += e["local_compute_tokens_avoided"]
-            agg[16] += e["tool_request_tokens"]; agg[17] += e["tool_response_tokens"]
-            agg[18] += e["net_cloud_token_delta"]; agg[19] += e["cloud_token_overhead"]
-            agg[20] += e["net_after_schema_token_delta"]; agg[21] += e["schema_adjusted_overhead"]
-        con.executemany(
-            """INSERT INTO daily_rollups(day,event_type,action,agent,model,cache_layer,success,events,duration_ms,queue_wait_ms,input_tokens,cache_read_tokens,output_tokens,avoided_cloud_tokens,cache_hits,fallback_count,degraded_count,gross_avoided_cloud_tokens,gross_input_tokens_avoided,gross_output_tokens_avoided,agent_protocol_tokens,tool_schema_tokens,local_compute_tokens_avoided,tool_request_tokens,tool_response_tokens,net_cloud_token_delta,cloud_token_overhead,net_after_schema_token_delta,schema_adjusted_overhead)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(day,event_type,action,agent,model,cache_layer,success) DO UPDATE SET
-                 events=events+excluded.events, duration_ms=duration_ms+excluded.duration_ms,
-                 queue_wait_ms=queue_wait_ms+excluded.queue_wait_ms, input_tokens=input_tokens+excluded.input_tokens,
-                 cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens,
-                 output_tokens=output_tokens+excluded.output_tokens, avoided_cloud_tokens=avoided_cloud_tokens+excluded.avoided_cloud_tokens,
-                 cache_hits=cache_hits+excluded.cache_hits, fallback_count=fallback_count+excluded.fallback_count,
-                 degraded_count=degraded_count+excluded.degraded_count,
-                 gross_avoided_cloud_tokens=gross_avoided_cloud_tokens+excluded.gross_avoided_cloud_tokens,
-                 gross_input_tokens_avoided=gross_input_tokens_avoided+excluded.gross_input_tokens_avoided,
-                 gross_output_tokens_avoided=gross_output_tokens_avoided+excluded.gross_output_tokens_avoided,
-                 agent_protocol_tokens=agent_protocol_tokens+excluded.agent_protocol_tokens,
-                 tool_schema_tokens=tool_schema_tokens+excluded.tool_schema_tokens,
-                 local_compute_tokens_avoided=local_compute_tokens_avoided+excluded.local_compute_tokens_avoided,
-                 tool_request_tokens=tool_request_tokens+excluded.tool_request_tokens,
-                 tool_response_tokens=tool_response_tokens+excluded.tool_response_tokens,
-                 net_cloud_token_delta=net_cloud_token_delta+excluded.net_cloud_token_delta,
-                 cloud_token_overhead=cloud_token_overhead+excluded.cloud_token_overhead,
-                 net_after_schema_token_delta=net_after_schema_token_delta+excluded.net_after_schema_token_delta,
-                 schema_adjusted_overhead=schema_adjusted_overhead+excluded.schema_adjusted_overhead""",
-            [key + tuple(vals) for key, vals in grouped.items()],
-        )
 
-    def _flush_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
-        events = [payload for kind, payload in batch if kind == "event"]
-        errors = [payload for kind, payload in batch if kind == "error"]
-        snapshots = [payload for kind, payload in batch if kind == "snapshot"]
-        with closing(self._connect()) as con:
-            self._insert_event_batch(con, events)
-            if errors:
-                con.executemany(
-                    """INSERT INTO errors(created_at,request_id,agent,component,operation,error_type,fingerprint,safe_message,retryable,recovered)
-                       VALUES(:created_at,:request_id,:agent,:component,:operation,:error_type,:fingerprint,:safe_message,:retryable,:recovered)""",
-                    errors,
-                )
-            if snapshots:
-                con.executemany(
-                    "INSERT INTO snapshots(created_at,name,metrics_json) VALUES(:created_at,:name,:metrics_json)", snapshots
-                )
-            con.commit()
-        with self._stats_lock:
-            self._stats["processed"] += len(batch)
-            self._stats["written"] += len(batch)
-            self._stats["batches"] += 1
 
-    def _prune(self) -> None:
-        cutoff = time.time() - self.retention_days * 86400
-        rollup_cutoff = datetime.fromtimestamp(time.time() - self.rollup_retention_days * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
-        with closing(self._connect()) as con:
-            con.execute("DELETE FROM events WHERE created_at<?", (cutoff,))
-            con.execute("DELETE FROM errors WHERE created_at<?", (cutoff,))
-            con.execute("DELETE FROM snapshots WHERE created_at<?", (cutoff,))
-            con.execute("DELETE FROM process_sessions WHERE started_at<?", (cutoff,))
-            count = int(con.execute("SELECT COUNT(*) FROM events").fetchone()[0])
-            if count > self.max_events:
-                con.execute("DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id ASC LIMIT ?)", (count - self.max_events,))
-            con.execute("DELETE FROM daily_rollups WHERE day<?", (rollup_cutoff,))
-            con.commit()
 
-    def resolve_errors(self, *, timeout_seconds: float = 2.0) -> dict[str, Any]:
-        """Acknowledge and clear all recorded operational failures, errors, crashes, and unclean sessions."""
-        if not self.enabled:
-            return {"enabled": False}
-        duration = float(timeout_seconds)
-        if not math.isfinite(duration) or duration <= 0:
-            raise ValueError("timeout_seconds must be a positive finite number")
-        deadline = time.monotonic() + min(10.0, duration)
 
-        def remaining() -> float:
-            budget = deadline - time.monotonic()
-            if budget <= 0:
-                raise TimeoutError("telemetry resolution time budget exceeded")
-            return budget
 
-        try:
-            if not self.flush(min(1.0, remaining())):
-                raise TimeoutError("telemetry resolution time budget exceeded")
-            with closing(connect_sqlite(self.path, timeout_seconds=min(1.0, remaining()))) as con:
-                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-                try:
-                    with con:
-                        remaining()
-                        resolved_events = con.execute("UPDATE events SET success=1, error_type='' WHERE success=0;").rowcount
-                        remaining()
-                        cleared_errors = con.execute("DELETE FROM errors;").rowcount
-                        remaining()
-                        cleaned_sessions = con.execute("UPDATE process_sessions SET exit_clean=1 WHERE exit_clean=0;").rowcount
-                        remaining()
-                        con.execute("DELETE FROM daily_rollups WHERE success=0;")
-                        remaining()
-                finally:
-                    con.set_progress_handler(None, 0)
-        except (TimeoutError, sqlite3.Error) as exc:
-            if isinstance(exc, TimeoutError) or is_busy_error(exc) or "interrupted" in str(exc).lower():
-                return {"success": False, "degraded": True, "retryable": True,
-                        "error": "telemetry resolution time budget exceeded"}
-            raise
-        with self._summary_cache_lock:
-            self._summary_cache.clear()
-        with self._live_lock:
-            for ev in self._live_events:
-                if not ev.get("success", True):
-                    ev["success"] = True
-                    ev["error_type"] = ""
-                    ev["resolved"] = True
-        return {
-            "success": True,
-            "resolved_events": resolved_events,
-            "cleared_errors": cleared_errors,
-            "cleaned_sessions": cleaned_sessions,
-        }
 
-    def _writer_loop(self) -> None:
-        last_prune = 0.0
-        batch: list[tuple[str, dict[str, Any]]] = []
-        busy_retries = 0
-        while not self._stop.is_set() or not self._queue.empty() or batch:
-            try:
-                if not batch:
-                    try:
-                        item = self._queue.get(timeout=self.flush_interval_seconds)
-                        batch.append(item)
-                    except queue.Empty:
-                        pass
-                while len(batch) < self.batch_size:
-                    try:
-                        batch.append(self._queue.get_nowait())
-                    except queue.Empty:
-                        break
-                if batch:
-                    self._flush_batch(batch)
-                    batch.clear()
-                    busy_retries = 0
-                    self.session_heartbeat()
-                if time.monotonic() - last_prune > 60.0:
-                    self._prune(); last_prune = time.monotonic()
-                    self.session_heartbeat()
-            except Exception as exc:
-                abandoned = 0
-                with self._stats_lock:
-                    self._stats["writer_errors"] += 1
-                    is_busy = is_busy_error(exc)
-                    if is_busy:
-                        busy_retries += 1
-                    if not is_busy or busy_retries > 10 or (self._stop.is_set() and busy_retries > 2):
-                        abandoned = len(batch)
-                        batch.clear()
-                        busy_retries = 0
-                if abandoned:
-                    self._record_writer_abandonment(abandoned)
-                retry_multiplier = max(1, busy_retries) if is_busy else 2
-                retry_delay = min(1.0, self.flush_interval_seconds * retry_multiplier)
-                sleep_dur = 0.05 if self._stop.is_set() else retry_delay
-                time.sleep(sleep_dur)
 
-    def _record_writer_abandonment(self, count: int) -> None:
-        """Account for accepted queue records permanently abandoned by the writer."""
-        abandoned = max(0, int(count))
-        if not abandoned:
-            return
-        with self._stats_lock:
-            self._stats["processed"] += abandoned
-            self._stats["dropped"] += abandoned
-            self._stats["lost_after_acceptance"] += abandoned
 
-    def flush(self, timeout: float = 3.0) -> bool:
-        """True only when accepted records through the boundary were persisted."""
-        return self.flush_status(timeout)["durable"]
 
-    def flush_status(self, timeout: float = 3.0) -> dict[str, Any]:
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout < 0:
-            raise ValueError("flush timeout must be finite and nonnegative")
-        if not self.enabled:
-            return {"enabled": False, "drained": True, "durable": True, "accepted_target": 0,
-                    "processed": 0, "written": 0, "lost_after_acceptance": 0, "timed_out": False}
-        with self._stats_lock:
-            target = int(self._stats["queued"])
-        deadline = time.monotonic() + min(float(timeout), 3600.0)
-        while True:
-            with self._stats_lock:
-                completed = int(self._stats["processed"])
-                written = int(self._stats.get("written", 0))
-                lost = int(self._stats.get("lost_after_acceptance", 0))
-            remaining = deadline - time.monotonic()
-            if completed >= target or remaining <= 0:
-                drained = completed >= target
-                return {"enabled": True, "accepted_target": target, "processed": completed,
-                        "written": written, "lost_after_acceptance": lost,
-                        "drained": drained, "durable": drained and written >= target and lost == 0,
-                        "timed_out": not drained}
-            time.sleep(min(0.02, remaining))
 
-    def _cutoff(self, days: int) -> float:
-        bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
-        return time.time() - bounded_days * 86400
 
-    def _scope_cutoff(self, days: int, scope: str) -> tuple[float, str]:
-        normalized = str(scope or "window").strip().lower()
-        if normalized not in {"window", "process"}:
-            raise ValueError("scope must be 'window' or 'process'")
-        cutoff = self._cutoff(days)
-        if normalized == "process":
-            # A process cohort is a deployment boundary, not a rolling window.
-            # It must include the full current process even for long-lived hubs.
-            cutoff = float(self.process_started_at)
-        return cutoff, normalized
 
-    @staticmethod
-    def _event_cohort(event_type: str, error_type: str) -> str:
-        if event_type == "inference":
-            return "inference"
-        if event_type == "http" and error_type == "policy_block":
-            return "policy_rejection"
-        if event_type == "http" and error_type == "compatibility_404":
-            return "compatibility"
-        if event_type == "http":
-            return "agent_http"
-        return "internal"
 
-    @classmethod
-    def _cohort_summary(cls, rows: Iterable[tuple[Any, ...]]) -> dict[str, dict[str, Any]]:
-        cohorts: dict[str, dict[str, Any]] = {
-            name: {
-                "events": 0,
-                "failures": 0,
-                "retry_count": 0,
-                "fallback_count": 0,
-                "degraded_count": 0,
-                "durations": [],
-            }
-            for name in ("agent_http", "inference", "policy_rejection", "compatibility", "internal")
-        }
-        for row in rows:
-            cohort = cohorts[cls._event_cohort(str(row[0]), str(row[1]))]
-            cohort["events"] += 1
-            cohort["failures"] += int(not int(row[3]))
-            cohort["retry_count"] += int(row[4])
-            cohort["fallback_count"] += int(row[5])
-            cohort["degraded_count"] += int(row[6])
-            cohort["durations"].append(float(row[2]))
-        result: dict[str, dict[str, Any]] = {}
-        for name, values in cohorts.items():
-            events = int(values["events"])
-            durations = values["durations"]
-            result[name] = {
-                "events": events,
-                "failures": int(values["failures"]),
-                "failure_rate": round(values["failures"] / events, 4) if events else 0.0,
-                "p50_duration_ms": _percentile(durations, 0.50),
-                "p95_duration_ms": _percentile(durations, 0.95),
-                "p99_duration_ms": _percentile(durations, 0.99),
-                "retry_count": int(values["retry_count"]),
-                "fallback_count": int(values["fallback_count"]),
-                "degraded_count": int(values["degraded_count"]),
-            }
-        return result
-
-    def _decision_grade(self, con: sqlite3.Connection, cutoff: float) -> dict[str, Any]:
-        """Return bounded, metadata-only aggregates for operational decisions."""
-        limit = _DECISION_DETAIL_LIMIT
-        route_rows = con.execute(
-            """SELECT route,COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),
-                      COALESCE(AVG(duration_ms),0)
-               FROM events WHERE created_at>=? AND route<>''
-               GROUP BY route ORDER BY COUNT(*) DESC,route LIMIT ?""",
-            (cutoff, limit + 1),
-        ).fetchall()
-        cache_rows = con.execute(
-            """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,
-                      COUNT(*),COALESCE(SUM(cache_hit),0),COALESCE(SUM(coalesced),0)
-               FROM events WHERE created_at>=?
-               GROUP BY cache_layer ORDER BY COUNT(*) DESC,cache_layer LIMIT ?""",
-            (cutoff, limit + 1),
-        ).fetchall()
-        bypass_rows = con.execute(
-            """SELECT bypass_reason,error_type,COUNT(*) FROM events
-               WHERE created_at>=? AND bypass_reason<>''
-               GROUP BY bypass_reason,error_type ORDER BY COUNT(*) DESC,bypass_reason,error_type LIMIT ?""",
-            (cutoff, limit + 1),
-        ).fetchall()
-        queue_rows = con.execute(
-            "SELECT queue_age_ms FROM events INDEXED BY idx_events_created WHERE created_at>=? AND queue_age_ms>0 ORDER BY id DESC LIMIT 1000",
-            (cutoff,),
-        ).fetchall()
-        metrics = con.execute(
-            """SELECT COUNT(*),
-                      COALESCE(SUM(cache_hit),0),
-                      COALESCE(SUM(CASE WHEN bypass_reason<>'' THEN 1 ELSE 0 END),0),
-                      COALESCE(SUM(CASE WHEN terminal=1 THEN 1 ELSE 0 END),0),
-                      COALESCE(SUM(CASE WHEN retryable=1 THEN 1 ELSE 0 END),0),
-                      COALESCE(SUM(CASE WHEN terminal>=0 THEN 1 ELSE 0 END),0),
-                      COALESCE(SUM(CASE WHEN retryable>=0 THEN 1 ELSE 0 END),0),
-                      COALESCE(SUM(receipt_count),0),
-                      COALESCE(SUM(CASE WHEN receipt_count>0 THEN 1 ELSE 0 END),0),
-                      COALESCE(MAX(receipt_count),0),
-                      COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-               FROM events WHERE created_at>=?""",
-            (cutoff,),
-        ).fetchone()
-        total = int(metrics[0] or 0)
-        cache_hits = int(metrics[1] or 0)
-        bypass_total = int(metrics[2] or 0)
-        outcome = tuple(int(metrics[index] or 0) for index in range(3, 7))
-        receipts = tuple(int(metrics[index] or 0) for index in range(7, 10))
-        failures = int(metrics[10] or 0)
-        truncated = any(len(rows) > limit for rows in (route_rows, cache_rows, bypass_rows))
-        queue_ages = [float(row[0] or 0) for row in queue_rows]
-        routes = [
-            {"route": str(row[0]), "events": int(row[1]), "failures": int(row[2]), "avg_ms": round(float(row[3]), 1)}
-            for row in route_rows[:limit]
-        ]
-        cache = [
-            {
-                "layer": str(row[0]), "events": int(row[1]), "hits": int(row[2]),
-                "coalesced": int(row[3]), "hit_rate": round(int(row[2]) / int(row[1]), 4) if row[1] else 0.0,
-            }
-            for row in cache_rows[:limit]
-        ]
-        bypass = [{"reason": str(row[0]), **({"error_type": str(row[1])} if row[1] else {}), "events": int(row[2])} for row in bypass_rows[:limit]]
-        return {
-            "counts": {
-                "events": total, "cache_hits": cache_hits, "bypasses": bypass_total,
-                "terminal": int(outcome[0]), "retryable": int(outcome[1]), "receipts": int(receipts[0]),
-                "cache_hit_count": cache_hits, "bypass_count": bypass_total,
-                "terminal_count": int(outcome[0]), "retryable_count": int(outcome[1]),
-                "receipt_count": int(receipts[0]),
-            },
-            "routes": routes,
-            "cache": cache,
-            "bypass": bypass,
-            "queue": {
-                "events": len(queue_ages),
-                "avg_age_ms": round(sum(queue_ages) / len(queue_ages), 1) if queue_ages else 0.0,
-                "p95_age_ms": _percentile(queue_ages, 0.95),
-                "max_age_ms": round(max(queue_ages), 1) if queue_ages else 0.0,
-                "avg_queue_age_ms": round(sum(queue_ages) / len(queue_ages), 1) if queue_ages else 0.0,
-                "p95_queue_age_ms": _percentile(queue_ages, 0.95),
-                "max_queue_age_ms": round(max(queue_ages), 1) if queue_ages else 0.0,
-            },
-            "outcomes": {
-                "terminal": int(outcome[0]), "retryable": int(outcome[1]),
-                "terminal_known": int(outcome[2]), "retryable_known": int(outcome[3]),
-            },
-            "receipts": {
-                "events": int(receipts[1]), "total": int(receipts[0]), "max_per_event": int(receipts[2]),
-            },
-            "errors": {"failures": failures},
-            "_truncated": truncated,
-        }
-
-    @staticmethod
-    def _detail_status(
-        *, truncated: bool, flush_complete: bool, writer: dict[str, Any],
-        summary_cache_stale: bool = False,
-    ) -> dict[str, Any]:
-        incomplete = bool(
-            truncated or not flush_complete or writer.get("pending")
-            or writer.get("dropped") or writer.get("writer_errors")
-            or not writer.get("activity_observed", False)
-            or writer.get("accounting_balanced") is False
-            or summary_cache_stale
-        )
-        omitted: list[str] = []
-        if truncated:
-            omitted.append("decision_grade_lists")
-        if not flush_complete or writer.get("pending"):
-            omitted.append("pending_events")
-        if writer.get("dropped") or writer.get("writer_errors"):
-            omitted.append("writer_failures")
-        if not writer.get("activity_observed", False):
-            omitted.append("writer_activity_unobserved")
-        if writer.get("accounting_balanced") is False:
-            omitted.append("writer_accounting_unbalanced")
-        if summary_cache_stale:
-            omitted.append("cached_summary_data")
-        return {
-            "status": "incomplete" if incomplete else "complete",
-            "truncated": bool(truncated),
-            "incomplete": incomplete,
-            "omitted_sections": omitted,
-            "list_limit": _DECISION_DETAIL_LIMIT,
-        }
-
-    def _writer_snapshot(self) -> dict[str, Any]:
-        """Snapshot current-process queue accounting, independent of report window."""
-        with self._stats_lock:
-            writer = dict(self._stats)
-            snapshot_end_at = time.time()
-            elapsed = max(0.0, time.monotonic() - self._process_started_monotonic)
-        attempted = int(writer.get("attempted", 0))
-        accepted = int(writer.get("accepted", writer.get("queued", 0)))
-        processed = int(writer.get("processed", 0))
-        written = int(writer.get("written", 0))
-        rejected = int(writer.get("rejected_overflow", 0))
-        lost = int(writer.get("lost_after_acceptance", 0))
-        pending = max(0, accepted - processed)
-        rejected_or_lost = rejected + lost
-        writer.update({
-            "scope": "current_process",
-            "process_started_at": self.process_started_at,
-            "snapshot_end_at": snapshot_end_at,
-            "interval_seconds": round(elapsed, 6),
-            "queue_depth": self._queue.qsize(),
-            "attempted": attempted,
-            "accepted": accepted,
-            "rejected_overflow": rejected,
-            "lost_after_acceptance": lost,
-            "pending": pending,
-            "activity_observed": attempted > 0,
-            "writer_error_attempts": int(writer.get("writer_errors", 0)),
-            "accounting_balanced": (
-                attempted == accepted + rejected
-                and int(writer.get("queued", accepted)) == accepted
-                and int(writer.get("dropped", rejected_or_lost)) == rejected_or_lost
-                and processed == written + lost
-                and accepted == written + lost + pending
-            ),
-            "writer_errors_unit": "caught writer exception attempts; may include retryable attempts",
-            "accepted_rate": round(accepted / attempted, 4) if attempted else None,
-            "overflow_rejection_rate": round(rejected / attempted, 4) if attempted else None,
-            "post_acceptance_loss_rate": round(lost / accepted, 4) if accepted else None,
-            "written_rate": round(written / accepted, 4) if accepted else None,
-            "pending_rate": round(pending / accepted, 4) if accepted else None,
-        })
-        return writer
-
-    def _refresh_cached_writer_status(
-        self, data: dict[str, Any], previous_writer: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Refresh cheap process counters so cache hits cannot preserve a false clean status."""
-        refreshed = dict(data)
-        writer = self._writer_snapshot()
-        # Only a new SQL summary can clear a prior stale marker; identical later
-        # writer counters do not make the cached aggregate current again.
-        changed = bool(data.get("summary_cache_stale") or data.get("stale")) or any(
-            int(writer.get(key, 0)) != int(previous_writer.get(key, 0))
-            for key in ("attempted", "accepted", "rejected_overflow", "lost_after_acceptance", "written", "writer_errors")
-        )
-        if not changed:
-            refreshed["writer"] = dict(previous_writer)
-            refreshed["summary_cache_stale"] = False
-            return refreshed
-        old_detail = refreshed.get("detail", {})
-        detail = self._detail_status(
-            truncated=bool(old_detail.get("truncated", False)) if isinstance(old_detail, dict) else False,
-            flush_complete=writer["pending"] == 0,
-            writer=writer,
-        )
-        detail["status"] = "incomplete"
-        detail["incomplete"] = True
-        detail["omitted_sections"] = sorted(set(detail["omitted_sections"] + ["cached_summary_data"]))
-        refreshed["writer"] = writer
-        refreshed["detail"] = detail
-        refreshed["summary_cache_stale"] = True
-        decision_grade = refreshed.get("decision_grade")
-        if isinstance(decision_grade, dict):
-            decision_grade = dict(decision_grade)
-            decision_grade["detail"] = detail
-            refreshed["decision_grade"] = decision_grade
-        return refreshed
-
-    def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True, session_limit: int = 10, detailed_diagnostics: bool | None = None) -> dict[str, Any]:
-        if not self.enabled:
-            return {"enabled": False}
-        now = time.monotonic()
-        bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
-        cutoff, scope = self._scope_cutoff(bounded_days, scope)
-        detailed = detailed_diagnostics
-        if detailed is None:
-            try:
-                from .agent_diagnostics import detailed_diagnostics_enabled
-                detailed = detailed_diagnostics_enabled(getattr(self, "config", {}))
-            except Exception:
-                detailed = False
-        # Keep the established rolling-window cache key stable for lightweight
-        # callers; process cohorts need the start boundary in their own key.
-        key: Any = (bounded_days, bool(detailed)) if scope == "window" else (bounded_days, scope, int(self.process_started_at), bool(detailed))
-        with self._summary_cache_lock:
-            cached = self._summary_cache.get(key)
-        if cached and now - cached["time"] < 3.0:
-            return self._refresh_cached_writer_status(
-                cached["data"], cached.get("writer_snapshot", {})
-            )
-        flush_complete = True
-        if _flush:
-            flush_complete = self.flush(0.5)
-        accounting_boundary_incomplete = False
-        with closing(self._connect()) as con:
-            row = con.execute(
-                """SELECT COUNT(*), COALESCE(SUM(cache_hit),0), COALESCE(SUM(coalesced),0),
-                          COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-                          COALESCE(SUM(avoided_cloud_tokens),0), COALESCE(AVG(duration_ms),0),
-                          COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),
-                          COALESCE(AVG(CASE WHEN load_duration_ms>0 THEN load_duration_ms END),0),
-                          COALESCE(AVG(queue_wait_ms),0), COALESCE(SUM(fallback_used),0), COALESCE(SUM(degraded),0),
-                          COALESCE(SUM(retry_count),0)
-                   FROM events WHERE created_at>=? AND event_type='inference'""",
-                (cutoff,),
-            ).fetchone()
-            provider_cache_read_tokens = con.execute(
-                "SELECT COALESCE(SUM(cache_read_tokens),0) FROM events WHERE created_at>=? AND event_type='inference'",
-                (cutoff,),
-            ).fetchone()[0]
-            wait_metrics = con.execute(
-                "SELECT COALESCE(SUM(wait_count),0), COALESCE(SUM(wait_duration_ms),0) FROM events WHERE created_at>=? AND wait_count>0",
-                (cutoff,),
-            ).fetchone()
-            by_action = con.execute(
-                """SELECT action,COUNT(*),COALESCE(SUM(avoided_cloud_tokens),0),COALESCE(AVG(duration_ms),0)
-                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY action ORDER BY COUNT(*) DESC LIMIT 20""",
-                (cutoff,),
-            ).fetchall()
-            by_cache = con.execute(
-                """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,COUNT(*)
-                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC, cache_layer LIMIT ?""",
-                (cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            cache_domains_rows = con.execute(
-                """SELECT CASE
-                           WHEN event_type='inference' THEN 'generation'
-                           WHEN action='/api/command' THEN 'command'
-                           WHEN cache_layer IN ('workspace','workspace-miss') THEN 'repository'
-                           ELSE 'other'
-                       END AS domain,
-                       COUNT(*),COALESCE(SUM(cache_hit),0),COALESCE(SUM(coalesced),0),
-                       COALESCE(SUM(CASE WHEN event_type='inference' AND cache_layer='semantic' AND cache_hit=1 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type IN ('inference','http')
-                   GROUP BY domain ORDER BY domain""",
-                (cutoff,),
-            ).fetchall()
-            cache_decision_rows = con.execute(
-                """SELECT error_type,COUNT(*) FROM events
-                   WHERE created_at>=? AND event_type='stage' AND stage='cache_decision'
-                   GROUP BY error_type ORDER BY COUNT(*) DESC, error_type LIMIT ?""",
-                (cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            http_outcome_rows = con.execute(
-                """SELECT CASE WHEN error_type='' THEN 'success' ELSE error_type END,
-                          COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='http'
-                   GROUP BY error_type ORDER BY COUNT(*) DESC, error_type LIMIT ?""",
-                (cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            durations = [float(r[0]) for r in con.execute(
-                "SELECT duration_ms FROM events WHERE created_at>=? AND event_type='inference' ORDER BY id DESC LIMIT 10000", (cutoff,)
-            )]
-            cohort_rows = con.execute(
-                """SELECT event_type,error_type,duration_ms,success,retry_count,fallback_used,degraded
-                   FROM events WHERE created_at>=? AND event_type IN ('inference','http')""",
-                (cutoff,),
-            )
-            cohorts = self._cohort_summary(cohort_rows)
-            http = con.execute(
-                "SELECT COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),COALESCE(AVG(duration_ms),0) FROM events WHERE created_at>=? AND event_type='http'",
-                (cutoff,),
-            ).fetchone()
-            # Persistent tool-adoption metric.  This deliberately counts agent -> hub
-            # application calls, not dashboard/health/control polling, so it survives
-            # hub restarts and reflects whether agents are actually using the local
-            # tool layer rather than the ephemeral in-process ToolAwareLocalAgent count.
-            tool_http = con.execute(
-                """SELECT COUNT(*), COUNT(DISTINCT CASE WHEN agent<>'' THEN agent END),
-                          COALESCE(SUM(CASE WHEN action='/api/command' THEN 1 ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN action LIKE '/api/repo/%' OR action='/api/solve/repo' THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='http'
-                     AND action LIKE '/api/%'
-                     AND action NOT IN ('/api/live','/api/live/status','/api/status')""",
-                (cutoff,),
-            ).fetchone()
-            prep_query = con.execute(
-                """SELECT
-                       COALESCE(SUM(CASE WHEN action LIKE '/api/repo/%' OR action='/api/search' OR action='/api/solve/repo' THEN 1 ELSE 0 END),0),
-                       COALESCE(SUM(CASE WHEN (action LIKE '/api/repo/%' OR action='/api/search' OR action='/api/solve/repo') AND preprocessed_hit=1 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='http'""",
-                (cutoff,),
-            ).fetchone()
-            # Channel counters are row-level evidence. Aggregate equality can hide
-            # legacy rows when another row has overlapping input/output counters.
-            unpriced_row = (
-                "NOT (gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided "
-                "OR (gross_input_tokens_avoided > 0 AND gross_avoided_cloud_tokens = gross_input_tokens_avoided) "
-                "OR (gross_input_tokens_avoided = 0 AND gross_avoided_cloud_tokens = gross_output_tokens_avoided)) "
-                "OR net_cloud_token_delta <> gross_avoided_cloud_tokens - tool_request_tokens - tool_response_tokens"
-            )
-            if scope == "window":
-                # Raw retention is shorter than the reporting window. Use daily
-                # totals once per complete UTC day, and raw rows only for the
-                # partial first day. This preserves the exact rolling cutoff
-                # without counting retained rows a second time.
-                columns = (
-                    "gross_avoided_cloud_tokens", "gross_input_tokens_avoided", "gross_output_tokens_avoided",
-                    "agent_protocol_tokens", "tool_request_tokens", "tool_response_tokens", "tool_schema_tokens",
-                    "local_compute_tokens_avoided", "net_cloud_token_delta", "cloud_token_overhead",
-                    "net_after_schema_token_delta", "schema_adjusted_overhead",
-                )
-                boundary = datetime.fromtimestamp(cutoff, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                boundary_end = (boundary + timedelta(days=1)).timestamp()
-                day = boundary.strftime("%Y-%m-%d")
-                fields = ",".join(columns)
-                sums = ",".join(f"COALESCE(SUM({column}),0)" for column in ("events", *columns))
-                tool_accounting = con.execute(
-                    f"SELECT {sums} FROM ("
-                    f"SELECT events,{fields} FROM daily_rollups WHERE day>? AND event_type='tool_accounting' "
-                    f"UNION ALL SELECT 1 AS events,{fields} FROM events "
-                    "WHERE created_at>=? AND created_at<? AND event_type='tool_accounting')",
-                    (day, cutoff, boundary_end),
-                ).fetchone()
-                boundary_rollup = con.execute(
-                    "SELECT COALESCE(SUM(events),0) FROM daily_rollups WHERE day=? AND event_type='tool_accounting'", (day,)
-                ).fetchone()[0]
-                boundary_raw = con.execute(
-                    "SELECT COUNT(*) FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting'",
-                    (boundary.timestamp(), boundary_end),
-                ).fetchone()[0]
-                accounting_boundary_incomplete = boundary_rollup > boundary_raw
-                pricing_table = (
-                    "(SELECT events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
-                    "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM daily_rollups "
-                    "WHERE day>? AND event_type='tool_accounting' "
-                    "UNION ALL SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
-                    "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
-                    "WHERE created_at>=? AND created_at<? AND event_type='tool_accounting')"
-                )
-                pricing_table_params = (day, cutoff, boundary_end)
-                pricing_rollup_rows = int(con.execute(
-                    f"""SELECT COUNT(*) FROM daily_rollups WHERE day>? AND event_type='tool_accounting'
-                       AND events>0 AND (gross_avoided_cloud_tokens<>0 OR gross_input_tokens_avoided<>0
-                           OR gross_output_tokens_avoided<>0 OR tool_request_tokens<>0
-                           OR tool_response_tokens<>0 OR net_cloud_token_delta<>0)
-                       AND ({unpriced_row})""",
-                    (day,),
-                ).fetchone()[0])
-                unpriced_event_rows = int(con.execute(
-                    f"SELECT COUNT(*) FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting' AND ({unpriced_row})",
-                    (cutoff, boundary_end),
-                ).fetchone()[0])
-                cat_rows = con.execute(
-                    """SELECT
-                           CASE
-                               WHEN action IN ('local_ai_repo', 'local_ai_artifact', 'local_ai_rag') THEN 'discovery'
-                               WHEN action IN ('local_ai_coord') THEN 'agent_os'
-                               WHEN action IN ('local_ai_task', 'local_ai_work') THEN 'local_inference'
-                               ELSE 'system'
-                           END AS category,
-                           COALESCE(SUM(events),0),
-                           COALESCE(SUM(agent_protocol_tokens),0),
-                           COALESCE(SUM(gross_avoided_cloud_tokens),0),
-                           COALESCE(SUM(net_cloud_token_delta),0)
-                       FROM (
-                           SELECT action, events, agent_protocol_tokens, gross_avoided_cloud_tokens, net_cloud_token_delta
-                           FROM daily_rollups WHERE day>? AND event_type='tool_accounting'
-                           UNION ALL
-                           SELECT action, 1 AS events, agent_protocol_tokens, gross_avoided_cloud_tokens, net_cloud_token_delta
-                           FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting'
-                       ) GROUP BY 1""",
-                    (day, cutoff, boundary_end),
-                ).fetchall()
-            else:
-                tool_accounting = con.execute(
-                    """SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
-                              COALESCE(SUM(gross_input_tokens_avoided),0), COALESCE(SUM(gross_output_tokens_avoided),0),
-                              COALESCE(SUM(agent_protocol_tokens),0), COALESCE(SUM(tool_request_tokens),0),
-                              COALESCE(SUM(tool_response_tokens),0), COALESCE(SUM(tool_schema_tokens),0),
-                              COALESCE(SUM(local_compute_tokens_avoided),0), COALESCE(SUM(net_cloud_token_delta),0),
-                              COALESCE(SUM(cloud_token_overhead),0), COALESCE(SUM(net_after_schema_token_delta),0),
-                              COALESCE(SUM(schema_adjusted_overhead),0)
-                       FROM events WHERE created_at>=? AND event_type='tool_accounting'""",
-                    (cutoff,),
-                ).fetchone()
-                pricing_table = (
-                    "(SELECT 1 AS events, gross_avoided_cloud_tokens, gross_input_tokens_avoided, gross_output_tokens_avoided, "
-                    "tool_request_tokens, tool_response_tokens, net_cloud_token_delta FROM events "
-                    "WHERE created_at>=? AND event_type='tool_accounting')"
-                )
-                pricing_table_params = (cutoff,)
-                pricing_rollup_rows = 0
-                unpriced_event_rows = int(con.execute(
-                    f"SELECT COUNT(*) FROM events WHERE created_at>=? AND event_type='tool_accounting' AND ({unpriced_row})",
-                    (cutoff,),
-                ).fetchone()[0])
-                cat_rows = con.execute(
-                    """SELECT
-                           CASE
-                               WHEN action IN ('local_ai_repo', 'local_ai_artifact', 'local_ai_rag') THEN 'discovery'
-                               WHEN action IN ('local_ai_coord') THEN 'agent_os'
-                               WHEN action IN ('local_ai_task', 'local_ai_work') THEN 'local_inference'
-                               ELSE 'system'
-                           END AS category,
-                           COUNT(*),
-                           COALESCE(SUM(agent_protocol_tokens),0),
-                           COALESCE(SUM(gross_avoided_cloud_tokens),0),
-                           COALESCE(SUM(net_cloud_token_delta),0)
-                       FROM events
-                       WHERE created_at>=? AND event_type='tool_accounting'
-                       GROUP BY 1""",
-                    (cutoff,),
-                ).fetchall()
-            known_channel_rows = con.execute(
-                f"""SELECT COALESCE(SUM(events),0),
-                           COALESCE(SUM(CASE
-                               WHEN gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided
-                                   THEN gross_input_tokens_avoided
-                               WHEN gross_input_tokens_avoided > 0 THEN gross_input_tokens_avoided
-                               ELSE 0 END),0),
-                           COALESCE(SUM(CASE
-                               WHEN gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided
-                                   THEN gross_output_tokens_avoided
-                               WHEN gross_input_tokens_avoided = 0 THEN gross_output_tokens_avoided
-                               ELSE 0 END),0),
-                           COALESCE(SUM(tool_request_tokens),0), COALESCE(SUM(tool_response_tokens),0)
-                    FROM {pricing_table} WHERE NOT ({unpriced_row})""",
-                pricing_table_params,
-            ).fetchone()
-            pricing_incomplete = bool(
-                pricing_rollup_rows or unpriced_event_rows or accounting_boundary_incomplete
-            )
-            # Realtime summaries must stay cheap even at max raw-event retention.
-            # Attribute each call to its dominant savings source in SQL; the full
-            # multi-source breakdown is parsed only by the explicit diagnostic report.
-            tool_breakdown_rows = con.execute(
-                """SELECT source,COALESCE(SUM(tokens),0) FROM (
-                       SELECT input_savings_source AS source,gross_input_tokens_avoided AS tokens
-                         FROM events WHERE created_at>=? AND event_type='tool_accounting' AND input_savings_source<>''
-                       UNION ALL
-                       SELECT output_savings_source AS source,gross_output_tokens_avoided AS tokens
-                         FROM events WHERE created_at>=? AND event_type='tool_accounting' AND output_savings_source<>''
-                   ) GROUP BY source ORDER BY 2 DESC, source LIMIT ?""",
-                (cutoff, cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            if scope == "process":
-                session_count_raw = con.execute(
-                    "SELECT COUNT(DISTINCT trace_id) FROM events WHERE created_at>=? AND trace_id<>''",
-                    (cutoff,),
-                ).fetchone()[0]
-            else:
-                session_count_raw = con.execute(
-                    "SELECT COUNT(*) FROM process_sessions WHERE started_at>=?",
-                    (cutoff,),
-                ).fetchone()[0]
-            decision_grade = self._decision_grade(con, cutoff)
-        total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
-        cache_domains: dict[str, dict[str, Any]] = {}
-        semantic_hits = 0
-        for domain, events, hits, coalesced, semantic in cache_domains_rows:
-            count = int(events)
-            semantic_hits += int(semantic)
-            cache_domains[str(domain)] = {
-                "events": count,
-                "hits": int(hits),
-                "coalesced": int(coalesced),
-                "hit_rate": round(int(hits) / count, 4) if count else 0.0,
-            }
-        cache_decisions = {str(reason): int(count) for reason, count in cache_decision_rows}
-        http_outcomes = {
-            str(category): {"events": int(events), "failures": int(failures)}
-            for category, events, failures in http_outcome_rows
-        }
-        tool_accounting_events = int(tool_accounting[0])
-        gross_avoided_cloud_tokens = int(tool_accounting[1])
-        gross_input_tokens_avoided = int(tool_accounting[2])
-        gross_output_tokens_avoided = int(tool_accounting[3])
-        agent_protocol_tokens = int(tool_accounting[4])
-        tool_request_tokens = int(tool_accounting[5])
-        tool_response_tokens = int(tool_accounting[6])
-        tool_schema_tokens = int(tool_accounting[7])
-        local_compute_tokens_avoided = int(tool_accounting[8])
-        net_cloud_token_delta = int(tool_accounting[9])
-        cloud_token_overhead = int(tool_accounting[10])
-        net_after_schema_token_delta = int(tool_accounting[11])
-        schema_adjusted_overhead = int(tool_accounting[12])
-        savings_breakdown = {str(source)[:64]: max(0, int(tokens or 0)) for source, tokens in tool_breakdown_rows}
-        priced_events = int(known_channel_rows[0])
-        estimated_gross_input_tokens = int(known_channel_rows[1])
-        estimated_gross_output_tokens = int(known_channel_rows[2])
-        priced_tool_request_tokens = int(known_channel_rows[3])
-        priced_tool_response_tokens = int(known_channel_rows[4])
-        if priced_events and (estimated_gross_input_tokens or estimated_gross_output_tokens):
-            # Tool responses are cloud input; tool calls are cloud output. Keep
-            # the token delta signed, but price each side with its own rate. SQL
-            # selects overlapping channels per row before summing contributions.
-            net_input_tokens = estimated_gross_input_tokens - priced_tool_response_tokens
-            net_output_tokens = estimated_gross_output_tokens - priced_tool_request_tokens
-            estimated_input_savings_usd = round(
-                net_input_tokens * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
-            )
-            estimated_output_savings_usd = round(
-                net_output_tokens * self.cloud_output_token_cost_usd_per_million / 1_000_000, 4
-            )
-            if pricing_incomplete:
-                # Legacy rows without channel counters remain in accounting totals,
-                # but their USD cost cannot be reconstructed from channel rates.
-                estimated_savings_usd = None
-                pricing_mode = "incomplete"
-            else:
-                estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
-                pricing_mode = "input_output"
-        elif pricing_incomplete and not priced_events:
-            # Older rows may retain gross and signed token accounting without
-            # either channel counter. Never price those rows with a blended rate.
-            estimated_input_savings_usd = None
-            estimated_output_savings_usd = None
-            estimated_savings_usd = None
-            pricing_mode = "incomplete"
-        else:
-            estimated_input_savings_usd = round(
-                -priced_tool_response_tokens * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
-            )
-            estimated_output_savings_usd = round(
-                -priced_tool_request_tokens * self.cloud_output_token_cost_usd_per_million / 1_000_000, 4
-            )
-            if pricing_incomplete:
-                estimated_savings_usd = None
-                pricing_mode = "incomplete"
-            else:
-                estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
-                pricing_mode = "input_output"
-
-        call_categories = {
-            "discovery": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
-            "agent_os": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
-            "local_inference": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
-            "system": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
-        }
-        for cat_name, cat_events, cat_proto, cat_avoided, cat_net in cat_rows:
-            if cat_name in call_categories:
-                call_categories[cat_name] = {
-                    "events": int(cat_events or 0),
-                    "protocol_tokens": int(cat_proto or 0),
-                    "gross_avoided": int(cat_avoided or 0),
-                    "net_delta": int(cat_net or 0),
-                }
-        discovery_events = call_categories["discovery"]["events"]
-
-        session_count = max(1, int(session_count_raw or 0))
-        calls_per_session = max(1, round(tool_accounting_events / session_count)) if tool_accounting_events else 1
-        dynamic_depth_tokens = int(min(128_000, max(6_000, 6_000 + (calls_per_session * 1_800))))
-
-        avoided_turns = discovery_events
-        avoided_turn_output_tokens = avoided_turns * 250
-        avoided_cache_read_tokens = avoided_turns * dynamic_depth_tokens
-        avoided_slice_tokens = avoided_turns * 600
-
-        realistic_gross_tokens = gross_avoided_cloud_tokens + (avoided_turn_output_tokens + avoided_slice_tokens)
-        realistic_net_cloud_token_delta = realistic_gross_tokens - agent_protocol_tokens
-
-        sonnet_output_rate = max(self.cloud_output_token_cost_usd_per_million, 12.50)
-
-        realistic_output_savings_usd = round(
-            (gross_output_tokens_avoided + avoided_turn_output_tokens - priced_tool_request_tokens)
-            * sonnet_output_rate / 1_000_000, 4
-        )
-        realistic_cache_read_savings_usd = round(
-            avoided_cache_read_tokens * self.cloud_cache_read_token_cost_usd_per_million / 1_000_000, 4
-        )
-        realistic_input_savings_usd = round(
-            (gross_input_tokens_avoided + avoided_slice_tokens - priced_tool_response_tokens)
-            * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
-        )
-
-        if pricing_incomplete:
-            realistic_savings_usd = None
-        else:
-            realistic_savings_usd = round(
-                realistic_output_savings_usd + realistic_cache_read_savings_usd + realistic_input_savings_usd, 4
-            )
-
-        detailed = detailed_diagnostics
-        if detailed is None:
-            try:
-                from .agent_diagnostics import detailed_diagnostics_enabled
-                detailed = detailed_diagnostics_enabled(getattr(self, "config", {}))
-            except Exception:
-                detailed = False
-
-        prep_events = int(prep_query[0] or 0)
-        prep_hits = int(prep_query[1] or 0)
-        prep_hit_rate = round(prep_hits / prep_events, 4) if prep_events else 0.0
-        writer = self._writer_snapshot()
-        decision_grade["detail"] = self._detail_status(
-            truncated=bool(decision_grade.pop("_truncated", False)),
-            flush_complete=flush_complete,
-            writer=writer,
-        )
-        res = {
-            "enabled": True, "window_days": max(1, int(days)), "scope": scope,
-            "process_started_at": self.process_started_at if scope == "process" else None, "events": total,
-            "cache_hits": cached, "cache_hit_rate": round(cached / total, 4) if total else 0.0,
-            "generation_cache_hits": cached,
-            "generation_cache_hit_rate": round(cached / total, 4) if total else 0.0,
-            "preprocessed_query_hits": prep_hits,
-            "preprocessed_query_events": prep_events,
-            "preprocessed_query_hit_rate": prep_hit_rate,
-            "sessions": self.sessions(days=int(days), limit=max(1, min(int(session_limit), 20))),
-            "cache_domains": cache_domains,
-            "cache_decisions": cache_decisions,
-            "cache_reuse_breakdown": {
-                "semantic_hits": semantic_hits,
-                "single_flight_waiters": cache_domains.get("generation", {}).get("coalesced", 0),
-            },
-            "http_outcomes": http_outcomes,
-            "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),
-            "provider_cache_read_tokens": int(provider_cache_read_tokens),
-            "local_output_tokens_est": int(row[4]),
-            "context_tokens_avoided_est": int(row[5]),
-            "net_cloud_token_delta_est": net_cloud_token_delta,
-            "realistic_net_cloud_token_delta_est": realistic_net_cloud_token_delta,
-            "cloud_token_overhead_est": cloud_token_overhead,
-            "gross_cloud_tokens_avoided_est": gross_avoided_cloud_tokens,
-            "gross_input_cloud_tokens_avoided_est": gross_input_tokens_avoided,
-            "gross_output_cloud_tokens_avoided_est": gross_output_tokens_avoided,
-            "agent_protocol_tokens_est": agent_protocol_tokens,
-            "agent_tool_request_tokens_est": tool_request_tokens,
-            "agent_tool_response_tokens_est": tool_response_tokens,
-            "tool_schema_tokens_exposure_est": tool_schema_tokens,
-            "net_after_schema_token_delta_est": net_after_schema_token_delta,
-            "schema_adjusted_overhead_est": schema_adjusted_overhead,
-            "local_compute_tokens_avoided_est": local_compute_tokens_avoided,
-            "token_savings_breakdown": dict(sorted(savings_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))),
-            "tool_accounting_events": tool_accounting_events,
-            "accounting_boundary_incomplete": accounting_boundary_incomplete,
-            "token_accounting_storage": "daily_rollups_and_boundary_events" if scope == "window" else "retained_process_events",
-            "cloud_input_token_cost_usd_per_million": self.cloud_input_token_cost_usd_per_million,
-            "cloud_output_token_cost_usd_per_million": self.cloud_output_token_cost_usd_per_million,
-            "cloud_cache_read_token_cost_usd_per_million": self.cloud_cache_read_token_cost_usd_per_million,
-            "cloud_cache_write_token_cost_usd_per_million": self.cloud_cache_write_token_cost_usd_per_million,
-            "dynamic_depth_tokens": dynamic_depth_tokens,
-            "call_categories": call_categories,
-            "active_pricing_profile": self.pricing_profile,
-            "pricing_profiles": CLOUD_PRICING_PROFILES,
-            "estimated_input_savings_usd": estimated_input_savings_usd,
-            "estimated_output_savings_usd": estimated_output_savings_usd,
-            "estimated_savings_pricing_mode": pricing_mode,
-            "estimated_savings_usd": estimated_savings_usd,
-            "realistic_savings_usd": realistic_savings_usd,
-            "avg_duration_ms": round(float(row[6]), 1), "p50_duration_ms": _percentile(durations, 0.50),
-            "p95_duration_ms": _percentile(durations, 0.95), "p99_duration_ms": _percentile(durations, 0.99),
-            "aggregate_duration_scope": "inference_only", "cohorts": cohorts,
-            "failures": int(row[7]), "failure_rate": round(int(row[7]) / total, 4) if total else 0.0,
-            "avg_model_load_duration_ms": round(float(row[8]), 1), "avg_queue_wait_ms": round(float(row[9]), 1),
-            "wait_count": int(wait_metrics[0]), "wait_duration_ms": round(float(wait_metrics[1]), 1),
-            "fallback_count": int(row[10]), "degraded_count": int(row[11]), "retry_count": int(row[12]),
-            "ollama_inference_calls": int(dict(by_cache).get("ollama", 0)),
-            "ollama_calls_avoided_est": max(0, total - int(dict(by_cache).get("ollama", 0))),
-            "cache_layers": {str(r[0]): int(r[1]) for r in by_cache},
-            "by_action": [
-                {"action": r[0], "calls": int(r[1]), "context_tokens_avoided_est": int(r[2]), "avg_ms": round(float(r[3]), 1)}
-                for r in by_action
-            ],
-            "http": {
-                "requests": http_total, "failures": int(http[1]),
-                "failure_rate": round(int(http[1]) / http_total, 4) if http_total else 0.0,
-                "avg_ms": round(float(http[2]), 1),
-            },
-            "tool_adoption": {
-                "http_calls": int(tool_http[0]), "agents": int(tool_http[1]),
-                "command_calls": int(tool_http[2]), "repo_calls": int(tool_http[3]),
-            },
-            "writer": writer,
-            "window": {"days": max(1, int(days)), "scope": scope,
-                       "events": decision_grade["counts"]["events"], "inference_events": total},
-            "counts": decision_grade["counts"],
-            "routes": decision_grade["routes"],
-            "cache": decision_grade["cache"],
-            "bypass": decision_grade["bypass"],
-            "errors": decision_grade["errors"],
-            "queue": decision_grade["queue"],
-            "detail": decision_grade["detail"],
-            "decision_grade": decision_grade,
-            "summary_cache_stale": False,
-        }
-        if detailed:
-            res["realistic_savings_breakdown"] = {
-                "avoided_turns": avoided_turns,
-                "avoided_agent_output_tokens": avoided_turn_output_tokens,
-                "avoided_cache_read_tokens": avoided_cache_read_tokens,
-                "avoided_slice_tokens": avoided_slice_tokens,
-                "dynamic_depth_tokens": dynamic_depth_tokens,
-                "calls_per_session_est": calls_per_session,
-                "sonnet_output_rate": sonnet_output_rate,
-                "cache_read_rate": self.cloud_cache_read_token_cost_usd_per_million,
-                "input_rate": self.cloud_input_token_cost_usd_per_million,
-                "realistic_output_savings_usd": realistic_output_savings_usd,
-                "realistic_cache_read_savings_usd": realistic_cache_read_savings_usd,
-                "realistic_input_savings_usd": realistic_input_savings_usd,
-            }
-        with self._summary_cache_lock:
-            self._summary_cache[key] = {"time": now, "data": res, "writer_snapshot": dict(writer)}
-            while len(self._summary_cache) > _SUMMARY_CACHE_LIMIT:
-                oldest_key = min(self._summary_cache, key=lambda item: self._summary_cache[item]["time"])
-                self._summary_cache.pop(oldest_key, None)
-        return res
-
-    def report(
-        self, days: int = 30, *, recent_errors: int = 25, error_offset: int = 0,
-        error_cursor: str | None = None, scope: str = "window", _flush: bool = True,
-    ) -> dict[str, Any]:
-        """Produce a prompt/source-free diagnostic report suitable for sharing."""
-        if not self.enabled:
-            return {"enabled": False}
-        flush_complete = True
-        if _flush:
-            flush_complete = self.flush(1.0)
-        days = max(1, min(int(days), self.rollup_retention_days))
-        cutoff, scope = self._scope_cutoff(days, scope)
-        error_limit = max(1, min(int(recent_errors), 100))
-        error_offset = max(0, min(int(error_offset), 100_000))
-        cursor_requested = error_cursor is not None
-        cursor_values = _decode_error_page_cursor(error_cursor)
-        if cursor_requested and error_offset:
-            raise ValueError("error_offset cannot be combined with error_cursor")
-        with closing(self._connect()) as con:
-            by_agent = con.execute(
-                """SELECT CASE WHEN agent='' THEN 'unknown' ELSE agent END,
-                          COALESCE(SUM(CASE WHEN event_type='http' THEN 1 ELSE 0 END),0),
-                          COALESCE(AVG(CASE WHEN event_type='http' THEN duration_ms END),0),
-                          COALESCE(SUM(CASE WHEN event_type='http' AND success=0 THEN 1 ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='inference' THEN avoided_cloud_tokens ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN net_cloud_token_delta ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN gross_avoided_cloud_tokens ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN agent_protocol_tokens ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? GROUP BY agent ORDER BY COUNT(*) DESC, agent LIMIT ?""",
-                (cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            by_model = con.execute(
-                """SELECT model,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(AVG(load_duration_ms),0),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='inference' AND model<>'' GROUP BY model ORDER BY COUNT(*) DESC, model LIMIT ?""",
-                (cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            provider_usage = con.execute(
-                """SELECT action,task_type,model,COALESCE(SUM(input_tokens),0),
-                          COALESCE(SUM(cache_read_tokens),0),COALESCE(SUM(output_tokens),0)
-                   FROM events WHERE created_at>=? AND event_type='inference'
-                   GROUP BY action,task_type,model ORDER BY COUNT(*) DESC,action,task_type,model LIMIT 50""",
-                (cutoff,),
-            ).fetchall()
-            actions = con.execute(
-                """SELECT action,event_type,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(AVG(queue_wait_ms),0),
-                          COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),COALESCE(SUM(cache_hit),0),
-                          COALESCE(SUM(fallback_used),0),COALESCE(SUM(retry_count),0)
-                   FROM events WHERE created_at>=? GROUP BY action,event_type ORDER BY COUNT(*) DESC LIMIT 50""", (cutoff,)
-            ).fetchall()
-            laya_capture_stages = con.execute(
-                """SELECT stage,COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='stage' AND action='laya_capture'
-                   GROUP BY stage ORDER BY stage LIMIT 10""",
-                (cutoff,),
-            ).fetchall()
-            laya_capture_reasons = con.execute(
-                """SELECT stage,COALESCE(NULLIF(bypass_reason,''),'unspecified'),COALESCE(error_type,''),COUNT(*),
-                          COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='stage' AND action='laya_capture'
-                   GROUP BY stage,COALESCE(NULLIF(bypass_reason,''),'unspecified'),COALESCE(error_type,'')
-                   ORDER BY COUNT(*) DESC,stage,bypass_reason,error_type LIMIT 32""",
-                (cutoff,),
-            ).fetchall()
-            routes = con.execute(
-                """SELECT route,task_type,complexity,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='http' AND route<>''
-                   GROUP BY route,task_type,complexity ORDER BY COUNT(*) DESC LIMIT 40""", (cutoff,)
-            ).fetchall()
-            error_select = """SELECT fingerprint,error_type,component,operation,COUNT(*),MAX(created_at),MAX(safe_message),SUM(retryable),SUM(recovered)
-                              FROM errors WHERE created_at>=?"""
-            if cursor_requested:
-                if cursor_values is None:
-                    error_snapshot_cutoff = cutoff
-                    error_snapshot_id = int(con.execute(
-                        "SELECT COALESCE(MAX(id),0) FROM errors WHERE created_at>=?", (error_snapshot_cutoff,),
-                    ).fetchone()[0])
-                    error_rows = con.execute(
-                        error_select + " AND id<=? GROUP BY fingerprint,error_type,component,operation "
-                        "ORDER BY fingerprint,error_type,component,operation LIMIT ?",
-                        (error_snapshot_cutoff, error_snapshot_id, error_limit + 1),
-                    ).fetchall()
-                else:
-                    error_snapshot_id, error_snapshot_cutoff, *group_cursor = cursor_values
-                    error_rows = con.execute(
-                        error_select + " AND id<=? AND (fingerprint,error_type,component,operation)>(?,?,?,?) "
-                        "GROUP BY fingerprint,error_type,component,operation ORDER BY fingerprint,error_type,component,operation LIMIT ?",
-                        (error_snapshot_cutoff, error_snapshot_id, *group_cursor, error_limit + 1),
-                    ).fetchall()
-                error_total = int(con.execute(
-                    """SELECT COUNT(*) FROM (
-                           SELECT 1 FROM errors WHERE created_at>=? AND id<=?
-                           GROUP BY fingerprint,error_type,component,operation
-                       )""",
-                    (error_snapshot_cutoff, error_snapshot_id),
-                ).fetchone()[0])
-            else:
-                error_rows = con.execute(
-                    error_select + " GROUP BY fingerprint,error_type,component,operation "
-                    "ORDER BY COUNT(*) DESC,MAX(created_at) DESC LIMIT ? OFFSET ?",
-                    (cutoff, error_limit + 1, error_offset),
-                ).fetchall()
-                error_total = int(con.execute(
-                    """SELECT COUNT(*) FROM (
-                           SELECT 1 FROM errors WHERE created_at>=?
-                           GROUP BY fingerprint,error_type,component,operation
-                       )""",
-                    (cutoff,),
-                ).fetchone()[0])
-            error_has_more = len(error_rows) > error_limit
-            errors = error_rows[:error_limit]
-            daily = con.execute(
-                """SELECT day,event_type,SUM(events),SUM(duration_ms),SUM(queue_wait_ms),
-                          SUM(cache_hits),SUM(fallback_count),SUM(degraded_count),SUM(CASE WHEN success=0 THEN events ELSE 0 END),
-                          SUM(gross_avoided_cloud_tokens),SUM(gross_input_tokens_avoided),SUM(gross_output_tokens_avoided),
-                          SUM(agent_protocol_tokens),SUM(tool_schema_tokens),SUM(local_compute_tokens_avoided),
-                          SUM(tool_request_tokens),SUM(tool_response_tokens),SUM(net_cloud_token_delta),SUM(cloud_token_overhead),
-                          SUM(net_after_schema_token_delta),SUM(schema_adjusted_overhead)
-                   FROM daily_rollups WHERE day>=? AND event_type IN ('inference','tool_accounting')
-                   GROUP BY day,event_type ORDER BY day,event_type""",
-                (datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%d"),),
-            ).fetchall()
-            cache = con.execute(
-                """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(avoided_cloud_tokens),0)
-                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC, cache_layer LIMIT ?""", (cutoff, _REPORT_GROUP_LIMIT)
-            ).fetchall()
-            cache_decisions = con.execute(
-                """SELECT error_type,COUNT(*) FROM events
-                   WHERE created_at>=? AND event_type='stage' AND stage='cache_decision'
-                   GROUP BY error_type ORDER BY COUNT(*) DESC, error_type LIMIT ?""",
-                (cutoff, _REPORT_GROUP_LIMIT),
-            ).fetchall()
-            # Tail diagnostics are a recent distribution, not an accounting total.
-            # Read one bounded sample once instead of scanning the same raw HTTP
-            # population three times on every dashboard refresh.
-            http_tail_sample = con.execute(
-                """SELECT action, CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,
-                          CASE WHEN agent='' THEN 'unknown' ELSE agent END,
-                          duration_ms, queue_wait_ms, service_ms, success
-                   FROM events WHERE created_at>=? AND event_type='http'
-                   ORDER BY id DESC LIMIT 10000""",
-                (cutoff,),
-            ).fetchall()
-            http_tail_rows = [(r[0], r[3], r[4], r[5], r[6]) for r in http_tail_sample]
-            http_cache_tail_rows = [(r[1], r[3], r[4], r[5], r[6]) for r in http_tail_sample]
-            agent_tail_rows = [(r[2], r[3], r[4], r[5], r[6]) for r in http_tail_sample]
-            snapshots = con.execute(
-                "SELECT created_at,name,metrics_json FROM snapshots WHERE created_at>=? ORDER BY created_at DESC LIMIT 20", (cutoff,)
-            ).fetchall()
-            laya_snapshot_rows = (
-                con.execute(
-                    "SELECT metrics_json FROM snapshots WHERE created_at>=? AND name='laya_decision' "
-                    "ORDER BY id DESC LIMIT 1001",
-                    (cutoff,),
-                ).fetchall()
-                if scope == "window"
-                else []
-            )
-            evaluations = con.execute(
-                "SELECT created_at,metrics_json FROM snapshots WHERE created_at>=? AND name='agent_evaluation' ORDER BY created_at",
-                (cutoff,),
-            ).fetchall()
-        summary = self.summary(days, scope=scope, _flush=False)
-        daily_selected: list[tuple[Any, ...]] = []
-        daily_by_day: dict[str, list[tuple[Any, ...]]] = {}
-        for row_daily in daily:
-            daily_by_day.setdefault(str(row_daily[0]), []).append(row_daily)
-        for day in sorted(daily_by_day):
-            candidates = daily_by_day[day]
-            selected = next((row_daily for row_daily in candidates if str(row_daily[1]) == "tool_accounting"), None)
-            if selected is not None:
-                daily_selected.append(selected)
-        evaluation = self._evaluation_summary(evaluations)
-        laya_decisions = _laya_decision_report(laya_snapshot_rows, scope=scope)
-        hotspots: list[dict[str, Any]] = []
-        if summary.get("failure_rate", 0) >= 0.02:
-            hotspots.append({"type": "reliability", "signal": "inference_failure_rate", "value": summary["failure_rate"]})
-        if summary.get("avg_queue_wait_ms", 0) >= 500:
-            hotspots.append({"type": "latency", "signal": "queue_wait", "value_ms": summary["avg_queue_wait_ms"]})
-        if summary.get("cache_hit_rate", 0) < 0.35 and summary.get("events", 0) >= 50:
-            hotspots.append({"type": "efficiency", "signal": "low_cache_hit_rate", "value": summary["cache_hit_rate"]})
-        if summary.get("fallback_count", 0) >= 5:
-            hotspots.append({"type": "quality", "signal": "frequent_model_fallbacks", "count": summary["fallback_count"]})
-        if summary.get("retry_count", 0) >= 10:
-            hotspots.append({"type": "reliability", "signal": "frequent_ollama_retries", "count": summary["retry_count"]})
-        if summary.get("writer", {}).get("dropped", 0):
-            hotspots.append({"type": "observability", "signal": "telemetry_queue_drops", "count": summary["writer"]["dropped"]})
-        report = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "window_days": days,
-            "scope": scope,
-            "process_started_at": self.process_started_at if scope == "process" else None,
-            "privacy": {
-                "mode": "metadata_only", "payloads": "not_stored",
-                "labels": "bounded and sanitized", "error_messages": "sanitized paths/tokens; max 500 chars",
-            },
-            "summary": summary,
-            "token_efficiency": {
-                key: summary.get(key, 0) for key in (
-                    "gross_cloud_tokens_avoided_est", "gross_input_cloud_tokens_avoided_est",
-                    "gross_output_cloud_tokens_avoided_est", "agent_protocol_tokens_est",
-                    "agent_tool_request_tokens_est", "agent_tool_response_tokens_est",
-                    "tool_schema_tokens_exposure_est", "net_cloud_token_delta_est",
-                    "cloud_token_overhead_est", "net_after_schema_token_delta_est",
-                    "schema_adjusted_overhead_est", "local_compute_tokens_avoided_est",
-                    "token_savings_breakdown", "tool_accounting_events",
-                )
-            },
-            "by_agent": [
-                {
-                    "agent": r[0], "requests": int(r[1]), "avg_ms": round(float(r[2]), 1), "failures": int(r[3]),
-                    "net_cloud_token_delta_est": int(r[6]),
-                    "gross_cloud_tokens_avoided_est": int(r[7]),
-                    "agent_protocol_tokens_est": int(r[8]),
-                    "local_inference_calls": int(r[5]), "tool_accounting_calls": int(r[9]),
-                }
-                for r in by_agent
-            ],
-            "by_model": [
-                {"model": r[0], "calls": int(r[1]), "avg_ms": round(float(r[2]), 1), "avg_load_ms": round(float(r[3]), 1), "failures": int(r[4])}
-                for r in by_model
-            ],
-            "provider_token_usage": [
-                {"action": r[0], "task_type": r[1], "model": r[2], "input_tokens": int(r[3]),
-                 "cache_read_tokens": int(r[4]), "output_tokens": int(r[5])}
-                for r in provider_usage
-            ],
-            "by_operation": [
-                {"action": r[0], "event_type": r[1], "calls": int(r[2]), "avg_ms": round(float(r[3]), 1), "avg_queue_wait_ms": round(float(r[4]), 1), "failures": int(r[5]), "cache_hits": int(r[6]), "fallbacks": int(r[7]), "retries": int(r[8])}
-                for r in actions
-            ],
-            "laya_capture_stages": [
-                {"stage": r[0], "calls": int(r[1]), "failures": int(r[2])}
-                for r in laya_capture_stages
-            ],
-            "laya_capture_reasons": [
-                {"stage": r[0], "reason": r[1], "error_type": r[2], "calls": int(r[3]), "failures": int(r[4])}
-                for r in laya_capture_reasons
-            ],
-            "execution_routes": [
-                {"route": r[0], "task_type": r[1], "complexity": r[2], "calls": int(r[3]), "avg_ms": round(float(r[4]), 1), "failures": int(r[5])}
-                for r in routes
-            ],
-            "cache_layers": [
-                {"layer": r[0], "calls": int(r[1]), "avg_ms": round(float(r[2]), 1),
-                 "context_tokens_avoided_est": int(r[3])}
-                for r in cache
-            ],
-            "cache_decisions": {str(r[0]): int(r[1]) for r in cache_decisions},
-            "http_tail_latency": {
-                "by_action": _tail_latency(http_tail_rows, "action"),
-                "by_cache_layer": _tail_latency(http_cache_tail_rows, "cache_layer"),
-            },
-            "agent_slo": _tail_latency(agent_tail_rows, "agent"),
-            "error_fingerprints": [
-                {"fingerprint": r[0], "error_type": r[1], "component": r[2], "operation": r[3], "count": int(r[4]),
-                 "last_seen": float(r[5]), "safe_message": r[6], "retryable_count": int(r[7]), "recovered_count": int(r[8])}
-                for r in errors
-            ],
-            "error_fingerprints_page": {
-                "offset": error_offset,
-                "limit": error_limit,
-                "total": error_total,
-                "next_offset": (
-                    error_offset + len(errors)
-                    if not cursor_requested and error_offset + len(errors) < error_total else None
-                ),
-                **({
-                    "cursor": error_cursor or "",
-                    "snapshot_id": error_snapshot_id,
-                    "snapshot_cutoff": error_snapshot_cutoff,
-                    "has_more": error_has_more,
-                    "next_cursor": _encode_error_page_cursor(
-                        error_snapshot_id, error_snapshot_cutoff, errors[-1][:4]
-                    )
-                    if error_has_more and errors else None,
-                } if cursor_requested else {}),
-            },
-            "daily": [
-                {
-                    "day": r[0], "accounting": r[1], "events": int(r[2]),
-                    "duration_ms": round(float(r[3]), 1), "queue_wait_ms": round(float(r[4]), 1),
-                    "cache_hits": int(r[5]), "fallbacks": int(r[6]), "degraded": int(r[7]), "failures": int(r[8]),
-                    "gross_cloud_tokens_avoided_est": int(r[9]),
-                    "gross_input_cloud_tokens_avoided_est": int(r[10]), "gross_output_cloud_tokens_avoided_est": int(r[11]),
-                    "agent_protocol_tokens_est": int(r[12]), "tool_schema_tokens_exposure_est": int(r[13]),
-                    "local_compute_tokens_avoided_est": int(r[14]),
-                    "agent_tool_request_tokens_est": int(r[15]), "agent_tool_response_tokens_est": int(r[16]),
-                    "net_cloud_token_delta_est": int(r[17]), "cloud_token_overhead_est": int(r[18]),
-                    "net_after_schema_token_delta_est": int(r[19]), "schema_adjusted_overhead_est": int(r[20]),
-                }
-                for r in daily_selected
-            ],
-            "runtime_snapshots": [
-                {"created_at": float(r[0]), "name": r[1], "metrics": json.loads(r[2]) if r[2] else {}} for r in snapshots
-            ],
-            "laya_decisions": laya_decisions,
-            "evaluation": evaluation,
-            "hotspots": hotspots,
-            "window": summary.get("window", {"days": days, "scope": scope}),
-            "counts": summary.get("counts", {}),
-            "routes": summary.get("routes", []),
-            "cache": summary.get("cache", []),
-            "bypass": summary.get("bypass", []),
-            "errors": summary.get("errors", {}),
-            "queue": summary.get("queue", {}),
-            "summary_cache_stale": bool(summary.get("summary_cache_stale", False)),
-            "detail": self._detail_status(
-                truncated=bool(summary.get("detail", {}).get("truncated", False)),
-                flush_complete=flush_complete,
-                writer=summary.get("writer", {}),
-                summary_cache_stale=bool(summary.get("summary_cache_stale", False)),
-            ),
-            "decision_grade": summary.get("decision_grade", {}),
-        }
-        return _bound_telemetry_report(report)
-
-    def tail(self, limit: int = 20) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        self.flush(0.5)
-        limit = max(1, min(int(limit), 100))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id,created_at,event_type,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
-                          avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint
-                   FROM events ORDER BY id DESC LIMIT ?""", (limit,)
-            ).fetchall()
-        return [
-            {
-                "id": r[0], "created_at": r[1], "event_type": r[2], "agent": r[3], "request_id": r[4],
-                "action": r[5], "stage": r[6], "model": r[7], "cache_hit": bool(r[8]), "coalesced": bool(r[9]),
-                "input_tokens": r[10], "cache_read_tokens": r[11], "output_tokens": r[12], "net_cloud_token_delta_est": r[13], "duration_ms": r[14],
-                "queue_wait_ms": r[15], "wait_count": r[16], "wait_duration_ms": r[17], "success": bool(r[18]), "status_code": r[19], "cache_layer": r[20],
-                "fallback_used": bool(r[21]), "degraded": bool(r[22]), "error_type": r[23], "error_fingerprint": r[24],
-            }
-            for r in rows
-        ]
-
-    def request_metrics(self, request_id: str) -> dict[str, Any]:
-        """Return bounded numeric telemetry for one request, without event payloads."""
-        empty = {
-            "available": False,
-            "inference_events": 0,
-            "cache_hits": 0,
-            "cache_hit_rate": None,
-            "input_tokens": 0,
-            "cache_read_tokens": 0,
-            "output_tokens": 0,
-            "avoided_cloud_tokens": 0,
-            "gross_avoided_cloud_tokens": 0,
-            "net_cloud_token_delta": 0,
-        }
-        request_id = str(request_id or "").strip()
-        if not self.enabled or not request_id or len(request_id) > 128:
-            return empty
-        self.flush(0.5)
-        with closing(self._connect()) as con:
-            row = con.execute(
-                """SELECT COUNT(*),
-                          SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' THEN input_tokens ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' THEN cache_read_tokens ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' THEN output_tokens ELSE 0 END),
-                          SUM(avoided_cloud_tokens),
-                          SUM(gross_avoided_cloud_tokens),
-                          SUM(net_cloud_token_delta)
-                   FROM events WHERE request_id=?""",
-                (request_id,),
-            ).fetchone()
-        inference_events = int(row[1] or 0)
-        cache_hits = int(row[2] or 0)
-        return {
-            "available": inference_events > 0,
-            "inference_events": inference_events,
-            "cache_hits": cache_hits,
-            "cache_hit_rate": round(cache_hits / inference_events, 4) if inference_events else None,
-            "input_tokens": int(row[3] or 0),
-            "cache_read_tokens": int(row[4] or 0),
-            "output_tokens": int(row[5] or 0),
-            "avoided_cloud_tokens": int(row[6] or 0),
-            "gross_avoided_cloud_tokens": int(row[7] or 0),
-            "net_cloud_token_delta": int(row[8] or 0),
-        }
-
-    def recent_http(self, limit: int = 50, *, _flush: bool = True) -> list[dict[str, Any]]:
-        """Return recent persisted API requests for the dashboard request history."""
-        if not self.enabled:
-            return []
-        if _flush:
-            self.flush(0.5)
-        limit = max(1, min(int(limit), 200))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id,created_at,request_id,agent,root,action,status_code,duration_ms,success,error_type
-                   FROM events WHERE event_type='http' ORDER BY id DESC LIMIT ?""", (limit,)
-            ).fetchall()
-        return [
-            {
-                "id": int(row[0]), "created_at": float(row[1]), "request_id": row[2], "agent": row[3],
-                "root": row[4], "action": row[5], "status_code": int(row[6] or 0),
-                "duration_ms": float(row[7] or 0), "success": bool(row[8]), "error_type": row[9],
-            }
-            for row in rows
-        ]
-
-    def http_latency_estimate(self, action: str, limit: int = 200) -> dict[str, Any]:
-        """Return bounded endpoint history for opt-in foreground/async delivery choice."""
-        if not self.enabled:
-            return {"samples": 0, "p95_duration_ms": 0.0}
-        self.flush(0.1)
-        bounded = max(1, min(int(limit), 500))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT duration_ms FROM events WHERE event_type='http' AND action=?
-                   ORDER BY id DESC LIMIT ?""",
-                (str(action)[:160], bounded),
-            ).fetchall()
-        values = [float(row[0] or 0.0) for row in rows]
-        return {"samples": len(values), "p95_duration_ms": _percentile(values, 0.95)}
-
-    def get_timeline_page(
-        self,
-        limit: int = 100,
-        *,
-        before_id: int | None = None,
-        _flush: bool = True,
-    ) -> dict[str, Any]:
-        """Return a recent chronological page with a cursor for older events."""
-        if not self.enabled:
-            return {"timeline": [], "next_cursor": None, "has_more": False}
-        if _flush:
-            self.flush(0.2)
-        try:
-            bounded_limit = max(1, min(int(limit), 500))
-        except (TypeError, ValueError, OverflowError):
-            bounded_limit = 100
-        try:
-            cursor = min(2**63 - 1, max(0, int(before_id))) if before_id is not None else None
-        except (TypeError, ValueError, OverflowError):
-            cursor = None
-        with closing(self._connect()) as con:
-            sql = """SELECT id, created_at, event_type, agent, action, duration_ms, success,
-                          avoided_cloud_tokens, error_type
-                   FROM events"""
-            values: tuple[Any, ...] = ()
-            if cursor is not None:
-                sql += " WHERE id < ?"
-                values = (cursor,)
-            rows = con.execute(
-                sql + " ORDER BY id DESC LIMIT ?",
-                (*values, bounded_limit + 1),
-            ).fetchall()
-        has_more = len(rows) > bounded_limit
-        page_rows = list(reversed(rows[:bounded_limit]))
-        timeline = [
-            {
-                "id": int(row[0]),
-                "timestamp": float(row[1]),
-                "event_type": str(row[2]),
-                "agent": str(row[3]),
-                "action": str(row[4]),
-                "duration_ms": float(row[5] or 0),
-                "success": bool(row[6]),
-                "net_tokens_saved": int(row[7] or 0),
-                "error_type": str(row[8] or ""),
-            }
-            for row in page_rows
-        ]
-        return {
-            "timeline": timeline,
-            "next_cursor": int(page_rows[0][0]) if has_more and page_rows else None,
-            "has_more": has_more,
-        }
-
-    def get_timeline(self, limit: int = 100, *, _flush: bool = True) -> list[dict[str, Any]]:
-        """Return chronological timeline of agent operations for session replay and visualization."""
-        if not self.enabled:
-            return []
-        if _flush:
-            self.flush(0.2)
-        limit = max(1, min(int(limit), 500))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id, created_at, event_type, agent, action, duration_ms, success,
-                          avoided_cloud_tokens, error_type
-                   FROM events ORDER BY id ASC LIMIT ?""", (limit,)
-            ).fetchall()
-        return [
-            {
-                "id": int(r[0]),
-                "timestamp": float(r[1]),
-                "event_type": str(r[2]),
-                "agent": str(r[3]),
-                "action": str(r[4]),
-                "duration_ms": float(r[5] or 0),
-                "success": bool(r[6]),
-                "net_tokens_saved": int(r[7] or 0),
-                "error_type": str(r[8] or ""),
-            }
-            for r in rows
-        ]
 
     def reset(self) -> bool:
         """Purge all recorded events, rollups, snapshots, errors, and reset in-memory caches."""

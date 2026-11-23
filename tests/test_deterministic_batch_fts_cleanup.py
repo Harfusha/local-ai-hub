@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -101,6 +102,44 @@ def test_deterministic_file_and_batch_writes_use_bounded_transactions(
     labels = {item.get("rollback_label"): item for item in observed}
     assert labels["deterministic update file"]["max_duration_seconds"] == 5.0
     assert labels["deterministic batch update"]["max_duration_seconds"] == 5.0
+
+
+def test_batch_inventory_lookup_is_limited_to_requested_paths(engine, tmp_path, monkeypatch):
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    paths = [f"cached_{i:03d}.py" for i in range(250)] + ["changed.py"]
+    source = b"def original():\n    return 1\n"
+    digest = hashlib.sha256(source).hexdigest()
+    for path in paths:
+        (root / path).write_bytes(source)
+    with closing(engine._connect()) as con:
+        con.executemany(
+            "INSERT INTO files(root,path,content_hash,language,updated_at) VALUES (?,?,?,'python',0)",
+            [(str(root), path, digest) for path in [*paths, "unrelated.py"]],
+        )
+        con.commit()
+    changed = b"def current():\n    return 2\n"
+    (root / paths[-1]).write_bytes(changed)
+    changed_hash = hashlib.sha256(changed).hexdigest()
+    statements = _trace(engine, monkeypatch)
+
+    result = engine.update_files_batch(str(root), [
+        *((path, digest) for path in paths[:-1]), (paths[-1], changed_hash),
+        (paths[0], digest), ("missing.py", digest),
+    ])
+
+    assert result["success"] is True
+    assert (result["updated"], result["cached"], result["failed"]) == (1, 251, 1)
+    lookups = [sql for sql in statements if sql.startswith("SELECT path,content_hash FROM files WHERE root=")]
+    assert len(lookups) == 2
+    assert all("AND path IN (" in sql and "unrelated.py" not in sql for sql in lookups)
+    assert sum(sql.count("'cached_000.py'") for sql in lookups) == 1
+    with closing(engine._connect()) as con:
+        updated_hash = con.execute(
+            "SELECT content_hash FROM files WHERE root=? AND path=?", (str(root), paths[-1]),
+        ).fetchone()[0]
+    assert updated_hash == changed_hash
+    _assert_facts_match_fts(engine)
 
 
 def test_manifest_refresh_uses_bounded_transaction(engine, tmp_path, monkeypatch):

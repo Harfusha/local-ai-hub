@@ -16,7 +16,7 @@ from contextlib import nullcontext
 from local_ai_hub import http_server
 from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
 from local_ai_hub.client import HubClient
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.resilience import RecoveryJournal
 

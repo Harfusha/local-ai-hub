@@ -28,9 +28,10 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
 
 
 class Reranker:
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None, *, training_collector: Any = None):
         cfg = config if isinstance(config, dict) else {}
         self.config = cfg
+        self.training_collector = training_collector
         models_cfg = cfg.get("models", {}) if isinstance(cfg.get("models"), dict) else {}
         features_cfg = cfg.get("features", {}) if isinstance(cfg.get("features"), dict) else {}
         cpu_cfg = cfg.get("cpu_retrieval", {}) if isinstance(cfg.get("cpu_retrieval"), dict) else {}
@@ -73,11 +74,20 @@ class Reranker:
         self._cache_hits = 0
         self._computed = 0
 
+    def set_training_collector(self, collector: Any) -> None:
+        self.training_collector = collector
+
     def is_enabled(self) -> bool:
         return self.enabled
 
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    def prewarm(self) -> bool:
+        """Preload the configured reranker model onto its target device."""
+        if not self.enabled:
+            return False
+        return self._ensure_model()
 
     def active_model_name(self) -> str:
         return self.model_name
@@ -138,7 +148,7 @@ class Reranker:
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
             openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
-            cpu_fallback = bool(openvino_cfg.get("cpu_fallback", True)) if isinstance(openvino_cfg, dict) else True
+            cpu_fallback = bool(openvino_cfg.get("cpu_fallback", False)) if isinstance(openvino_cfg, dict) else False
             if cpu_fallback:
                 candidates.append(("torch", "cpu"))
             result: list[tuple[str, str]] = []
@@ -358,7 +368,7 @@ class Reranker:
                 self._model = None
                 self.active_backend = None
                 self.active_device = None
-                if allow_cpu_fallback and self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
+                if self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
                     continue
                 return None
 
@@ -426,8 +436,18 @@ class Reranker:
         documents: list[str],
         top_k: int | None = None,
         priority: int = 3,
-        allow_cpu_fallback: bool = True,
+        allow_cpu_fallback: bool | None = None,
     ) -> dict[str, Any]:
+        if allow_cpu_fallback is None:
+            openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
+            allow_cpu_fallback = (
+                self.device.strip().lower().startswith("cpu")
+                or (self.backend == "auto" and self.device.strip().lower() == "auto")
+            ) or (
+                self.backend == "openvino"
+                and isinstance(openvino_cfg, dict)
+                and openvino_cfg.get("cpu_fallback") is True
+            )
         if not self.enabled or not documents or not isinstance(documents, (list, tuple)):
             return self._rerank_without_admission(
                 query,
@@ -549,6 +569,37 @@ class Reranker:
         output.setdefault("reranker_device", self.active_device)
         if self._fallback_reason:
             output.setdefault("fallback_reason", self._fallback_reason)
+
+        if (
+            isinstance(output, dict)
+            and output.get("success") is True
+            and getattr(self, "training_collector", None)
+            and getattr(self.training_collector, "enabled", False)
+        ):
+            try:
+                ranked = output.get("results")
+                if isinstance(ranked, list) and len(ranked) >= 2 and len(clean_docs) >= 2 and clean_query:
+                    top_item = ranked[0]
+                    bot_item = ranked[-1]
+                    top_idx = int(top_item.get("index", 0))
+                    bot_idx = int(bot_item.get("index", len(clean_docs) - 1))
+                    if 0 <= top_idx < len(clean_docs) and 0 <= bot_idx < len(clean_docs) and top_idx != bot_idx:
+                        pos_text = clean_docs[top_idx]
+                        neg_text = clean_docs[bot_idx]
+                        if pos_text and neg_text and pos_text != neg_text:
+                            self.training_collector.record_retrieval_triplet(
+                                query=clean_query,
+                                positive=pos_text,
+                                negative=neg_text,
+                                metadata={
+                                    "model": str(self.model_name),
+                                    "pos_score": float(top_item.get("score", 1.0)),
+                                    "neg_score": float(bot_item.get("score", 0.0)),
+                                },
+                            )
+            except Exception:
+                pass
+
         return output
 
     def _rerank_uncached(
@@ -683,6 +734,7 @@ class Reranker:
             "active_device": self.active_device,
             "loaded": self._model is not None,
             "load_error": self._load_error,
+            "fallback_reason": self._fallback_reason,
             "cache_enabled": self.cache_enabled,
             "cache": self.cache.stats(),
             "cache_hits_runtime": self._cache_hits,

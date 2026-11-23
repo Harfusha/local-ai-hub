@@ -105,6 +105,9 @@ def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None
         def _validate_payload(self, path, value):
             return http_server.Handler._validate_payload(path, value)
 
+        def _handle_telemetry_post(self, path, value):
+            return http_server.Handler._handle_telemetry_post(self, path, value)
+
         def _agent(self):
             return "wire-test"
 

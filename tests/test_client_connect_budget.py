@@ -4,9 +4,11 @@ import http.client
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient, _TransportFailure
 
 
@@ -38,6 +40,37 @@ def test_absent_connect_is_bounded_before_any_write(tmp_path, monkeypatch, budge
     assert connection.timeout == budget
     assert caught.value.request_not_sent is True
     assert caught.value.cancelled is False
+
+
+@pytest.mark.parametrize("cancelled", [False, True], ids=["expired", "cancelled"])
+def test_connection_finishing_after_interruption_does_not_send(tmp_path, monkeypatch, cancelled):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", timeout=1)
+    cancel_event = threading.Event()
+    now = [100.0]
+    writes = []
+
+    def connect():
+        connection.sock = SimpleNamespace(settimeout=lambda _timeout: None, close=lambda: None)
+        if cancelled:
+            cancel_event.set()
+        else:
+            now[0] += 2
+
+    monkeypatch.setattr(client_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(client, "_connection", lambda _timeout: connection)
+    monkeypatch.setattr(connection, "connect", connect)
+    monkeypatch.setattr(connection, "send", writes.append)
+    monkeypatch.setattr(connection, "getresponse", lambda: SimpleNamespace(read=lambda: b"{}", status=200))
+
+    try:
+        with pytest.raises(_TransportFailure) as caught:
+            client._pooled_open("POST", "/api/command", b"{}", {}, 1, cancel_event=cancel_event)
+        assert caught.value.request_not_sent is True
+        assert caught.value.cancelled is cancelled
+        assert writes == []
+    finally:
+        connection.close()
 
 
 def test_real_response_can_outlast_connect_budget(tmp_path):

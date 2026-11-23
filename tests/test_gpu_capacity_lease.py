@@ -96,6 +96,55 @@ def test_capacity_lease_releases_only_for_matching_owner_and_generation(tmp_path
     assert store.release_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"])
 
 
+def test_capacity_lease_release_clears_idle_embedding_reservation(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    reservation = store.reserve(
+        _digest("embedding"), owner="embedding:123:456", owner_vram_budget_bytes=8 * 1024**3,
+    )
+    lease = store.acquire_capacity_lease(
+        owner="hub:request", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=8 * 1024**3,
+        expected_reservation_generation=reservation["generation"],
+    )
+    second_lease = store.acquire_capacity_lease(
+        owner="hub:second-request", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=8 * 1024**3,
+        expected_reservation_generation=reservation["generation"],
+    )
+
+    assert reservation is not None and lease is not None and second_lease is not None
+    assert store.renew(reservation["token_digest"], reservation["generation"], state="idle")
+    assert not store.release(reservation["token_digest"], reservation["generation"])
+
+    assert store.release_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"])
+    assert store.read()["generation"] == reservation["generation"]
+    assert store.capacity_snapshot()["leases"] == [second_lease]
+    assert store.release_capacity_lease(
+        second_lease["lease_id"], second_lease["owner"], second_lease["generation"],
+    )
+    assert store.read() is None
+
+
+def test_capacity_lease_release_preserves_idle_external_reservation(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    reservation = store.reserve(
+        _digest("external"), owner="external-owner", owner_vram_budget_bytes=8 * 1024**3,
+    )
+    lease = store.acquire_capacity_lease(
+        owner="hub:request", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=8 * 1024**3,
+        expected_reservation_generation=reservation["generation"],
+    )
+
+    assert reservation is not None and lease is not None
+    assert store.renew(reservation["token_digest"], reservation["generation"], state="idle")
+    assert not store.release(reservation["token_digest"], reservation["generation"])
+
+    assert store.release_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"])
+    assert store.read()["generation"] == reservation["generation"]
+    assert store.capacity_snapshot()["leases"] == []
+
+
 def test_authorized_orphaned_laya_capacity_lease_release_requires_dead_owner_and_null_reservation(
     tmp_path, monkeypatch,
 ):

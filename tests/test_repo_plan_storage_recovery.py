@@ -11,7 +11,13 @@ from threading import Event
 
 import pytest
 
-from local_ai_hub.repo_plan import RepoPlanConflictError, RepoPlanStorage
+from local_ai_hub.repo_plan.schema_validation import (
+    RepoPlanConflictError,
+)
+
+from local_ai_hub.repo_plan.storage import (
+    RepoPlanStorage,
+)
 from local_ai_hub.repo_plan.schema_validation import RepoPlanError, serialize_plan_json
 from local_ai_hub.repo_plan.storage import IntentTarget, OperationIntent, compute_bytes_sha256
 from test_repo_plan_storage import create_sample_plan_dict

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.treesitter_parser import parse_treesitter, is_treesitter_available
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.code_index import CodeIndex
@@ -258,7 +258,7 @@ def test_changed_intelligence_refresh_logs_expected_os_errors_without_paths(
     with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
         result = services._refresh_changed_intelligence(str(tmp_path))
 
-    assert result is None
+    assert result is False
     messages = [record.getMessage() for record in caplog.records]
     assert any("Changed-file intelligence refresh skipped (PermissionError)" in message for message in messages)
     assert all(str(tmp_path) not in message for message in messages)

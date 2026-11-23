@@ -88,11 +88,13 @@ def test_batch_recovers_after_sustained_progress(tmp_path):
         return con
 
     class Rag:
-        def __init__(self): self.sizes = []
+        def __init__(self): self.sizes, self.indexed = [], set()
+        def indexed_paths(self, *, workspace, paths): return set(paths) & self.indexed
         def index_paths_step(self, root, *, workspace, paths, should_yield, content_overrides):
             self.sizes.append(len(paths))
             if len(self.sizes) <= 3 or len(self.sizes) == 9:
                 return {'success': True, 'preempted': True, 'processed_paths': []}
+            self.indexed.update(paths)
             return {'success': True, 'processed_paths': paths}
 
     pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
@@ -183,7 +185,7 @@ def test_real_rag_preemption_preserves_snapshot_and_reduces_batch(tmp_path, monk
     chunks = ['original chunk']
     monkeypatch.setattr(rag, '_chunks', lambda _text, path='': list(chunks))
     workspace = 'preemption-test'
-    assert rag.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=['module.py'])['success']
+    assert rag.index_paths_step(root=str(root), workspace=workspace, paths=['module.py'])['success']
     with closing(rag._connect()) as con:
         before = con.execute('SELECT chunk_no, text FROM chunks WHERE workspace=? ORDER BY chunk_no', (workspace,)).fetchall()
 
@@ -192,7 +194,7 @@ def test_real_rag_preemption_preserves_snapshot_and_reduces_batch(tmp_path, monk
     db = tmp_path / 'index.sqlite'
     with closing(sqlite3.connect(db)) as con:
         con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
-        con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)')
+        con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)')
         con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
         content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 10, 0)', (str(root), 'module.py', content_hash))

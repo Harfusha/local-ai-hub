@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def test_pytest_failure_output_parses_into_failed_tests():

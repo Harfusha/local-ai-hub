@@ -3,10 +3,13 @@
 import json
 import pytest
 
-from local_ai_hub.repo_plan import (
+from local_ai_hub.repo_plan.schema_validation import (
     RepoPlanConflictError,
     RepoPlanNotFoundError,
     RepoPlanValidationError,
+)
+
+from local_ai_hub.repo_plan.workspace import (
     RepoPlanWorkspace,
 )
 
@@ -171,6 +174,23 @@ def test_create_get_list_plans(workspace):
     assert plans[0]["title"] == "Alpha Plan"
 
 
+def test_list_plans_keeps_other_rows_when_a_plan_disappears_after_read(workspace, monkeypatch):
+    root, ws = workspace
+    ws.create_plan("plan_alpha", "Alpha")
+    ws.create_plan("plan_beta", "Beta")
+    read_plan_file = ws.storage.read_plan_file
+
+    def read_and_remove(rel_path):
+        plan, revision = read_plan_file(rel_path)
+        if plan["id"] == "plan_alpha":
+            (root / rel_path).unlink()
+        return plan, revision
+
+    monkeypatch.setattr(ws.storage, "read_plan_file", read_and_remove)
+
+    assert [plan["id"] for plan in ws.list_plans(limit=1)] == ["plan_beta"]
+
+
 def test_update_plan_preserves_file_identity(workspace):
     """Test updating title preserves plan ID and does not rename file."""
     tmp_path, ws = workspace
@@ -265,6 +285,26 @@ def test_kanban_board_view(workspace):
     blocked_card = board["columns"]["blocked"][0]
     assert blocked_card["blocker"] == "Awaiting spec"
     assert blocked_card["saved_to_file"] is True
+
+
+def test_kanban_board_view_bounds_long_descriptions(workspace):
+    _root, ws = workspace
+    ws.create_plan("plan_long_description", title="Long Description Plan")
+    description = "context " * 600
+    ws.edit_task(
+        "plan_long_description",
+        "task_long",
+        title="Long Task",
+        description=description,
+        work_status="in_progress",
+    )
+
+    card = ws.get_board_view(plan_id="plan_long_description", query="task_long")["columns"]["in_progress"][0]
+
+    assert len(card["description"]) == 2048
+    assert card["description_truncated"] is True
+    assert card["plan_rel_path"] == ".local-ai-hub/plans/plan_long_description.plan.json"
+    assert card["plan_file_revision"] == ws.get_plan("plan_long_description")["file_revision"]
 
 
 def test_legacy_board_adoption(workspace):

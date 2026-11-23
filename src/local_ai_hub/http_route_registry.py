@@ -16,6 +16,7 @@ class RouteRule:
 
 
 POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
+    RouteRule('post_updates_1', frozenset(('/api/updates',))),
     RouteRule('post_admin_mode_1', frozenset(('/api/admin/mode',))),
     RouteRule('post_bundle_import_1', frozenset(('/api/bundle/import',))),
     RouteRule('post_telemetry_tool_accounting_1', frozenset(('/api/telemetry/tool-accounting',))),
@@ -212,6 +213,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
 POST_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
     "post_work_orders_1": "_handle_post_work_orders",
     "post_async_jobs_1": "_handle_post_async_jobs",
+    "post_config_update_1": "_handle_post_config_update",
     "post_db_query_1": "_handle_post_db_query",
     "post_telemetry_timeline_1": "_handle_post_telemetry_timeline",
     "post_git_status_1": "_handle_post_repository_analysis",
@@ -256,7 +258,6 @@ TELEMETRY_SAFE_GET_ROUTE_LABELS = frozenset({
     "/api/telemetry/report",
     "/api/telemetry/endpoint-stats",
     "/dashboard",
-    "/dashboard/legacy",
     "/favicon.ico",
     "/health",
     "/ready",

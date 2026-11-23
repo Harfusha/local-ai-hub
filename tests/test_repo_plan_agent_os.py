@@ -8,7 +8,9 @@ from local_ai_hub.agent_verification import (
     evaluate_completion_receipts,
 )
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.repo_plan import RepoPlanStorage
+from local_ai_hub.repo_plan.storage import (
+    RepoPlanStorage,
+)
 from local_ai_hub.repo_plan.agent_bridge import (
     TaskBindingManager,
     reconcile_contract_revision,
@@ -164,7 +166,6 @@ def test_contract_revision_reconciliation(test_environment):
         ),
         ScopeContext(repository_id=str(tmp_path)),
         task_id="task_001", actor="test_agent", repo_root=str(tmp_path),
-    root=str(tmp_path),
     )
     binding = binding_manager.bind_task("task_001", "plan_workflow", "task_core", rel_path)
 
@@ -222,7 +223,6 @@ def test_authentic_native_receipts(test_environment):
         context,
         actor="test_agent",
         repo_root=str(tmp_path),
-    root=str(tmp_path),
     )
     task_id = task_state.task_id
 

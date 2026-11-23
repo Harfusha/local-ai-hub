@@ -18,7 +18,9 @@ idna==3.19
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 mcp==1.30.0
+packaging==26.3
 pycparser==3.0
+pycryptodomex==3.24.2
 pydantic==2.13.4
 pydantic-core==2.46.4
 pydantic-settings==2.15.0
@@ -26,6 +28,7 @@ pyjwt==2.15.1
 python-dotenv==1.2.3
 python-multipart==0.0.32
 pywin32==312
+pyzipper==0.4.0
 referencing==0.37.0
 rpds-py==2026.6.3
 sse-starlette==3.4.8

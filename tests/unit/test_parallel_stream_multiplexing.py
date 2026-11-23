@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 import pytest
 
-from local_ai_hub.commands import CommandBroker, StreamMultiplexer, MultiplexEvent
+from local_ai_hub.command_broker import CommandBroker, StreamMultiplexer, MultiplexEvent
 
 
 def test_stream_multiplexer_buffers_and_emits_lines_atomically() -> None:

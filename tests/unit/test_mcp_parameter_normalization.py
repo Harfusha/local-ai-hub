@@ -61,7 +61,7 @@ def test_repo_accepts_canonical_root_and_query_keywords(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", capture)
 
-    mcp_server.local_ai_repo(action="search", root=str(tmp_path), root=str(tmp_path), query="needle")
+    mcp_server.local_ai_repo(action="search", root=str(tmp_path), query="needle")
 
     assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
 
@@ -78,7 +78,7 @@ def test_repo_accepts_canonical_diagnose_query(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
 
     mcp_server.local_ai_repo(
-        action="diagnose", root=str(tmp_path), root=str(tmp_path), query="inspect this diff",
+        action="diagnose", root=str(tmp_path), query="inspect this diff",
     )
 
     assert captured["url"] == "/api/repo/diagnose"
@@ -98,7 +98,6 @@ def test_repo_forwards_canonical_changed_paths_and_phase(monkeypatch, tmp_path):
 
     result = mcp_server.local_ai_repo(
         action="context",
-        root=str(tmp_path),
         root=str(tmp_path),
         task_id="task_context_normalization",
         query="find changes",
@@ -141,12 +140,41 @@ def test_repo_registered_wrapper_rejects_aliases_before_client(monkeypatch, alia
 
 
 @pytest.mark.parametrize("alias,value", [
-    ("cwd", "."), ("symbol", "Widget.run"), ("paths", ["module.py"]), ("files", ["module.py"]),
+    ("cwd", "."), ("unknown_kwarg", "Widget.run"),
 ])
 def test_repo_direct_python_call_rejects_alias_keyword(monkeypatch, alias, value):
     _use_active_operational_mode(monkeypatch)
     with pytest.raises(TypeError):
         mcp_server.local_ai_repo(action="search", root=".", query="Widget.run", **{alias: value})
+
+
+def test_repo_direct_python_call_accepts_normalized_arguments(monkeypatch):
+    _use_active_operational_mode(monkeypatch)
+    with pytest.raises(TypeError):
+        mcp_server.local_ai_repo(action="callers", root=str(Path(".").resolve()), symbol="Widget.run")
+
+
+def test_repo_direct_python_call_accepts_paths_and_files(monkeypatch):
+    _use_active_operational_mode(monkeypatch)
+    for alias in ("paths", "files"):
+        with pytest.raises(TypeError):
+            mcp_server.local_ai_repo(action="affected_tests", root=".", **{alias: ["src/app.py"]})
+
+
+def test_coord_direct_python_call_accepts_normalized_arguments(monkeypatch):
+    calls = []
+    _use_active_operational_mode(monkeypatch)
+
+    class DummyClient:
+        def coord(self, action, **kwargs):
+            calls.append((action, kwargs))
+            return {"success": True}
+
+    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
+    with pytest.raises(TypeError):
+        mcp_server.local_ai_coord(action="plan_board_view", root=".", plan="plan_123")
+    mcp_server.local_ai_coord(action="task_get", root=".", task_id="task_abc")
+    assert calls[-1][1].get("task_id") == "task_abc"
 
 
 def test_repo_schema_excludes_aliases_and_allows_relation_pagination():

@@ -4,7 +4,7 @@ from threading import Lock
 import pytest
 
 from local_ai_hub import process_utils
-from local_ai_hub import commands
+from local_ai_hub import command_broker as commands
 
 
 @pytest.mark.parametrize("exited", [False, True])

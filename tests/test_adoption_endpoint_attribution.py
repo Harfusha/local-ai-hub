@@ -97,6 +97,32 @@ def test_raised_tool_exception_reports_same_failed_call_identity(monkeypatch, tm
     assert reported[0]["event_id"] == direct[0]["event_id"]
 
 
+def test_raised_tool_exception_records_only_safe_failure_category(monkeypatch, tmp_path):
+    import pytest
+
+    from local_ai_hub.adoption_metrics import AdoptionMetricsStore
+
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(mcp_server, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(mcp_server, "ENDPOINT_STATS", None)
+    monkeypatch.setattr(mcp_server, "configured_state_dir", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda path: object())
+    monkeypatch.setattr(mcp_server, "_classify_mcp_operation", lambda *args: ("task", False))
+    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server, "detailed_diagnostics_enabled", lambda cfg: True)
+
+    @mcp_server._instrumented_tool()
+    def local_ai_task(action):
+        raise RuntimeError("connection unavailable; secret marker")
+
+    with pytest.raises(RuntimeError):
+        local_ai_task("review")
+
+    report = store.report(days=1)
+    assert report["terminal_failures"] == [{"reason": "unavailable", "count": 1}]
+    assert "secret marker" not in str(report)
+
+
 def test_unsupported_tool_result_is_terminal_for_native_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "configured_state_dir", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda path: object())

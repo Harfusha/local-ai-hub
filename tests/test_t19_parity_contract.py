@@ -54,7 +54,7 @@ def test_current_runtime_contract_matches_between_canonical_prompts(tmp_path: Pa
         "repository-scoped memory requires provenance tied to the trusted project root",
         "`state_data.memory_audit`",
         "CodeGraph remains optional external standalone tooling outside Hub setup/runtime",
-        "If Hub is unavailable, make one bounded health/retry attempt, then use one native fallback",
+        "If the live MCP schema has no action for the operation, skip Hub and use the authorized native tool directly",
     )
     assert all(item in install_contract for item in expected)
     assert T19_RUNTIME_PARITY_CONTRACT in generated

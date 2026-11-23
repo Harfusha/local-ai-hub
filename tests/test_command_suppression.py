@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 class _Artifacts:
@@ -44,7 +44,7 @@ def test_non_mutating_policy_block_is_terminal_and_rechecked(tmp_path):
 
 
 def test_missing_safe_executable_is_rejected_before_spawn(tmp_path, monkeypatch):
-    import local_ai_hub.commands as module
+    import local_ai_hub.command_broker as module
 
     broker = _broker(tmp_path)
     monkeypatch.setattr(module.shutil, "which", lambda _name: None)

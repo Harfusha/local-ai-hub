@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-ai-hub"
-version = "6.1.0"
+version = "7.0.0"
 description = "Deterministic-first local tooling and inference hub for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,7 +39,7 @@ intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026
 token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]
 performance = ["orjson>=3.10,<4", "msgspec>=0.18,<1", "Cython>=3,<4"]
 profiling = ["py-spy>=0.3,<1", "scalene>=1.5,<2"]
-dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8", "psutil>=7,<8", "numpy>=2,<3", "setuptools>=61.0", "wheel>=0.45,<1", "mypy>=1.15,<2"]
+dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "ruff>=0.9,<1", "coverage[toml]>=7,<8", "psutil>=7,<8", "numpy>=2,<3", "setuptools>=77.0.3", "wheel>=0.45,<1", "mypy>=1.15,<2"]
 
 [project.scripts]
 local-ai-hub = "local_ai_hub.__main__:main"
@@ -121,3 +121,29 @@ files = [
   "src/local_ai_hub/dashboard_contracts.py",
   "src/local_ai_hub/operation_contracts.py",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "F",    # pyflakes (syntax, unused vars, undefined names)
+  "E4",   # import errors
+  "E7",   # multiple statements / syntax
+  "E9",   # runtime syntax errors
+  "W",    # pycodestyle warnings
+]
+ignore = [
+  "E501", # line length
+  "E402", # module level import not at top of file (script sys.path guards)
+  "E701", # multiple statements on one line (colon)
+  "E702", # multiple statements on one line (semicolon)
+  "E731", # do not assign a lambda expression, use a def
+  "E741", # ambiguous variable name
+  "W291", # trailing whitespace
+  "W293", # blank line contains whitespace
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F401", "F811", "F841"]

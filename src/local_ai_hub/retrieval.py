@@ -13,11 +13,13 @@ _SOURCE_QUERY = re.compile(
     re.IGNORECASE,
 )
 _DOCUMENT_OBJECT = re.compile(
-    r"\b(?:docs?|documentation|readme|guides?|manuals?|reference|prompts?|coverage|plans?|roadmap)\b",
+    r"\b(?:docs?|documentation|readme|guides?|manuals?|reference|prompts?|coverage|plans?|roadmap|"
+    r"dokumentac[ei]|p[rř][ií]ru[cč](?:k[auy]|ce)|n[aá]vod(?:u|y)?|pl[aá]n(?:u|y)?)\b",
     re.IGNORECASE,
 )
 _DOCUMENT_ACTION = re.compile(
-    r"\b(?:update|edit|write|create|draft|rewrite|explain|summari[sz]e|describe|review|find|show|open|read|document)\b",
+    r"\b(?:update|edit|write|create|draft|rewrite|explain|summari[sz]e|describe|review|find|show|open|read|document|"
+    r"uprav|napi[sš]|dopl[nň]|aktualizuj|najdi|vyhledej|uka[zž]|otev[rř]i|p[rř]e[cč]ti)\b",
     re.IGNORECASE,
 )
 _DOCUMENT_PATH = re.compile(r"(?:^|\s)[\w./\\-]+\.(?:md|rst|adoc)(?:$|\s)", re.IGNORECASE)
@@ -33,9 +35,12 @@ _SOURCE_SYMBOL = re.compile(
 _SOURCE_ACTION = re.compile(
     r"\b(?:implement\w*|fix|debug|diagnos\w*|trace|audit|refactor)\b", re.IGNORECASE,
 )
-_CZECH_SOURCE_ACTION = re.compile(r"\b(?:najdi|najít|oprav|opravit|diagnostikuj|vysleduj)\b", re.IGNORECASE)
+_CZECH_SOURCE_ACTION = re.compile(
+    r"\b(?:najdi|naj[ií]t|vyhledej|uka[zž]|kde|oprav|opravit|diagnostikuj|vysleduj)\b", re.IGNORECASE,
+)
 _CZECH_SOURCE_OBJECT = re.compile(
-    r"\b(?:chybu|chyba|funkci|funkce|metodu|metoda|implementaci|implementace|komponentu|komponenta|kód|zdrojový|zdrojová)\b",
+    r"\b(?:chyb[auy]|funkc[ei]|metod[auy]|implementac[ei]|komponent[auy]|definic[ei]|"
+    r"k[oó]d(?:u|em)?|zdrojov[aáeéyý])\b",
     re.IGNORECASE,
 )
 _SOURCE_SUFFIXES = {

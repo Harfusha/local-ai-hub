@@ -1,0 +1,7 @@
+{
+  "name": "local-ai-hub",
+  "displayName": "Local AI Hub",
+  "description": "Local-first AI coordination, AST indexing, Token Economy enforcer, and multi-agent orchestration.",
+  "version": "6.1.0",
+  "author": "Local AI Hub Contributor"
+}

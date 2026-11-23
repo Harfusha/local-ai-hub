@@ -82,6 +82,7 @@ def _insert_parent_ref(
     *,
     card_key: str = "parent-card",
     rag_hash: str = "parent-rag-hash",
+    text_origin: str = "source",
 ) -> None:
     stat = path.stat()
     now = time.time()
@@ -93,8 +94,8 @@ def _insert_parent_ref(
             (root, path.name, digest, stat.st_size, stat.st_mtime_ns, rag_hash, card_key, now),
         )
         con.execute(
-            "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
-            (root, path.name, digest, path.read_text(encoding="utf-8"), now),
+            "INSERT INTO source_index(root,path,content_hash,text,updated_at,text_origin) VALUES(?,?,?,?,?,?)",
+            (root, path.name, digest, path.read_text(encoding="utf-8"), now, text_origin),
         )
         con.commit()
 
@@ -187,8 +188,9 @@ def test_parent_seed_does_not_clone_whole_code_index_into_worktree(
         code_index.close()
 
 
+@pytest.mark.parametrize("text_origin", ["source", "projection", "unknown"])
 def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child(
-    tmp_path: Path, preprocessor_factory
+    tmp_path: Path, preprocessor_factory, text_origin: str
 ) -> None:
     pre, repo_tools = preprocessor_factory(tmp_path / "state")
     parent = tmp_path / "parent"
@@ -221,7 +223,7 @@ def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_chil
     child_root = pre._root(str(child))
     parent_hash = repo_tools.git_blob_map(parent_root)["module.py"]
     assert parent_hash.startswith("git:")
-    _insert_parent_ref(pre, parent_root, parent_file, parent_hash)
+    _insert_parent_ref(pre, parent_root, parent_file, parent_hash, text_origin=text_origin)
 
     seeded = pre._seed_from_parent(child_root, parent_root)
 
@@ -239,7 +241,10 @@ def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_chil
     assert row["needs_hash"] == 0
     assert row["rag_hash"] in (None, "")
     assert row["card_key"] == "parent-card"
-    assert source["text"] == parent_file.read_text(encoding="utf-8")
+    if text_origin == "source":
+        assert source["text"] == parent_file.read_text(encoding="utf-8")
+    else:
+        assert source is None
 
     child_file = child / "module.py"
     child_file.write_text("value = 2\n", encoding="utf-8")
@@ -516,7 +521,8 @@ def test_t11_ingestion_batch_benchmark(tmp_path: Path, preprocessor_factory) -> 
             seed_rows,
         )
         con.executemany(
-            "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
+            """INSERT INTO source_index(root,path,content_hash,text,updated_at,text_origin)
+               VALUES(?,?,?,?,?,'source')""",
             source_rows,
         )
         con.commit()
@@ -527,6 +533,8 @@ def test_t11_ingestion_batch_benchmark(tmp_path: Path, preprocessor_factory) -> 
     _, seed_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert seeded["file_refs"] == file_count
+    with closing(seed_pre._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM source_index WHERE root=?", (child_root,)).fetchone()[0] == file_count
 
     integrated = profile_overrides(
         "integrated", {"ram": {"total_gb": 16.0, "available_gb": 8.0}, "gpus": []}

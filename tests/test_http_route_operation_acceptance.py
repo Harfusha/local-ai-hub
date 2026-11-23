@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import io
 import json
+import random
+import sqlite3
 import subprocess
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from urllib import request as urllib_request
 
+import pyzipper
 import pytest
 
-from local_ai_hub import http_server
+from local_ai_hub import diagnostics_export, http_server
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract
+from local_ai_hub.client import HubClient
+from local_ai_hub.scheduler import AffinityScheduler
 
 
 def _urlopen_with_error_body(request):
@@ -40,6 +49,8 @@ def running_http_hub(tmp_path):
                 f'allowed_roots = ["{tmp_path.as_posix()}"]',
                 "[agent_state]",
                 "enabled = true",
+                "[prewarm]",
+                "enabled = false",
             ]
         ),
         encoding="utf-8",
@@ -333,14 +344,15 @@ def test_http_git_diff_post_compares_actual_revisions(running_http_hub, tmp_path
     assert "-before" in result["diff"] and "+after" in result["diff"]
 
 
-def test_http_rag_search_cannot_bypass_reranker_capability_gate(
-    running_http_hub, monkeypatch, tmp_path
+@pytest.mark.parametrize("configured_timeout", [None, 0.5])
+def test_http_rag_search_applies_deadline_and_reranker_capability_gate(
+    running_http_hub, monkeypatch, tmp_path, configured_timeout
 ):
     base_url, app = running_http_hub
     calls = []
 
     def search(query, **kwargs):
-        calls.append((query, kwargs))
+        calls.append((query, kwargs, time.perf_counter()))
         return {"success": True, "results": []}
 
     monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
@@ -352,6 +364,8 @@ def test_http_rag_search_cannot_bypass_reranker_capability_gate(
     )
     monkeypatch.setitem(app.config, "hardware", {**app.config.get("hardware", {}), "profile": "low"})
     monkeypatch.setitem(app.config, "_hardware", {"profile": "low"})
+    if configured_timeout is not None:
+        monkeypatch.setitem(app.config["resilience"], "repository_search_timeout_seconds", configured_timeout)
     root = str(tmp_path.resolve())
     payload = {
         "root": root,
@@ -367,14 +381,96 @@ def test_http_rag_search_cannot_bypass_reranker_capability_gate(
         method="POST",
     )
 
+    started = time.perf_counter()
     with _urlopen_with_error_body(request) as response:
         result = json.loads(response.read().decode("utf-8"))
 
     assert result["success"] is True
-    assert calls == [(
+    assert len(calls) == 1
+    query, options, handled_at = calls[0]
+    deadline = options.pop("deadline")
+    timeout = 10.0 if configured_timeout is None else configured_timeout
+    assert started + timeout <= deadline <= handled_at + timeout
+    assert (query, options) == (
         "needle",
         {"workspace": "project:test", "top_k": 6, "use_reranker": False, "semantic_only": True},
-    )]
+    )
+
+
+def test_http_rag_search_observes_client_disconnect_and_retains_unknown_outcome(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    client = HubClient(config_path=str(tmp_path / "config.toml"), auto_start=False)
+    client.base_url = base_url
+    client._http_port = urlsplit(base_url).port
+    started, cancelled, release = (threading.Event() for _ in range(3))
+    calls = []
+
+    def search(query, *, cancel_event=None, **_kwargs):
+        calls.append(query)
+        if query == "unknown model job":
+            return {"success": False, "outcome_unknown": True, "retryable": False, "job_id": 17}
+        started.set()
+        if cancel_event is not None and cancel_event.wait(4):
+            cancelled.set()
+            return {"success": False, "cancelled": True}
+        release.wait(2)
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
+    monkeypatch.setattr(app.rag, "search", search)
+    path = "/api/rag/search"
+    payload = {"root": str(tmp_path.resolve()), "workspace": "project:test", "query": "cancel this search"}
+    cancel = threading.Event()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(client.post, path, payload, timeout=8, cancel_event=cancel)
+            try:
+                assert started.wait(4)
+                cancel.set()
+                result = future.result(timeout=3)
+                assert result["cancelled"] is True and result["outcome_unknown"] is True
+                assert result["retryable"] is False
+                assert cancelled.wait(2)
+            finally:
+                release.set()
+
+        result = client.post(path, {**payload, "query": "unknown model job"}, timeout=4)
+        assert result["outcome_unknown"] is True and result["retryable"] is False
+        assert result["job_id"] == 17
+        assert calls == ["cancel this search", "unknown model job"]
+    finally:
+        client.close()
+
+
+def test_http_repository_search_returns_rag_in_progress_without_client_replay(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+
+    def search(query, **_kwargs):
+        calls.append(query)
+        return {"success": False, "in_progress": True, "retryable": True, "retry_after_seconds": 0.01,
+                "job_id": 17, "error": "identical work is still running"}
+
+    monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
+    monkeypatch.setattr(app.rag, "has_workspace_chunks", lambda **_kwargs: True)
+    monkeypatch.setattr(app.rag, "search", search)
+    client = HubClient(config_path=str(tmp_path / "config.toml"), auto_start=False)
+    client.base_url = base_url
+    client._http_port = urlsplit(base_url).port
+    try:
+        result = client.post("/api/search", {
+            "root": str(tmp_path.resolve()), "query": "deployment reference", "search_mode": "rag",
+        }, timeout=4)
+    finally:
+        client.close()
+
+    assert result["success"] is False and result["in_progress"] is True
+    assert result["retryable"] is True and result["job_id"] == 17
+    assert len(calls) == 1
 
 
 def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
@@ -457,6 +553,53 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     assert result["next_offset"] == 4 and result["has_more"] is False
     assert result["success"] is True
     assert result["tasks"] == [{"task_id": "task-77", "status": "active", "summary": "T08 task"}]
+
+
+@pytest.mark.parametrize("root_changes", [False, True])
+def test_scoped_task_list_reuses_the_validated_request_root(running_http_hub, monkeypatch, tmp_path, root_changes):
+    base_url, app = running_http_hub
+    root = tmp_path.resolve()
+    other = root / "other"
+    other.mkdir()
+    requested_root_checks = []
+    strict_root_path = http_server._strict_root_path
+
+    def checked_path(value):
+        requested_root_checks.append(value)
+        if root_changes:
+            raise ValueError("root path changed during validation")
+        return strict_root_path(value)
+
+    def make_row(index, path):
+        task_id = f"task_{index}"
+        return SimpleNamespace(
+            task_id=task_id,
+            checkpoint=SimpleNamespace(state_data={
+                "_agent_task_scope": {"version": 2, "repo_root": str(path)},
+            }),
+            to_dict=lambda: {"task_id": task_id},
+        )
+
+    rows = [make_row(index, other if index < 20 else root) for index in range(23)]
+    monkeypatch.setattr(http_server, "_strict_root_path", checked_path)
+    monkeypatch.setattr(app.agent_tasks, "list_tasks", lambda *, offset, limit, **_kwargs: rows[offset:offset + limit])
+    url = f"{base_url}/api/agent-state/tasks?scoped_page=true&limit=2&root={quote(str(root))}"
+    if root_changes:
+        with pytest.raises(HTTPError) as exc:
+            urllib_request.urlopen(url, timeout=10)
+        with exc.value as response:
+            assert response.code == 409
+            result = json.load(response)
+        assert result["success"] is False
+        assert "tasks" not in result
+        return
+    with _urlopen_with_error_body(url) as response:
+        result = json.load(response)
+
+    assert [task["task_id"] for task in result["tasks"]] == ["task_20", "task_21"]
+    assert result["has_more"] is True
+    assert result["next_offset"] == 2
+    assert requested_root_checks == [str(root)] * 2
 
 
 def test_http_post_agent_state_cleanup_forwards_retention_policy(running_http_hub, monkeypatch):
@@ -837,6 +980,63 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
     )["count"] == 0
 
 
+def test_http_diagnostics_export_download_restores_sqlite_snapshot(running_http_hub, tmp_path, monkeypatch):
+    base_url, _app = running_http_hub
+    source = tmp_path / "hub"
+    package = source / "src" / "local_ai_hub"
+    package.mkdir(parents=True)
+    (package / "example.py").write_bytes(b"value = 1\n")
+    monkeypatch.setattr(diagnostics_export, "_repository_root", lambda _module: source)
+
+    database = tmp_path / "state" / "projects" / "synthetic" / "diagnostics.sqlite3"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    # Keep a committed WAL and enough incompressible data to exercise multiple response chunks.
+    payload = random.Random(0).randbytes(1100 * 1024)
+    with closing(sqlite3.connect(database)) as original:
+        assert original.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        original.execute("CREATE TABLE diagnostic_events (payload BLOB NOT NULL)")
+        original.execute("INSERT INTO diagnostic_events VALUES (?)", (payload,))
+        original.commit()
+        assert database.with_suffix(".sqlite3-wal").stat().st_size > len(payload)
+
+        toggle = urllib_request.Request(
+            f"{base_url}/api/config/update",
+            data=b'{"settings":{"debug_traces.enabled":true}}',
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib_request.urlopen(toggle, timeout=15) as response:
+            assert json.load(response)["success"] is True
+
+        request = urllib_request.Request(
+            f"{base_url}/api/diagnostics/export",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Accept": "application/zip"},
+        )
+        with urllib_request.urlopen(request, timeout=30) as response:
+            assert response.status == 200
+            assert response.headers.get_content_type() == "application/zip"
+            assert response.headers["Cache-Control"] == "no-store"
+            assert response.headers["Content-Disposition"] == 'attachment; filename="local-ai-hub-support.zip"'
+            password = response.headers["X-Local-AI-Export-Password"].encode("ascii")
+            download = response.read()
+            assert len(download) == int(response.headers["Content-Length"]) > 1024 * 1024
+
+    member = "state/projects/synthetic/diagnostics.sqlite3"
+    with pyzipper.AESZipFile(io.BytesIO(download)) as archive:
+        assert archive.getinfo(member).wz_aes_strength == 3
+        with pytest.raises(RuntimeError, match="password"):
+            archive.read(member)
+        archive.setpassword(password)
+        assert json.loads(archive.read("manifest.json"))["scope"] == "installation_all_projects"
+        assert archive.read("hub/src/local_ai_hub/example.py") == b"value = 1\n"
+        restored_path = tmp_path / "restored.sqlite3"
+        restored_path.write_bytes(archive.read(member))
+
+    with closing(sqlite3.connect(restored_path)) as restored:
+        assert restored.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert restored.execute("SELECT payload FROM diagnostic_events").fetchone() == (payload,)
+
+
 def test_http_diagnostics_export_rejects_retired_laya_consent_and_forwards_snapshot_scope(
     running_http_hub, tmp_path, monkeypatch
 ):
@@ -1126,6 +1326,58 @@ def test_http_post_complete_acceptance(running_http_hub, monkeypatch, tmp_path):
         res = json.loads(resp.read().decode("utf-8"))
         assert res["success"] is True
         assert res["text"] == "result_code"
+
+
+def test_http_code_completion_keeps_model_output_and_response_separate(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    monkeypatch.setitem(app.config, "_hardware", {"profile": "medium"})
+    monkeypatch.setitem(app.config.setdefault("features", {}), "local_code_generation", True)
+
+    def fake_generation(endpoint, payload, *, timeout):
+        assert endpoint == "/api/generate"
+        assert payload["raw"] is True
+        return {"response": "return 42"}
+
+    runtime = SimpleNamespace(
+        loaded_models=lambda: [], prepare_model=lambda _model, **kwargs: [], request=fake_generation,
+    )
+    monkeypatch.setattr(app.services, "runtime", runtime)
+
+    def complete(request_id):
+        request = urllib_request.Request(
+            f"{base_url}/api/complete",
+            data=json.dumps({"prefix": f"# {request_id}\ndef answer():", "root": str(tmp_path)}).encode(),
+            headers={"Content-Type": "application/json", "X-LocalAI-Request-ID": request_id},
+        )
+        with urllib_request.urlopen(request, timeout=15) as response:
+            result = json.load(response)
+        assert result["success"] is True
+        assert result["completion"] == "return 42"
+        return result
+
+    with closing(AffinityScheduler(runtime, {"scheduler": {"max_caller_wait_timeout_seconds": 5}})) as scheduler:
+        monkeypatch.setattr(app.services, "scheduler", scheduler)
+        assert app.debug_traces.enabled is False
+        complete("trace-default-disabled")
+
+        toggle = urllib_request.Request(
+            f"{base_url}/api/config/update", data=b'{"settings":{"debug_traces.enabled":true}}',
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib_request.urlopen(toggle, timeout=15) as response:
+            assert json.load(response)["success"] is True
+        completed = complete("trace-explicitly-enabled")
+
+    with urllib_request.urlopen(f"{base_url}/api/debug-traces?limit=50", timeout=15) as response:
+        summaries = {item["request_id"]: item for item in json.load(response)["items"]}
+    assert "trace-default-disabled" not in summaries
+    trace_id = summaries["trace-explicitly-enabled"]["trace_id"]
+    with urllib_request.urlopen(f"{base_url}/api/debug-traces/{trace_id}?full=1", timeout=15) as response:
+        detail = json.load(response)
+    assert detail["terminal"] is True
+    assert detail["session"]["output"] == "return 42"
+    assert detail["session"]["response"] == {**completed, "http_status_code": 200}
+    assert [event["payload"]["text"] for event in detail["events"] if event["event_type"] == "output_delta"] == ["return 42"]
 
 
 def test_http_post_worktree_routes_acceptance(running_http_hub, monkeypatch, tmp_path):

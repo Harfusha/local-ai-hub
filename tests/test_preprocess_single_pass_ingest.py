@@ -84,7 +84,8 @@ def test_lexical_step_indexes_text_without_parsing_python_ast(tmp_path, monkeypa
     db = tmp_path / 'index.db'
     with closing(sqlite3.connect(db)) as con:
         con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER)')
-        con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, updated_at REAL, PRIMARY KEY(root,path))')
+        con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, updated_at REAL, text_origin TEXT, PRIMARY KEY(root,path))')
+        con.execute('CREATE TABLE content_lexical(content_hash TEXT PRIMARY KEY, text TEXT, updated_at REAL)')
         con.execute('CREATE TABLE source_fts(root TEXT, path TEXT, content TEXT)')
         con.execute('INSERT INTO file_refs VALUES(?,?,?,0)', (str(tmp_path), 'a.py', digest))
         con.commit()
@@ -349,4 +350,18 @@ def test_single_pass_ingest_concurrent_single_flight(tmp_path: Path):
     assert all(r is results[0] for r in results)
     # Single-flight should have coalesced concurrent calls so disk was only read once
     assert read_count == 1
+
+
+def test_single_pass_ingest_rejects_single_item_larger_than_byte_limit():
+    cache = SinglePassIngestCache(max_bytes=4)
+
+    cache.put("large.txt", text="12345")
+    assert len(cache) == 0
+
+    item = IngestedFile(
+        path="large.txt", content_hash="hash", size_bytes=5,
+        text="12345", lines=("12345",), ast_tree=None, timestamp=time.time(),
+    )
+    cache.put(item)
+    assert len(cache) == 0
 

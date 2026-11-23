@@ -31,6 +31,27 @@ def test_postprocess_model_output_repairs_unclosed_tilde_fence() -> None:
     assert cleaned == "~~~python\ndef hello():\n    print('world')\n~~~"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("````text\n```\n[DONE]\n", "````text\n```\n[DONE]\n````"),
+        ("~~~~~text\nexample\n~~~~~~", "~~~~~text\nexample\n~~~~~~"),
+        ("~~~~\n", "~~~~\n~~~~"),
+        ('marker = "```"', 'marker = "```"'),
+        ("```example``` is an inline code span.", "```example``` is an inline code span."),
+        ("\ufeff```text\n<plan>literal</plan>\n```", "```text\n<plan>literal</plan>\n```"),
+    ],
+)
+def test_postprocess_model_output_repairs_only_unclosed_fence_lines(raw, expected) -> None:
+    assert postprocess_model_output(raw, role="code") == (expected, None)
+
+
+def test_postprocess_model_output_restores_code_inside_extracted_thinking() -> None:
+    example = "```text\n<plan>literal</plan>\n[DONE]\n```"
+    raw = f"<think>\n{example}\n</think>\nDone."
+    assert postprocess_model_output(raw, role="code") == ("Done.", example)
+
+
 def test_postprocess_model_output_preserves_runtime_markers_inside_fenced_code() -> None:
     raw = "```text\n<plan>example</plan>\n[DONE]\n<|im_end|>\n```"
     cleaned, thinking = postprocess_model_output(raw, role="code")

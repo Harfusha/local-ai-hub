@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.artifacts import ArtifactStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.compact import compact_result
 from local_ai_hub.projection import AgentProjector
 

@@ -77,7 +77,7 @@ def task_private_state_projection(value: Any) -> Any:
         if memory_projection is not None:
             task["checkpoint"] = memory_projection["task"]["checkpoint"]
             continue
-        private_keys = {"memory_audit_history", "_pending_fenced_work", "file_snapshots", "raw_debug"}
+        private_keys = {"memory_audit_history", "_pending_fenced_work", "file_snapshots", "raw_debug", "_agent_task_scope"}
         omitted = {key for key in private_keys if key in state}
         previous = checkpoint.get("state_data_omitted", [])
         if isinstance(previous, list):
@@ -123,7 +123,7 @@ def task_memory_projection(value: Any) -> dict[str, Any] | None:
                 "repository_id", "clone_id", "worktree_id", "branch", "task_id", "session_id",
             ) if isinstance(task["context"].get(key), str)
         }
-    private_state_keys = {"memory_audit_history", "_pending_fenced_work", "file_snapshots", "raw_debug"}
+    private_state_keys = {"memory_audit_history", "_pending_fenced_work", "file_snapshots", "raw_debug", "_agent_task_scope"}
     projected_state = {
         key: copy.deepcopy(item) for key, item in state.items()
         if key not in {"memory_context", "memory_audit"} | private_state_keys

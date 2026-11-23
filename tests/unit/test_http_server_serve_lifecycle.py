@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,10 @@ from local_ai_hub import http_server
 
 def test_serve_closes_bound_server_and_app_when_telemetry_start_fails(monkeypatch, tmp_path):
     state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pid_path = state_dir / "hub.pid"
+    launcher_pid = str(os.getpid() + 1)
+    pid_path.write_text(launcher_pid, encoding="utf-8")
     config = {
         "server": {
             "state_dir": str(state_dir),
@@ -35,6 +40,7 @@ def test_serve_closes_bound_server_and_app_when_telemetry_start_fails(monkeypatc
     server = Server()
 
     def fail_session_start(*_args):
+        assert pid_path.read_text(encoding="utf-8") == launcher_pid
         raise RuntimeError("telemetry startup failed")
 
     app = SimpleNamespace(
@@ -63,4 +69,4 @@ def test_serve_closes_bound_server_and_app_when_telemetry_start_fails(monkeypatc
     assert server.closed is True
     assert app.closed is True
     assert http_server.APP is None
-    assert not (state_dir / "hub.pid").exists()
+    assert pid_path.read_text(encoding="utf-8") == launcher_pid

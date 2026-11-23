@@ -10,15 +10,27 @@ from local_ai_hub.services import LocalAIServices
 from tools.benchmark_preprocess_demand import _read_learned_query, run
 
 
+def _lexical_fixture_schema(con):
+    con.execute("CREATE TABLE source_index(root TEXT,path TEXT,content_hash TEXT,text TEXT,updated_at REAL,PRIMARY KEY(root,path))")
+    con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
+
+
+def _lexical_fixture_row(con, root, path, digest, text):
+    con.execute("INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,0)",
+                (root, path, digest, text))
+    con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)", (root, path, text))
+
+
 def test_file_cards_prioritize_learned_queries_but_keep_regular_work(tmp_path):
     root = str(tmp_path / "repo")
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, card_key TEXT, last_accessed_at REAL)")
-        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED, path UNINDEXED, content)")
+        con.execute("""CREATE TABLE file_refs(root TEXT,path TEXT,size INTEGER,card_key TEXT,last_accessed_at REAL,
+                                              content_hash TEXT,needs_hash INTEGER)""")
+        _lexical_fixture_schema(con)
         for name in ["a.py", "b.py", "c.py", "z_hot.py"]:
-            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0)", (root, name))
-            con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, name, "rare_demand" if name == "z_hot.py" else "other"))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
+            _lexical_fixture_row(con, root, name, "hash", "rare_demand" if name == "z_hot.py" else "other")
         con.commit()
 
     def connect():
@@ -43,9 +55,9 @@ def test_file_cards_prioritize_learned_queries_but_keep_regular_work(tmp_path):
     assert paths == ["z_hot.py", "a.py"]
     other = str(tmp_path / "other")
     with closing(connect()) as con:
-        con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0)", (other, "a.py"))
-        con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0)", (other, "z_hot.py"))
-        con.execute("INSERT INTO source_fts VALUES(?,?,?)", (other, "z_hot.py", "unrelated"))
+        con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (other, "a.py"))
+        con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (other, "z_hot.py"))
+        _lexical_fixture_row(con, other, "z_hot.py", "hash", "unrelated")
         con.commit()
     assert [row["path"] for row in pre._find_next_files(other, 2)] == ["a.py", "z_hot.py"]
     pre.learner.enabled = False
@@ -58,13 +70,12 @@ def test_rag_batches_reserve_regular_work_when_demand_is_hot(tmp_path):
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL)")
-        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
-        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED, path UNINDEXED, content)")
+        _lexical_fixture_schema(con)
         content_hash = hashlib.sha256(b"body").hexdigest()
         for name in ["a.py", "b.py", "z_hot.py"]:
             (root / name).write_text("body", encoding="utf-8")
             con.execute("INSERT INTO file_refs VALUES(?,?,10,?,0,NULL,0)", (str(root), name, content_hash))
-            con.execute("INSERT INTO source_fts VALUES(?,?,?)", (str(root), name, "rare_demand" if name == "z_hot.py" else "other"))
+            _lexical_fixture_row(con, str(root), name, content_hash, "rare_demand" if name == "z_hot.py" else "other")
         con.commit()
 
     def connect():
@@ -121,8 +132,10 @@ def test_real_search_recording_drives_preprocessing_priority(tmp_path):
             for name in ["a.py", "b.py", "z_hot.py"]:
                 con.execute("INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
                             (str(root), name, "hash", 10, 1, 0))
-                con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-                            (str(root), name, "rare_demand" if name == "z_hot.py" else "ordinary"))
+                text = "rare_demand" if name == "z_hot.py" else "ordinary"
+                con.execute("INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,0)",
+                            (str(root), name, "hash", text))
+                pre._insert_fts_rows(con, [(str(root), name, text)])
             con.commit()
         service = LocalAIServices.__new__(LocalAIServices)
         service.config, service.repo_tools, service.learner = config, tools, learner
@@ -160,7 +173,7 @@ def test_repository_benchmark_measures_real_hot_files_against_cold_queue(tmp_pat
     t03_artifacts.mkdir(parents=True)
     (t03_artifacts / "output.txt").write_text("rare_demand validation output", encoding="utf-8")
 
-    result = run(files=4, batch_size=2, root=str(root), root=str(root), query="rare_demand")
+    result = run(files=4, batch_size=2, root=str(root), query="rare_demand")
 
     assert result["scope"] == "repository queue selection and deterministic context_pack_paths, no model inference"
     assert result["sampled_files"] == 3
@@ -202,7 +215,7 @@ def test_repository_benchmark_treats_invalid_context_pack_as_unverified(tmp_path
     (root / "a.py").write_text("rare_demand", encoding="utf-8")
     (root / "b.py").write_text("ordinary", encoding="utf-8")
 
-    result = run(files=2, batch_size=2, root=str(root), root=str(root), query="rare_demand")
+    result = run(files=2, batch_size=2, root=str(root), query="rare_demand")
 
     assert result["useful_context_verified"] is False
     assert result["useful_context_work_saved"] is None
@@ -216,11 +229,12 @@ def test_learned_priority_cache_invalidates_on_query_or_index_change(tmp_path, m
     root = str(tmp_path / "repo")
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED, path UNINDEXED, content)")
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, size INTEGER, generation INTEGER, updated_at REAL)")
+        _lexical_fixture_schema(con)
+        con.execute("""CREATE TABLE file_refs(root TEXT,path TEXT,content_hash TEXT,size INTEGER,
+                                              generation INTEGER,updated_at REAL,needs_hash INTEGER)""")
         _ensure_file_refs_revision_tracking(con)
-        con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, "old.py", "old_demand"))
-        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?)", (root, "old.py", "old", 10, 1, 1.0))
+        _lexical_fixture_row(con, root, "old.py", "old", "old_demand")
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?,0)", (root, "old.py", "old", 10, 1, 1.0))
         con.commit()
 
     def connect():
@@ -245,27 +259,30 @@ def test_learned_priority_cache_invalidates_on_query_or_index_change(tmp_path, m
     # the old signature. The cached mapping must follow the current FTS path.
     with closing(connect()) as con:
         con.execute("DELETE FROM source_fts WHERE root=?", (root,))
-        con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, "new.py", "old_demand"))
+        con.execute("DELETE FROM source_index WHERE root=?", (root,))
+        _lexical_fixture_row(con, root, "new.py", "old", "old_demand")
         con.execute("DELETE FROM file_refs WHERE root=?", (root,))
-        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?)", (root, "new.py", "old", 10, 1, 1.0))
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?,0)", (root, "new.py", "old", 10, 1, 1.0))
         con.commit()
     assert pre._learned_priority_paths(root) == ("new.py",)
 
     pre.learner.query = "new_demand"
     with closing(connect()) as con:
         con.execute("DELETE FROM source_fts WHERE root=?", (root,))
-        con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, "new.py", "new_demand"))
+        con.execute("DELETE FROM source_index WHERE root=?", (root,))
+        _lexical_fixture_row(con, root, "new.py", "new", "new_demand")
         con.execute("DELETE FROM file_refs WHERE root=?", (root,))
-        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?)", (root, "new.py", "new", 10, 2, 2.0))
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?,0)", (root, "new.py", "new", 10, 2, 2.0))
         con.commit()
     now[0] = 114.999
     assert pre._learned_priority_paths(root) == ("new.py",)
 
     with closing(connect()) as con:
         con.execute("DELETE FROM source_fts WHERE root=?", (root,))
-        con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, "newer.py", "new_demand"))
+        con.execute("DELETE FROM source_index WHERE root=?", (root,))
+        _lexical_fixture_row(con, root, "newer.py", "newer", "new_demand")
         con.execute("DELETE FROM file_refs WHERE root=?", (root,))
-        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?)", (root, "newer.py", "newer", 12, 3, 3.0))
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,?,?,0)", (root, "newer.py", "newer", 12, 3, 3.0))
         con.commit()
     assert pre._learned_priority_paths(root) == ("newer.py",)
 
@@ -326,16 +343,17 @@ def test_sustained_hot_queries_do_not_starve_regular_file_cards(tmp_path):
     root = str(tmp_path / "repo")
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, card_key TEXT, last_accessed_at REAL)")
-        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED, path UNINDEXED, content)")
+        con.execute("""CREATE TABLE file_refs(root TEXT,path TEXT,size INTEGER,card_key TEXT,last_accessed_at REAL,
+                                              content_hash TEXT,needs_hash INTEGER)""")
+        _lexical_fixture_schema(con)
         for i in range(8):
             name = f"hot_{i:02}.py"
-            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0)", (root, name))
-            con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, name, "rare_demand"))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
+            _lexical_fixture_row(con, root, name, "hash", "rare_demand")
         for i in range(12):
             name = f"cold_{i:02}.py"
-            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0)", (root, name))
-            con.execute("INSERT INTO source_fts VALUES(?,?,?)", (root, name, "ordinary"))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
+            _lexical_fixture_row(con, root, name, "hash", "ordinary")
         con.commit()
 
     def connect():
@@ -387,7 +405,7 @@ def test_repository_benchmark_uses_scoped_learned_query_without_emitting_it(tmp_
     learner.record(str(other_root), "other repository query")
 
     query = _read_learned_query(state_dir / "learning.sqlite3", str(root))
-    result = run(files=2, batch_size=2, root=str(root), root=str(root), query=query, query_source="learned")
+    result = run(files=2, batch_size=2, root=str(root), query=query, query_source="learned")
 
     assert result["query_source"] == "learned"
     assert result["query_length"] == len(query)

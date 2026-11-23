@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from contextlib import closing
@@ -43,9 +44,14 @@ def test_lookup_skips_invalid_json_and_non_object_cards_but_keeps_valid_siblings
                     (str(root), "module-good", "rev", '{"summary":"needle module"}', now),
                 ],
             )
+            legacy_purpose = "needle " + "x" * 200
+            legacy_card = {
+                "purpose": legacy_purpose, "symbols": ["x" * 110], "dependencies": [],
+                "side_effects": [], "risks": [], "tests": [], "keywords": [],
+            }
             file_cards = [
                 ("file-bad", "file-hash-bad", "needle-bad.py", "null"),
-                ("file-good", "file-hash-good", "needle-good.py", '{"summary":"valid sibling"}'),
+                ("file-good", "file-hash-good", "needle-good.py", json.dumps(legacy_card)),
             ]
             for card_key, content_hash, path, card_json in file_cards:
                 con.execute(
@@ -71,6 +77,7 @@ def test_lookup_skips_invalid_json_and_non_object_cards_but_keeps_valid_siblings
         assert result["project"] == {}
         assert [item["module"] for item in result["modules"]] == ["module-good"]
         assert [item["path"] for item in result["files"]] == ["needle-good.py"]
+        assert result["files"][0]["purpose"] == legacy_purpose
         assert len(result["capsules"]) == 1
         assert result["capsules"][0]["summary"] == "valid capsule"
         assert result["preprocessed"] is True

@@ -1271,6 +1271,63 @@ def test_local_ai_coord_task_create_forwards_goal_and_contract(monkeypatch, tmp_
     }]
 
 
+@pytest.mark.parametrize("session_id", ["session-build-42", " session-build-42", "session\x00id"])
+def test_local_ai_coord_task_create_forwards_canonical_session(monkeypatch, tmp_path, session_id):
+    backend = _prepare_coord_rpc(monkeypatch)
+    tool_result = asyncio.run(mcp_server.mcp.call_tool(
+        "local_ai_coord", {"action": "task_create", "root": str(tmp_path.resolve()),
+                           "goal": "Bind an execution", "session_id": session_id},
+    ))
+    result = _mcp_coord_json(tool_result)
+    if session_id == "session-build-42":
+        assert result["success"] is True, result
+        assert backend.calls[0]["context"] == {"session_id": session_id}
+    else:
+        assert result["success"] is False
+        assert "session_id must be a canonical string" in result["error"]
+        assert backend.calls == []
+
+
+def test_local_ai_coord_task_create_persists_session_for_plan_binding(monkeypatch, tmp_path):
+    from local_ai_hub.repo_plan.agent_bridge import bind_plan_execution
+    from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
+
+    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
+    tasks = TaskStore(state_store)
+    app = SimpleNamespace(agent_state=state_store, agent_tasks=tasks, config={"security": {}})
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
+
+    def post_without_socket(path, payload, **_kwargs):
+        status, response = _direct_post(app, path, payload)
+        assert status == 200, response
+        return response
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post_without_socket)
+    result = _mcp_coord_json(asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "task_create",
+        "root": str(tmp_path.resolve()),
+        "goal": "Persist the current session",
+        "session_id": "session-build-42",
+    })))
+
+    assert result["success"] is True, result
+    task_id = result["task"]["task_id"]
+    assert tasks.get(task_id).context.session_id == "session-build-42"
+
+    workspace = RepoPlanWorkspace(tmp_path)
+    plan = workspace.create_plan("plan_session", "Session binding", tasks={
+        "task_bind": {"title": "Bind execution", "acceptance_criteria": []},
+    })
+    binding = bind_plan_execution(
+        tasks, root=str(tmp_path.resolve()), task_id=task_id,
+        plan_id="plan_session", plan_task_id="task_bind", session_id="session-build-42",
+        expected_revision=plan["file_revision"],
+    )
+    assert binding["success"] is True, binding
+
+
 @pytest.mark.parametrize("field", ["acceptance_criteria", "non_goals", "constraints"])
 @pytest.mark.parametrize("bad_value", ["", "one item", False, 0, None])
 def test_task_contract_invalid_collections_are_not_coerced(monkeypatch, tmp_path, field, bad_value):

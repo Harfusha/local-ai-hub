@@ -19,6 +19,10 @@ from typing import Any
 SOURCE_FILES = {
     "mcp": "src/local_ai_hub/mcp_server.py",
     "http": "src/local_ai_hub/http_server.py",
+    "http_admin": "src/local_ai_hub/http_admin.py",
+    "http_routes_api": "src/local_ai_hub/http_routes_api.py",
+    "http_api_get": "src/local_ai_hub/http_api_get.py",
+    "http_routes_post": "src/local_ai_hub/http_routes_post.py",
     "client": "src/local_ai_hub/client.py",
     "features": "src/local_ai_hub/features.py",
     "generator": "src/local_ai_hub/generator.py",
@@ -313,6 +317,8 @@ def _extract_mcp(
     tree: ast.Module,
     path: str,
     external_type_aliases: dict[str, set[str]] | None = None,
+    *,
+    include_undecorated: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     tools: list[dict[str, Any]] = []
     action_aliases: dict[str, dict[str, str]] = {}
@@ -329,7 +335,12 @@ def _extract_mcp(
             (item for item in node.decorator_list if _decorator_name(item) == "tool"),
             None,
         )
-        if decorator is None:
+        if decorator is None and not (
+            include_undecorated
+            and node.name in {"local_ai_repo", "local_ai_rag", "local_ai_coord", "local_ai_task", "local_ai_artifact", "local_ai_status", "local_ai_work"}
+            and ("action" in {arg.arg for arg in node.args.args}
+                 or node.name == "local_ai_status" and "detail" in {arg.arg for arg in node.args.args})
+        ):
             continue
         public_name = node.name
         if isinstance(decorator, ast.Call):
@@ -614,10 +625,11 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
         elif isinstance(node, ast.ClassDef):
             handlers.extend(
                 member for member in node.body
-                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name in HTTP_METHODS
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and (member.name in HTTP_METHODS or member.name == "_handle_admin_get")
             )
     for function in handlers:
-        method = HTTP_METHODS[function.name]
+        method = HTTP_METHODS.get(function.name, "GET")
         for branch in _walk_handler_nodes(function):
             if not isinstance(branch, ast.If):
                 continue
@@ -2417,6 +2429,7 @@ def _post_route_scope_binding(
     path: str,
     route_id: str | None = None,
     handler_name: str | None = None,
+    source_path: str = "src/local_ai_hub/http_server.py",
 ) -> dict[str, Any]:
     method = next(
         (
@@ -2450,7 +2463,7 @@ def _post_route_scope_binding(
         ]
         guards = {call.func.attr for call in calls if _is_route_scope_guard(call.func.attr)}
         evidence = {
-            f"src/local_ai_hub/http_server.py:{call.lineno}"
+            f"{source_path}:{call.lineno}"
             for call in calls
             if _is_route_scope_guard(call.func.attr)
         }
@@ -2482,7 +2495,7 @@ def _post_route_scope_binding(
             ]
             guards = {call.func.attr for call in calls if _is_route_scope_guard(call.func.attr)}
             evidence = {
-                f"src/local_ai_hub/http_server.py:{call.lineno}"
+                f"{source_path}:{call.lineno}"
                 for call in calls
                 if _is_route_scope_guard(call.func.attr)
             }
@@ -2493,7 +2506,7 @@ def _post_route_scope_binding(
     evidence = sorted({source for _, _, _, group in selected for source in group})
     if guards:
         evidence.extend(
-            f"src/local_ai_hub/http_server.py:{node.lineno}"
+            f"{source_path}:{node.lineno}"
             for _, node, _, _ in selected
         )
     return {
@@ -2508,6 +2521,7 @@ def _post_route_dispatch(
     path: str,
     route_id: str | None,
     handler_name: str | None,
+    source_path: str = "src/local_ai_hub/http_server.py",
 ) -> dict[str, Any]:
     method = next(
         (
@@ -2545,13 +2559,14 @@ def _post_route_dispatch(
     targets: set[str] = set()
     evidence: set[str] = set()
     for branch in selected:
-        evidence.add(f"src/local_ai_hub/http_server.py:{branch.lineno}")
+        evidence.add(f"{source_path}:{branch.lineno}")
         for statement in (branch.test, *branch.body):
             for call in ast.walk(statement):
                 if not isinstance(call, ast.Call):
                     continue
                 name = ast.unparse(call.func)
-                is_app_target = name.startswith("APP.") and not name.startswith("APP.logger.")
+                is_app_target = (name.startswith(("APP.", "services_module.APP."))
+                                 and not name.startswith(("APP.logger.", "services_module.APP.logger.")))
                 is_handler_target = (
                     isinstance(call.func, ast.Attribute)
                     and isinstance(call.func.value, ast.Name)
@@ -2559,11 +2574,11 @@ def _post_route_dispatch(
                     and call.func.attr.startswith("_handle_post_")
                 )
                 if is_app_target:
-                    targets.add(name)
-                    evidence.add(f"src/local_ai_hub/http_server.py:{call.lineno}")
+                    targets.add(name.removeprefix("services_module."))
+                    evidence.add(f"{source_path}:{call.lineno}")
                 if is_handler_target:
                     handlers.append(call.func.attr)
-                    evidence.add(f"src/local_ai_hub/http_server.py:{call.lineno}")
+                    evidence.add(f"{source_path}:{call.lineno}")
     if handler_name:
         handler = next(
             (
@@ -2574,7 +2589,7 @@ def _post_route_dispatch(
             None,
         )
         if handler is not None:
-            evidence.add(f"src/local_ai_hub/http_server.py:{handler.lineno}")
+            evidence.add(f"{source_path}:{handler.lineno}")
     handlers = sorted(set(handlers))
     return {
         "status": "observed" if handlers or targets else "not_observed",
@@ -2596,6 +2611,18 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
     source_mcp_tools, mcp_action_aliases, conditional_mcp_actions = _extract_mcp(
         modules["mcp"][1], SOURCE_FILES["mcp"], contract_aliases
     )
+    for module_name in ("mcp_tools_repo.py", "mcp_tools_rag.py", "mcp_tools_coord.py", "mcp_tools_task.py", "mcp_tools_artifact.py", "mcp_tools_status.py", "mcp_tools_work.py"):
+        module_path = root / "src" / "local_ai_hub" / module_name
+        if not module_path.is_file():
+            continue
+        module_tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+        module_tools, module_aliases, module_conditional = _extract_mcp(
+            module_tree, module_path.relative_to(root).as_posix(), contract_aliases,
+            include_undecorated=True,
+        )
+        source_mcp_tools.extend(module_tools)
+        mcp_action_aliases.update(module_aliases)
+        conditional_mcp_actions.update(module_conditional)
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
     mcp_schemas, mcp_schema_evidence, schema_errors, disabled_mcp_tools = _generated_mcp_schemas(root)
     mcp_tools = []
@@ -2711,6 +2738,10 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         })
 
     source_http_routes = _extract_http(modules["http"][1], SOURCE_FILES["http"])
+    source_http_routes.extend(_extract_http(modules["http_admin"][1], SOURCE_FILES["http_admin"]))
+    source_http_routes.extend(_extract_http(modules["http_routes_api"][1], SOURCE_FILES["http_routes_api"]))
+    source_http_routes.extend(_extract_http(modules["http_api_get"][1], SOURCE_FILES["http_api_get"]))
+    source_http_routes.extend(_extract_http(modules["http_routes_post"][1], SOURCE_FILES["http_routes_post"]))
     route_registry_path = root / "src/local_ai_hub/http_route_registry.py"
     registry_tree: ast.AST | None = None
     if route_registry_path.is_file():
@@ -2728,10 +2759,12 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             route_id = route_ids_by_path.get(route["path"])
             handler_name = handlers_by_id.get(route_id or "")
             route["scope_binding"] = _post_route_scope_binding(
-                modules["http"][1], route["path"], route_id, handler_name
+                modules["http_routes_post"][1], route["path"], route_id, handler_name,
+                source_path=SOURCE_FILES["http_routes_post"],
             )
             route["dispatch"] = _post_route_dispatch(
-                modules["http"][1], route["path"], route_id, handler_name
+                modules["http_routes_post"][1], route["path"], route_id, handler_name,
+                source_path=SOURCE_FILES["http_routes_post"],
             )
     client_methods, client_targets = _extract_client(modules["client"][1], SOURCE_FILES["client"])
     manifests, missing_manifests = _extract_manifests(modules["generator"][1], root)
@@ -3267,7 +3300,7 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                 "name": route["path"],
                 "condition": condition,
                 "evidence_status": route.get("evidence_status") or ("conditional" if condition else "confirmed"),
-                "owner": SOURCE_FILES["http"] if route.get("classification") is None else "tools/surface_inventory.py",
+                "owner": route["evidence"].rsplit(":", 1)[0] if route.get("classification") is None else "tools/surface_inventory.py",
                 "owner_task": route.get("owner_task"),
                 "handler": route.get("handler"),
                 "access_classification": (
@@ -3284,9 +3317,9 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                 "acceptance": "HTTP method and path resolve to a handler or registered dynamic route.",
                 "evidence": [
                     route["evidence"],
-                    "src/local_ai_hub/http_server.py:2782",
-                    "src/local_ai_hub/http_server.py:3005",
-                    "src/local_ai_hub/http_server.py:5816",
+                    "src/local_ai_hub/http_routes_api.py:973",
+                    "src/local_ai_hub/http_routes_api.py:1036",
+                    "src/local_ai_hub/http_routes_api.py:3561",
                     *scope_binding["evidence"],
                     *dispatch["evidence"],
                 ] if route["method"] == "POST" else [route["evidence"]],
@@ -3695,10 +3728,20 @@ def main(argv: list[str] | None = None) -> int:
     inventory = collect_inventory(args.root)
     doc_path = args.root / "docs" / "API_COVERAGE.md"
     artifact_path = args.root / "docs" / "API_COVERAGE.json"
-    if args.check:
+    if args.write_doc and inventory["drift"]:
+        print(json.dumps({
+            "success": False,
+            "coverage_rows": len(_findings(inventory)),
+            "drift": inventory["drift"],
+        }, sort_keys=True))
+        return 1
+
+    task_id = args.task_id
+    if args.check or (args.write_doc and not task_id):
         current_text = doc_path.read_text(encoding="utf-8") if doc_path.is_file() else ""
         current_artifact = artifact_path.read_text(encoding="utf-8") if artifact_path.is_file() else ""
-        task_id = args.task_id or _coverage_task_id(current_text) or _coverage_artifact_task_id(current_artifact)
+        task_id = task_id or _coverage_task_id(current_text) or _coverage_artifact_task_id(current_artifact)
+    if args.check:
         expected_document = render_coverage(inventory, task_id)
         expected_artifact = render_coverage_artifact(inventory, task_id)
         coverage_matches = current_text == expected_document
@@ -3717,13 +3760,15 @@ def main(argv: list[str] | None = None) -> int:
         }, sort_keys=True))
         return 1 if inventory["drift"] else 0
     if args.write_doc:
-        doc_path.write_text(render_coverage(inventory, args.task_id), encoding="utf-8")
-        artifact_path.write_text(render_coverage_artifact(inventory, args.task_id), encoding="utf-8")
+        document = render_coverage(inventory, task_id)
+        artifact = render_coverage_artifact(inventory, task_id)
+        doc_path.write_text(document, encoding="utf-8")
+        artifact_path.write_text(artifact, encoding="utf-8")
         print(json.dumps({
-            "success": not inventory["drift"],
+            "success": True,
             "written": doc_path.relative_to(args.root).as_posix(),
             "written_artifact": artifact_path.relative_to(args.root).as_posix(),
-            "coverage_rows": len(coverage_rows(_findings(inventory), args.task_id)),
+            "coverage_rows": len(_findings(inventory)),
             "drift": inventory["drift"],
         }, sort_keys=True))
         return 0

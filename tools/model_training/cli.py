@@ -10,6 +10,7 @@ from .dataset import split_dataset, split_embedding_corpus
 from .existing_cards import export_existing_cards, list_existing_card_candidates
 from .manifest import load_run_manifest, validate_dataset_pair
 from .laya_backend import split_laya_dataset
+from .publish_hf import publish_matrix_to_hf, publish_run_to_hf
 from .run_matrix import load_matrix_manifest, run_matrix
 from .train import train_from_manifest
 
@@ -63,10 +64,20 @@ def main() -> int:
     matrix = subparsers.add_parser("run-matrix", help="benchmark before, train, then benchmark each model")
     matrix.add_argument("--manifest", required=True, type=Path)
     matrix.add_argument("--allow-model-download", action="store_true")
+    matrix.add_argument("--publish-hf", help="auto-publish trained models to Hugging Face under this user/org prefix")
+    matrix.add_argument("--private", action="store_true", help="publish as private repository")
 
     train = subparsers.add_parser("train", help="fine-tune one configured model backend")
     train.add_argument("--manifest", required=True, type=Path)
     train.add_argument("--allow-model-download", action="store_true")
+
+    publish = subparsers.add_parser("publish", help="publish fine-tuned model or matrix to Hugging Face Hub")
+    publish.add_argument("--run-dir", required=True, type=Path, help="path to run dir or matrix folder")
+    publish.add_argument("--repo-id", help="repository ID (username/model-name) for a single run")
+    publish.add_argument("--repo-prefix", help="repository prefix (username) for a matrix run")
+    publish.add_argument("--matrix", action="store_true", help="publish all models under matrix folder")
+    publish.add_argument("--token", help="optional Hugging Face API token")
+    publish.add_argument("--private", action="store_true", help="publish as private repository")
 
     benchmark = subparsers.add_parser("benchmark", help="run baseline or paired model evaluation")
     benchmark.add_argument("--manifest", required=True, type=Path)
@@ -111,7 +122,23 @@ def main() -> int:
         ))
         return 0
     if args.command == "run-matrix":
-        _print(run_matrix(args.manifest, allow_model_download=args.allow_model_download))
+        _print(run_matrix(
+            args.manifest,
+            allow_model_download=args.allow_model_download,
+            publish_hf=args.publish_hf,
+            private=args.private,
+        ))
+        return 0
+    if args.command == "publish":
+        if args.matrix or args.repo_prefix:
+            prefix = args.repo_prefix or args.repo_id
+            if not prefix:
+                parser.error("--repo-prefix or --repo-id required for matrix publishing")
+            _print(publish_matrix_to_hf(args.run_dir, prefix, token=args.token, private=args.private))
+            return 0
+        if not args.repo_id:
+            parser.error("--repo-id required for publishing a single run")
+        _print(publish_run_to_hf(args.run_dir, args.repo_id, token=args.token, private=args.private))
         return 0
     if args.command == "train":
         _print(train_from_manifest(args.manifest, allow_model_download=args.allow_model_download))

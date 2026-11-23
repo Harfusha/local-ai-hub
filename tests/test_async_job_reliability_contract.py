@@ -12,6 +12,7 @@ import pytest
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.execution_pool import ExecutionPool
 from local_ai_hub.http_server import _telemetry_http_outcome
+from local_ai_hub.shutdown import CloseCoordinator
 
 
 class _ArtifactStore:
@@ -88,6 +89,213 @@ def _cancel_delayed_dispatch(manager: AsyncJobManager, job_id: str) -> None:
         timer.cancel()
 
 
+def test_retention_indexes_are_added_to_an_existing_queue(manager_factory) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    index_names = {"idx_async_jobs_terminal_expiry", "idx_async_jobs_tombstone_purge"}
+    now = time.time()
+    with closing(manager._connect()) as con:
+        for name in index_names:
+            con.execute(f"DROP INDEX IF EXISTS {name}")
+        con.executemany(
+            """INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at)
+               VALUES (?, 'reason', '', '{}', ?, ?, ?, ?)""",
+            [
+                ("terminal-fresh", "done", now, now, now + 60),
+                ("terminal-due", "failed", now - 60, now - 60, now - 30),
+                ("tombstone-fresh", "expired", now - 60, now - 30, now - 45),
+                ("tombstone-due", "expired", now - 900, now - 800, now - 850),
+            ],
+        )
+        con.commit()
+
+    reopened = manager_factory(lambda *_: {"success": True})
+    with closing(reopened._connect()) as con:
+        indexes = {row[1] for row in con.execute("PRAGMA index_list(async_jobs)")}
+        assert index_names <= indexes
+
+    reopened.tick()
+    assert reopened._row("terminal-fresh")["state"] == "done"
+    expired = reopened._row("terminal-due")
+    assert expired["state"] == "expired"
+    assert json.loads(expired["result_json"])["_async_expiry"]["state"] == "failed"
+    assert reopened._row("tombstone-fresh")["state"] == "expired"
+    assert reopened._row("tombstone-due") is None
+
+
+@pytest.mark.parametrize("shared_pool", [False, True], ids=["thread", "future"])
+def test_shutdown_report_requires_async_worker_to_drain(manager_factory, shared_pool) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def execute(*_args):
+        entered.set()
+        assert release.wait(8)
+        return {"success": True}
+
+    pool = ExecutionPool(cpu_workers=1, io_workers=1, inference_workers=1) if shared_pool else None
+    manager = manager_factory(execute, execution_pool=pool)
+    coordinator = CloseCoordinator([("async_jobs", manager.close)])
+    try:
+        submitted = manager.submit("reason", {"task": "shutdown drain"})
+        assert submitted["success"] and entered.wait(3)
+        with manager._lock:
+            worker = next(iter(manager._workers))
+
+        report = coordinator.close(timeout=4)
+        assert not report["success"]
+        assert report["failed"] == ["async_jobs"]
+        assert manager._row(submitted["job_id"])["cancel_requested"] == 1
+
+        release.set()
+        if isinstance(worker, threading.Thread):
+            worker.join(timeout=4)
+            assert not worker.is_alive()
+        else:
+            worker.result(timeout=4)
+        drained = coordinator.close(timeout=4)
+        assert drained["success"], drained
+        assert manager._row(submitted["job_id"])["state"] == "cancelled"
+    finally:
+        release.set()
+        if pool is not None:
+            pool.close()
+
+
+def test_shutdown_reports_pending_resource_release_worker(manager_factory) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    release = threading.Event()
+    token = manager.begin_resource_release()
+
+    def cleanup():
+        try:
+            release.wait(8)
+        finally:
+            manager.end_resource_release(token)
+
+    worker = threading.Thread(target=cleanup, daemon=True)
+    assert manager.register_resource_release_worker(token, worker)
+    worker.start()
+    try:
+        assert manager.close() == {"success": False, "cleanup_unconfirmed": True}
+    finally:
+        release.set()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert manager.close() is None
+
+
+@pytest.mark.parametrize("already_queued", [False, True], ids=["new-submit", "durable-backlog"])
+def test_resource_release_pauses_dispatch_until_the_last_token(manager_factory, monkeypatch, already_queued) -> None:
+    executions = []
+
+    def execute(action, payload):
+        executions.append(payload["task"])
+        return {"success": True}
+
+    pool = ExecutionPool(cpu_workers=1, io_workers=1, inference_workers=1)
+    manager = manager_factory(execute, execution_pool=pool)
+    try:
+        if already_queued:
+            with monkeypatch.context() as patch:
+                patch.setattr(manager, "_dispatch_background", lambda _job_id: None)
+                submitted = manager.submit("reason", {"task": "resume after release"})
+        first = manager.begin_resource_release()
+        last = manager.begin_resource_release()
+        with monkeypatch.context() as patch:
+            patch.setattr(pool, "submit", lambda *_: pytest.fail("dispatch attempted during resource release"))
+            if not already_queued:
+                submitted = manager.submit("reason", {"task": "resume after release"})
+            assert submitted["success"]
+            manager._dispatch_next_queued()
+            manager.end_resource_release(first)
+            assert manager._row(submitted["job_id"])["state"] == "queued"
+
+        manager.end_resource_release(last)
+
+        assert manager.wait(submitted["job_id"], timeout_seconds=5)["state"] == "done"
+        assert executions == ["resume after release"]
+    finally:
+        manager.close()
+        pool.close()
+
+
+def test_submit_does_not_persist_after_shutdown(manager_factory, monkeypatch) -> None:
+    manager = manager_factory(lambda *_: pytest.fail("closed manager executed a job"))
+    safe_payload = manager._safe_payload
+
+    def close_after_submit_enters(payload):
+        manager.close()
+        return safe_payload(payload)
+
+    monkeypatch.setattr(manager, "_safe_payload", close_after_submit_enters)
+    result = manager.submit("reason", {"task": "shutdown race"})
+
+    assert not result["success"]
+    assert result["terminal"] and not result["retryable"]
+    with closing(manager._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM async_jobs").fetchone() == (0,)
+
+
+def test_delayed_submit_does_not_start_timer_after_shutdown(manager_factory) -> None:
+    manager = manager_factory(lambda *_: pytest.fail("closed manager executed a job"))
+
+    def close_after_insert(**_kwargs):
+        manager.close()
+        return "shutdown-trace"
+
+    manager.debug_traces = SimpleNamespace(
+        start=close_after_insert, update=lambda *_args, **_kwargs: None,
+        link=lambda *_args, **_kwargs: None,
+    )
+    result = manager.submit("reason", {"task": "delayed shutdown race"}, dispatch_delay_seconds=30)
+
+    assert result["success"]
+    assert manager._row(result["job_id"])["state"] == "cancelled"
+    assert manager._delayed_dispatch == {}
+
+
+@pytest.mark.parametrize(
+    ("replay_key", "cancel_requested", "state_after_expiry"),
+    [(True, False, "queued"), (False, False, "outcome_unknown"), (True, True, "cancelled")],
+)
+def test_recovery_preserves_an_unexpired_running_lease(
+    manager_factory, monkeypatch, replay_key, cancel_requested, state_after_expiry,
+) -> None:
+    owner = manager_factory(lambda *_: {"success": True})
+    recovering = manager_factory(lambda *_: {"success": True})
+    dispatched = []
+    monkeypatch.setattr(recovering, "_dispatch", dispatched.append)
+    job_id = "still-leased"
+    now = time.time()
+    lease_until = now + 300
+    payload = {"task": "fixture"}
+    if replay_key:
+        payload.update(request_id="lease-request", _async_request_id_supplied=True)
+    with closing(owner._connect()) as con:
+        con.execute(
+            """INSERT INTO async_jobs (job_id, action, request_hash, payload_json, state, attempts,
+                       cancel_requested, created_at, updated_at, expires_at, lease_until)
+                VALUES (?, 'reason', ?, ?, 'running', 1, ?, ?, ?, ?, ?)""",
+            (job_id, "lease-hash", json.dumps(payload), int(cancel_requested), now, now, now + 600, lease_until),
+        )
+        con.commit()
+
+    assert recovering.recover() == 0
+    running = owner._row(job_id)
+    assert running["state"] == "running"
+    assert running["lease_until"] == lease_until
+    assert running["updated_at"] == now
+    assert dispatched == []
+
+    with closing(owner._connect()) as con:
+        con.execute("UPDATE async_jobs SET lease_until=? WHERE job_id=?", (now - 1, job_id))
+        con.commit()
+
+    assert recovering.recover() == int(state_after_expiry == "queued")
+    assert owner._row(job_id)["state"] == state_after_expiry
+    assert dispatched == ([job_id] if state_after_expiry == "queued" else [])
+
+
 def test_recovery_does_not_overwrite_concurrent_completion(manager_factory, monkeypatch) -> None:
     manager = manager_factory(lambda *_: {"success": True})
     finalizer = manager_factory(lambda *_: {"success": True})
@@ -102,7 +310,7 @@ def test_recovery_does_not_overwrite_concurrent_completion(manager_factory, monk
                 created_at, updated_at, expires_at, lease_until
             ) VALUES (?, 'reason', ?, ?, 'running', 1, ?, ?, ?, ?)
             """,
-            (job_id, f"hash-{job_id}", payload_json, now, now, now + 600, now + 300),
+            (job_id, f"hash-{job_id}", payload_json, now, now, now + 600, now - 1),
         )
         con.commit()
 
@@ -151,7 +359,7 @@ def test_pending_async_result_is_not_counted_as_endpoint_failure(manager_factory
     assert result["success"] is False
     assert result["in_progress"] is True
     assert result["terminal"] is False
-    assert result["retryable"] is True
+    assert result["retryable"] is False
     assert _telemetry_http_outcome(200, result, "/api/async-jobs") == (True, "in_progress", False)
 
 

@@ -10,6 +10,8 @@ import threading
 import hashlib
 import json
 
+import pytest
+
 
 def test_evidence_demand_is_root_scoped_and_counts_real_usage(tmp_path):
     store = EvidenceStore(tmp_path / "state")
@@ -96,6 +98,34 @@ def test_one_hop_resolves_nested_rust_module_from_module_file(tmp_path):
     assert neighbors == ["src/foo/bar.rs"]
 
 
+@pytest.mark.parametrize("module_line", ["module example.test/inner", 'module\t"example.test/inner"'])
+def test_one_hop_uses_nearest_go_module_for_package_paths(tmp_path, module_line):
+    files = {
+        "go.mod": "module example.test/outer\n",
+        "outer.go": "package outer\n",
+        "lib/value.go": "package lib\n",
+        "apps/service/go.mod": module_line + "\n",
+        "apps/service/service.go": "package service\n",
+        "apps/service/lib/value.go": "package lib\n",
+        "apps/service/cmd/main.go": (
+            'package main\nimport (\n_ "example.test/inner"\n_ "example.test/inner/lib"\n'
+            '_ "example.test/inner-other/lib"\n_ "example.test/outer/lib"\n)\n'
+        ),
+        "cmd/main.go": 'package main\nimport _ "example.test/outer"\n',
+    }
+    for relative, content in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    eligible = {path for path in files if path.endswith(".go")}
+    repo_tools = RepositoryTools({})
+    assert one_hop_related_files(tmp_path, ["apps/service/cmd/main.go"], eligible, repo_tools) == [
+        "apps/service/service.go", "apps/service/lib/value.go",
+    ]
+    assert one_hop_related_files(tmp_path, ["cmd/main.go"], eligible, repo_tools) == ["outer.go"]
+
+
 def test_one_hop_php_resolves_composer_autoload_and_dev_psr4_aliases(tmp_path):
     (tmp_path / "src/Services").mkdir(parents=True)
     (tmp_path / "src/Legacy").mkdir(parents=True)
@@ -131,6 +161,38 @@ def test_one_hop_php_resolves_composer_autoload_and_dev_psr4_aliases(tmp_path):
     )
 
     assert neighbors == ["src/Services/InvoiceService.php", "tests/Support/FakeClient.php"]
+
+
+def test_one_hop_php_resolves_grouped_and_comma_separated_class_imports(tmp_path):
+    files = {
+        "composer.json": json.dumps({"autoload": {"psr-4": {"App\\": "src/"}}}),
+        "src/main.php": (
+            "<?php\n"
+            "use App\\Services\\{\n"
+            "    InvoiceService as Invoice, // keep the alias; braces { } are commentary\n"
+            "    Nested\\Client, function format, const MODE,\n"
+            "};\n"
+            "use App\\First as Primary /* lookup; keep the order */,\n    App\\Second;\n"
+            "use function App\\helper, App\\other_helper;\n"
+        ),
+        "src/Services/InvoiceService.php": "<?php\n",
+        "src/Services/Nested/Client.php": "<?php\n",
+        "src/Services/format.php": "<?php\n",
+        "src/Services/MODE.php": "<?php\n",
+        "src/First.php": "<?php\n",
+        "src/Second.php": "<?php\n",
+        "src/helper.php": "<?php\n",
+        "src/other_helper.php": "<?php\n",
+    }
+    for relative, content in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    neighbors = one_hop_related_files(tmp_path, ["src/main.php"], set(files), RepositoryTools({}))
+    assert neighbors == [
+        "src/Services/InvoiceService.php", "src/Services/Nested/Client.php", "src/First.php", "src/Second.php",
+    ]
 
 
 def test_one_hop_ignores_ambiguous_module_names(tmp_path):

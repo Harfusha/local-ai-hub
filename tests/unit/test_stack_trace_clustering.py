@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import pytest
 
-from local_ai_hub.commands import (
+from local_ai_hub.command_broker import (
     CommandBroker,
     deduplicate_stack_traces,
 )

@@ -4,7 +4,7 @@ from contextlib import closing
 
 import pytest
 
-from local_ai_hub.telemetry import TelemetryStore
+from local_ai_hub.telemetry import TelemetryStore, _laya_decision_report
 
 
 def _metadata(**changes):
@@ -23,6 +23,12 @@ def _metadata(**changes):
         "model_estimate": True,
         "uncertainty": "UNCALIBRATED",
         "execution_verification": "NOT_VERIFIED",
+        "runtime_latency_ms": None,
+        "inference_latency_ms": None,
+        "queue_wait_ms": None,
+        "backend": None,
+        "fallback_used": None,
+        "fallback_reason": None,
     }
     value.update(changes)
     return value
@@ -168,6 +174,13 @@ def test_report_summarizes_laya_decisions_by_mode_category_and_status(tmp_path):
             task_id="task-1",
             session_id="session-1",
         )
+        for decision_id, mode in (
+            ("decision-1", "shadow"), ("decision-2", "advisory"),
+            ("decision-3", "shadow"), ("decision-4", "advisory"),
+        ):
+            store.record_laya_eligibility(
+                decision_id=decision_id, mode=mode, category="context_source"
+            )
 
         report = store.report(days=1)
 
@@ -192,8 +205,10 @@ def test_report_summarizes_laya_decisions_by_mode_category_and_status(tmp_path):
         for mode in ("shadow", "advisory"):
             mode_report = summary["by_mode"][mode]
             assert mode_report["coverage"] == {
-                "available": False,
-                "reason": "eligible_decision_count_not_recorded",
+                "available": True,
+                "eligible_decisions": 2,
+                "recorded_decisions": 2,
+                "rate": 1.0,
             }
             assert mode_report["latency_ms"] == {
                 "available": False,
@@ -236,3 +251,68 @@ def test_report_reports_empty_and_unrecognized_laya_snapshots_explicitly(tmp_pat
         assert report["invalid_records"] == 1
     finally:
         store.close()
+
+
+def test_laya_report_measures_eligibility_runtime_latency_backend_and_fallback(tmp_path):
+    store = TelemetryStore(tmp_path)
+    try:
+        store.record_laya_eligibility(
+            decision_id="decision-1", mode="shadow", category="context_source"
+        )
+        store.record_laya_eligibility(
+            decision_id="decision-2", mode="shadow", category="context_source"
+        )
+        store.record_laya_decision(
+            _metadata(
+                runtime_latency_ms=22.0,
+                inference_latency_ms=19.0,
+                queue_wait_ms=3.0,
+                backend="onnx",
+                fallback_used=True,
+                fallback_reason="EARLIER_DEVICE_UNAVAILABLE",
+            ),
+            repository_id="repo-1", task_id="task-1", session_id="session-1",
+        )
+
+        summary = store.report(days=1)["laya_decisions"]["by_mode"]["shadow"]
+
+        assert summary["coverage"] == {
+            "available": True, "eligible_decisions": 2,
+            "recorded_decisions": 1, "rate": 0.5,
+        }
+        assert summary["latency_ms"] == {
+            "available": True, "samples": 1,
+            "mean": 22.0, "max": 22.0,
+            "inference_samples": 1,
+            "inference_mean": 19.0, "queue_wait_mean": 3.0,
+            "queue_wait_samples": 1,
+        }
+        assert summary["backend"] == {"available": True, "counts": {"onnx": 1}}
+        assert summary["fallbacks"] == {
+            "available": True, "used": 1, "not_used": 0, "unknown": 0,
+            "reasons": {"EARLIER_DEVICE_UNAVAILABLE": 1},
+        }
+    finally:
+        store.close()
+
+
+def test_laya_report_deduplicates_retried_eligibility_and_matches_decision_ids():
+    decision = json.dumps(_metadata())
+    eligible = json.dumps({
+        "decision_id": "decision-1", "mode": "shadow", "category": "context_source",
+    })
+    missing = json.dumps({
+        "decision_id": "decision-missing", "mode": "shadow", "category": "context_source",
+    })
+
+    report = _laya_decision_report(
+        [(decision,), (decision,)],
+        [(eligible,), (eligible,), (missing,)],
+        scope="window",
+    )
+
+    assert report["records"] == 1
+    assert report["by_mode"]["shadow"]["coverage"] == {
+        "available": True, "eligible_decisions": 2,
+        "recorded_decisions": 1, "rate": 0.5,
+    }

@@ -193,7 +193,7 @@ class HubClient:
         self.auto_start = bool(auto_start)
         self._inprocess_transport = inprocess_transport
         client_cfg = self.config.get("client", {})
-        self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))
+        self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 2.5)))
         self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 30.0)))
         self.startup_poll = max(0.05, float(client_cfg.get("startup_poll_seconds", 0.15)))
         self.start_lock_stale = max(self.startup_wait, float(client_cfg.get("start_lock_stale_seconds", 20.0)))
@@ -276,6 +276,14 @@ class HubClient:
 
             deadline = time.monotonic() + max(0.0, timeout)
 
+            def check_request_active() -> None:
+                if request_cancelled.is_set() or (cancel_event is not None and cancel_event.is_set()):
+                    request_cancelled.set()
+                    raise TimeoutError("request cancelled")
+                if deadline_expired.is_set() or time.monotonic() >= deadline:
+                    deadline_expired.set()
+                    raise TimeoutError("request deadline exceeded")
+
             def interrupt_connection() -> None:
                 # close() alone does not interrupt a concurrent blocking recv.
                 active_socket = getattr(conn, "sock", None)
@@ -318,6 +326,7 @@ class HubClient:
 
             def tracked_send(data: Any) -> None:
                 nonlocal request_send_started
+                check_request_active()
                 # Connect before marking the request as potentially written. Once sendall
                 # starts, an OSError may follow a partial write, so outcome is uncertain.
                 if conn.sock is None:
@@ -337,6 +346,7 @@ class HubClient:
                     finally:
                         if has_connect_timeout:
                             conn.timeout = response_timeout
+                    check_request_active()
                     settimeout = getattr(conn.sock, "settimeout", None)
                     if callable(settimeout):
                         settimeout(max(0.001, deadline - time.monotonic()))
@@ -348,14 +358,12 @@ class HubClient:
             else:
                 # A nonstandard transport has no send hook; fail closed once
                 # request() begins because write state cannot be observed.
+                check_request_active()
                 request_send_started = True
             conn.request(method, path, body=body, headers=headers)
             response = conn.getresponse()
             raw = response.read()
-            if request_cancelled.is_set():
-                raise TimeoutError("request cancelled")
-            if deadline_expired.is_set():
-                raise TimeoutError("request deadline exceeded")
+            check_request_active()
         except (OSError, http.client.HTTPException) as exc:
             self._drop_connection()
             raise _TransportFailure(
@@ -984,15 +992,15 @@ class HubClient:
 
         def execute() -> dict[str, Any]:
             duplicate_deadline = time.monotonic() + timeout
-            server_reported_in_progress = False
+            all_attempts_unsent = True
 
             def request_until_terminal() -> dict[str, Any]:
-                nonlocal server_reported_in_progress
+                nonlocal all_attempts_unsent
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
                         return self._cancelled_response(
                             request_id,
-                            request_not_sent=not server_reported_in_progress,
+                            request_not_sent=all_attempts_unsent,
                         )
                     remaining = duplicate_deadline - time.monotonic()
                     if remaining <= 0:
@@ -1014,7 +1022,7 @@ class HubClient:
                             and result.get("retryable")
                         ):
                             return result
-                        server_reported_in_progress = True
+                        all_attempts_unsent = False
                         remaining = duplicate_deadline - time.monotonic()
                         if remaining <= 0:
                             result["retry_timeout"] = True
@@ -1033,9 +1041,10 @@ class HubClient:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException, AttributeError) as exc:
                 self._drop_connection()
-                if getattr(exc, "cancelled", False):
-                    return self._cancelled_response(request_id, request_not_sent=bool(getattr(exc, "request_not_sent", False)) and not server_reported_in_progress)
                 pre_send_refusal = bool(getattr(exc, "request_not_sent", False))
+                all_attempts_unsent = all_attempts_unsent and pre_send_refusal
+                if getattr(exc, "cancelled", False):
+                    return self._cancelled_response(request_id, request_not_sent=all_attempts_unsent)
                 if replay_safe or (allow_start and pre_send_refusal):
                     remaining = duplicate_deadline - time.monotonic()
                     try:
@@ -1047,13 +1056,13 @@ class HubClient:
                         server_ready = False
                     if server_ready:
                         if cancel_event is not None and cancel_event.is_set():
-                            return self._cancelled_response(request_id, request_not_sent=pre_send_refusal and not server_reported_in_progress)
+                            return self._cancelled_response(request_id, request_not_sent=all_attempts_unsent)
                         remaining = duplicate_deadline - time.monotonic()
                         if remaining <= 0:
                             return self._transport_failure_response(
                                 request_id,
                                 exc,
-                                prior_send_possible=server_reported_in_progress or not pre_send_refusal,
+                                prior_send_possible=not all_attempts_unsent,
                             )
                         try:
                             retried_result = request_until_terminal()
@@ -1064,19 +1073,20 @@ class HubClient:
                             return self._error_response(retry_http, request_id)
                         except (URLError, OSError, http.client.HTTPException) as retry_exc:
                             self._drop_connection()
+                            all_attempts_unsent = all_attempts_unsent and bool(getattr(retry_exc, "request_not_sent", False))
                             if getattr(retry_exc, "cancelled", False):
-                                return self._cancelled_response(request_id, request_not_sent=bool(getattr(retry_exc, "request_not_sent", False)) and not server_reported_in_progress)
+                                return self._cancelled_response(request_id, request_not_sent=all_attempts_unsent)
                             return self._transport_failure_response(
                                 request_id,
                                 exc,
                                 retry_exc,
                                 retried=True,
-                                prior_send_possible=server_reported_in_progress or not pre_send_refusal,
+                                prior_send_possible=not all_attempts_unsent,
                             )
                         except Exception:
                             return self._uncertain_response(request_id, retried=True)
                 return self._transport_failure_response(
-                    request_id, exc, prior_send_possible=server_reported_in_progress
+                    request_id, exc, prior_send_possible=not all_attempts_unsent
                 )
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
@@ -1133,6 +1143,8 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
+        all_attempts_unsent = True
+
         def once(attempt_timeout: float) -> dict[str, Any]:
             try:
                 open_options = {
@@ -1156,7 +1168,9 @@ class HubClient:
             return result if isinstance(result, dict) else self._invalid_json_response(request_id, outcome_unknown=False)
 
         def once_ready(attempt_timeout: float, deadline: float) -> dict[str, Any]:
+            nonlocal all_attempts_unsent
             result = once(attempt_timeout)
+            all_attempts_unsent = False
             for _ in range(3):
                 if not result.get("snapshot_warming"):
                     return result
@@ -1185,6 +1199,7 @@ class HubClient:
             return result
 
         def execute() -> dict[str, Any]:
+            nonlocal all_attempts_unsent
             deadline = time.monotonic() + timeout
             try:
                 return once_ready(timeout, deadline)
@@ -1192,15 +1207,11 @@ class HubClient:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException, AttributeError) as exc:
                 self._drop_connection()
-                if getattr(exc, "cancelled", False):
+                all_attempts_unsent = all_attempts_unsent and bool(getattr(exc, "request_not_sent", False))
+                if getattr(exc, "cancelled", False) or (cancel_event is not None and cancel_event.is_set()):
                     return self._cancelled_response(
                         request_id,
-                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
-                    )
-                if cancel_event is not None and cancel_event.is_set():
-                    return self._cancelled_response(
-                        request_id,
-                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
+                        request_not_sent=all_attempts_unsent,
                     )
                 remaining = deadline - time.monotonic()
                 if self._inprocess_transport is not None:
@@ -1216,7 +1227,7 @@ class HubClient:
                         if cancel_event is not None and cancel_event.is_set():
                             return self._cancelled_response(
                                 request_id,
-                                request_not_sent=bool(getattr(exc, "request_not_sent", False)),
+                                request_not_sent=all_attempts_unsent,
                             )
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
@@ -1227,10 +1238,11 @@ class HubClient:
                             return self._error_response(retry_http, request_id)
                         except (URLError, OSError, http.client.HTTPException) as transient_exc:
                             self._drop_connection()
+                            all_attempts_unsent = all_attempts_unsent and bool(getattr(transient_exc, "request_not_sent", False))
                             if getattr(transient_exc, "cancelled", False):
                                 return self._cancelled_response(
                                     request_id,
-                                    request_not_sent=bool(getattr(transient_exc, "request_not_sent", False)),
+                                    request_not_sent=all_attempts_unsent,
                                 )
                             if attempt < 3 and should_autostart:
                                 remaining = deadline - time.monotonic()
@@ -1242,13 +1254,10 @@ class HubClient:
                                     remaining = deadline - time.monotonic()
                                     if remaining > 0:
                                         delay = min(0.05, remaining)
-                                        request_not_sent = bool(
-                                            getattr(transient_exc, "request_not_sent", False)
-                                        )
                                         if cancel_event is not None:
                                             if cancel_event.wait(delay) or cancel_event.is_set():
                                                 return self._cancelled_response(
-                                                    request_id, request_not_sent=request_not_sent
+                                                    request_id, request_not_sent=all_attempts_unsent
                                                 )
                                         else:
                                             time.sleep(delay)
@@ -1264,7 +1273,7 @@ class HubClient:
                 }
                 if server_ready:
                     unavailable["retried"] = True
-                if bool(getattr(exc, "request_not_sent", False)):
+                if all_attempts_unsent:
                     unavailable.update({"request_not_sent": True, "outcome_unknown": False})
                 return unavailable
             except Exception:
@@ -1797,7 +1806,7 @@ class HubClient:
         return self.coord(action="plan_init", root=root)
 
     def list_plans(self, root: str, query: str = "", lifecycle: str | None = None,
-                   limit: int = 50) -> dict[str, Any]:
+                   limit: int = 5) -> dict[str, Any]:
         arguments = dict(root=root, query=query, limit=limit)
         if lifecycle is not None:
             arguments["lifecycle"] = lifecycle

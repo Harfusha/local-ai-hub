@@ -35,7 +35,7 @@
       "language": "neutral",
       "query": "CommandBroker",
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "expected_symbols": [
         "CommandBroker"
@@ -314,7 +314,7 @@
       "language": "neutral",
       "query": "_INTERACTIVE_PATTERNS",
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "expected_symbols": [],
       "negative": false
@@ -358,7 +358,7 @@
       "language": "neutral",
       "query": "terminate_grace_seconds",
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "expected_symbols": [],
       "negative": false
@@ -501,7 +501,7 @@
       "language": "cz",
       "query": "zpracování a streamování výstupu z příkazů command brokeru",
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "expected_symbols": [],
       "negative": false
@@ -666,7 +666,7 @@
       "language": "en",
       "query": "command execution broker with interactive prompt detection and log callbacks",
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "expected_symbols": [],
       "negative": false
@@ -759,7 +759,7 @@
       "language": "en",
       "query": "commands process execution using process_utils terminate_tree",
       "expected_paths": [
-        "src/local_ai_hub/commands.py",
+        "src/local_ai_hub/command_broker.py",
         "src/local_ai_hub/process_utils.py"
       ],
       "expected_symbols": [],
@@ -990,7 +990,7 @@
       "language": "en",
       "query": "commands in commands.py",
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "scope_root": "src/local_ai_hub",
       "expected_symbols": [],
@@ -1243,7 +1243,7 @@
       "query": "broker",
       "max_tokens": 128,
       "expected_paths": [
-        "src/local_ai_hub/commands.py"
+        "src/local_ai_hub/command_broker.py"
       ],
       "expected_symbols": [],
       "negative": false

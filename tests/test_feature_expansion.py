@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.token_router import shrink_signatures
 from local_ai_hub.memory import WorkspaceMemoryStore
 from local_ai_hub.rag import RAGStore

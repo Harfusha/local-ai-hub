@@ -29,6 +29,7 @@ if _skill_ownership_spec is None or _skill_ownership_spec.loader is None:
 _skill_ownership_module = importlib.util.module_from_spec(_skill_ownership_spec)
 _skill_ownership_spec.loader.exec_module(_skill_ownership_module)
 install_owned_skill = _skill_ownership_module.install_skill
+get_user_homes = _skill_ownership_module.get_user_homes
 _install_ownership_spec = importlib.util.spec_from_file_location(
     "_local_ai_hub_install_ownership", Path(__file__).with_name("install_ownership.py")
 )
@@ -48,7 +49,7 @@ record_external_file = _install_ownership_module.record_external_file
 assert_external_file_writable = _install_ownership_module.assert_external_file_writable
 forget_external_record = _install_ownership_module.forget_external_record
 _ACTIVE_INSTALL_ROOT: Path | None = None
-_ADOPT_UNOWNED_HUB_BLOCKS = False
+_ADOPT_UNOWNED_HUB_BLOCKS = True
 
 
 def _assert_or_adopt_external_block(path: Path, owner_marker: dict[str, str], current_block: str) -> None:
@@ -77,6 +78,7 @@ _update_transaction_module = importlib.util.module_from_spec(_update_transaction
 _update_transaction_spec.loader.exec_module(_update_transaction_module)
 replace_install_payload = _update_transaction_module.replace_install_payload
 stop_existing_runtime = _update_transaction_module.stop_existing_runtime
+installation_update_lock = _update_transaction_module.installation_update_lock
 _setup_wizard_spec = importlib.util.spec_from_file_location("_local_ai_hub_setup_wizard", Path(__file__).with_name("setup_wizard.py"))
 if _setup_wizard_spec is None or _setup_wizard_spec.loader is None:
     raise ImportError("could not load sibling setup_wizard.py")
@@ -153,6 +155,7 @@ def write_migration_failure_report(
     error: Exception,
     selected: dict[str, Any] | None = None,
 ) -> None:
+    backups = [str(error.backup_path)] if isinstance(error, _state_migrations_module.StateMigrationError) else []
     report = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -160,7 +163,7 @@ def write_migration_failure_report(
         "install_dir": str(install_dir),
         "state_dir": str(state_dir),
         "selected": selected or {},
-        "migration": {"stage": stage, "error": str(error)},
+        "migration": {"stage": stage, "error": str(error), "backups": backups},
         "manual_actions": [
             "Keep the state directory unchanged and read docs/INSTALLER_RECOVERY.md.",
             "Use only a format-specific converter with verified preservation; do not edit state_version.json manually.",
@@ -316,15 +319,8 @@ def copy_install_tree(
     before_commit: Callable[[], tuple[bool, str]] | None = None,
     after_swap: Callable[[], tuple[bool, str]] | None = None,
 ) -> bool:
-    file_names = (
-        "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt",
-        "requirements-laya-runtime.txt", "requirements-ast-index.txt", "requirements-performance.txt", "requirements-profiling.txt",
-        "defaults.toml", "config.toml.example", "pyproject.toml",
-        "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
-        "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
-    )
     success, detail = replace_install_payload(
-        UPDATE_SOURCE_ROOT, install_dir, config_source, file_names,
+        UPDATE_SOURCE_ROOT, install_dir, config_source, _update_transaction_module.PAYLOAD_FILES,
         before_commit=before_commit, after_swap=after_swap,
     )
     log(detail if success else f"ERROR: {detail}")
@@ -505,65 +501,6 @@ If any required skill or the Hub is unavailable, report the precise limitation a
             _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
             preimage=preimage, postimage=policy,
         )
-
-
-def get_user_homes() -> list[Path]:
-    """Discover all user and MultiGravity profile home directories."""
-    homes: list[Path] = []
-    seen: set[Path] = set()
-
-    def add_home(p: Path) -> None:
-        try:
-            resolved = p.resolve()
-            if resolved not in seen and p.exists() and p.is_dir():
-                seen.add(resolved)
-                homes.append(p)
-        except Exception:
-            pass
-
-    cur_home = Path.home()
-    add_home(cur_home)
-
-    if os.name == "nt":
-        username = os.environ.get("USERNAME")
-        system_drive = os.environ.get("SystemDrive", "C:")
-        if username:
-            add_home(Path(f"{system_drive}/Users/{username}"))
-        userprofile = os.environ.get("USERPROFILE")
-        if userprofile:
-            add_home(Path(userprofile))
-
-    # MultiGravity discovery: search cur_home and its ancestors
-    mg_profiles_dir: Path | None = None
-    for p in [cur_home, *cur_home.parents]:
-        cand = p / "Desktop" / "Multigravity" / "profiles"
-        if cand.is_dir():
-            mg_profiles_dir = cand
-            add_home(p)
-            break
-        if p.name.lower() == "profiles" and p.parent.name.lower() == "multigravity":
-            mg_profiles_dir = p
-            for anc in p.parents:
-                if (anc / "Desktop").is_dir():
-                    add_home(anc)
-                    break
-            break
-
-    env_mg = os.environ.get("MULTIGRAVITY_PROFILES") or os.environ.get("MULTIGRAVITY_HOME")
-    if env_mg:
-        p_env = Path(env_mg)
-        if p_env.name.lower() == "profiles" and p_env.is_dir():
-            mg_profiles_dir = p_env
-        elif (p_env / "profiles").is_dir():
-            mg_profiles_dir = p_env / "profiles"
-
-    if mg_profiles_dir and mg_profiles_dir.is_dir():
-        for child in mg_profiles_dir.iterdir():
-            if child.is_dir():
-                target = child / "home" if (child / "home").is_dir() else child
-                add_home(target)
-
-    return homes
 
 
 def install_agent_skills(install_dir: Path, target_skills_dir: Path, *, include_companion: bool = True) -> None:
@@ -1545,6 +1482,9 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
         model = str(model_cfg.get("embedding", "") or "")
         if model and model not in models:
             models.append(model)
+    prep_model = str(cfg.get("preprocessing", {}).get("model", "") or "")
+    if prep_model and prep_model not in models:
+        models.append(prep_model)
     if not ollama_setup_required(cfg):
         return {"status": "not_selected", "requested": [], "ready": [], "skipped": [], "unavailable": []}
     if not cfg.get("features", {}).get("pull_models_during_setup", True):
@@ -1557,6 +1497,14 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
     unavailable: list[str] = []
     for model in models:
         try:
+            from local_ai_hub.model_distribution import DISTRIBUTION_REGISTRY, ensure_distribution_model
+            if model in DISTRIBUTION_REGISTRY:
+                dist_res = ensure_distribution_model(model, root=Path.cwd(), allow_download=True)
+                if dist_res.get("status") in {"ready", "registered"}:
+                    ready.append(model)
+                    continue
+                else:
+                    log(f"WARNING: distribution model provisioning failed: {model}: {dist_res.get('error')}")
             result = run([ollama, "pull", model], check=False, timeout=1800)
             if result.returncode == 0:
                 ready.append(model)
@@ -1782,6 +1730,36 @@ def _configure_agents_impl(
         if _agent_component_enabled(agent_components, "copilot", "mcp"):
             vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, "copilot", cfg), backup_enabled)
 
+    if agents_cfg.get("opencode", True):
+        opencode_dirs: list[Path] = []
+        if os.environ.get("OPENCODE_HOME"):
+            opencode_dirs.append(Path(os.environ["OPENCODE_HOME"]))
+        if sys.platform == "win32" and os.environ.get("APPDATA"):
+            opencode_dirs.append(Path(os.environ["APPDATA"]) / "opencode")
+        opencode_dirs.append(Path.home() / ".config" / "opencode")
+        opencode_dirs.append(Path.home() / ".opencode")
+
+        for oc_dir in opencode_dirs:
+            if _agent_component_enabled(agent_components, "opencode", "skills"):
+                install_agent_skills(install_dir, oc_dir / "skills", include_companion=include_companion)
+            if (
+                cfg.get("tool_policy", {}).get("install_global_instructions", True)
+                and _agent_component_enabled(agent_components, "opencode", "instructions")
+            ):
+                doc = oc_dir / "AGENTS.md"
+                try:
+                    merge_global_policy(doc, backup_enabled, cfg=cfg)
+                    merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+                except ValueError as exc:
+                    if "external block has no ownership record" not in str(exc):
+                        raise
+                    manual_action = f"OpenCode instructions preserved: {doc} ({exc})"
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
+            if _agent_component_enabled(agent_components, "opencode", "mcp"):
+                json_mcp_merge(oc_dir / "opencode.json", build_mcp_entries(install_dir, hub_python, serena, "opencode", cfg), backup_enabled)
+                json_mcp_merge(oc_dir / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "opencode", cfg), backup_enabled)
+
     # Escape hatch for any MCP host/build whose config path differs from
     # the common defaults above. Users provide explicit paths, so setup never guesses
     # at vendor-specific locations or overwrites unrelated files.
@@ -1879,7 +1857,7 @@ def main() -> int:
     parser.add_argument("--superpowers-entrypoint", type=Path, help="Absolute Gemini CLI JavaScript entrypoint for a native Node launcher.")
     parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
     args = parser.parse_args()
-    _ADOPT_UNOWNED_HUB_BLOCKS = args.adopt_existing_hub_blocks
+    _ADOPT_UNOWNED_HUB_BLOCKS = bool(args.adopt_existing_hub_blocks)
 
     if args.host_project_root is not None or args.host_adapter is not None:
         if args.host_project_root is None or args.host_adapter is None:
@@ -1926,6 +1904,16 @@ def main() -> int:
         log(f"Verified clean source commit: {verified_revision}")
 
     config_source, cfg, install_dir = select_config_source(args.config)
+    try:
+        with installation_update_lock(install_dir):
+            return run_installation(args, config_source, cfg, install_dir)
+    except (OSError, ValueError, RuntimeError) as exc:
+        log(f"Setup refused or failed: {exc}")
+        return 1
+
+
+def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[str, Any], install_dir: Path) -> int:
+    global _ADOPT_UNOWNED_HUB_BLOCKS
     setup_choices = configure_setup_choices(args, cfg, install_dir, argv=sys.argv[1:])
     include_companion = not args.skip_companion_skills and bool(cfg.get("setup", {}).get("install_companion_skills", True))
     if args.generate_only:
@@ -2065,6 +2053,8 @@ def main() -> int:
 
     serena: Path | None = None
     setup_cfg = cfg.get("setup", {})
+    if args.adopt_existing_hub_blocks or setup_cfg.get("adopt_existing_hub_blocks", True):
+        _ADOPT_UNOWNED_HUB_BLOCKS = True
     if not args.skip_tools and bool(setup_cfg.get("install_optional_tools", True)):
         intelligence = cfg.get("code_intelligence", {})
         if intelligence.get("serena_enabled", True):
@@ -2431,7 +2421,7 @@ def main() -> int:
         and bool(setup_cfg.get("install_optional_tools", True))
         and bool(cfg.get("code_intelligence", {}).get("serena_enabled", True))
     )
-    agent_names = ("codex", "claude", "gemini", "cursor", "windsurf", "copilot")
+    agent_names = ("codex", "claude", "gemini", "cursor", "windsurf", "copilot", "opencode")
     agent_component_selection = {
         name: {
             component: bool(

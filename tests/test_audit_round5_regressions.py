@@ -121,10 +121,11 @@ def test_t5_07_rust_nested_module_resolution():
 def test_t5_08_go_root_package_import(tmp_path: Path):
     """T5-08 (B18): _go_import_candidates resolves root package import matching module_name."""
     from local_ai_hub.code_index_demand import _go_import_candidates
+    from local_ai_hub.repo_tools import RepositoryTools
     (tmp_path / "go.mod").write_text("module example.com/tool\n\ngo 1.22\n", encoding="utf-8")
     source = 'package main\n\nimport "example.com/tool"\n'
     eligible = {"main.go", "tool.go", "sub/sub.go"}
-    candidates = _go_import_candidates(tmp_path, source, eligible)
+    candidates = _go_import_candidates(tmp_path, "main.go", source, eligible, RepositoryTools({}))
     assert "main.go" in candidates
     assert "tool.go" in candidates
     assert "sub/sub.go" not in candidates

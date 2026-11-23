@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreInvocation": [
+      {
+        "command": "python -m local_ai_hub.antigravity_hook PreInvocation"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "command": "python -m local_ai_hub.antigravity_hook PreToolUse"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "command": "python -m local_ai_hub.antigravity_hook PostToolUse"
+      }
+    ]
+  }
+}

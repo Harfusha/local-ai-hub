@@ -17,7 +17,7 @@ CRITICAL = (
 REQUIRED_FUNCTIONS = (
     "src/local_ai_hub/http_server.py::Handler._require_authorized",
     "src/local_ai_hub/http_server.py::Handler._authorized",
-    "src/local_ai_hub/commands.py::CommandBroker.run",
+    "src/local_ai_hub/command_broker.py::CommandBroker.run",
     "src/local_ai_hub/agent_memory.py::MemoryStore.record",
 )
 

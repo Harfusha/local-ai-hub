@@ -77,32 +77,40 @@ def test_direct_trace_inspector_tab_loads_and_keeps_trace_history_polling():
     end = DASHBOARD_HTML.index("\ndocument.querySelectorAll('.tabbtn')", start)
     switch_tab = DASHBOARD_HTML[start:end]
     polling_start = DASHBOARD_HTML.index("function tracePollingNeeded(){")
-    polling_end = DASHBOARD_HTML.index("\nasync function pollTraces", polling_start)
+    polling_end = DASHBOARD_HTML.index("\n$('traceRefresh')", polling_start)
     polling = DASHBOARD_HTML[polling_start:polling_end]
+    init_start = DASHBOARD_HTML.index("let initTab = 'overview';")
+    init_end = DASHBOARD_HTML.index("\nloadCoordinationView();", init_start)
+    initial_navigation = DASHBOARD_HTML[init_start:init_end]
     script = (
-        "const state={calls:0,aborts:0};"
-        "const page={id:'traceInspector',querySelector:()=>null};"
-        "const elements={traceInspector:page,controlMenu:{}};"
-        "const document={querySelector:()=>page,querySelectorAll:()=>[],visibilityState:'visible'};"
+        "const requests=[],loaded=[];let active='overview',traceSummaryPoll=null;"
+        "const pages=['overview','traceInspector'].map(id=>({id,querySelector:()=>null,"
+        "classList:{toggle:(_name,selected)=>{if(selected)active=id}}}));"
+        "const elements=Object.fromEntries(pages.map(page=>[page.id,page]));"
+        "const document={querySelector:()=>({id:active}),"
+        "querySelectorAll:selector=>selector==='.page'?pages:[],visibilityState:'visible'};"
         "const $=id=>elements[id]||null;"
         "const localStorage={setItem:()=>{}};"
         "const location={hash:'#traceInspector'};"
         "const history={replaceState:()=>{}};"
         "const window={scrollTo:()=>{},addEventListener:()=>{}};"
-        "const pollTraces=()=>{state.calls++};"
-        "const tracesPollAbortController={abort:()=>{state.aborts++}};"
+        "const apiFetch=async url=>{requests.push(url);return {ok:true,json:async()=>({success:true,items:[{trace_id:'retained'}]})}};"
+        "const updateTraceSummaries=items=>loaded.push(...items.map(item=>item.trace_id));"
         + switch_tab
         + polling
-        + "switchTab('traceInspector');"
-        + "console.log(JSON.stringify({calls:state.calls,aborts:state.aborts,needed:tracePollingNeeded()}));"
+        + initial_navigation
+        + "\nsetImmediate(()=>console.log(JSON.stringify({active,requests,loaded,needed:tracePollingNeeded()})));"
     )
     result = subprocess.run(
-        ["node"], input=script, check=True, capture_output=True, text=True, encoding="utf-8"
+        ["node"], input=script, check=True, capture_output=True, text=True, encoding="utf-8", timeout=8,
     )
 
     import json
 
-    assert json.loads(result.stdout) == {"calls": 1, "aborts": 0, "needed": True}
+    assert json.loads(result.stdout) == {
+        "active": "traceInspector", "requests": ["/api/debug-traces?limit=200"],
+        "loaded": ["retained"], "needed": True,
+    }
 
 
 def test_trace_primary_input_only_removes_top_level_settings():

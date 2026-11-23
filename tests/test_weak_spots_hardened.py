@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from local_ai_hub.commands import _BoundedStreamBuffer
+from local_ai_hub.command_broker import _BoundedStreamBuffer
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.sqlite_support import incremental_vacuum, optimize_db
 
@@ -48,7 +48,7 @@ def test_rag_bm25_fts_fallback_when_embedding_fails(tmp_path: Path):
     (root / "other.py").write_text("def placeholder(): pass\n", encoding="utf-8")
 
     workspace = store.workspace_id(str(root))
-    res = store.index_step(root=str(root), root=str(root), workspace=workspace, max_files=10)
+    res = store.index_step(root=str(root), workspace=workspace, max_files=10)
     assert res["success"] is True
 
     # Now make embeddings fail completely

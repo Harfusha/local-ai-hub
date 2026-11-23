@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import threading
+import time
+
+import pytest
 
 from local_ai_hub.scheduler import AffinityScheduler, Job
 
@@ -31,10 +34,12 @@ def test_cancelled_switch_returns_false_and_clears_stale_active_model() -> None:
     assert scheduler._stats["model_switch_cancellations"] == 1
 
 
-def test_cancelled_dispatched_job_does_not_start_execute() -> None:
+@pytest.mark.parametrize("stopped", ["cancelled", "timed_out"])
+def test_stopped_dispatched_job_does_not_start_execute_and_releases_capacity(stopped, monkeypatch) -> None:
     started: list[bool] = []
     cancel = threading.Event()
-    cancel.set()
+    if stopped == "cancelled":
+        cancel.set()
     job = Job(
         id=1,
         model="fixture-model",
@@ -42,6 +47,8 @@ def test_cancelled_dispatched_job_does_not_start_execute() -> None:
         priority=5,
         execute=lambda: (started.append(True) or {"success": True}),
         cancel_event=cancel,
+        deadline=time.monotonic() - 1 if stopped == "timed_out" else None,
+        gpu_capacity_lease={"lease_id": "test-lease", "owner": "test-job", "generation": "test-generation"},
     )
     scheduler = AffinityScheduler.__new__(AffinityScheduler)
     scheduler._cond = threading.Condition()
@@ -50,8 +57,18 @@ def test_cancelled_dispatched_job_does_not_start_execute() -> None:
     scheduler._inflight_jobs = {job.id: job}
     scheduler._inflight_background = 0
     scheduler._last_foreground_activity = 0.0
+    released = []
+
+    def release_capacity(*identity):
+        released.append(identity)
+        return True
+
+    monkeypatch.setattr(scheduler, "release_gpu_capacity_lease", release_capacity)
 
     scheduler._run_job(job)
 
     assert started == []
     assert job.done.is_set()
+    assert job.result[stopped] is True and job.result["operation_not_started"] is True
+    assert released == [("test-lease", "test-job", "test-generation")]
+    assert job.gpu_capacity_lease is None

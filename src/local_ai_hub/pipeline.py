@@ -589,6 +589,28 @@ class LocalAgentPipeline:
                 "repo_context": {"root": deterministic.get("root", root), "evidence": deterministic.get("evidence", []), "local_context_tokens": 0, "semantic_used": False},
                 "pipeline": {"mode": mode, "degraded": False, "stages": ["deterministic-script"], "confidence": deterministic.get("confidence"), "ollama_calls": 0},
             }
+        scheduler = getattr(self.services, "scheduler", None)
+        admission_blocked = False
+        try:
+            admission_state = scheduler.status().get("gpu_admission_state") if scheduler is not None else None
+            admission_blocked = admission_state == "outcome_unknown"
+            if admission_state == "external_reservation":
+                admission_blocked = True
+                blocks_scheduler = getattr(scheduler, "_external_gpu_blocks_scheduler", None)
+                if callable(blocks_scheduler):
+                    admission_blocked = bool(blocks_scheduler())
+        except Exception:
+            admission_state = None
+        if admission_blocked:
+            error_code = "gpu_outcome_unknown" if admission_state == "outcome_unknown" else "gpu_reservation_blocked"
+            return {
+                "success": False,
+                "error": "local inference is blocked by GPU admission; operation was not started",
+                "error_code": error_code,
+                "operation_not_started": True,
+                "terminal": True,
+                "retryable": False,
+            }
         low_task = task.lower()
         mutation_terms = set(self.config.get("local_pipeline", {}).get("mutation_terms", [
             "fix", "implement", "change", "modify", "refactor", "review diff", "regression", "patch", "rewrite", "add", "remove", "update"

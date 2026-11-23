@@ -1,6 +1,6 @@
 import pytest
 
-from local_ai_hub.operation_contracts import operation_contract, validate_operation_arguments
+from local_ai_hub.operation_contracts import operation_contract, operation_tool_input_schema, validate_operation_arguments
 from local_ai_hub.search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW
 
 
@@ -38,3 +38,28 @@ def test_pagination_arguments_are_scoped_to_search_actions():
     )
 
     assert error is not None
+
+
+def test_repo_search_contract_advertises_exact_count():
+    schema = operation_tool_input_schema("local_ai_repo")
+
+    assert schema["properties"]["exact_count"]["type"] == "boolean"
+    assert validate_operation_arguments("local_ai_repo", "search", {"exact_count": True}) is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"exact_count": True, "search_mode": "lexical"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"exact_count": False, "search_mode": "hybrid"},
+    ) is None
+
+
+@pytest.mark.parametrize(("action", "arguments"), [
+    ("search", {"exact_count": None}),
+    ("search", {"exact_count": "true"}),
+    ("search", {"exact_count": 1}),
+    ("search", {"exact_count": True, "search_mode": "hybrid"}),
+    ("search", {"exact_count": True, "search_mode": "rag"}),
+    ("code_index", {"exact_count": False}),
+])
+def test_repo_search_contract_rejects_invalid_exact_count(action, arguments):
+    assert validate_operation_arguments("local_ai_repo", action, arguments) is not None

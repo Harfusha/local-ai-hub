@@ -134,6 +134,15 @@ class CircuitBreakerRegistry:
             state = self._get_or_create_locked(key)
             return state.probe_generation if state is not None else 0
 
+    def abandon_probe(self, key: str, *, probe_generation: int) -> None:
+        """Release the admitted probe without recording a backend result."""
+        key = self._clean_key(key)
+        with self._lock:
+            state = self._states.get(key)
+            if state is not None and state.half_open_probe and state.probe_generation == probe_generation:
+                state.half_open_probe = False
+                state.half_open_probe_since = 0.0
+
     def success(self, key: str, *, probe_generation: int | None = None) -> None:
         key = self._clean_key(key)
         with self._lock:
@@ -147,7 +156,8 @@ class CircuitBreakerRegistry:
                     or time.monotonic() - state.half_open_probe_since > self.probe_timeout_seconds
                 ):
                     return
-                self._states[key] = BreakerState()
+                # An expired probe may still report after this circuit recovers.
+                self._states[key] = BreakerState(probe_generation=state.probe_generation)
 
     def failure(self, key: str, *, probe_generation: int | None = None) -> None:
         key = self._clean_key(key)

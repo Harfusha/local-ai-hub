@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from unittest.mock import MagicMock
 import pytest
 from local_ai_hub.token_router import LosslessTokenRouter
@@ -68,3 +69,35 @@ def test_n01_token_router_rejects_invalid_llm_scores(score):
     assert result["success"] is True
     assert result["local_selector_used"] is False
     assert router.fallbacks == 1
+
+
+def test_t03_token_router_falls_back_for_1000_malformed_model_responses(tmp_path):
+    rng = random.Random(20261119)
+    services = MagicMock()
+    router = LosslessTokenRouter(
+        config={
+            "lossless_router": {"enabled": True, "threshold_tokens": 10},
+            "models": {"fast_code": "test-fast"},
+            "server": {"state_dir": str(tmp_path)},
+        },
+        services=services,
+    )
+    malformed = ["", "{", "[", "not json", "```json\n{broken}\n```", "null"]
+    invalid_values = [None, True, False, "NaN", "Infinity", float("nan"), float("inf"), -1e100, 1e100, [], {}]
+    text = "\n".join(f"line {index}: useful token-router evidence" for index in range(1, 51))
+
+    for index in range(1000):
+        if rng.randrange(2):
+            response = rng.choice(malformed)
+        else:
+            response = json.dumps({"ranges": [{
+                "start": rng.choice([None, True, "invalid", -10**100, 10**100]),
+                "end": rng.choice([None, False, "invalid", -10**100, 10**100]),
+                "score": rng.choice(invalid_values),
+            }]})
+        services._generate.return_value = {"success": True, "text": response}
+        result = router.route_text(text, f"query-{index}", path=f"fuzz-{index}.py", force_local=True)
+        assert result["success"] is True
+        assert result["local_selector_used"] is False
+
+    assert router.fallbacks == 1000

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from local_ai_hub.commands import build_invocation, validate_invocation
+from local_ai_hub.command_broker import build_invocation, validate_invocation
 
 
 def test_command_arguments_are_passed_as_argv_not_nested_shell_text() -> None:

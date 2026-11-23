@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from local_ai_hub.commands import CommandBroker, CommandInvocation
+from local_ai_hub.command_broker import CommandBroker, CommandInvocation
 from local_ai_hub.project_config import (
     PathHint,
     path_matches_pattern,

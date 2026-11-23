@@ -32,7 +32,7 @@ def test_pipeline_keeps_duplicate_actions_and_failure_state(tmp_path, monkeypatc
 
     monkeypatch.setattr(server, "CLIENT", SimpleNamespace(post=post))
     monkeypatch.setattr(server, "FEATURES", FeatureSet({}))
-    result = server._local_ai_repo_impl(action="pipeline", root=str(tmp_path), root=str(tmp_path), steps=[
+    result = server._local_ai_repo_impl(action="pipeline", root=str(tmp_path),  steps=[
         {"action": "affected_tests", "path": "a.py"},
         {"action": "verify", "evidence": [{"id": "E-test"}]},
         {"action": "affected_tests", "path": "b.py"},
@@ -51,7 +51,7 @@ def test_pipeline_rejects_bad_step_before_backend(step, tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("malformed step reached backend")
     monkeypatch.setattr(server, "CLIENT", SimpleNamespace(post=forbidden))
-    result = server._local_ai_repo_impl(action="pipeline", root=str(tmp_path), root=str(tmp_path), steps=[step])
+    result = server._local_ai_repo_impl(action="pipeline", root=str(tmp_path),  steps=[step])
     assert result["success"] is False
     assert result["steps_failed"] == 1
 
@@ -65,14 +65,14 @@ def test_pubsub_sequence_and_timestamp_are_distinct_canonical_filters(monkeypatc
     monkeypatch.setattr(server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
     monkeypatch.setattr(server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(server, "_record_adoption", lambda *_args, **_kwargs: None)
-    result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), root=str(tmp_path), after_seq=17, after_ts=3.5)
+    result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path),  after_seq=17, after_ts=3.5)
     assert result["success"] is True
     assert calls[0]["after_seq"] == 17
     assert calls[0]["after_ts"] == 3.5
-    retired = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), root=str(tmp_path), expected_version=3)
+    retired = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path),  expected_version=3)
     assert retired["terminal"] is True
     for value in (-1, True, MAX_EVENT_SEQUENCE + 1):
-        result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), root=str(tmp_path), after_seq=value)
+        result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path),  after_seq=value)
         assert result["terminal"] is True
     assert len(calls) == 1
 
@@ -112,7 +112,7 @@ def test_pipeline_parallel_ceiling_and_mutation_serialization(actions, ceiling, 
             active -= 1
         return {"success": True}
     monkeypatch.setattr(server, "CLIENT", SimpleNamespace(post=post))
-    result = server._local_ai_repo_impl(action="pipeline", root=str(tmp_path), root=str(tmp_path), steps=[{"action": action} for action in actions])
+    result = server._local_ai_repo_impl(action="pipeline", root=str(tmp_path),  steps=[{"action": action} for action in actions])
     assert result["success"] is True
     assert peak <= ceiling
     assert peak > 1 if ceiling == 4 else peak == 1

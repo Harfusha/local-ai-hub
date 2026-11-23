@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.projection import AgentProjector, _dense_text
 
 

@@ -107,7 +107,7 @@ class AsyncJobManager:
         )
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
-        self._dispatchers: set[threading.Thread] = set()
+        self._dispatchers: set[Future[Any] | threading.Thread] = set()
         self._workers: set[Future[Any] | threading.Thread] = set()
         self._processes: dict[str, list[Any]] = {}
         self._shutdown = threading.Event()
@@ -200,6 +200,11 @@ class AsyncJobManager:
                         )""")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_state ON async_jobs(state, lease_until, expires_at)")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_dispatch ON async_jobs(state, dispatch_not_before, expires_at)")
+                        con.execute("""CREATE INDEX IF NOT EXISTS idx_async_jobs_terminal_expiry
+                            ON async_jobs(state, expires_at)
+                            WHERE state IN ('done','failed','cancelled','outcome_unknown')""")
+                        con.execute("""CREATE INDEX IF NOT EXISTS idx_async_jobs_tombstone_purge
+                            ON async_jobs(state, updated_at) WHERE state='expired'""")
                         # Additive metadata table preserves the exact durable job schema.
                         con.execute("""CREATE TABLE IF NOT EXISTS async_job_progress (
                             job_id TEXT PRIMARY KEY, attempt INTEGER NOT NULL,
@@ -551,12 +556,17 @@ class AsyncJobManager:
         """Release ownership and wake queued jobs only after the final cleanup exits."""
         with self._mode_transition_lock, self._lock:
             token = str(token)
-            self._resource_release_tokens.discard(token)
+            if token not in self._resource_release_tokens:
+                return
+            self._resource_release_tokens.remove(token)
             self._resource_release_workers.pop(token, None)
             if self._resource_release_tokens:
                 return
             waiters = sorted(self._resource_release_waiters)
             self._resource_release_waiters.clear()
+        if not waiters:
+            self._dispatch_next_queued()
+            return
         for job_id in waiters:
             self._reset_event_for_resume(job_id)
             self._dispatch_background(job_id)
@@ -949,7 +959,7 @@ class AsyncJobManager:
         if self._shutdown.is_set():
             return
         with self._lock:
-            if len(self._workers) >= self.max_workers:
+            if self._resource_release_tokens or len(self._workers) >= self.max_workers:
                 return
             try:
                 with closing(self._connect()) as con:
@@ -974,16 +984,38 @@ class AsyncJobManager:
             try:
                 self._dispatch(job_id)
             finally:
-                with self._lock:
-                    self._dispatchers.discard(threading.current_thread())
-                self._dispatch_next_queued()
+                if self.execution_pool is None:
+                    with self._lock:
+                        self._dispatchers.discard(threading.current_thread())
+                    self._dispatch_next_queued()
 
         with self._lock:
-            if self._shutdown.is_set() or len(self._dispatchers) >= self.max_dispatch_workers:
+            if self._shutdown.is_set():
                 return
-            worker = threading.Thread(target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True)
+            if self._resource_release_tokens:
+                self._resource_release_waiters.add(job_id)
+                return
+            if len(self._dispatchers) >= self.max_dispatch_workers:
+                return
+            if self.execution_pool is None:
+                worker: Future[Any] | threading.Thread = threading.Thread(
+                    target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True,
+                )
+            else:
+                try:
+                    worker = self.execution_pool.submit("io", run)
+                except Exception:
+                    return
             self._dispatchers.add(worker)
-        worker.start()
+        if isinstance(worker, threading.Thread):
+            worker.start()
+        else:
+            def dispatch_done(completed: Future[Any]) -> None:
+                with self._lock:
+                    self._dispatchers.discard(completed)
+                self._dispatch_next_queued()
+
+            worker.add_done_callback(dispatch_done)
 
     @staticmethod
     def _expired_job_response(
@@ -1066,6 +1098,8 @@ class AsyncJobManager:
         mode_snapshot: dict[str, Any] | None = None
         mode_rejection: dict[str, Any] | None = None
         with self._mode_transition_lock, self._lock, closing(self._connect()) as con:
+            if self._shutdown.is_set():
+                return {"success": False, "error": "async job manager is closed", "terminal": True, "retryable": False}
             if caller_request_id:
                 identified = con.execute(
                     "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id,result_json FROM async_jobs WHERE json_valid(payload_json) AND json_type(payload_json,'$.request_id')='text' AND json_extract(payload_json,'$.request_id')<>'' AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
@@ -1137,11 +1171,12 @@ class AsyncJobManager:
                 trace_id = ""
         self._event(job_id)
         if delay:
-            timer = threading.Timer(delay, self._dispatch, args=(job_id,))
-            timer.daemon = True
             with self._lock:
-                self._delayed_dispatch[job_id] = timer
-            timer.start()
+                if not self._shutdown.is_set():
+                    timer = threading.Timer(delay, self._dispatch, args=(job_id,))
+                    timer.daemon = True
+                    self._delayed_dispatch[job_id] = timer
+                    timer.start()
         else:
             self._dispatch_background(job_id)
         return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
@@ -1625,7 +1660,7 @@ class AsyncJobManager:
                 self.task_store.fail(task_id, reason=task_failure_reason)
             except Exception:
                 pass
-        if final and (final.get("state") == "done" or final.get("success") is True):
+        if stats_counter == "completed":
             if task_id and self.task_store is not None:
                 try:
                     from .agent_tasks import TaskCheckpoint
@@ -1654,12 +1689,15 @@ class AsyncJobManager:
                     pass
         if self.debug_traces is not None and trace_id:
             try:
+                trace_state = {"completed": "done", "failed": "failed", "cancelled": "cancelled"}.get(
+                    stats_counter, "outcome_unknown" if final.get("outcome_unknown") else "queued",
+                )
                 self.debug_traces.update(trace_id, output=final)
                 self.debug_traces.finish(
                     trace_id,
-                    state=str(final.get("state") or ("done" if final.get("success") else "failed")),
+                    state=trace_state,
                     response=None,
-                    error="" if final.get("success") else "async job failed",
+                    error="" if trace_state == "done" else str(final.get("error") or f"async job {trace_state}"),
                 )
             except Exception:
                 pass
@@ -1733,7 +1771,7 @@ class AsyncJobManager:
             "in_progress": state in {"queued", "running"},
             "terminal": state in self.TERMINAL_STATES,
             "retryable": state in {"queued", "running"},
-            "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
+            "next_action": "wait" if state in {"queued", "running"} else "inspect_result",
             "admission": self._admission("accepted", "job_persisted", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
         }
         if state == "outcome_unknown":
@@ -1840,7 +1878,9 @@ class AsyncJobManager:
         if state == "cancelled":
             return {"success": True, "job_id": job_id, "state": state, "cancel_requested": True, "terminal": True, "retryable": False}
         if row["state"] != "done":
-            result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "in_progress": state in {"queued", "running"}, "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
+            result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "in_progress": state in {"queued", "running"}, "terminal": state in self.TERMINAL_STATES, "retryable": False}
+            if state in {"queued", "running"}:
+                result.update(waiting=True, next_action="wait")
             if state == "outcome_unknown":
                 try:
                     retained = json.loads(str(row["result_json"] or "{}"))
@@ -1940,6 +1980,9 @@ class AsyncJobManager:
         with self._lock, closing(self._connect()) as con:
             rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,lease_until,dispatch_not_before,updated_at FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
             for job_id, state, action, attempts, cancelled, trace_id, payload_json, lease_until, dispatch_not_before, updated_at in rows:
+                # A live worker may still own this attempt or be confirming cancellation.
+                if state == "running" and float(lease_until or 0) > now:
+                    continue
                 # Recovery may race a live manager. Change the row only if every
                 # field used for this decision still matches the selected snapshot.
                 cas = "job_id=? AND state IS ? AND attempts IS ? AND cancel_requested IS ? AND lease_until IS ? AND dispatch_not_before IS ? AND updated_at IS ?"
@@ -2066,7 +2109,7 @@ class AsyncJobManager:
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
 
-    def close(self) -> None:
+    def close(self) -> dict[str, bool] | None:
         self._shutdown.set()
         with self._lock:
             waiters = list(self._events.values())
@@ -2120,8 +2163,14 @@ class AsyncJobManager:
                 worker for worker in self._workers
                 if isinstance(worker, Future) and not worker.done()
             }
+            workers_pending = bool(self._dispatchers or self._workers) or any(
+                worker.is_alive() for worker in resource_release_workers
+            )
         if persistence_error is not None:
             raise persistence_error
+        if workers_pending:
+            return {"success": False, "cleanup_unconfirmed": True}
+        return None
 
     def stats(self) -> dict[str, Any]:
         def read() -> dict[str, int]:

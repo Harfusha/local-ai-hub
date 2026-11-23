@@ -1,8 +1,31 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tomllib
+
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from tools.release_inventory import assess_response, lock_from_report
+
+
+def test_release_constraints_pin_all_declared_runtime_dependencies():
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    constraints = (root / "tools/release-runtime-constraints.txt").read_text(encoding="utf-8")
+    pins = {}
+    for line in constraints.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            name, version = line.split("==", 1)
+            pins[canonicalize_name(name)] = version
+
+    for dependency in project["dependencies"]:
+        requirement = Requirement(dependency)
+        pinned = pins.get(canonicalize_name(requirement.name))
+        assert pinned is not None, f"Missing release constraint for {requirement.name}"
+        assert pinned in requirement.specifier, f"Release version {pinned} does not satisfy {requirement}"
 
 
 def test_release_constraints_cover_every_resolved_dependency():

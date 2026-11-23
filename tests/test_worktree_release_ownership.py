@@ -39,7 +39,7 @@ def test_worktree_release_fails_closed_without_owner_identifier(tmp_path: Path) 
 
 
 def test_services_worktree_release_forwards_owner_identifier() -> None:
-    source = Path(__file__).parents[1] / "src/local_ai_hub/services.py"
+    source = Path(__file__).parents[1] / "src/local_ai_hub/service_repository.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     method = next(
         node for node in ast.walk(tree)
@@ -73,7 +73,7 @@ def test_client_worktree_release_posts_owner_identifier(monkeypatch) -> None:
 
 
 def test_mcp_worktree_release_passes_owner_identifier() -> None:
-    source = Path(__file__).parents[1] / "src/local_ai_hub/mcp_server.py"
+    source = Path(__file__).parents[1] / "src/local_ai_hub/mcp_tools_coord.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     calls = [
         node for node in ast.walk(tree)
@@ -87,8 +87,10 @@ def test_mcp_worktree_release_passes_owner_identifier() -> None:
     assert any(keyword.arg == "worktree_id" and isinstance(keyword.value, ast.Name)
                and keyword.value.id == "worktree_id" for keyword in calls[0].keywords)
 
+    server_source = Path(__file__).parents[1] / "src/local_ai_hub/mcp_server.py"
+    server_tree = ast.parse(server_source.read_text(encoding="utf-8"))
     protected = next(
-        node.value for node in tree.body
+        node.value for node in server_tree.body
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == "_STATUS_PROTECTED_KEYS"
                 for target in node.targets)
@@ -100,7 +102,7 @@ def test_mcp_worktree_release_passes_owner_identifier() -> None:
 
 
 def test_http_worktree_release_passes_owner_identifier() -> None:
-    source = Path(__file__).parents[1] / "src/local_ai_hub/http_server.py"
+    source = Path(__file__).parents[1] / "src/local_ai_hub/http_routes_post.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     calls = [
         node for node in ast.walk(tree)

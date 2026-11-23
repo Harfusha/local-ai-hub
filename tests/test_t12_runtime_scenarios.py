@@ -123,12 +123,16 @@ def test_t12_prepare_model_forwards_deadline_and_stop_to_embedding_load() -> Non
         "llama_cpp": {"fallback_to_ollama": True, "model_load_timeout_seconds": 5},
         "ollama": {"keep_alive": "24h"},
     }
+    runtime._mixed_fallback_model = None
+    runtime._mixed_fallback_guard = None
     runtime.timeout = 10.0
     runtime.ensure_running = lambda: True
-    runtime.loaded_model_details = lambda **_kwargs: []
+    calls: list[dict[str, Any]] = []
+    runtime.loaded_model_details = lambda **_kwargs: ([
+        {"name": "reranker-model", "size_bytes": 100, "vram_bytes": 100, "cpu_bytes": 0}
+    ] if calls else [])
     runtime._is_embedding_model = lambda _model: True
     runtime._invalidate_loaded_cache = lambda: None
-    calls: list[dict[str, Any]] = []
 
     class LlamaRuntime:
         def supports_model(self, _model: str) -> bool:

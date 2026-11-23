@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from tests.fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
 

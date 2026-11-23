@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import threading
 import tomllib
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
@@ -241,7 +242,7 @@ class ProjectContext:
         return self._hint_store.project_id
 
     def path_hints(
-        self, *, purpose: str, scope: str, repository_revision: str
+        self, *, purpose: str, scope: str, repository_revision: str | Callable[[], str]
     ) -> tuple[PathHint, ...]:
         return self._hint_store.find(
             purpose=purpose,
@@ -256,7 +257,7 @@ class ProjectContext:
         *,
         purpose: str,
         scope: str,
-        repository_revision: str,
+        repository_revision: str | Callable[[], str],
         path_hints: list[PathHint] | tuple[PathHint, ...] = (),
     ) -> PathHintUsage:
         """Rank candidates by durable, request, then saved repo-scoped hints."""
@@ -269,11 +270,15 @@ class ProjectContext:
             for hint in path_hints[:_MAX_REQUEST_PATH_HINTS]
             if isinstance(hint, PathHint)
         )
+        if callable(repository_revision) and any(hint.repository_revision for hint in request_hints):
+            repository_revision = repository_revision()
         saved_hints = self.path_hints(
             purpose=purpose,
             scope=scope,
             repository_revision=repository_revision,
         )
+        if callable(repository_revision):
+            repository_revision = (saved_hints[0].repository_revision or "") if saved_hints else ""
         ordered = tuple(candidates)
         hints_available = bool(configured_hints or request_hints or saved_hints)
         hint_used = False
@@ -1683,7 +1688,7 @@ class ProjectPathHintStore:
         *,
         purpose: str,
         scope: str,
-        repository_revision: str,
+        repository_revision: str | Callable[[], str],
         config_digest: str,
     ) -> tuple[PathHint, ...]:
         if not self.database.is_file():
@@ -1699,22 +1704,24 @@ class ProjectPathHintStore:
                 if table_exists is None:
                     return ()
                 now = datetime.now(timezone.utc).isoformat()
-                rows = connection.execute(
-                    """SELECT path, purpose, scope, evidence_id, provenance,
-                              repository_revision, config_digest, expires_at
-                       FROM project_path_hints
+                hint_scope = """FROM project_path_hints
                        WHERE project_id = ? AND purpose = ? AND scope = ?
-                         AND repository_revision = ? AND config_digest = ?
-                         AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
-                       ORDER BY path LIMIT 256""",
-                    (
-                        self.project_id,
-                        purpose,
-                        scope,
-                        repository_revision,
-                        config_digest,
-                        now,
-                    ),
+                         AND config_digest = ?
+                         AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))"""
+                parameters = (self.project_id, purpose, scope, config_digest, now)
+                if callable(repository_revision):
+                    found = connection.execute(
+                        f"SELECT 1 {hint_scope} LIMIT 1", parameters,
+                    ).fetchone()
+                    if found is None:
+                        return ()
+                    repository_revision = repository_revision()
+                rows = connection.execute(
+                    f"""SELECT path, purpose, scope, evidence_id, provenance,
+                               repository_revision, config_digest, expires_at
+                        {hint_scope} AND repository_revision = ?
+                        ORDER BY path LIMIT 256""",
+                    (*parameters, repository_revision),
                 ).fetchall()
         except sqlite3.OperationalError:
             if not self.database.is_file():

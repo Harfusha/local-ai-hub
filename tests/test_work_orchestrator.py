@@ -138,7 +138,7 @@ class FakeServices:
     def test_matrix(self, root): return {"success": True, "commands": ["git diff --check"]}
     def deterministic_query(self, root, query, limit=24): return {"success": True, "facts": []}
     def code_query(self, root, query, limit=20): return {"success": True, "symbols": []}
-    def fast_context(self, root, query, max_tokens): return {"success": True, "evidence": []}
+    def fast_context(self, request): return {"success": True, "evidence": []}
     def repo_diff(self, root, base="HEAD", staged=False, max_tokens=5000):
         cp = subprocess.run(["git", "-C", root, "diff"], capture_output=True, text=True, check=False)
         return {"success": True, "diff": cp.stdout}
@@ -196,7 +196,6 @@ def owned_verification_context(tmp_path: Path, root: Path, artifacts: FakeArtifa
         task_id=task_id,
         actor="work-order-owner",
         repo_root=str(root),
-    root=str(root),
     )
     tasks.transition(task_id, TaskStatus.ACTIVE, reason="start bounded work",
                      actor="work-order-owner", idempotency_key="start-bounded-work")

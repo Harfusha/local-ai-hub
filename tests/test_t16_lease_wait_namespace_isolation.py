@@ -98,8 +98,8 @@ def test_concurrent_canonical_wait_initialization_preserves_namespace_rows(tmp_p
         try:
             barrier.wait()
             store = ScopeLeaseStore(state_dir)
-            assert store.claim(owner="blocker", root=str(root), root=str(root), paths=["src/shared.py"], coordination_id=namespace)["success"] is True
-            assert store.claim(owner="waiter", root=str(root), root=str(root), paths=["src/shared.py"], coordination_id=namespace)["success"] is False
+            assert store.claim(owner="blocker", root=str(root),  paths=["src/shared.py"], coordination_id=namespace)["success"] is True
+            assert store.claim(owner="waiter", root=str(root),  paths=["src/shared.py"], coordination_id=namespace)["success"] is False
             results[namespace] = store.waits(str(root), coordination_id=namespace)
         except BaseException as exc:
             errors.append(exc)

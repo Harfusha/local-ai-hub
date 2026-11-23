@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.agent_events import SwarmPubSub
-from local_ai_hub.commands import CommandBroker, _BoundedStreamBuffer, _redact_secrets
+from local_ai_hub.command_broker import CommandBroker, _BoundedStreamBuffer, _redact_secrets
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.services import LocalAIServices

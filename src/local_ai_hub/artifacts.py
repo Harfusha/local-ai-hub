@@ -278,9 +278,9 @@ class ArtifactStore:
     def _connect_for_initialization(self, *, fresh: bool) -> sqlite3.Connection:
         mode = "rwc" if fresh else "rw"
         uri = f"{self.path.resolve().as_uri()}?mode={mode}"
-        con = connect_sqlite(uri, uri=True, timeout_seconds=0.75, wal=fresh)
+        con = connect_sqlite(uri, uri=True, timeout_seconds=5.0, wal=fresh)
         try:
-            con.execute("PRAGMA busy_timeout=750")
+            con.execute("PRAGMA busy_timeout=5000")
             con.execute("PRAGMA foreign_keys=ON")
             con.execute("PRAGMA cache_size=-32768")
             try:
@@ -420,7 +420,7 @@ class ArtifactStore:
     def _configure_read_deadline(self, con: sqlite3.Connection, deadline: float) -> None:
         self._check_read_deadline(deadline)
         remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
-        con.execute(f"PRAGMA busy_timeout={min(100, remaining_ms)}")
+        con.execute(f"PRAGMA busy_timeout={max(1000, remaining_ms)}")
         con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
 
     def _read_small_text(
@@ -521,17 +521,21 @@ class ArtifactStore:
                 if overlap_start < overlap_end:
                     span_parts[index].append(decoded[overlap_start - chunk_start:overlap_end - chunk_start])
             if parse_sections:
-                for local_index, character in enumerate(decoded):
-                    if character == "\n":
-                        finish_line()
-                        line_start = chunk_start + local_index + 1
-                        line_chars.clear()
-                        line_overflow = False
-                    elif not line_overflow:
-                        if len(line_chars) < MAX_ARTIFACT_HEADING_CHARS + 1:
-                            line_chars.append(character)
-                        else:
-                            line_overflow = True
+                cursor = 0
+                while cursor < len(decoded):
+                    newline = decoded.find("\n", cursor)
+                    end = len(decoded) if newline == -1 else newline
+                    if not line_overflow:
+                        remaining = MAX_ARTIFACT_HEADING_CHARS + 1 - len(line_chars)
+                        line_chars.extend(decoded[cursor:min(end, cursor + remaining)])
+                        line_overflow = end - cursor > remaining
+                    if newline == -1:
+                        break
+                    finish_line()
+                    cursor = newline + 1
+                    line_start = chunk_start + cursor
+                    line_chars.clear()
+                    line_overflow = False
             total_chars = chunk_end
 
         try:

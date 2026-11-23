@@ -66,6 +66,55 @@ def test_late_half_open_probe_result_cannot_reset_newer_probe(monkeypatch):
     assert not registry.status()["model"]["open"]
 
 
+def test_abandoned_probe_cannot_release_its_replacement(monkeypatch):
+    tick = [10.0]
+    monkeypatch.setattr(resilience.time, "monotonic", lambda: tick[0])
+    registry = CircuitBreakerRegistry(failure_threshold=1, cooldown_seconds=1, probe_timeout_seconds=2)
+    registry.failure("model")
+    tick[0] = 12.0
+    previous = registry.allow("model")
+    tick[0] = 15.0
+    replacement = registry.allow("model")
+    assert previous.probe_generation is not None and replacement.probe_generation is not None
+
+    registry.abandon_probe("model", probe_generation=previous.probe_generation)
+
+    assert not registry.allow("model")
+    registry.abandon_probe("model", probe_generation=replacement.probe_generation)
+    assert registry.allow("model").probe_generation > replacement.probe_generation
+    assert registry.status()["model"]["failures"] == 1
+
+
+@pytest.mark.parametrize("late_result", ["success", "failure"])
+def test_expired_probe_cannot_reuse_generation_after_successful_recovery(monkeypatch, late_result):
+    tick = [10.0]
+    monkeypatch.setattr(resilience.time, "monotonic", lambda: tick[0])
+    registry = CircuitBreakerRegistry(failure_threshold=1, cooldown_seconds=1, probe_timeout_seconds=2)
+    registry.failure("model")
+
+    tick[0] = 12.0
+    expired_probe = registry.allow("model")
+    assert expired_probe.probe_generation is not None
+    tick[0] = 15.0
+    recovery_probe = registry.allow("model")
+    assert recovery_probe.probe_generation is not None
+    registry.success("model", probe_generation=recovery_probe.probe_generation)
+
+    assert registry.allow("model").probe_generation is None
+    registry.failure("model")
+    tick[0] = 17.0
+    current_probe = registry.allow("model")
+    assert current_probe.probe_generation is not None
+    before_late_result = registry.status()["model"]
+
+    getattr(registry, late_result)("model", probe_generation=expired_probe.probe_generation)
+
+    assert registry.status()["model"] == before_late_result
+    assert current_probe.probe_generation > recovery_probe.probe_generation
+    registry.success("model", probe_generation=current_probe.probe_generation)
+    assert registry.status()["model"]["failures"] == 0
+
+
 @pytest.mark.parametrize("key", ["", " ", None, 1, "x" * 513])
 @pytest.mark.parametrize("operation", ["allow", "success", "failure"])
 def test_invalid_key_never_allocates_state(key, operation):

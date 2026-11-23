@@ -53,15 +53,15 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     schemas = generate_mcp_tool_schemas(cfg)
 
     assert features.agent_os
-    assert "Recipe — Agent OS Execution" in policy
+    assert "local-ai-orchestrator" in policy
     assert "Create a task contract before edits" in skill
     assert "verify_completion" in skill
     assert "Agent OS trigger and lifecycle" in references["tools.md"]
     assert "Agent OS through `local_ai_coord`" in references["multi-agent.md"]
     assert "create an Agent OS task" in schemas["local_ai_coord"]["description"]
     for semantic_action in ("delegate", "reason", "second_opinion", "compress"):
-        assert semantic_action in policy.lower()
-    assert "deterministic/indexed evidence" in policy.lower()
+        assert semantic_action in skill.lower()
+    assert "deterministic/indexed evidence" in skill.lower()
     tools_reference = references["tools.md"].lower()
     workflows_reference = references["workflows.md"].lower()
     assert "semantic generation" in tools_reference
@@ -121,17 +121,15 @@ def test_codex_and_antigravity_surfaces_follow_profile_gated_semantic_actions():
     cfg["hardware"] = {"profile": "low"}
     features = FeatureSet.from_config(cfg)
     disabled_actions = {"review", "reason", "second_opinion"} - set(features.supported_task_actions())
-    outputs = (
-        generate_antigravity_instructions(cfg),
-        generate_global_policy(cfg),
-        generate_skill_markdown(cfg),
-    )
+    detailed_outputs = (generate_antigravity_instructions(cfg), generate_skill_markdown(cfg))
+    policy = generate_global_policy(cfg)
 
     assert "compress" in features.supported_task_actions()
-    for output in outputs:
+    for output in detailed_outputs:
         assert "compress" in output
         for action in disabled_actions:
             assert f'local_ai_task(action="{action}")' not in output
+    assert "local-ai-orchestrator" in policy
 
 
 def test_whole_task_tool_obeys_its_feature_gate():

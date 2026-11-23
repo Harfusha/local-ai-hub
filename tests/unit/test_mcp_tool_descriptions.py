@@ -82,7 +82,9 @@ def test_task_description_keeps_feature_routing_contracts() -> None:
     assert "review, independent second opinions, semantic compression" in lean
     assert "Semantic contract enabled=True; status=True." in lean
     assert "Actions: review, second_opinion, compress." in lean
+    assert "call `result` only after the job is terminal" in lean
     assert "prep-model" in full and "reasoning-model" in full
+    assert "call `result` only after the job is terminal" in full
     assert "trigger" in full
 
 
@@ -141,6 +143,11 @@ def test_coord_description_keeps_agent_os_and_reservation_contracts() -> None:
     assert description.startswith("Agent OS coordination for task contracts")
     assert "gpu_reservation_release_authorized requires explicit consent=true" in description
     assert "gpu_capacity_lease_release requires exact lease_id" in description
+    assert "state_data.memory_audit.used_ids" in description
+    assert "not_used_reason" in description
+    assert "persisted real `session_id`" in description
+    assert "`plan_reconcile_steering` requires a matching persisted task session" in description
+    assert "never a title or slug" in description
     assert "Malformed metadata and symlinks remain fail-closed." in description
     assert "Plan notes." in description
     assert "Trigger local_ai_coord." in description
@@ -190,6 +197,10 @@ def test_repo_description_keeps_disabled_and_lean_contracts() -> None:
     assert "TIER[" in disabled
     assert "aggregate-bounded responses" in lean
     assert "adaptive context fuses deterministic/indexed evidence" in lean
+    assert "fragment exceeds the 512-token review budget" in lean
+    assert "exclude generated/minified files" in lean
+    assert "`solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`, plus real root-bound `task_id`/`session_id` for shadow capture" in lean
+    assert "Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`" in lean
     assert "Actions: search, code_index, context, solve, review_diff" in lean
 
 

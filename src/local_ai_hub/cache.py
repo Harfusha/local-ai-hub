@@ -458,7 +458,7 @@ class SQLiteCache:
     recreated rather than taking foreground requests down with it.
     """
 
-    def __init__(self, path: Path | str, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 0.75, busy_retries: int = 3):
+    def __init__(self, path: Path | str, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 5.0, busy_retries: int = 3):
         if not isinstance(path, (str, Path)) or not str(path).strip() or "\x00" in str(path):
             raise ValueError("invalid cache path")
         if not isinstance(namespace, str) or not namespace.strip() or "\x00" in namespace:
@@ -1056,6 +1056,12 @@ class TieredCache:
         }
 
 
+class _CacheFlight(threading.Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self.uncached_result: dict[str, Any] | None = None
+
+
 class SingleFlightCache:
     """Exact cache plus striped in-process coalescing of identical concurrent requests."""
 
@@ -1065,10 +1071,9 @@ class SingleFlightCache:
         self.wait_timeout_seconds = max(0.01, float(wait_timeout_seconds))
         self.num_shards = max(1, int(shards))
         self._locks = [threading.Lock() for _ in range(self.num_shards)]
-        self._inflight_shards: list[dict[str, threading.Event]] = [{} for _ in range(self.num_shards)]
+        self._inflight_shards: list[dict[str, _CacheFlight]] = [{} for _ in range(self.num_shards)]
         self._inflight_started_shards: list[dict[str, float]] = [{} for _ in range(self.num_shards)]
         self._errors_shards: list[dict[str, tuple[float, str]]] = [{} for _ in range(self.num_shards)]
-        self._ephemeral_shards: list[dict[str, tuple[float, dict[str, Any]]]] = [{} for _ in range(self.num_shards)]
         self._hits = [0] * self.num_shards
         self._misses = [0] * self.num_shards
         self._coalesced_waiters = [0] * self.num_shards
@@ -1103,14 +1108,6 @@ class SingleFlightCache:
         for idx in range(self.num_shards):
             with self._locks[idx]:
                 out.update(self._errors_shards[idx])
-        return out
-
-    @property
-    def _ephemeral(self) -> dict[str, tuple[float, dict[str, Any]]]:
-        out: dict[str, tuple[float, dict[str, Any]]] = {}
-        for idx in range(self.num_shards):
-            with self._locks[idx]:
-                out.update(self._ephemeral_shards[idx])
         return out
 
     @property
@@ -1151,6 +1148,7 @@ class SingleFlightCache:
         compute: Callable[[], dict[str, Any]],
         *,
         wait_timeout_seconds: float | None = None,
+        cancel_event: Any | None = None,
     ) -> tuple[dict[str, Any], bool, bool]:
         if not self.enabled:
             self._misses[0] += 1
@@ -1170,12 +1168,11 @@ class SingleFlightCache:
         inflight = self._inflight_shards[idx]
         inflight_started = self._inflight_started_shards[idx]
         errors = self._errors_shards[idx]
-        ephemeral = self._ephemeral_shards[idx]
 
         with lock:
             event = inflight.get(key)
             if event is None:
-                event = threading.Event()
+                event = _CacheFlight()
                 inflight[key] = event
                 inflight_started[key] = time.monotonic()
                 owner = True
@@ -1189,7 +1186,25 @@ class SingleFlightCache:
                 if wait_timeout_seconds is None
                 else max(0.01, float(wait_timeout_seconds))
             )
-            if not event.wait(wait_timeout):
+            if cancel_event is None:
+                completed = event.wait(wait_timeout)
+            else:
+                wait_until = time.monotonic() + wait_timeout
+                while not event.is_set() and not cancel_event.is_set():
+                    remaining = wait_until - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    event.wait(min(remaining, 0.05))
+                if cancel_event.is_set():
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": "waiting for identical work was cancelled",
+                    }, False, True
+                completed = event.is_set()
+            if not completed:
                 with lock:
                     self._coalesced_timeouts[idx] += 1
                     started = inflight_started.get(key, time.monotonic())
@@ -1201,14 +1216,13 @@ class SingleFlightCache:
                     "owner_age_seconds": round(max(0.0, time.monotonic() - started), 3),
                     "error": "identical work is still running; do not start a duplicate",
                 }, False, True
+            if event.uncached_result is not None:
+                return dict(event.uncached_result), False, True
             cached = self.cache.get(key)
             if isinstance(cached, dict):
                 self._hits[idx] += 1
                 return cached, True, True
             with lock:
-                eph = ephemeral.get(key)
-                if eph and time.monotonic() - eph[0] <= 10.0:
-                    return eph[1], False, True
                 err_entry = errors.get(key)
                 err = err_entry[1] if err_entry else None
             return {"success": False, "error": err or "coalesced request failed"}, False, True
@@ -1216,21 +1230,21 @@ class SingleFlightCache:
         self._misses[idx] += 1
         try:
             result = compute()
-            if isinstance(result, dict) and result.get("success", "error" not in result):
+            if isinstance(result, dict) and (
+                result.get("success", "error" not in result) or result.get("_cacheable") is False
+            ):
                 cacheable = bool(result.get("_cacheable", True))
                 clean_result = dict(result)
                 clean_result.pop("_cacheable", None)
                 if cacheable:
                     self.cache.set(key, clean_result)
                 else:
-                    with lock:
-                        ephemeral[key] = (time.monotonic(), clean_result)
+                    # Only waiters attached to this flight receive an uncached outcome.
+                    event.uncached_result = dict(clean_result)
                 result = clean_result
                 with lock:
                     errors.pop(key, None)
                     now = time.monotonic()
-                    for k in [k for k, v in ephemeral.items() if now - v[0] > 10.0]:
-                        ephemeral.pop(k, None)
                     for k in [k for k, v in errors.items() if isinstance(v, tuple) and now - v[0] > 60.0]:
                         errors.pop(k, None)
             else:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from local_ai_hub import commands
+from local_ai_hub import command_broker as commands
 from local_ai_hub.services import LocalAIServices
 
 

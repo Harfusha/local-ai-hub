@@ -29,7 +29,6 @@ def test_swarm_lifecycle_success(tmp_path: Path) -> None:
         test_command="pytest tests/test_auth.py",
         author="lead_agent",
         root=str(tmp_path),
-    root=str(tmp_path),
     )
     assert res["success"] is True
     swarm_id = res["swarm_id"]
@@ -99,7 +98,6 @@ def test_swarm_lifecycle_test_failure_triggers_rejection(tmp_path: Path) -> None
         test_command="pytest tests/test_payments.py",
         author="lead_agent",
         root=str(tmp_path),
-    root=str(tmp_path),
     )
     swarm_id = res["swarm_id"]
 
@@ -239,7 +237,6 @@ def test_swarm_idempotent_replay_rejects_changed_expected_version(
     dispatched = coordinator.dispatch(
         "expected version is part of operation",
         root=str(tmp_path),
-    root=str(tmp_path),
     )
     swarm_id = dispatched["swarm_id"]
     initial_version = int(dispatched["version"])

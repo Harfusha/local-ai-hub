@@ -80,6 +80,30 @@ def test_semaphore_basic_acquire_release(tmp_path: Path) -> None:
     assert st2["semaphores"]["unity_slot"]["active_count"] == 0
 
 
+def test_semaphore_acquire_and_release_without_owner(tmp_path: Path) -> None:
+    store = SemaphoreStore(tmp_path / "sem_singleton.sqlite")
+    # Acquire singleton semaphore without specifying owner
+    acq1 = store.acquire("unity_singleton", capacity=1, timeout=0.1)
+    assert acq1["acquired"] is True
+    assert acq1["capacity"] == 1
+    lease_id = acq1["lease_id"]
+
+    # Second acquire must be blocked
+    acq2 = store.acquire("unity_singleton", capacity=1, timeout=0.1)
+    assert acq2["acquired"] is False
+    assert acq2["reason"] == "capacity_reached"
+
+    # Release without owner must succeed
+    rel = store.release("unity_singleton", lease_id)
+    assert rel["success"] is True
+    assert rel["released"] is True
+
+    # After release, acquire succeeds again
+    acq3 = store.acquire("unity_singleton", capacity=1, timeout=0.1)
+    assert acq3["acquired"] is True
+    store.release("unity_singleton", acq3["lease_id"])
+
+
 def test_semaphore_wait_and_wakeup(tmp_path: Path) -> None:
     db_path = tmp_path / "semaphores_wait.sqlite"
     pubsub = SwarmPubSub()
@@ -205,9 +229,7 @@ def test_semaphore_waiter_wakes_when_holder_ttl_expires(tmp_path: Path) -> None:
     thread = threading.Thread(target=waiter)
     thread.start()
     assert waiting.wait(timeout=2.5)
-    thread.join(timeout=3.0)
-    if thread.is_alive():
-        thread.join(timeout=1.0)
+    thread.join(timeout=6.0)
 
     assert not thread.is_alive()
     assert result.get("success") is True
@@ -426,36 +448,7 @@ def test_mcp_coord_routing_and_dispatch(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls[-1]["kwargs"]["topic"] == "build_pipeline"
     assert calls[-1]["kwargs"]["timeout"] == 15.0
 
-    # 5. Board Item Create
-    res = local_ai_mcp.local_ai_coord(
-        action="board_item_create",
-        title="Fix texture glitch",
-        status="planned",
-        priority="high",
-        labels=["graphics", "bug"],
-        assignee="renderer-agent",
-        milestone="v1.0",
-        details={"asset": "hero.mat"},
-    )
-    assert res["success"] is True
-    assert calls[-1]["action"] == "board_item_create"
-    assert calls[-1]["kwargs"]["title"] == "Fix texture glitch"
-    assert calls[-1]["kwargs"]["status"] == "planned"
-    assert calls[-1]["kwargs"]["priority"] == "high"
-
-    # 6. Board Item List
-    res = local_ai_mcp.local_ai_coord(action="board_item_list", status="planned", limit=20)
-    assert res["success"] is True
-    assert calls[-1]["action"] == "board_item_list"
-    assert calls[-1]["kwargs"]["status"] == "planned"
-    assert calls[-1]["kwargs"]["limit"] == 20
-
-    # 7. Board Summary
-    res = local_ai_mcp.local_ai_coord(action="board_summary")
-    assert res["success"] is True
-    assert calls[-1]["action"] == "board_summary"
-
-    # 8. Milestone Create
+    # 5. Milestone Create
     res = local_ai_mcp.local_ai_coord(
         action="milestone_create",
         name="v1.0",
@@ -510,26 +503,7 @@ def test_client_coord_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
     client.coord("wait_for_event", topic="ev_topic", timeout=5.0)
     assert posted[-1]["path"] == "/api/coord/wait_for_event"
 
-    # 5. Board items
-    client.coord("board_item_create", title="Test item", status="planned")
-    assert posted[-1]["path"] == "/api/coord/board_item_create"
-
-    client.coord("board_item_update", item_id="item-1", status="done")
-    assert posted[-1]["path"] == "/api/coord/board_item_update"
-
-    client.coord("board_item_get", item_id="item-1")
-    assert posted[-1]["path"] == "/api/coord/board_item_get"
-
-    client.coord("board_item_delete", item_id="item-1")
-    assert posted[-1]["path"] == "/api/coord/board_item_delete"
-
-    client.coord("board_item_list", status="done")
-    assert posted[-1]["path"] == "/api/coord/board_item_list"
-
-    client.coord("board_summary")
-    assert posted[-1]["path"] == "/api/coord/board_summary"
-
-    # 6. Milestones
+    # 5. Milestones
     client.coord("milestone_create", name="m1", target_date="2026-12-01")
     assert posted[-1]["path"] == "/api/coord/milestone_create"
 

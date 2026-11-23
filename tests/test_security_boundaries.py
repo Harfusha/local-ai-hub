@@ -1,4 +1,4 @@
-from local_ai_hub.commands import build_invocation, validate_invocation
+from local_ai_hub.command_broker import build_invocation, validate_invocation
 
 
 def test_raw_shell_expansion_is_not_accepted():

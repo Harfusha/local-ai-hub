@@ -206,7 +206,6 @@ def test_hub_client_forwards_explicit_memory_record_identity(tmp_path):
         client,
         "memory_record",
         root=str(tmp_path),
-        root=str(tmp_path),
         scope="repository",
         key="falsey-value-is-explicit",
         value="",
@@ -638,6 +637,17 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
         action="search", root="C:/repo", query="repo_search", search_mode="lexical",
     )
     assert captured["payload"]["search_mode"] == "lexical"
+    assert "exact_count" not in captured["payload"]
+
+    local_ai_mcp.local_ai_repo(action="search", root="C:/repo", query="needle", exact_count=True)
+    assert captured["payload"]["search_mode"] == "lexical"
+    assert captured["payload"]["exact_count"] is True
+
+    local_ai_mcp.local_ai_repo(
+        action="search", root="C:/repo", query="needle", search_mode="hybrid", exact_count=False,
+    )
+    assert captured["payload"]["search_mode"] == "hybrid"
+    assert captured["payload"]["exact_count"] is False
 
 
 @pytest.mark.parametrize(
@@ -761,13 +771,12 @@ def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, 
 
     monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", consumer)
     monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
-    result = mcp_server.local_ai_repo("search", root=str(tmp_path), root=str(tmp_path), path_hints=[hint])
+    result = mcp_server.local_ai_repo("search", root=str(tmp_path),  path_hints=[hint])
     assert result["success"] is True
     assert captured == [[{**hint, "path": "src"}]]
 
     rejected = mcp_server.local_ai_repo(
         "search",
-        root=str(tmp_path),
         root=str(tmp_path),
         path_hints=[{"path": "../escape", "purpose": "repository_search", "scope": "repo_search"}],
     )

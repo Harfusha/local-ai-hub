@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
 
-from .deterministic import _git_history_timestamp
+from .git_history_search import _git_history_timestamp
 
 
 def handle_post_plan(handler: Any, payload: dict[str, Any], path: str, app: Any) -> bool:

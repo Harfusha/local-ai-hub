@@ -12,7 +12,7 @@ from local_ai_hub.agent_policy import (
     PolicyEngine,
     RiskClass,
 )
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.services import LocalAIServices
 
 

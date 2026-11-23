@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def resolve_runtime(*, device: str = "cuda", torch_module: Any | None = None) -> dict[str, Any]:
+def resolve_runtime(*, device: str = "cuda", precision: str | None = None, torch_module: Any | None = None) -> dict[str, Any]:
     """Resolve accelerated training settings; a CUDA request never falls back silently."""
     if torch_module is None:
         try:
@@ -24,12 +24,21 @@ def resolve_runtime(*, device: str = "cuda", torch_module: Any | None = None) ->
             "fused_optimizer": False,
         }
 
-    supports_bf16 = bool(getattr(torch_module.cuda, "is_bf16_supported", lambda: False)())
-    dtype = torch_module.bfloat16 if supports_bf16 else torch_module.float16
+    import sys
+    if precision in {"fp16", "float16"}:
+        use_bf16 = False
+    elif precision in {"bf16", "bfloat16"}:
+        use_bf16 = True
+    elif sys.platform == "win32":
+        # Windows bitsandbytes cuBLAS requires fp16 for stable dequantized matmul backward passes
+        use_bf16 = False
+    else:
+        use_bf16 = bool(getattr(torch_module.cuda, "is_bf16_supported", lambda: False)())
+    dtype = torch_module.bfloat16 if use_bf16 else torch_module.float16
     sdpa = getattr(getattr(torch_module.nn, "functional", None), "scaled_dot_product_attention", None)
     return {
         "device": "cuda",
-        "precision": "bf16" if supports_bf16 else "fp16",
+        "precision": "bf16" if use_bf16 else "fp16",
         "dtype": dtype,
         "attention": "sdpa" if sdpa is not None else "eager",
         "fused_optimizer": True,

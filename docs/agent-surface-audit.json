@@ -106,7 +106,9 @@
         "literal_response_fields": [
           "error"
         ],
-        "response_producers": [],
+        "response_producers": [
+          "self._handle_dashboard_route"
+        ],
         "action_literals": []
       }
     },
@@ -498,24 +500,6 @@
         "action_literals": []
       }
     },
-    "GET /api/config": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Readiness, installed capabilities/model inventory or authenticated operator configuration/control; needed with diagnostics disabled.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "config",
-          "config_path",
-          "runtime_override_path",
-          "success"
-        ],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
     "GET /api/coord/worktrees": {
       "decision": "retain",
       "role": "agent",
@@ -557,14 +541,7 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
-        "literal_response_fields": [
-          "columns",
-          "count",
-          "db",
-          "error",
-          "rows",
-          "success"
-        ],
+        "literal_response_fields": [],
         "response_producers": [
           "self._handle_db_query"
         ],
@@ -628,21 +605,6 @@
           "trace_id"
         ],
         "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /api/doctor": {
-      "decision": "diagnostic",
-      "role": "operator_diagnostic",
-      "reason": "Operator troubleshooting, raw history, hardware inspection, routing experiment or model evaluation; gated before reading or execution. Trace list off returns only its disabled empty envelope.",
-      "response_policy": "Dashboard debug_traces.enabled required before work/read; normal response is actionable disabled error (empty disabled trace list is the exception). Enabled detail retains original payload; private accounting never goes on wire.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.run_doctor"
-        ],
         "action_literals": []
       }
     },
@@ -806,62 +768,7 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "error_code",
-          "lines",
-          "retryable",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /api/maintenance/optimize_db": {
-      "decision": "protocol_boundary",
-      "role": "http_protocol",
-      "reason": "Rejects unsafe/mutating GET with method error; actual control uses authenticated POST.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /api/maintenance/purge_cache": {
-      "decision": "protocol_boundary",
-      "role": "http_protocol",
-      "reason": "Rejects unsafe/mutating GET with method error; actual control uses authenticated POST.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /api/maintenance/resolve_errors": {
-      "decision": "protocol_boundary",
-      "role": "http_protocol",
-      "reason": "Rejects unsafe/mutating GET with method error; actual control uses authenticated POST.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
+        "literal_response_fields": [],
         "response_producers": [],
         "action_literals": []
       }
@@ -922,56 +829,6 @@
           "owned_by"
         ],
         "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /api/models/manage": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Installed-model inventory reader for operator/agent model readiness. GET lists models; model mutations use authenticated POST. This is not a 405 boundary.",
-      "response_policy": "Retain operational index/model inventory and actionable errors; common diagnostic projection still applies. Reading these states requires neither a mutation nor detailed tracing.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "count",
-          "error",
-          "models",
-          "success"
-        ],
-        "response_producers": [
-          "self._handle_models_list"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /api/preprocess": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Authorized repository index status reader; returns indexing/lifecycle state, not a mutating GET or a 405 boundary.",
-      "response_policy": "Retain operational index/model inventory and actionable errors; common diagnostic projection still applies. Reading these states requires neither a mutation nor detailed tracing.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.preprocessor.status"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /api/preprocess/status": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Authorized repository indexing lifecycle and control; needed without diagnostic tracing.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.preprocessor.status"
-        ],
         "action_literals": []
       }
     },
@@ -1094,7 +951,9 @@
           "unobserved_truncated",
           "window"
         ],
-        "response_producers": [],
+        "response_producers": [
+          "self._handle_repair_priorities"
+        ],
         "action_literals": []
       }
     },
@@ -1189,24 +1048,6 @@
         "action_literals": []
       }
     },
-    "GET /api/security_audit": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "APP.services.security_audit"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/status": {
       "decision": "retain",
       "role": "agent",
@@ -1229,7 +1070,8 @@
           "tasks_count"
         ],
         "response_producers": [
-          "local:status"
+          "local:status",
+          "self._handle_api_status"
         ],
         "action_literals": []
       }
@@ -1334,6 +1176,27 @@
         "action_literals": []
       }
     },
+    "GET /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Local dashboard reads verified release availability and installation results.",
+      "response_policy": "Preserve release identity, status and errors for the local operator.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "controller.install",
+          "controller.status",
+          "local:result",
+          "self._handle_dashboard_updates"
+        ],
+        "action_literals": []
+      }
+    },
     "GET /dashboard": {
       "decision": "retain",
       "role": "dashboard",
@@ -1345,22 +1208,9 @@
         "literal_response_fields": [
           "error"
         ],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /dashboard/legacy": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Supported legacy route for the local operator dashboard shell, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error"
+        "response_producers": [
+          "self._handle_dashboard_route"
         ],
-        "response_producers": [],
         "action_literals": []
       }
     },
@@ -1373,7 +1223,9 @@
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [],
-        "response_producers": [],
+        "response_producers": [
+          "self._handle_favicon_route"
+        ],
         "action_literals": []
       }
     },
@@ -1386,12 +1238,18 @@
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [
+          "error",
           "hub_online",
           "installed_version",
+          "ready",
+          "reason",
+          "retryable",
           "success",
           "version"
         ],
-        "response_producers": [],
+        "response_producers": [
+          "self._handle_health_route"
+        ],
         "action_literals": []
       }
     },
@@ -1405,13 +1263,17 @@
         "handler": "do_GET",
         "literal_response_fields": [
           "error",
+          "hub_online",
+          "installed_version",
           "ready",
           "reason",
           "retryable",
           "success",
           "version"
         ],
-        "response_producers": [],
+        "response_producers": [
+          "self._handle_health_route"
+        ],
         "action_literals": []
       }
     },
@@ -1875,6 +1737,28 @@
       }
     },
     "MCP local_ai_coord.claim": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.client_status": {
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
@@ -6480,20 +6364,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_admin_mode_1",
-        "literal_response_fields": [
-          "error",
-          "error_code",
-          "mode",
-          "mode_changed",
-          "retry_after_seconds",
-          "retryable",
-          "revision",
-          "success",
-          "terminal"
-        ],
+        "literal_response_fields": [],
         "response_producers": [
-          "local:response",
-          "unload"
+          "self._handle_admin_mode_post"
         ],
         "action_literals": []
       }
@@ -6506,22 +6379,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_blackboard_1",
-        "literal_response_fields": [
-          "boards",
-          "count",
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "local:res"
-        ],
-        "action_literals": [
-          "delete",
-          "get",
-          "list",
-          "merge",
-          "update"
-        ]
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
       }
     },
     "POST /api/agent-state/cleanup": {
@@ -6552,36 +6412,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_context_1",
-        "literal_response_fields": [
-          "complete",
-          "context",
-          "context_id",
-          "error",
-          "estimated_tokens",
-          "etag",
-          "evidence_ids",
-          "next_action",
-          "omitted_sections",
-          "partial",
-          "repo_revision",
-          "retryable",
-          "source_layers",
-          "stale",
-          "success",
-          "task_context",
-          "terminal",
-          "text",
-          "truncated",
-          "unchanged",
-          "warnings"
-        ],
-        "response_producers": [
-          "attach_compiled_context_artifact",
-          "local:response"
-        ],
-        "action_literals": [
-          "compile"
-        ]
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
       }
     },
     "POST /api/agent-state/events/delta": {
@@ -6610,22 +6443,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_incidents_1",
-        "literal_response_fields": [
-          "decision",
-          "error",
-          "incident",
-          "incidents",
-          "negative_knowledge",
-          "retryable",
-          "success",
-          "terminal"
-        ],
+        "literal_response_fields": [],
         "response_producers": [],
-        "action_literals": [
-          "decision",
-          "find",
-          "record"
-        ]
+        "action_literals": []
       }
     },
     "POST /api/agent-state/learning": {
@@ -6637,22 +6457,13 @@
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_learning_1",
         "literal_response_fields": [
-          "candidate",
-          "candidates",
-          "decision",
           "error",
           "retryable",
-          "rollback_trigger",
           "success",
           "terminal"
         ],
         "response_producers": [],
-        "action_literals": [
-          "create_candidate",
-          "list",
-          "observe",
-          "promote"
-        ]
+        "action_literals": []
       }
     },
     "POST /api/agent-state/memory": {
@@ -6663,33 +6474,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_memory_1",
-        "literal_response_fields": [
-          "deleted",
-          "error",
-          "record",
-          "record_id",
-          "records",
-          "retryable",
-          "success",
-          "terminal"
-        ],
+        "literal_response_fields": [],
         "response_producers": [],
-        "action_literals": [
-          "compact",
-          "delete",
-          "find",
-          "find_relations",
-          "get",
-          "promote",
-          "quarantine",
-          "reap",
-          "record",
-          "record_relation",
-          "relation_find",
-          "relation_record",
-          "relation_traverse",
-          "traverse_graph"
-        ]
+        "action_literals": []
       }
     },
     "POST /api/agent-state/swarm/cancel": {
@@ -6754,62 +6541,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_tasks_1",
-        "literal_response_fields": [
-          "error",
-          "error_code",
-          "model_resident",
-          "mutation_applied",
-          "operation_not_started",
-          "question",
-          "reaped",
-          "requested_tokens",
-          "required_tokens",
-          "response_budget",
-          "retryable",
-          "runtime",
-          "service_available",
-          "success",
-          "task",
-          "tasks",
-          "terminal",
-          "unit"
-        ],
-        "response_producers": [
-          "APP.agent_tasks.answer_question",
-          "APP.agent_tasks.ask_question",
-          "APP.agent_tasks.cleanup_worktree",
-          "APP.agent_tasks.curate_training_dataset",
-          "APP.commands.increase_task_budget",
-          "APP.evaluate_laya_context_source",
-          "APP.evaluate_laya_decision",
-          "APP.laya_candidates.handle",
-          "local:error_payload",
-          "local:response",
-          "local:result",
-          "local:revision_stop",
-          "self._task_budget_increase"
-        ],
-        "action_literals": [
-          "adopt",
-          "answer",
-          "ask",
-          "budget_increase",
-          "checkpoint",
-          "claim",
-          "cleanup_worktree",
-          "complete",
-          "create",
-          "curate_dataset",
-          "fail",
-          "get",
-          "heartbeat",
-          "list",
-          "reap_expired",
-          "repair_session",
-          "resume",
-          "rollback",
-          "transition"
-        ]
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
       }
     },
     "POST /api/agent-state/verification": {
@@ -6821,25 +6555,15 @@
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_verification_1",
         "literal_response_fields": [
-          "completion",
           "error",
           "error_code",
-          "evidence_id",
-          "receipt",
-          "receipt_id",
           "retryable",
-          "stop_code",
           "success",
           "terminal"
         ],
-        "response_producers": [
-          "local:res",
-          "local:revision_stop"
-        ],
+        "response_producers": [],
         "action_literals": [
           "completion",
-          "export",
-          "native_receipt",
           "project_command",
           "receipt"
         ]
@@ -7497,27 +7221,8 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_context_pack_1",
-        "literal_response_fields": [
-          "context",
-          "degraded",
-          "degraded_reason",
-          "delivery_mode",
-          "error",
-          "evidence",
-          "query",
-          "retryable",
-          "stop_code",
-          "success",
-          "task_context",
-          "terminal"
-        ],
-        "response_producers": [
-          "APP.services._hybrid_context",
-          "APP.services.adaptive_context_pack",
-          "APP.services.fast_context",
-          "local:response",
-          "local:result"
-        ],
+        "literal_response_fields": [],
+        "response_producers": [],
         "action_literals": []
       }
     },
@@ -8068,14 +7773,7 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_db_query_1",
-        "literal_response_fields": [
-          "columns",
-          "count",
-          "db",
-          "error",
-          "rows",
-          "success"
-        ],
+        "literal_response_fields": [],
         "response_producers": [
           "self._handle_db_query"
         ],
@@ -8170,7 +7868,8 @@
           "terminal"
         ],
         "response_producers": [
-          "bool"
+          "bool",
+          "self._handle_post_diagnostics_export"
         ],
         "action_literals": []
       }
@@ -8752,7 +8451,9 @@
           "success"
         ],
         "response_producers": [
-          "APP.rag.search"
+          "APP.rag.search",
+          "_invoke_cancellable_request",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9727,15 +9428,8 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_task_automation_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "success",
-          "terminal"
-        ],
+        "literal_response_fields": [],
         "response_producers": [
-          "APP.automation.execute",
-          "local:result",
           "self._handle_task_automation"
         ],
         "action_literals": []
@@ -9884,12 +9578,7 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_telemetry_endpoint_stats_reset_1",
-        "literal_response_fields": [
-          "available",
-          "reset",
-          "root",
-          "success"
-        ],
+        "literal_response_fields": [],
         "response_producers": [],
         "action_literals": []
       }
@@ -9960,6 +9649,27 @@
           "dict",
           "local:result",
           "tracker.fingerprint"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "The local dashboard can refresh release availability or confirm an exact update and restart.",
+      "response_policy": "Preserve the launch result and errors. Release and target are confined by the managed updater.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_updates_1",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "controller.install",
+          "controller.status",
+          "local:result",
+          "self._handle_dashboard_updates"
         ],
         "action_literals": []
       }

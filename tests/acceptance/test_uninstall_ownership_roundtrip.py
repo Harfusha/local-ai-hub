@@ -12,6 +12,60 @@ import setup
 import uninstall
 
 
+def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    install = tmp_path / "install"
+    install.mkdir()
+    setup.write_install_manifest(install)
+    profiles = tmp_path / "Multigravity" / "profiles"
+    profile_home = profiles / "example" / "home"
+    profile_home.mkdir(parents=True)
+    codex_override = home / "alternate-codex"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("USERNAME", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("MULTIGRAVITY_PROFILES", str(profiles))
+    monkeypatch.setenv("CODEX_HOME", str(codex_override))
+    monkeypatch.setattr(uninstall, "configured_install_dir", lambda: install)
+    monkeypatch.setattr(uninstall, "_owned_hub_pids", lambda _install: [])
+    monkeypatch.setattr(sys, "argv", ["uninstall.py", "--keep-install"])
+
+    placements = [
+        (home / ".agents" / "skills", "ponytail"),
+        (home / ".codex" / "skills", "plan-led-work"),
+        (home / ".cursor" / "skills", "ponytail-audit"),
+        (home / ".codeium" / "windsurf" / "skills", "ponytail-review"),
+        (home / ".copilot" / "skills", "token-economizer"),
+        (profile_home / ".gemini" / "config" / "skills", "using-superpowers"),
+        (home / ".gemini" / "skills", "former-managed-skill"),
+    ]
+    edited = (codex_override / "skills", "ponytail")
+    unlisted = (tmp_path / "unlisted" / "skills", "plan-led-work")
+    for base, name in (*placements, edited, unlisted):
+        source = install / "skills" / name
+        source.mkdir(parents=True, exist_ok=True)
+        (source / "SKILL.md").write_text(f"---\nname: {name}\n---\nmanaged fixture\n", encoding="utf-8")
+        setup.install_skill(source, base / name)
+        assert (base / name / "SKILL.md").is_file()
+
+    edited_file = edited[0] / edited[1] / "SKILL.md"
+    edited_file.write_text("user changes\n", encoding="utf-8")
+    unmanaged = home / ".agents" / "skills" / "user-only"
+    unmanaged.mkdir()
+    (unmanaged / "SKILL.md").write_text("user skill\n", encoding="utf-8")
+
+    assert uninstall.main() == 0
+
+    for base, name in placements:
+        assert not (base / name).exists()
+        backups = list((base.parent / ".local-ai-hub-skill-quarantine").glob(f"{name}*/SKILL.md"))
+        assert len(backups) == 1 and "managed fixture" in backups[0].read_text(encoding="utf-8")
+    assert edited_file.read_text(encoding="utf-8") == "user changes\n"
+    assert (unlisted[0] / unlisted[1] / "SKILL.md").is_file()
+    assert (unmanaged / "SKILL.md").read_text(encoding="utf-8") == "user skill\n"
+
+
 def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, monkeypatch) -> None:
     home = tmp_path / "home"
     install = tmp_path / "install"

@@ -16,12 +16,12 @@ def validate_run_options(training: Any, benchmark: Any, lora: Any) -> None:
     if not isinstance(training, dict) or not isinstance(benchmark, dict) or not isinstance(lora, dict):
         raise ValueError("training, benchmark, and lora options must be JSON objects")
     device = training.get("device", "cuda")
-    quantization = training.get("quantization", "none")
+    quantization = training.get("quantization", "4bit")
     if not isinstance(device, str) or device not in {"cuda", "cpu"}:
         raise ValueError("training.device must be cuda or cpu")
-    if not isinstance(quantization, str) or quantization not in {"none", "4bit"}:
-        raise ValueError("training.quantization must be none or 4bit")
-    if quantization == "4bit" and device != "cuda":
+    if quantization != "4bit":
+        raise ValueError("training.quantization must be 4bit")
+    if device != "cuda":
         raise ValueError("4bit QLoRA requires training.device=cuda")
     bounds = {
         "epochs": (1, 20),
@@ -58,11 +58,11 @@ def validate_run_options(training: Any, benchmark: Any, lora: Any) -> None:
     benchmark_device = benchmark.get("device", device)
     if not isinstance(benchmark_device, str) or benchmark_device not in {"cuda", "cpu"}:
         raise ValueError("benchmark.device must be cuda or cpu")
-    for name, minimum, maximum in (("max_new_tokens", 1, 8192), ("warmup_runs", 0, 5)):
+    for name, minimum, maximum in (("max_new_tokens", 1, 8192), ("warmup_runs", 0, 5), ("max_cases", 1, 10000)):
         value = benchmark.get(name)
         if value is not None and (type(value) is not int or not minimum <= value <= maximum):
             raise ValueError(f"benchmark.{name} must be an integer from {minimum} to {maximum}")
-    if quantization == "4bit" and benchmark_device != "cuda":
+    if benchmark_device != "cuda":
         raise ValueError("4bit QLoRA requires benchmark.device=cuda")
 
 

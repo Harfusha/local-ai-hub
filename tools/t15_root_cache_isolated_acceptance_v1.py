@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = Path(__file__).resolve().parents[1]
 PATCH = CANDIDATE / "handoff" / "t15-root-current-cache-only-v2.patch"
 EXPECTED = {
-    "src/local_ai_hub/commands.py": "1b27f83872d439b9167c9b2323bf4be71279e688df6094c002ca20934f761b67",
+    "src/local_ai_hub/command_broker.py": "1b27f83872d439b9167c9b2323bf4be71279e688df6094c002ca20934f761b67",
     "tests/test_project_command_broker.py": "169f086607ccd725c6514b15bc6a54baf66e9f6c096395801b6f0beaa23b8728",
 }
 SELECTORS = [

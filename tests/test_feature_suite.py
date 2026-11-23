@@ -15,7 +15,7 @@ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.benchmark import HardwareBenchmarkRunner
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.process_utils import hidden_run_kwargs
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.leases import ScopeLeaseStore

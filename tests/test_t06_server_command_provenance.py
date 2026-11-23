@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStore

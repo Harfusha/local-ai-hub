@@ -69,6 +69,7 @@ _CURRENT_ROUTE_PATHS = {
  'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
 }
 _CURRENT_ADDED_ROUTES = {
+    'post_updates_1': {'paths': ['/api/updates'], 'before': 'post_admin_mode_1'},
     'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},
     'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
  'post_task_automation_1': {'paths': ['/api/task/automation'], 'before': 'post_repo_split_changes_1'},
@@ -178,10 +179,10 @@ def test_bundle_import_and_duplicate_embed_selection_keep_preimage_order() -> No
 def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gates() -> None:
     import ast
 
-    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_server.py"
+    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_routes_post.py"
     source = source_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "HTTPPostRoutesMixin")
     do_post = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
     dispatch = max((node for node in do_post.body if isinstance(node, ast.Try)), key=lambda node: len(node.body))
     branches = [
@@ -243,8 +244,10 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
     assert min(trace_lines) < min(request_id_lines) < min(body_lines)
     payload_mode_lines = [
         node.lineno for node in ast.walk(do_post)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        and node.func.id == "_http_mode_gate_error" and len(node.args) == 3
+        if isinstance(node, ast.Call) and (
+            isinstance(node.func, ast.Name) and node.func.id == "_http_mode_gate_error"
+            or isinstance(node.func, ast.Attribute) and node.func.attr == "_http_mode_gate_error"
+        ) and len(node.args) == 3
     ]
     validation_lines = [line for line, name in calls if name == "_validate_payload"]
     recovery_lines = [line for line, name in calls if name == "_claim_recovery"]
@@ -296,7 +299,7 @@ def test_root_api_coverage_route_crosswalk_is_row_exact() -> None:
 
 def test_context_pack_current_route_stays_outside_preimage_coverage() -> None:
     assert select_http_routes("POST", "/api/context/pack") == ("post_context_pack_1",)
-    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_server.py"
+    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_routes_post.py"
     source = source_path.read_text(encoding="utf-8")
     assert 'if path == "/api/context/pack":' in source
     assert "post_context_pack_1" in {rule.route_id for rule in POST_ROUTE_REGISTRY}
@@ -590,27 +593,25 @@ def test_telemetry_timeline_handler_preserves_success_and_error_contract(monkeyp
 def test_named_telemetry_dispatch_stays_after_recovery_and_inside_error_boundary() -> None:
     import ast
 
-    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_server.py"
+    def calls(node, name):
+        function = node.func if isinstance(node, ast.Call) else None
+        return (isinstance(function, ast.Name) and function.id == name) or (
+            isinstance(function, ast.Attribute) and function.attr == name
+        )
+
+    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_routes_post.py"
     source = source_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "HTTPPostRoutesMixin")
     do_post = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
     named_dispatch = next(
         node for node in ast.walk(do_post)
         if isinstance(node, ast.Try)
         and any(isinstance(exc.type, ast.Name) and exc.type.id == "Exception" for exc in node.handlers)
-        and any(
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "select_post_handler"
-            for call in ast.walk(node)
-        )
+        and any(calls(call, "select_post_handler") for call in ast.walk(node))
     )
     dispatch_line = min(
-        call.lineno for call in ast.walk(named_dispatch)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Name)
-        and call.func.id == "select_post_handler"
+        call.lineno for call in ast.walk(named_dispatch) if calls(call, "select_post_handler")
     )
     recovery_begin_line = min(
         call.lineno for call in ast.walk(do_post)
@@ -620,9 +621,7 @@ def test_named_telemetry_dispatch_stays_after_recovery_and_inside_error_boundary
     )
     mode_gate_line = min(
         call.lineno for call in ast.walk(do_post)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Name)
-        and call.func.id == "_http_mode_gate_error"
+        if calls(call, "_http_mode_gate_error")
     )
     assert mode_gate_line < recovery_begin_line < dispatch_line
 

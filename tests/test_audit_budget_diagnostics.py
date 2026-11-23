@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from local_ai_hub.agent_policy import BudgetCost, PolicyEngine
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub import mcp_server
 
 
@@ -43,7 +43,7 @@ def test_broker_reports_each_budget_counter_before_any_command_execution(
     def unexpected_execution(*args, **kwargs):
         pytest.fail("exhausted task reached process execution")
 
-    monkeypatch.setattr("local_ai_hub.commands.subprocess.Popen", unexpected_execution)
+    monkeypatch.setattr("local_ai_hub.command_broker.subprocess.Popen", unexpected_execution)
     result = broker.run(
         "git status --short",
         str(tmp_path),

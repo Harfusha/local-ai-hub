@@ -4,7 +4,22 @@
   "id": "plan_4fc62af31642",
   "lifecycle": "active",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+      }
+    },
+    {
+      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+      }
+    }
+  ],
   "tasks": {
     "task_endpoint_routing": {
       "acceptance_criteria": [
@@ -34,10 +49,26 @@
       "depends_on": [],
       "description": "Concrete IDE/client adapters remain deferred per user steering. Client-neutral Agent OS checkpoint shadow producer writes v3 metadata-only observations into canonical task streams, including explicit not_proposed outcomes. The offline evaluator exports root/task-scoped observations and requires strict six-field annotations with independent and adjudication stages. One adjudicator can resolve only a disagreement between at least two independent reviewers; adjudicated_cases scores the adjudicated label, while unresolved cases remain excluded. CLI --require-double-review rejects any unannotated export observation, single-reviewer observation, or disagreement without adjudication. double_review_gate=passed proves only complete labels under supplied pseudonymous reviewer_ref values; reviewer_identity_status remains not_verified because human identity and independence are operator-attested, not technically verified. quality_status remains not_verified. Generated repository tool descriptions, skill/workflow references, and global policy name only profile-enabled repository actions. FINAL_COMPLETION_PLAN.md records client deferral, shadow privacy/status semantics, annotation workflow, reviewer identity limitation, quality gates, and the six sequential post-shadow gates. Current targeted validation on HEAD ecf259c7 (dirty tree): tests/test_agent_tasks.py tests/test_shadow_evaluation.py tests/test_host_shadow_adapters.py tests/test_host_adapters_superpowers.py tests/test_managed_host_hooks.py => 140 passed, 2 skipped (opt-in Codex smoke, symlink unavailable). These are source regressions only; no inference or live host acceptance ran.",
       "kind": "code",
-      "next_action": "Keep collecting natural client-neutral checkpoint observations until the sample includes proposed and not_proposed behavior across relevant states. Then obtain two independent human labels per selected observation, adjudicate disagreements, and run the offline scorer. Do not infer host event delivery from installed docs or binaries.",
+      "next_action": "Fresh current dirty-HEAD source regressions are recorded in docs/FINAL_COMPLETION_PLAN.md (SHA-256 f2d708057accd021f2f00ebbc4327a5f1c96433dd8d9f949c464e1ab7f620e3c): five host/shadow test files passed 148, 2 skipped (opt-in live Codex smoke and unavailable symlink). They do not change the blocker: the 24-observation sample is one-class recommend_pause, human double labels/adjudication are absent, and live client handshakes remain user-blocked. Continue only permitted offline source/evaluator reconciliation; do not fabricate observations or labels.",
       "title": "Codex and Antigravity host integration, shadow contract, and endpoint routing",
       "work_phase": "implementation",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+          }
+        },
+        {
+          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+          }
+        }
+      ]
     }
   },
   "title": "Make applicable Local AI Hub endpoints default in Codex and Antigravity"

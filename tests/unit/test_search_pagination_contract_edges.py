@@ -156,6 +156,27 @@ def test_mcp_compaction_returns_413_when_budget_omits_requested_page_rows(
     assert result[page_key] == []
 
 
+def test_search_budget_error_offers_larger_cap_when_limit_is_already_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = {
+        "success": True, "root": ".", "results": [{"path": "src/large.py", "text": "x" * 5000}],
+        "limit": 1, "offset": 0, "total_matches": 1, "has_more": False,
+    }
+    monkeypatch.setattr(mcp_server, "_response_budget", lambda *_args: (512, "minimal", "", True))
+    monkeypatch.setattr(mcp_server, "_search_prefix_fitting", lambda *_args, **_kwargs: None)
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({"tool": "local_ai_repo", "max_response_tokens": 512})
+    try:
+        result = mcp_server._compact(value, task_kind="search")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["success"] is False
+    assert result["status_code"] == 413
+    assert result["limit"] == 1
+    assert "max_response_tokens" in result["error"]
+
+
 @pytest.mark.parametrize("symbols", [[], [{"name": "f", "path": "f.py", "kind": "function", "line": 1}]])
 def test_code_index_budget_error_does_not_invent_a_symbol(monkeypatch, symbols):
     value = {"success": True, "root": ".", "symbols": symbols, "limit": 1,

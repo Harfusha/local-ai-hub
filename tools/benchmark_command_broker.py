@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -113,7 +113,7 @@ def _load_command_api(source_root: Path) -> tuple[Callable[..., str], type]:
     source_path = source_root / "src"
     sys.path.insert(0, str(source_path))
     cache_module = importlib.import_module("local_ai_hub.cache")
-    commands_module = importlib.import_module("local_ai_hub.commands")
+    commands_module = importlib.import_module("local_ai_hub.command_broker")
     commands_path = Path(commands_module.__file__).resolve()
     if source_root not in commands_path.parents:
         raise RuntimeError("CommandBroker import did not resolve inside --root")
@@ -201,7 +201,7 @@ def _seed_concurrency_cache(broker: CommandBroker, root: str) -> dict[str, Any]:
 
 
 def _source_snapshot(root: Path) -> dict[str, Any]:
-    source_path = root / "src" / "local_ai_hub" / "commands.py"
+    source_path = root / "src" / "local_ai_hub" / "command_broker.py"
     script_path = Path(__file__).resolve()
     return {
         **_git_identity(root),
@@ -428,9 +428,9 @@ def run_benchmark(
     root = root.resolve(strict=True)
     source_before = _source_snapshot(root)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_commands_sha256):
-        raise RuntimeError("expected commands.py SHA-256 must be 64 hexadecimal characters")
+        raise RuntimeError("expected command_broker.py SHA-256 must be 64 hexadecimal characters")
     if source_before["commands_sha256"].lower() != expected_commands_sha256.lower():
-        raise RuntimeError("commands.py SHA-256 does not match expected pin")
+        raise RuntimeError("command_broker.py SHA-256 does not match expected pin")
     stable_hash, CommandBroker = _load_command_api(root)
     execution_root_before = _git_identity(root)
     harness_before = _git_identity(REPOSITORY_ROOT)

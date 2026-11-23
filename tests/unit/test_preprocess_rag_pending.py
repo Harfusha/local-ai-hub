@@ -76,16 +76,18 @@ def test_rag_completion_does_not_mark_a_new_version_as_indexed(tmp_path, change)
         assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] is None
 
 
-def test_rag_does_not_use_source_text_from_an_older_version(tmp_path):
+@pytest.mark.parametrize("donor_origin", ["source", "projection", "unknown"])
+def test_rag_uses_current_text_and_only_reuses_source_text_from_other_roots(tmp_path, donor_origin):
     root = tmp_path / "repo"
     root.mkdir()
     (root / "file.py").write_text("new", encoding="utf-8")
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
-        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)")
         con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'new', 0, NULL, 0, 3, 0)", (str(root),))
-        con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old')", (str(root),))
+        con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old', 'source')", (str(root),))
+        con.execute("INSERT INTO source_index VALUES('donor', 'file.py', 'new', 'new', ?)", (donor_origin,))
         con.commit()
 
     def connect():
@@ -95,7 +97,8 @@ def test_rag_does_not_use_source_text_from_an_older_version(tmp_path):
 
     class Rag:
         def index_paths_step(self, root, *, workspace, paths, should_yield, content_overrides):
-            assert content_overrides is None
+            expected = {"file.py": "new"} if donor_origin == "source" else None
+            assert content_overrides == expected
             return {"preempted": True}
 
     pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
@@ -350,7 +353,7 @@ def test_rag_marks_policy_excluded_paths_complete_to_avoid_retry_loop(tmp_path):
             "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, "
             "rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)"
         )
-        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)")
         con.execute(
             "INSERT INTO file_refs VALUES(?, 'excluded.py', 'hash', 0, NULL, 0, 8, 0)",
             (str(root),),

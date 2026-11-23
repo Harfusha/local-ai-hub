@@ -8,7 +8,7 @@ import pytest
 import threading
 import urllib.request
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_verification import VerificationStore

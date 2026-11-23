@@ -4,6 +4,7 @@ from pathlib import Path
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.test_selection import affected_test_command
 
 
 def test_deterministic_affected_tests_mapping(tmp_path: Path):
@@ -63,3 +64,15 @@ def test_affected_tests_includes_ast_callers_from_code_index(tmp_path: Path):
     assert result["success"] is True
     assert "tests/test_login_journey.py" in result["test_files"]
     assert "test_login_journey.py" in result["suggested_command"]
+
+
+def test_affected_test_command_uses_native_multilanguage_cli_forms():
+    assert affected_test_command(["tests/WidgetTests.rs"], "cargo") == "cargo test --test WidgetTests"
+    assert affected_test_command(["pkg/widget.go"], "go") == "go test ./pkg"
+    assert affected_test_command(["Tests/Widget.cs"], "dotnet") == (
+        'dotnet test --filter "FullyQualifiedName~Widget"'
+    )
+    assert affected_test_command(["tests/UserTest.php"], "phpunit") == (
+        "vendor/bin/phpunit tests/UserTest.php"
+    )
+    assert affected_test_command(["tests/UserTest.php"], "pest") == "vendor/bin/pest tests/UserTest.php"

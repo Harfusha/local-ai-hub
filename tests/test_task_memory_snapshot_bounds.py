@@ -378,7 +378,6 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
             GoalContract(goal="Fix renderer theme cache invalidation"),
             ScopeContext(repository_id=str(root), task_id="ranked-snapshot"),
             task_id="ranked-snapshot", repo_root=str(root),
-        root=str(root),
         )
         assert wanted.record_id in compiled_ids[-1]
         created_snapshot = task.checkpoint.state_data["memory_context"]

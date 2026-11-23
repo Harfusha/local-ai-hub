@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub import commands
+from local_ai_hub import command_broker as commands
 
 
 def _quarantine_fixture(tmp_path, monkeypatch, *, tamper=None, before_change=False, recreate=False):

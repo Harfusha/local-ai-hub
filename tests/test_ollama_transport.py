@@ -28,6 +28,41 @@ def _runtime(base_url: str = "http://ollama", *, attempts: int = 1) -> OllamaRun
     return runtime
 
 
+def test_missing_ollama_model_fails_without_pull_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    runtime.config["llama_cpp"] = {"mode": "off"}
+
+    class LlamaCpp:
+        def ensure_model(self, _model: str, **_kwargs: object) -> bool:
+            return False
+
+    class Policy:
+        def profile(self, _model: str) -> object:
+            return type("Profile", (), {"num_ctx": 4096})()
+
+    runtime.llama_cpp = LlamaCpp()
+    runtime.model_policy = Policy()
+    runtime.ensure_running = lambda: True
+    runtime.loaded_model_details = lambda **_kwargs: []
+    runtime._invalidate_loaded_cache = lambda: None
+    runtime._is_embedding_model = lambda _model: False
+    requests: list[str] = []
+
+    def missing_model(request, **_kwargs):
+        requests.append(request.full_url)
+        raise HTTPError(
+            request.full_url, 404, "Not Found", None,
+            BytesIO(b'{"error":"model \\"missing-model\\" not found"}'),
+        )
+
+    monkeypatch.setattr(ollama_module, "urlopen", missing_model)
+
+    with pytest.raises(ollama_module.OllamaModelNotFoundError):
+        runtime.prepare_model("missing-model", unload_others=False)
+
+    assert requests == ["http://ollama/api/generate"]
+
+
 def test_prepare_model_checks_admission_after_unload_before_target_load() -> None:
     runtime = _runtime()
     runtime.config["llama_cpp"] = {"fallback_to_ollama": True}

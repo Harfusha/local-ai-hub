@@ -133,6 +133,89 @@ def test_one_hop_follows_both_rust_nested_module_layouts(tmp_path: Path):
     assert directory_layout == ["src/directory_layout/child/mod.rs"]
 
 
+def test_one_hop_keeps_rust_imports_in_their_module_and_workspace_member(tmp_path: Path):
+    seed = "crates/engine/src/features/parser.rs"
+    nested_src_seed = "crates/engine/src/features/src/parser.rs"
+    expected = {
+        "crates/engine/src/features/parser/local.rs",
+        "crates/engine/src/features/parser/hooks.rs",
+        "crates/engine/src/features/shared.rs",
+        "crates/engine/src/config.rs",
+        "crates/engine/src/common.rs",
+    }
+    decoys = {
+        "crates/engine/src/features/local.rs",
+        "crates/engine/src/features/hooks.rs",
+        "crates/engine/src/features/common.rs",
+        "crates/engine/src/features/src/common.rs",
+        "crates/engine/escape.rs",
+        "src/hooks.rs",
+        "src/shared.rs",
+        "src/common.rs",
+    }
+    eligible = {seed, nested_src_seed, "crates/engine/src/lib.rs", *expected, *decoys}
+    for path in eligible:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("pub struct Item;\n", encoding="utf-8")
+    (tmp_path / seed).write_text(
+        "mod local;\n"
+        "use self::hooks::Item;\n"
+        "use super::shared::Item as Shared;\n"
+        "use super::super::config::Item as Config;\n"
+        "use super::super::super::escape::Item as Escape;\n"
+        "use crate::common::Item as Common;\n",
+        encoding="utf-8",
+    )
+    (tmp_path / nested_src_seed).write_text("use crate::common::Item;\n", encoding="utf-8")
+
+    repo = RepositoryTools({})
+    neighbors = one_hop_related_files(tmp_path, [seed], eligible, repo)
+
+    assert set(neighbors) == expected
+    assert one_hop_related_files(tmp_path, [nested_src_seed], eligible, repo) == ["crates/engine/src/common.rs"]
+
+
+def test_one_hop_keeps_rust_binary_crate_imports_out_of_the_library(tmp_path: Path):
+    source = {
+        "member/src/bin/cli.rs": "use crate::startup::Item;\n",
+        "member/src/bin/startup.rs": "pub struct Item;\n",
+        "member/src/bin/worker/main.rs": "mod routes;\n",
+        "member/src/bin/worker/routes.rs": "use crate::cms::Item;\n",
+        "member/src/bin/worker/cms.rs": "pub struct Item;\n",
+        "member/src/startup.rs": "pub struct Item;\n",
+        "member/src/cms.rs": "pub struct Item;\n",
+        "src/startup.rs": "pub struct Item;\n",
+        "src/cms.rs": "pub struct Item;\n",
+    }
+    for path, content in source.items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    repo = RepositoryTools({})
+    eligible = set(source)
+
+    assert one_hop_related_files(tmp_path, ["member/src/bin/cli.rs"], eligible, repo) == ["member/src/bin/startup.rs"]
+    assert one_hop_related_files(tmp_path, ["member/src/bin/worker/routes.rs"], eligible, repo) == ["member/src/bin/worker/cms.rs"]
+
+
+def test_one_hop_keeps_rust_build_script_imports_out_of_the_library(tmp_path: Path):
+    files = {
+        "member/build.rs": "mod build_support;\nuse crate::build_support::Item;\n",
+        "member/build_support.rs": "pub struct Item;\n",
+        "member/src/build_support.rs": "pub struct Item;\n",
+        "member/build/build_support.rs": "pub struct Item;\n",
+    }
+    for path, content in files.items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    neighbors = one_hop_related_files(tmp_path, ["member/build.rs"], set(files), RepositoryTools({}))
+
+    assert neighbors == ["member/build_support.rs"]
+
+
 def test_one_hop_exact_go_module_import_resolves_root_package_only(tmp_path: Path):
     (tmp_path / "go.mod").write_text("module example.com/myproject\n\ngo 1.22\n", encoding="utf-8")
     (tmp_path / "sub").mkdir()
@@ -146,6 +229,24 @@ def test_one_hop_exact_go_module_import_resolves_root_package_only(tmp_path: Pat
     neighbors = one_hop_related_files(tmp_path, ["main.go"], eligible, RepositoryTools({}))
 
     assert neighbors == ["root.go"]
+
+
+def test_one_hop_resolves_legacy_go_imports_relative_to_the_importing_package(tmp_path: Path):
+    files = {
+        "pkg/app/main.go": 'package app\nimport (\n  "./worker"\n  "../shared"\n  "../../../outside"\n)\n',
+        "pkg/app/worker/worker.go": "package worker\n",
+        "pkg/shared/shared.go": "package shared\n",
+        "worker/decoy.go": "package worker\n",
+        "outside/decoy.go": "package outside\n",
+    }
+    for path, content in files.items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    neighbors = one_hop_related_files(tmp_path, ["pkg/app/main.go"], set(files), RepositoryTools({}))
+
+    assert neighbors == ["pkg/app/worker/worker.go", "pkg/shared/shared.go"]
 
 
 def test_one_hop_reuses_csharp_namespace_index_across_many_seeds(tmp_path: Path):

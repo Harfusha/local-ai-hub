@@ -107,7 +107,7 @@ def test_repo_canonical_operation_dispatch_payloads(
             return {"success": True}
 
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
-    result = mcp_server._local_ai_repo_impl(action, root=str(tmp_path), root=str(tmp_path), **arguments)
+    result = mcp_server._local_ai_repo_impl(action, root=str(tmp_path), **arguments)
 
     assert result["success"] is True
     assert len(calls) == 1

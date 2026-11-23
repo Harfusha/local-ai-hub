@@ -12,7 +12,7 @@ from local_ai_hub.command_build import (
     _unknown_classification,
 )
 from local_ai_hub.command_validation import is_validation_executable
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 
 
 def _broker(tmp_path) -> CommandBroker:

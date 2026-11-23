@@ -234,15 +234,12 @@ const apiFetch=async()=>response;
 
 
 def test_task_counts_distinguish_missing_invalid_and_explicit_zero_totals():
-    source = extract("async function loadAgentOsView({appendTasks=false}={})", "$('agentOsTasksMore')?.addEventListener")
+    source = extract("let agentOsTasks=[]", "$('agentOsTasksMore')?.addEventListener")
     source += extract("function renderAgentOsView(){", "function renderAgentOsLoadErrors(){")
     run_javascript(source, """
-let agentOsTasks=[],agentOsMemories=[],agentOsIncidents=[],agentOsLoadErrors={};
-let agentOsTaskOffset=0,agentOsTaskTotal=null,agentOsActiveTasksTotal=null,agentOsTaskLoadGeneration=0,agentOsTaskPageLoading=false;
-const agentOsTaskPageSize=100;
 const nodes=new Map();
 const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:''});return nodes.get(id)};
-const setAgentOsScopeReady=()=>{},rows=()=>{},renderAgentOsLoadErrors=()=>{};
+const rows=()=>{},renderAgentOsLoadErrors=()=>{};
 let taskPage={tasks:[{task_id:'one',status:'active'}]};
 const fetchDashboardJson=async path=>path.split('?')[0].endsWith('/tasks')?taskPage:{records:[],incidents:[]};
 (async()=>{
@@ -268,15 +265,52 @@ const fetchDashboardJson=async path=>path.split('?')[0].endsWith('/tasks')?taskP
 """)
 
 
-def test_agent_os_partial_failure_remains_visible_after_filtering():
-    source = extract("async function loadAgentOsView({appendTasks=false}={})", "$('agentOsTasksMore')?.addEventListener")
+def test_agent_os_scoped_pages_follow_only_an_advancing_cursor():
+    source = extract("let agentOsTasks=[]", "$('agentOsTasksMore')?.addEventListener")
+    source += extract("function renderAgentOsView(){", "function renderAgentOsLoadErrors(){")
     run_javascript(source, """
-let agentOsTasks=[],agentOsMemories=[],agentOsIncidents=[],agentOsLoadErrors={};
+const nodes=new Map();
+const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:''});return nodes.get(id)};
+const rows=()=>{},renderAgentOsLoadErrors=()=>{};
+const requested=[],otherRequests=[];
+let page={tasks:[{task_id:'one'}],count_scope:'repository',total_count:null,has_more:true,next_offset:1};
+const fetchDashboardJson=async(path,options)=>{
+  const url=new URL(path,'http://localhost');
+  if(!url.pathname.endsWith('/tasks')){otherRequests.push(url.pathname);return {records:[],incidents:[]}}
+  requested.push({scope:url.searchParams.get('scoped_page'),offset:url.searchParams.get('offset'),unscoped:options.unscoped});
+  return page;
+};
+(async()=>{
+  $('agentOsRoot').value='C:/repo';
+  await loadAgentOsView();
+  assert.deepEqual(requested[0],{scope:'true',offset:'0',unscoped:false});
+  assert.equal($('agentOsTasksMore').hidden,false);
+  page={tasks:[{task_id:'two'}],count_scope:'repository',total_count:3,has_more:true,next_offset:2};
+  await loadAgentOsView({appendTasks:true});
+  assert.equal(requested[1].offset,'1');
+  assert.deepEqual(agentOsTasks.map(task=>task.task_id),['one','two']);
+  assert.match($('agentOsSummary').textContent,/3 total tasks in this repository/);
+  page={tasks:[],count_scope:'repository',total_count:null,has_more:true,next_offset:2,query_truncated:true};
+  await loadAgentOsView({appendTasks:true});
+  assert.equal($('agentOsTasksMore').hidden,true);
+  assert.match($('agentOsSummary').textContent,/Task list incomplete/);
+  await loadAgentOsView({appendTasks:true});
+  assert.equal(requested.length,3);
+  assert.deepEqual(otherRequests,['/api/agent-state/memory','/api/agent-state/incidents']);
+  $('agentOsRoot').value='all';
+  page={tasks:[],total_count:0,active_count:0,has_more:false,next_offset:0};
+  await loadAgentOsView();
+  assert.deepEqual(requested[3],{scope:null,offset:'0',unscoped:true});
+  assert.doesNotMatch($('agentOsSummary').textContent,/Task list incomplete/);
+})().catch(error=>{console.error(error);process.exitCode=1});
+""")
+
+
+def test_agent_os_partial_failure_remains_visible_after_filtering():
+    source = extract("let agentOsTasks=[]", "$('agentOsTasksMore')?.addEventListener")
+    run_javascript(source, """
 let renders=0;
-let agentOsTaskOffset=0,agentOsTaskTotal=0,agentOsActiveTasksTotal=0,agentOsTaskLoadGeneration=0,agentOsTaskPageLoading=false;
-const agentOsTaskPageSize=100;
 const $=()=>({value:"C:/repo"});
-const setAgentOsScopeReady=()=>{};
 const renderAgentOsView=()=>renders++;
 const fetchDashboardJson=async path=>{
   if(path.split('?')[0].endsWith('/tasks'))throw Error('tasks unavailable');

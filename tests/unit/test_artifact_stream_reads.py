@@ -130,6 +130,25 @@ def test_markdown_section_reads_stop_at_boundary_and_clamp_past_end(tmp_path) ->
     assert past_end["next_offset"] is None
 
 
+@pytest.mark.parametrize("chunk_size", [17, 64])
+def test_section_scan_retains_boundaries_across_encoded_chunks(tmp_path, monkeypatch, chunk_size) -> None:
+    monkeypatch.setattr("local_ai_hub.artifacts.MAX_ARTIFACT_TEXT_CHUNK_BYTES", chunk_size)
+    store = ArtifactStore(tmp_path)
+    target = "## Target α🙂\r\n\n" + "ž" * 131 + "\x00🙂\n"
+    artifact_id = store.put("# Start\n" + target + "## " + "H" * 600 + "\nbody\n## After", kind="log")
+
+    page = store.get(artifact_id, section="target", offset=5, max_chars=len(target))
+    assert page["success"] is True, page
+    assert page["text"] == target[5:]
+    assert page["total_chars"] == len(target)
+    assert page["next_offset"] is None
+    assert page["sections"] == ["start", "target", "after"]
+    assert page["sections_truncated"] is True
+
+    last = store.get(artifact_id, section="after")
+    assert last["text"] == "## After"
+
+
 def test_section_map_closes_last_retained_section_at_first_omitted_heading() -> None:
     lines = [f"## Heading {index}" for index in range(51)]
     text = "\n".join(lines) + "\nremaining body"

@@ -1658,7 +1658,7 @@ def test_bounded_handoff_preserves_actual_command_output_evidence(tmp_path):
 def test_bounded_work_executes_approved_command_through_real_broker(tmp_path, bound, command):
     import json
     import subprocess
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
     from local_ai_hub.services import LocalAIServices
     from types import SimpleNamespace
     from test_work_orchestrator import (FakeArtifacts, FakeLeases, FakeServices, config, init_repo,
@@ -1737,7 +1737,7 @@ def test_bounded_work_executes_approved_command_through_real_broker(tmp_path, bo
 
 
 def test_broker_work_order_identity_requires_matching_current_fence_and_root(tmp_path):
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
     from local_ai_hub.work_fencing import FencingLeaseStore
     from test_work_orchestrator import init_repo
 
@@ -1774,7 +1774,7 @@ def test_cancelling_bounded_work_stops_real_validation_process(tmp_path):
     import subprocess
     import time
     from types import SimpleNamespace
-    from local_ai_hub.commands import CommandBroker
+    from local_ai_hub.command_broker import CommandBroker
     from local_ai_hub.services import LocalAIServices
     from test_work_orchestrator import FakeArtifacts, FakeLeases, FakeServices, config, init_repo, wait_terminal
 

@@ -3,12 +3,12 @@ import json
 import subprocess
 from types import SimpleNamespace
 
-from local_ai_hub.commands import (
+from local_ai_hub.command_broker import (
     CommandBroker,
     CommandInvocation,
     _ResolvedProjectCommand,
 )
-from local_ai_hub import commands as commands_module
+from local_ai_hub import command_broker as commands_module
 from local_ai_hub.process_utils import hidden_run_kwargs
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 

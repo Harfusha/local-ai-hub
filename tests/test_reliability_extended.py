@@ -245,3 +245,21 @@ def test_http_server_binds_before_constructing_app(tmp_path: Path, monkeypatch: 
         assert constructed["n"] == 0
     finally:
         listener.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX TIME_WAIT rebinding")
+def test_http_server_rebinds_after_time_wait_without_sharing_a_listener():
+    from local_ai_hub import http_server
+
+    with http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler) as server:
+        address = server.server_address
+        with pytest.raises(OSError):
+            http_server.LocalAIHTTPServer(address, http_server.Handler)
+        with closing(socket.create_connection(address, timeout=3)) as client:
+            accepted, _ = server.get_request()
+            with closing(accepted):
+                accepted.shutdown(socket.SHUT_WR)
+                assert client.recv(1) == b""
+
+    with http_server.LocalAIHTTPServer(address, http_server.Handler) as restarted:
+        assert restarted.server_address == address

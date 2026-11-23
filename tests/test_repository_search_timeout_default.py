@@ -1,6 +1,8 @@
 from pathlib import Path
 import tomllib
 
+from local_ai_hub.search_modes import repository_search_timeout
+
 
 def test_repository_search_timeout_default_is_bounded_and_distributions_match():
     root = Path(__file__).resolve().parents[1]
@@ -12,4 +14,5 @@ def test_repository_search_timeout_default_is_bounded_and_distributions_match():
 
     assert defaults[0] == defaults[1]
     assert defaults[0]["repository_search_timeout_seconds"] == 10
+    assert repository_search_timeout({}) == defaults[0]["repository_search_timeout_seconds"]
 

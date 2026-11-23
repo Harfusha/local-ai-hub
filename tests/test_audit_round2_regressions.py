@@ -204,13 +204,13 @@ def test_t2_02_graph_traversal_closed_subgraph(tmp_path: Path):
     mem_store = MemoryStore(state_store=state_store)
 
     # A -> B -> C -> D, with a cycle back to A.
-    mem_store.record_relation("A", "calls", "B", weight=1.0, root=str(tmp_path))
-    mem_store.record_relation("B", "calls", "C", weight=1.0, root=str(tmp_path))
-    mem_store.record_relation("C", "calls", "D", weight=1.0, root=str(tmp_path))
-    mem_store.record_relation("D", "calls", "A", weight=1.0, root=str(tmp_path))
+    mem_store.record_relation("A", "calls", "B", weight=1.0, root=str(tmp_path), repository_id="repo-round2")
+    mem_store.record_relation("B", "calls", "C", weight=1.0, root=str(tmp_path), repository_id="repo-round2")
+    mem_store.record_relation("C", "calls", "D", weight=1.0, root=str(tmp_path), repository_id="repo-round2")
+    mem_store.record_relation("D", "calls", "A", weight=1.0, root=str(tmp_path), repository_id="repo-round2")
 
     # Limit to max 2 nodes from A (A and B)
-    traversal = mem_store.traverse_graph("A", max_depth=3, max_nodes=2, root=str(tmp_path))
+    traversal = mem_store.traverse_graph("A", max_depth=3, max_nodes=2, root=str(tmp_path), repository_id="repo-round2")
     node_names = set(traversal["nodes"])
     assert len(node_names) <= 2
     assert "A" in node_names
@@ -352,6 +352,20 @@ def test_t2_10_scheduler_enqueue_passes_model_admission():
     assert "qwen2.5-coder:7b" in admitted_models
 
 
+def test_t2_10_scheduler_enqueue_refreshes_external_reservation():
+    """N07: queued and waiting scheduler admissions both refresh the GPU fence."""
+    from local_ai_hub.scheduler import Scheduler
+
+    sched = Scheduler(max_concurrent=1, max_queue=10)
+    checks = []
+    sched._external_gpu_reserved = lambda: checks.append(True) or False
+    try:
+        sched.enqueue("model", source="test", execute=lambda: {"success": True})
+        assert checks == [True]
+    finally:
+        sched.close()
+
+
 def test_t2_11_find_relations_source_and_target_filter(tmp_path: Path):
     """T2-11 (N13): find_relations supports simultaneous source_entity and target_entity filter."""
     db_path = tmp_path / "relations.sqlite3"
@@ -359,11 +373,11 @@ def test_t2_11_find_relations_source_and_target_filter(tmp_path: Path):
     state_store._ensure_schema()
     mem_store = MemoryStore(state_store=state_store)
 
-    mem_store.record_relation("A", "calls", "B", root=str(tmp_path))
-    mem_store.record_relation("A", "calls", "C", root=str(tmp_path))
-    mem_store.record_relation("D", "calls", "B", root=str(tmp_path))
+    mem_store.record_relation("A", "calls", "B", root=str(tmp_path), repository_id="repo-round2")
+    mem_store.record_relation("A", "calls", "C", root=str(tmp_path), repository_id="repo-round2")
+    mem_store.record_relation("D", "calls", "B", root=str(tmp_path), repository_id="repo-round2")
 
-    res = mem_store.find_relations(source_entity="A", target_entity="B", root=str(tmp_path))
+    res = mem_store.find_relations(source_entity="A", target_entity="B", root=str(tmp_path), repository_id="repo-round2")
     assert len(res) == 1
     assert res[0]["source_entity"] == "A"
     assert res[0]["target_entity"] == "B"

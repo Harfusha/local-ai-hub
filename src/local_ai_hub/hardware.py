@@ -708,8 +708,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "preprocessing": {"model": "qwen2.5-coder:7b"},
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
-        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 12, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
         "ollama_subagents": {

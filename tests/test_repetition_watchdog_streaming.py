@@ -40,7 +40,7 @@ class RepetitionWatchdogStreamingTests(unittest.TestCase):
         self.assertTrue(watchdog.push(" ".join([cycle] * 3)))
         self.assertTrue(watchdog.loop_detected)
 
-    def test_non_streaming_request_rejects_and_stops_repetitive_output(self):
+    def test_request_streams_to_reject_and_stop_repetitive_output(self):
         runtime = object.__new__(OllamaRuntime)
         runtime.config = {"ollama": {"enabled": True, "request_attempts": 1}}
         runtime.base_url = "http://ollama/"
@@ -50,7 +50,7 @@ class RepetitionWatchdogStreamingTests(unittest.TestCase):
         with patch("local_ai_hub.ollama.urlopen", return_value=response) as urlopen_mock:
             result = runtime.request(
                 "/api/chat",
-                {"model": "test", "messages": [], "stream": False},
+                {"model": "test", "messages": [], "stream": True},
             )
 
         request = urlopen_mock.call_args.args[0]

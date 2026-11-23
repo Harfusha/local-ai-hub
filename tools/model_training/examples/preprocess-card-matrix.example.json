@@ -5,7 +5,7 @@
   "train_file": "../../../state/experiments/model-training/data/preprocess-card-train.jsonl",
   "evaluation_file": "../../../state/experiments/model-training/data/preprocess-card-eval.jsonl",
   "output_root": "../../../state/experiments/model-training/runs/preprocess-card",
-  "system_prompt": "Use the source as sole authority. Return one JSON file card matching output_schema.",
+  "system_prompt": "Use the source as sole authority. Preserve deterministic facts. Return a complete file card and an exact source quote for every claim.",
   "output_schema": {
     "type": "object",
     "properties": {
@@ -15,18 +15,31 @@
       "side_effects": {"type": "array", "items": {"type": "string"}},
       "risks": {"type": "array", "items": {"type": "string"}},
       "tests": {"type": "array", "items": {"type": "string"}},
-      "keywords": {"type": "array", "items": {"type": "string"}}
+      "keywords": {"type": "array", "items": {"type": "string"}},
+      "evidence": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "field": {"type": "string"},
+            "value": {"type": "string"},
+            "quote": {"type": "string"}
+          },
+          "required": ["field", "value", "quote"],
+          "additionalProperties": false
+        }
+      }
     },
-    "required": ["purpose", "symbols", "dependencies", "side_effects", "risks", "tests", "keywords"],
+    "required": ["purpose", "symbols", "dependencies", "side_effects", "risks", "tests", "keywords", "evidence"],
     "additionalProperties": false
   },
   "training": {
     "device": "cuda",
-    "quantization": "none",
+    "quantization": "4bit",
     "epochs": 3,
     "batch_size": 1,
     "gradient_accumulation_steps": 4,
-    "max_length": 2048,
+    "max_length": 8192,
     "learning_rate": 0.0002,
     "gradient_checkpointing": true,
     "seed": 20261110

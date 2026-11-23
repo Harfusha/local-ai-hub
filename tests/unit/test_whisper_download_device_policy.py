@@ -148,3 +148,18 @@ def test_transcribe_does_not_invoke_cli_for_missing_model_without_opt_in(tmp_pat
     assert result["retryable"] is False
     assert result["request_not_sent"] is True
     run_hidden.assert_not_called()
+
+
+def test_transcribe_disabled_by_config_never_checks_cli_or_audio(tmp_path: Path) -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"transcription": {"enabled": False}}
+    with (
+        patch("local_ai_hub.services.shutil.which") as which,
+        patch("local_ai_hub.process_utils.run_hidden") as run_hidden,
+    ):
+        result = service.transcribe({"audio": str(tmp_path / "missing.wav")})
+    assert result["success"] is False
+    assert result["reason"] == "transcription_disabled"
+    assert result["request_not_sent"] is True
+    which.assert_not_called()
+    run_hidden.assert_not_called()

@@ -11,6 +11,29 @@ from pathlib import Path
 from local_ai_hub.operational_mode import set_operational_mode
 
 
+def test_critical_selection_ignores_parent_directory_name(tmp_path: Path) -> None:
+    child_dir = tmp_path / "critical-host"
+    child_dir.mkdir()
+    shutil.copyfile(Path(__file__).with_name("conftest.py"), child_dir / "conftest.py")
+    (child_dir / "test_probe.py").write_text(
+        "def test_security_probe(): pass\ndef test_plain_probe(): pass\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", "critical",
+         "--rootdir", str(child_dir), "--confcutdir", str(child_dir)],
+        cwd=child_dir,
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "test_probe.py::test_security_probe" in result.stdout
+    assert "test_probe.py::test_plain_probe" not in result.stdout
+
+
 def test_pytest_collection_ignores_inherited_operator_gaming(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     operator_state = tmp_path / "operator-state"

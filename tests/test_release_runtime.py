@@ -102,7 +102,7 @@ def test_deterministic_fast_fallback_remains_useful_and_explicit() -> None:
     services.config = {"deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5}}
     services._repo_cached = lambda _op, _root, _params, compute: compute()
 
-    result = services.fast_context("C:/repo", "route", 512)
+    result = services.fast_context(ContextRequest(task_id="route", root="C:/repo", token_budget=512))
 
     assert result["success"] is True
     assert result["context"] == "verified route evidence"

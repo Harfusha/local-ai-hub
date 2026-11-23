@@ -11,7 +11,6 @@ import struct
 from contextlib import closing
 from pathlib import Path
 
-from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_memory import MemoryStore
 from local_ai_hub import rag as rag_module
 from local_ai_hub.rag import RAGStore, _fragment_hash
@@ -187,10 +186,11 @@ def test_graphrag_search_excludes_relations_from_other_repositories(tmp_path):
     }
 
 
-def test_memory_auto_links_persist_scope_provenance():
+def test_memory_auto_links_persist_scope_provenance(tmp_path):
     from types import SimpleNamespace
 
     linked = []
+    root = Path(os.path.normcase(str(tmp_path.resolve()))).as_posix()
     store = object.__new__(MemoryStore)
     store.record_relation = lambda **kwargs: linked.append(kwargs)
     record = SimpleNamespace(
@@ -199,13 +199,14 @@ def test_memory_auto_links_persist_scope_provenance():
         value="local memory value",
         scope="repository",
         scope_id="repo-A",
-        provenance={"repository_id": "repo-A"},
+        provenance={"repository_id": "repo-A", "root": root},
         confidence=1.0,
     )
 
     MemoryStore._auto_link_record(store, record)
 
     assert linked
+    assert all(item["root"] == item["metadata"]["root"] == root for item in linked)
     assert all(item["metadata"]["scope"] == "repository" for item in linked)
     assert all(
         item["metadata"]["provenance"]["repository_id"] == "repo-A"
@@ -522,14 +523,19 @@ def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_
             "VALUES(?,?,?,?,?,?,?)",
             (workspace, "old.py", 0, "old-hash", "unrelated words", "[1.0,0.0]", "space-old"),
         )
+        store._store_workspace_embedding_space(con, workspace, "space-old")
         con.commit()
 
-    result = store._search_uncached("zebra query", workspace,  top_k=2, use_reranker=False)
+    result = store.search("zebra query", workspace=workspace, top_k=2, use_reranker=False)
 
     assert result["success"] is True
     assert result["results"] == []
     assert result["degraded"] is True
     assert result["fallback"] == "embedding_space_mismatch"
+    assert result["reindex_scheduled"] is True
+    with closing(store._connect()) as con:
+        assert store._stored_workspace_embedding_space(con, workspace) == "space-old"
+        assert store._stored_workspace_reindex_target(con, workspace) == "space-current"
 
 
 def test_semantic_only_search_skips_embedder_for_known_stale_index(tmp_path):
@@ -547,6 +553,29 @@ def test_semantic_only_search_skips_embedder_for_known_stale_index(tmp_path):
     assert result["fallback"] == "embedding_space_mismatch"
     assert result["reindex_required"] is True
     assert store.services.calls == []
+
+
+@pytest.mark.parametrize("explicit_space", [False, True])
+def test_semantic_search_recovers_stale_metadata_when_vectors_match(tmp_path, explicit_space):
+    store = _store(tmp_path)
+    if explicit_space:
+        store.services.space_id = "space-current"
+    store.services.embed = lambda *_args, **_kwargs: {
+        "success": True, "embedding_space_id": "space-current", "embeddings": [[1.0, 0.0]],
+    }
+    workspace = "stale-header"
+    with closing(store._connect()) as con, con:
+        store._store_workspace_embedding_space(con, workspace, "space-stale")
+        con.execute(
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
+            (workspace, "matching.py", 0, "current", "actual indexed text", "[1.0,0.0]", "space-current"),
+        )
+
+    result = store._search_uncached("query", workspace, use_reranker=False, semantic_only=True)
+
+    assert [row["path"] for row in result["results"]] == ["matching.py"]
+    with closing(store._connect()) as con:
+        assert store._stored_workspace_embedding_space(con, workspace) == "space-current"
 
 
 def test_semantic_search_skips_embedder_for_empty_workspace(tmp_path):
@@ -588,7 +617,7 @@ def test_semantic_only_uses_runtime_identity_when_configured_digest_is_stale(tmp
     assert result.get("degraded") is not True
 
 
-def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
+def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path, monkeypatch):
     store = _store(tmp_path)
     store.services.embed = lambda *_args, **_kwargs: {
         "success": True,
@@ -597,6 +626,7 @@ def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
     }
     workspace = "partial-spaces"
     with closing(store._connect()) as con:
+        store._store_workspace_embedding_space(con, workspace, "space-old")
         con.executemany(
             "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
             "VALUES(?,?,?,?,?,?,?)",
@@ -607,14 +637,29 @@ def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
         )
         con.commit()
 
-    result = store._search_uncached("query", workspace,  top_k=2, use_reranker=False)
+    result = store.search("query", workspace=workspace, top_k=2, use_reranker=False)
 
     assert [row["path"] for row in result["results"]] == ["current.py"]
     assert result["degraded"] is True
     assert result["reindex_required"] is True
     assert "embedding_space_rebuild_pending" in result["fallbacks"]
     with closing(store._connect()) as con:
-        assert store._stored_workspace_embedding_space(con, workspace) == "space-current"
+        assert store._stored_workspace_embedding_space(con, workspace) == "space-old"
+        assert store._stored_workspace_reindex_target(con, workspace) == "space-current"
+    assert result["reindex_scheduled"] is True
+
+    original_connect = store._connect
+    statements = []
+
+    def traced_connect():
+        con = original_connect()
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+    repeated = store.search("query", workspace=workspace, top_k=2, use_reranker=False)
+    assert repeated["reindex_scheduled"] is True
+    assert "BEGIN IMMEDIATE" not in statements
 
 
 def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
@@ -643,6 +688,7 @@ def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
             ],
         )
         con.commit()
+    store._request_workspace_reindex(workspace, "space-a")
 
     first = store.search("same query", use_reranker=False, workspace=workspace)
     repeated = store.search("same query", use_reranker=False, workspace=workspace)
@@ -655,6 +701,39 @@ def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
     assert [row["path"] for row in second["results"]] == ["b.py"]
     assert second["search_cache"]["hit"] is False
     assert len(calls) == 2
+
+
+def test_metadata_repair_rechecks_vectors_when_index_changes_after_read(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.services.space_id = "space-current"
+    workspace = "metadata-repair-race"
+    insert_chunk = (
+        "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)"
+    )
+    with closing(store._connect()) as con, con:
+        store._store_workspace_embedding_space(con, workspace, "space-old")
+        con.execute(insert_chunk, (workspace, "first.py", 0, "a", "first result", "[1.0,0.0]", "space-current"))
+
+    read_metadata = store._stored_workspace_embedding_space
+    changed = False
+
+    def publish_during_read(connection, workspace_key):
+        nonlocal changed
+        value = read_metadata(connection, workspace_key)
+        if not changed and connection.in_transaction:
+            with closing(store._connect()) as writer, writer:
+                writer.execute(insert_chunk, (workspace, "new.py", 0, "b", "new result", "[1.0,0.0]", "space-new"))
+                store._store_workspace_embedding_space(writer, workspace, "space-new")
+            changed = True
+        return value
+
+    monkeypatch.setattr(store, "_stored_workspace_embedding_space", publish_during_read)
+    result = store._search_uncached("query", workspace, use_reranker=False)
+
+    assert changed
+    assert [row["path"] for row in result["results"]] == ["first.py"]
+    with closing(store._connect()) as con:
+        assert read_metadata(con, workspace) == "space-new"
 
 
 def test_warm_search_skips_embedding_space_write_lock(tmp_path, monkeypatch):
@@ -721,6 +800,178 @@ def test_warm_search_reads_embedding_space_from_vector_snapshot(tmp_path, monkey
     assert transaction_states == [True]
 
 
+@pytest.mark.parametrize("semantic_only", [False, True])
+def test_public_search_fallback_never_writes_a_cache_entry(tmp_path, monkeypatch, semantic_only):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "needle.py").write_text("needle = True\n", encoding="utf-8")
+    store = _store(tmp_path)
+    store.services.space_id = "transient-fallback-space"
+    workspace = "fallback-test"
+    assert store.index(str(root), workspace=workspace)["success"]
+    query_calls = []
+
+    def unavailable_embed(texts, **kwargs):
+        assert kwargs.get("query") is True
+        query_calls.append(texts)
+        return {"success": False, "error": "embedder unavailable"}
+
+    monkeypatch.setattr(store.services, "embed", unavailable_embed)
+    cache = store.search_flight.cache
+    writes = []
+    for action in ("set", "delete"):
+        original = getattr(cache, action)
+
+        def record(*args, _action=action, _original=original, **kwargs):
+            writes.append(_action)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(cache, action, record)
+
+    for _ in range(2):
+        response = store.search("needle", workspace=workspace, use_reranker=False, semantic_only=semantic_only)
+        assert response["success"] is True and response["degraded"] is True
+        assert response["search_cache"]["hit"] is False
+        if semantic_only:
+            assert response["fallback"] == "embedding_backend" and response["results"] == []
+        else:
+            assert response["retrieval_mode"] == "lexical_fallback"
+            assert [row["path"] for row in response["results"]] == ["needle.py"]
+    assert len(query_calls) == 2
+    assert writes == []
+
+
+def test_public_search_evicts_a_legacy_cached_fallback(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.services.space_id = "legacy-fallback-space"
+    monkeypatch.setattr(store, "_search_uncached", lambda *_args, **_kwargs: {
+        "success": True, "results": [],
+    })
+    cache = store.search_flight.cache
+    original_get = cache.get
+    keys = []
+
+    def capture_get(key):
+        keys.append(key)
+        return original_get(key)
+
+    monkeypatch.setattr(cache, "get", capture_get)
+    store.search("needle", workspace="legacy", use_reranker=False)
+    key = keys[0]
+    cache.set(key, {"success": True, "results": [], "retrieval_mode": "lexical_fallback"})
+
+    result = store.search("needle", workspace="legacy", use_reranker=False)
+
+    assert result["search_cache"]["hit"] is True
+    assert original_get(key) is None
+
+
+def test_published_revision_skips_manifest_on_new_reader(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = root / "needle.py"
+    path.write_text("needle = 1\n", encoding="utf-8")
+    writer = _store(tmp_path)
+    writer.services.space_id = "publication-space"
+    workspace = "published"
+    assert writer.index(str(root), workspace=workspace)["success"]
+
+    reader = RAGStore(writer.config)
+    connect = reader._connect
+    statements = []
+
+    def traced_connect():
+        con = connect()
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(reader, "_connect", traced_connect)
+    first = reader.revision(workspace=workspace)
+    assert first == writer.revision(workspace=workspace)
+    path.write_text("needle = 200\n", encoding="utf-8")
+    assert writer.index_paths_step(str(root), workspace=workspace, paths=["needle.py"])["success"]
+    second = reader.revision(workspace=workspace)
+
+    assert second != first
+    assert second == writer.revision(workspace=workspace)
+    assert not any("SELECT path,content_hash,mtime_ns,size FROM files" in sql for sql in statements)
+
+
+def test_independent_publications_at_the_same_generation_have_distinct_revisions(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "needle.py").write_text("needle = 1\n", encoding="utf-8")
+    workspace = "published"
+    first, second = _store(tmp_path / "first"), _store(tmp_path / "second")
+    generations = []
+    for store in (first, second):
+        assert store.index(str(root), workspace=workspace)["success"]
+        with closing(store._connect()) as con:
+            generations.append(store._workspace_index_generation(con, workspace))
+
+    assert generations[0] == generations[1] > 0
+    assert first.revision(workspace=workspace) != second.revision(workspace=workspace)
+
+
+def test_unpaired_generation_uses_legacy_manifest_revision(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "needle.py").write_text("needle = 1\n", encoding="utf-8")
+    store = _store(tmp_path)
+    workspace = "older-writer"
+    assert store.index(str(root), workspace=workspace)["success"]
+    first = store.revision(workspace=workspace)
+    with closing(store._connect()) as con:
+        generation = store._workspace_index_generation(con, workspace)
+        con.execute(
+            "UPDATE rag_meta SET value=? WHERE key=?",
+            (str(generation + 1), store._workspace_index_generation_key(workspace)),
+        )
+        con.execute("UPDATE files SET mtime_ns=mtime_ns+1 WHERE workspace=?", (workspace,))
+        con.commit()
+
+    statements = []
+    connect = store._connect
+
+    def traced_connect():
+        con = connect()
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+    assert store.revision(workspace=workspace) != first
+    assert any("SELECT path,content_hash,mtime_ns,size FROM files" in sql for sql in statements)
+
+
+def test_search_retry_reports_the_revision_after_concurrent_publication(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = root / "needle.py"
+    path.write_text("needle = 1\n", encoding="utf-8")
+    store = _store(tmp_path)
+    workspace = "concurrent-publication"
+    assert store.index(str(root), workspace=workspace)["success"]
+    first = store.revision(workspace=workspace)
+    writer = RAGStore(store.config, services=store.services)
+    calls = 0
+
+    def search(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            path.write_text("needle = 200\n", encoding="utf-8")
+            assert writer.index_paths_step(str(root), workspace=workspace, paths=["needle.py"])["success"]
+        return {"success": True, "results": [{"path": f"call-{calls}.py"}]}
+
+    monkeypatch.setattr(store, "_search_uncached", search)
+    response = store.search("needle", workspace=workspace, use_reranker=False)
+
+    assert calls == 2
+    assert response["results"] == [{"path": "call-2.py"}]
+    assert response["index_revision"] == response["search_cache"]["revision"] != first
+    assert response["index_revision"] == writer.revision(workspace=workspace)
+
+
 def test_public_search_cache_isolated_by_workspace(tmp_path):
     store = _store(tmp_path)
     store.services.space_id = "shared-runtime-space"
@@ -729,7 +980,6 @@ def test_public_search_cache_isolated_by_workspace(tmp_path):
         "embedding_space_id": "shared-runtime-space",
         "embeddings": [[1.0, 0.0]],
     }
-    workspace = "same-workspace"
     with closing(store._connect()) as con:
         con.executemany(
             "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "

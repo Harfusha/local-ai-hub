@@ -77,11 +77,11 @@ _OPERATION_GUIDANCE = {
         "and allowed paths. Do not edit files, execute commands, or claim verification."
     ),
     "explore": "Identify the smallest set of relevant facts, paths and symbols; do not invent missing context.",
-    "reason": "Compare concrete hypotheses, select the strongest one, and explain what evidence supports or weakens it.",
-    "review": "Find concrete correctness, regression, security or test risks in the supplied material. Default to a JSON verdict and cited findings; explicit task response formats take precedence.",
+    "reason": "Give a short conclusion, the decisive evidence, key uncertainty, and one verification step. Do not restate the task or provide hidden chain-of-thought; explicit task response formats take precedence.",
+    "review": "Adversarial skeptical review: find concrete correctness, regression, security, concurrency, or test risks in the supplied material. Do not rubber-stamp or flatter the author. Scrutinize edge cases, null/empty states, resource cleanup, and contracts. Default to a JSON verdict and cited findings, using one concise sentence per finding and grouping duplicates; never omit distinct defects. Explicit task response formats take precedence.",
     "review_diff": (
-        "Review only the changed hunk. Check regression risk, changed contracts, error handling, security/concurrency "
-        "and missing tests. Report `None found` when the supplied diff contains no actionable defect."
+        "Review only the changed hunk with high scrutiny: check regression risk, changed contracts, error handling, security/concurrency flaws, "
+        "and missing tests. Do not rubber-stamp. Report `None found` only when the supplied diff contains no actionable defect."
     ),
     "second_opinion": "Challenge the candidate independently and state concrete corrections or reasons it survives review.",
     "compress": "Compress the supplied evidence while preserving paths, identifiers, numbers, decisions and uncertainty.",
@@ -179,7 +179,7 @@ def build_prompt(
         "do not introduce unrelated hardware, software, frameworks, files or APIs merely because they are plausible. "
         "For diagnosis, separate OBSERVED from INFERENCE and give one falsifiable verification step. "
         "Never report a bare location such as 'line 42': attach every location to a supplied path as path:line. "
-        "If TASK requests an exact output shape, follow that shape while retaining evidence and uncertainty. "
+        "If TASK requests an exact output shape, follow it exactly without adding sections; keep evidence and uncertainty only where that shape allows. "
         f"Operation contract: {guidance} {profile_rule} "
         f"Model capability tier: {capability.tier}. Allowed strengths: {', '.join(capability.can)}. "
         f"Out of scope for this model: {', '.join(capability.cannot)}.",
@@ -190,7 +190,8 @@ def build_prompt(
         "Use only supplied repository context and allowed paths. Do not claim tests, execution, or file changes.\n"
         if operation_name == "code" else
         'Return only a JSON object with "verdict" ("pass" or "fail") and "findings" (a list). '
-        'Use "pass" only when findings is empty; otherwise use "fail". Each finding must explain '
+        'Use "pass" only when findings is empty and you have actively verified that all boundary cases and error paths are handled; '
+        'otherwise use "fail". Do not rubber-stamp. Each finding must explain '
         'a concrete defect and include "citation": {"path": "supplied allowed path", "line": 1} '
         'with an actual positive line number from the supplied evidence. Do not invent citations. '
         'If evidence is insufficient, state that limitation in a separate "limitations" field. '
@@ -203,16 +204,12 @@ def build_prompt(
         "add facts. If safe compression is not possible, return CONTEXT unchanged. Do not add headings, analysis, "
         "citations, a summary of TASK, or code fences.\n"
         if operation_name == "compress" else
-        "1. SUMMARY: one concrete conclusion for this task / Konkrétní závěr.\n"
-        "2. EVIDENCE: cite supplied evidence IDs and paths.\n"
-        "3. ANALYSIS: explain the project-specific reasoning, not generic best practices.\n"
-        "4. LIMITATIONS: state unknowns instead of guessing.\n"
-        "5. NEXT: one concrete next step, or `None found`.\n"
+        "Answer TASK directly in its requested format. If TASK specifies none, provide a concise answer with evidence and material limitations. "
+        "Do not add unrelated sections.\n"
     )
     user = (
         f"{operation_name.upper()}\n"
         "OPERATION CONTRACT:\n" + guidance + "\n\n"
-        "TASK:\n" + _clip(task, 3500) + "\n\n"
         "ACCEPTANCE CRITERIA:\n" + _lines(acceptance_criteria) + "\n\n"
         "AUTHORITATIVE EVIDENCE IDS:\n" + _lines(evidence_ids) + "\n\n"
         "CHANGED / ALLOWED PATHS:\n" + _lines(changed_paths) + "\n\n"
@@ -221,10 +218,10 @@ def build_prompt(
         "CONTEXT:\n" + _clip(context, 12500) + "\n\n"
         "REQUIRED RESPONSE:\n" + required_response +
         (
-            "Nevymýšlej soubory, API, symboly, řádky ani výsledky testů. Každý řádek musí odkazovat na dodaný důkaz; "
-            "holé 'line N' nepoužívej. Obecné rady bez vazby na dodaný context označ jako nedostatečné."
+            "Do not invent files, APIs, symbols, lines, or test results. Every line must cite supplied evidence; "
+            "do not use bare 'line N'. Mark generic advice without anchor in supplied context as insufficient."
             if operation_name not in {"compress", "code"} else ""
-        )
+        ) + "\n\nTASK:\n" + _clip(task, 3500)
     )
     return PromptPackage(system=system, user=user, capability=capability, operation=operation_name)
 

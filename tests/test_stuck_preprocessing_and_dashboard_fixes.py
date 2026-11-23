@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.external_tools import ExternalCodeIntelligence
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.services import LocalAIServices

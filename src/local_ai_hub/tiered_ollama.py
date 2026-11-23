@@ -59,7 +59,7 @@ class TieredOllamaRuntime:
         ollama["num_parallel"] = max(1, int(smart_cfg.get("num_parallel", 1)))
         ollama["keep_alive"] = str(smart_cfg.get("keep_alive", "10m"))
         ollama["flash_attention"] = bool(smart_cfg.get("flash_attention", True))
-        ollama["kv_cache_type"] = str(smart_cfg.get("kv_cache_type", "q8_0"))
+        ollama["kv_cache_type"] = "q4_0"
         ollama["startup_timeout_seconds"] = float(smart_cfg.get("startup_timeout_seconds", 30))
         model = str(smart_cfg.get("model") or cfg.get("models", {}).get("heavy_code", ""))
         if model:

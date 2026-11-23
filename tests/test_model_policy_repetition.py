@@ -43,7 +43,8 @@ def test_apply_payload_injects_repetition_penalty_for_small_models():
         {"model": "qwen2.5-coder:7b", "prompt": "test", "options": {"temperature": 0.05}},
     )
     assert clean7["options"]["temperature"] == 0.20
-    assert clean7["options"]["repeat_penalty"] == 1.12
+    assert clean7["options"]["repeat_penalty"] == 1.18
+    assert clean7["options"]["repeat_last_n"] == 128
 
 
 def test_repetition_watchdog_detects_2_line_cycle():

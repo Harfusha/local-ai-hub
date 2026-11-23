@@ -63,10 +63,10 @@ def test_timeline_handler_preserves_status_body_arguments_and_degrades_backend_e
 
 
 def test_named_dispatch_keeps_existing_gate_and_exception_order() -> None:
-    source_path = Path(http_server.__file__)
+    source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_routes_post.py"
     source = source_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
+    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "HTTPPostRoutesMixin")
     do_post = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
     calls = [
         (node.lineno, node.func.id if isinstance(node.func, ast.Name) else node.func.attr)

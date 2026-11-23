@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from local_ai_hub import mcp_server
 
 
@@ -65,3 +67,42 @@ def test_plan_board_view_keeps_all_cards_below_response_budget(monkeypatch, tmp_
     assert result["success"] is True, result
     assert result["total_items"] == 60
     assert len(result["columns"]["planned"]) == 60
+
+
+@pytest.mark.parametrize("diagnostics_enabled", [False, True])
+@pytest.mark.parametrize(("requested", "plan_count"), [(1200, 20), (4096, 50)])
+def test_plan_list_budget_rejection_reports_size_before_inner_clipping(
+    monkeypatch, tmp_path, requested, plan_count, diagnostics_enabled,
+):
+    plans = [
+        {"id": f"plan_{index}", "title": f"Plan {index}", "description": "Plan details. " * 24}
+        for index in range(plan_count)
+    ]
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", CoordBackend({"success": True, "plans": plans}))
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
+    monkeypatch.setattr(mcp_server, "detailed_diagnostics_enabled", lambda _cfg: diagnostics_enabled)
+    content, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_list",
+        "root": str(tmp_path),
+        "max_response_tokens": requested,
+        "response_profile": "minimal",
+    }))
+
+    assert result["success"] is False
+    assert result["status_code"] == 413
+    assert "Reduce limit or narrow query" in result["error"]
+    assert "plans" not in result
+    budget = result["response_budget"]
+    if diagnostics_enabled:
+        assert budget["original_tokens"] > requested
+    else:
+        assert "original_tokens" not in budget
+    assert budget["rejected"] is True
+    assert budget["truncated"] is True
+    wire = {
+        "content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+        "structuredContent": result,
+        "isError": False,
+    }
+    assert budget["returned_tokens"] == mcp_server.json_tokens(wire) <= requested

@@ -19,7 +19,7 @@ import pytest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree

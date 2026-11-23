@@ -4,7 +4,15 @@
   "id": "plan_a169449339bc",
   "lifecycle": "active",
   "schema_version": 1,
-  "spec_refs": [],
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-09-encrypted-diagnostic-export-design.md",
+      "revision": {
+        "kind": "working",
+        "content_sha256": "a7789f842602907a13bae4db7445df71f2e42bbd3cd8474c36e085aec05c39e3"
+      }
+    }
+  ],
   "tasks": {
     "task_export_diagnostics": {
       "acceptance_criteria": [
@@ -16,14 +24,23 @@
         "Model weights and unrelated project source are excluded.",
         "Focused export tests pass and diff has no whitespace errors."
       ],
-      "blocker": "Focused export tests pass; source SHA-256 36b53cec1ad370c7e664770b5482d42efecd95ac373ff0ad4826dff0f487c332 was reviewed manually. A local semantic review returned terminal outcome_unknown (request req_830a31a6a624) and was not retried; a separate review attempt could not fit the oversized dirty diff. Referenced Agent OS task returned terminal 404 and this plan has no authentic session_id. Large ZIP64 boundary is now verified end-to-end; live download/restore acceptance remains unrun.",
+      "blocker": "Live download/restore remain blocked per user direction. Independent privacy review and qualified semantic review remain unverified; prior semantic request ended outcome_unknown and cannot be retried. No authentic session_id is bound.",
       "clarifications": [],
       "depends_on": [],
       "description": "Implement installation-wide support ZIP: Local AI Hub source, redacted effective configuration, all retained Hub operational databases/logs/traces across projects; large ZIP64 stream with configurable caps and download password.",
       "kind": "code",
-      "next_action": "Keep task open. Need qualified independent semantic review and authentic session identity before bind/close, plus live download/restore acceptance. Do not retry unknown semantic request or treat ZIP64 smoke as runtime acceptance.",
+      "next_action": "Fresh Windows focused run on dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5: `.venv\\Scripts\\python.exe -m pytest tests/unit/test_diagnostics_export.py -q` → 10 passed in 1.58s. This is local fixture/unit coverage only. Continue exact-source/acceptance crosswalk; do not attempt live download/restore, client restart, or semantic-request retry without fresh authorization/evidence. Improved the wheel-only source fallback so the installed package owns its verification root and state uses a separate approved root. The regression failed before the fix. Fresh Windows 26 tests passed across diagnostics, Laya sanitization, SQLite snapshots and Trace Inspector. An offline wheel installed in a clean venv archived 278 AES-256 package members matching the wheel byte-for-byte using synthetic data. See docs/FINAL_COMPLETION_PLAN.md. User restrictions and session/privacy blockers still apply.",
       "title": "Expand encrypted diagnostics export into full support ZIP",
-      "work_status": "in_progress"
+      "work_status": "in_progress",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-09-encrypted-diagnostic-export-design.md",
+          "revision": {
+            "kind": "working",
+            "content_sha256": "a7789f842602907a13bae4db7445df71f2e42bbd3cd8474c36e085aec05c39e3"
+          }
+        }
+      ]
     }
   },
   "title": "Encrypted Local AI Hub diagnostic export"

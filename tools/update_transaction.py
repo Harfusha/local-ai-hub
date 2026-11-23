@@ -8,10 +8,18 @@ import os
 import shutil
 import stat
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+PAYLOAD_FILES = (
+    "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt",
+    "requirements-laya-runtime.txt", "requirements-ast-index.txt", "requirements-performance.txt", "requirements-profiling.txt",
+    "defaults.toml", "config.toml.example", "pyproject.toml",
+    "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
+    "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
+)
 
 
 def _is_link(path: Path) -> bool:
@@ -26,6 +34,24 @@ def _has_link_component(path: Path) -> bool:
     """Check the lexical path and every existing ancestor without resolving it."""
     absolute = Path(os.path.abspath(os.fspath(path)))
     return any(_is_link(component) for component in (absolute, *absolute.parents))
+
+
+def update_recovery_path(install_dir: Path) -> Path:
+    return install_dir.with_name(f".{install_dir.name}.auto-update-recovery")
+
+
+@contextmanager
+def installation_update_lock(install_dir: Path, *, timeout: float = 2):
+    from local_ai_hub.file_locks import exclusive_file_update
+
+    if install_dir == install_dir.parent or _has_link_component(install_dir):
+        raise ValueError(f"invalid or linked install root: {install_dir}")
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_file_update(install_dir.with_name(f".{install_dir.name}.hub-install"), timeout=timeout):
+        recovery = update_recovery_path(install_dir)
+        if recovery.exists() or _is_link(recovery):
+            raise RuntimeError(f"previous update requires recovery before another install: {recovery}")
+        yield
 
 
 def _tree_digest(root: Path, ignored: tuple[str, ...] = ()) -> str:
@@ -62,6 +88,26 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def has_unexpected_python_link(install_dir: Path, python: Path) -> bool:
+    if os.name == "nt" or not python.is_symlink() or python != install_dir / ".venv/bin/python":
+        return _has_link_component(python)
+    # A stdlib POSIX venv normally links to its recorded base interpreter.
+    settings = install_dir / ".venv/pyvenv.cfg"
+    if _has_link_component(python.parent) or _has_link_component(settings):
+        return True
+    try:
+        with settings.open(encoding="utf-8") as stream:
+            lines = stream.read(64 * 1024).splitlines()
+        for line in lines:
+            key, _, value = line.partition("=")
+            if key.strip() == "executable":
+                executable = Path(value.strip())
+                return not executable.is_absolute() or executable.resolve(strict=True) != python.resolve(strict=True)
+    except (OSError, ValueError):
+        return True
+    return True
+
+
 def stop_existing_runtime(
     install_dir: Path,
     python: Path,
@@ -79,7 +125,7 @@ def stop_existing_runtime(
         return True, "no existing managed runtime"
     installed_config = install_dir / "config.toml"
     if (
-        _has_link_component(install_dir) or _has_link_component(python)
+        _has_link_component(install_dir) or has_unexpected_python_link(install_dir, python)
         or _has_link_component(service_script) or _has_link_component(installed_config)
     ):
         return False, "existing runtime paths contain a link or junction; stop refused"
@@ -108,12 +154,15 @@ def replace_install_payload(
     ignored: tuple[str, ...] = ("__pycache__", "*.pyc", ".pytest_cache"),
     before_commit: Callable[[], tuple[bool, str]] | None = None,
     after_swap: Callable[[], tuple[bool, str]] | None = None,
+    before_rollback: Callable[[], tuple[bool, str]] | None = None,
+    after_rollback: Callable[[], None] | None = None,
 ) -> tuple[bool, str]:
     """Stage and verify payload, then swap with rollback on failure.
 
     The caller owns runtime quiescence. Production setup supplies ``before_commit``
     to confirm a stop and ``after_swap`` for state migration while backups remain
-    available; a failed post-swap step rolls back the install payload.
+    available; a failed post-swap step rolls back the install payload. A caller
+    that starts the new runtime can require a confirmed stop before rollback.
     """
     if _has_link_component(install_dir):
         return False, f"install path contains a link or junction; update refused: {install_dir}"
@@ -209,6 +258,13 @@ def replace_install_payload(
                 raise RuntimeError(f"post-swap step failed: {detail}")
         commit_complete = True
     except Exception as exc:
+        if runtime_stopped and before_rollback is not None and (moved_new or moved_old):
+            try:
+                safe_to_restore, reason = before_rollback()
+            except Exception as guard_error:
+                safe_to_restore, reason = False, str(guard_error)
+            if not safe_to_restore:
+                return False, f"update payload transaction failed: {exc}; rollback blocked: {reason}; backups at {backup_root}"
         rollback_errors: list[str] = []
         for target, staged, expected_digest, is_tree in reversed(moved_new):
             try:
@@ -235,11 +291,13 @@ def replace_install_payload(
                 except OSError:
                     pass
             detail = "; rollback completed" if not rollback_errors else "; " + "; ".join(rollback_errors)
+            if not rollback_errors and after_rollback is not None:
+                after_rollback()
         else:
             detail = f"; recoverable backups retained at {backup_root}"
             if rollback_errors:
                 detail += "; " + "; ".join(rollback_errors)
-        if runtime_stopped:
+        if runtime_stopped and (after_rollback is None or recoverable or rollback_errors):
             detail += "; runtime remains stopped after rollback; service restart skipped"
         return False, f"update payload transaction failed: {exc}{detail}"
     finally:

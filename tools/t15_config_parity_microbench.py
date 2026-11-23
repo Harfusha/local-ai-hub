@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = Path(__file__).resolve().parents[1]
 WORKER = r'''
 import json, sys, time
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 class Artifacts:
     def put(self, *_args, **_kwargs): return "microbench-artifact"
 class RepoState:
@@ -33,7 +33,7 @@ for line in sys.stdin:
 
 
 def _hashes(root: Path) -> dict[str, str]:
-    names = ("src/local_ai_hub/commands.py", "src/local_ai_hub/project_config.py", "src/local_ai_hub/services.py")
+    names = ("src/local_ai_hub/command_broker.py", "src/local_ai_hub/project_config.py", "src/local_ai_hub/services.py")
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
 
 

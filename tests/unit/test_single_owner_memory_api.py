@@ -90,10 +90,9 @@ def test_repository_provenance_requires_server_coordination_identity(tmp_path):
     from types import SimpleNamespace
 
     with pytest.raises(ValueError, match="coordination identity"):
-        http_server._bind_repository_memory_provenance({}, root=str(tmp_path), root=str(tmp_path), project_context=None)
+        http_server._bind_repository_memory_provenance({}, root=str(tmp_path), project_context=None)
     result = http_server._bind_repository_memory_provenance(
         {"repository_id": "untrusted"}, root=str(tmp_path),
-        root=str(tmp_path),
         project_context=SimpleNamespace(root=tmp_path, coordination_id="repository-one"),
     )
     assert result == {"root": str(tmp_path.resolve()), "repository_id": "repository-one"}

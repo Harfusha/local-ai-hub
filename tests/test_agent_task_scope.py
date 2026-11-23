@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from local_ai_hub.agent_tasks import (
     TaskState,
     TaskStatus,
     TaskStore,
+    _task_matches_scope,
     _task_scope_root,
 )
 from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
@@ -56,6 +58,20 @@ def test_reaper_filters_root_and_recovers_same_repository_agents(store: TaskStor
     assert store.get("matching").status is TaskStatus.WAITING
     assert store.get("wrong-root").status is TaskStatus.ACTIVE
     assert store.get("same-root-peer").status is TaskStatus.WAITING
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive by default")
+def test_task_scope_matches_same_windows_directory_with_different_path_case(
+    store: TaskStore, tmp_path: Path,
+):
+    root = tmp_path / "RepoCase"
+    root.mkdir()
+    task = _create_task(store, root, "case-variant")
+    variant = Path(str(root).swapcase())
+    if not variant.exists() or not variant.samefile(root):
+        pytest.skip("temporary directory is on a case-sensitive Windows volume")
+
+    assert _task_matches_scope(task, str(variant))
 
 
 def test_reaper_task_id_filter_is_narrow(store: TaskStore, tmp_path: Path):

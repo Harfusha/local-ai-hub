@@ -18,7 +18,7 @@ Embedding and reranker defaults use `*_backend = "auto"` and `*_device = "auto"`
 
 File-card enrichment's separate background GPU worker is disabled by default. Set `[background_gpu].enabled = true` to opt in after foreground idle grace and scheduler admission; its existing limits, preemption and game-mode gates remain active. The configured preprocessing model and foreground hardware-profile routing remain authoritative.
 
-For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so this path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
+For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so this path does not require a torch-native NPU device. Explicit device requests fail when that device is unavailable; `cpu_fallback = true` opts into CPU fallback for an explicit OpenVINO route that cannot load.
 
 `[ollama].enabled = false` is the default and prevents setup/service installation, startup, pulls, and health probes. `[ollama].allow_integrated_gpu` and `enable_vulkan` matter only after Ollama is explicitly enabled. With `headless.manage_ollama = true`, the supervisor owns an explicitly enabled Ollama process; otherwise the Hub does not run it. `llama_cpp.mode = "auto"` only probes an existing hardware-appropriate endpoint and never installs a runtime.
 

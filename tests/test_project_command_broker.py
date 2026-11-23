@@ -10,8 +10,7 @@ import pytest
 
 from local_ai_hub import project_config
 from local_ai_hub.cache import stable_hash
-from local_ai_hub.commands import CommandBroker, CommandInvocation
-from local_ai_hub.project_config import CommandDefinition
+from local_ai_hub.command_broker import CommandBroker, CommandInvocation
 from local_ai_hub.repo_state import RepoStateTracker
 
 
@@ -64,6 +63,7 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
     command = "python -B -c pass"
     cwd = str(tmp_path)
     classification = {"class": "read_only"}
+    policy = broker._cache_policy_identity()
 
     key, _ = broker._key(command, cwd, classification)
 
@@ -77,15 +77,7 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
             "python": sys.version_info[:3],
             "tool": "tool",
             "timeout_seconds": 60,
-            "policy": {
-                "blocking": True,
-                "allow_read": True,
-                "allow_validation": True,
-                "allow_build": True,
-                "allow_mutating": False,
-                "allow_unknown": True,
-                "extra_allowed_tools": [],
-            },
+            "policy": policy,
         }
     )
     tokens = broker._tokens(command)
@@ -95,15 +87,7 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
             "cwd": str(Path(cwd).resolve()),
             "tool": "tool",
             "timeout_seconds": 60,
-            "policy": {
-                "blocking": True,
-                "allow_read": True,
-                "allow_validation": True,
-                "allow_build": True,
-                "allow_mutating": False,
-                "allow_unknown": True,
-                "extra_allowed_tools": [],
-            },
+            "policy": policy,
         }
     )
 

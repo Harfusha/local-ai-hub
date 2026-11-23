@@ -72,6 +72,7 @@ def test_generate_promotes_benchmark_think_flag_to_ollama_payload(tmp_path):
 
     assert result["response"] == "ok"
     assert seen["endpoint"] == "/api/generate"
+    assert seen["payload"]["stream"] is True
     assert seen["payload"]["think"] is False
     assert seen["payload"]["options"] == {"num_predict": 8}
 

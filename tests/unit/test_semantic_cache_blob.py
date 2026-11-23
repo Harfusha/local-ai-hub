@@ -67,6 +67,23 @@ def test_semantic_cache_get_reads_blob(tmp_path: Path):
     assert sim >= 0.99
 
 
+def test_semantic_cache_eviction_uses_embedding_scoped_namespace(tmp_path: Path):
+    cache = SemanticGenerationCache(
+        {"server": {"state_dir": str(tmp_path)}, "semantic_cache": {"max_entries": 1}},
+        _StubEmbeddings(),
+    )
+
+    cache.set("scope", "first distinct query", {"answer": 1})
+    cache.set("scope", "second distinct query", {"answer": 2})
+
+    with closing(sqlite3.connect(cache.path)) as con:
+        count = con.execute(
+            "SELECT COUNT(*) FROM semantic_entries WHERE scope_key=?",
+            (cache._scoped_key("scope"),),
+        ).fetchone()[0]
+    assert count <= 1
+
+
 def test_semantic_cache_rebuilds_stale_vector_schema_only(tmp_path: Path):
     db_path = tmp_path / "semantic-cache.sqlite3"
     with closing(sqlite3.connect(db_path)) as con:

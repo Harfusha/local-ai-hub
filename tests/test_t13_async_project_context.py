@@ -1,15 +1,14 @@
 from contextlib import contextmanager
-import importlib
-import importlib.util
-import sys
 from types import SimpleNamespace
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.async_jobs import AsyncJobManager
+from local_ai_hub.hardware import profile_overrides
+from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.services import LocalAIServices
 
 
 class _Admission:
@@ -235,65 +234,27 @@ class _Artifacts:
         return {"success": True, "text": "result"}
 
 
-def _load_source_packages():
-    root_src = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub"
-    t12_src = Path.home() / ".codex" / "worktrees" / "4816" / ".local-ai-hub" / "src" / "local_ai_hub"
-    if not (root_src / "project_config.py").is_file() or not (t12_src / "services.py").is_file():
-        pytest.skip("Root ProjectContext or T12 service source is unavailable")
-
-    def load_package(alias, package_path):
-        spec = importlib.util.spec_from_file_location(
-            alias,
-            package_path / "__init__.py",
-            submodule_search_locations=[str(package_path)],
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[alias] = module
-        spec.loader.exec_module(module)
-        return module
-
-    root_package = load_package("t13_root_source", root_src)
-    t12_package = load_package("t12_candidate_source", t12_src)
-    root_project_config = importlib.import_module(f"{root_package.__name__}.project_config")
-    sys.modules[f"{t12_package.__name__}.project_config"] = root_project_config
-    service_module = importlib.import_module(f"{t12_package.__name__}.services")
-    repo_tools_module = importlib.import_module(f"{t12_package.__name__}.repo_tools")
-    return root_project_config, service_module, repo_tools_module
-
-
-def test_async_reason_review_batch_resolve_project_config_through_t12_generate(tmp_path):
-    project_config, service_module, repo_tools_module = _load_source_packages()
-    root_src = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub"
-    t12_src = Path.home() / ".codex" / "worktrees" / "4816" / ".local-ai-hub" / "src" / "local_ai_hub"
-    assert Path(project_config.__file__).resolve() == (root_src / "project_config.py").resolve()
-    assert Path(service_module.__file__).resolve() == (t12_src / "services.py").resolve()
-
+def test_async_reason_review_batch_use_current_project_config_for_generation(tmp_path):
+    hardware = {"profile": "balanced", "ram": {"total_gb": 32}, "gpus": []}
     config = {
         "server": {"state_dir": str(tmp_path / "state"), "request_timeout_seconds": 5},
-        "models": {
-            "background_code": "qwen2.5-coder:1.5b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:7b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen2.5-coder:7b",
-            "vision": "qwen3.5:9b",
-        },
+        "models": profile_overrides("balanced", hardware)["models"],
         "hardware": {"profile": "balanced"},
-        "_hardware": {"profile": "balanced", "ram": {"total_gb": 32}, "gpus": []},
+        "_hardware": hardware,
         "routing": {"prefer_resident_model": False},
         "cache": {"generation": True, "embeddings": False},
         "resilience": {"model_fallback_enabled": False, "serve_stale_on_error": False},
         "token_saving": {"compact_responses": False},
     }
     runtime = _FakeTaskRuntime()
-    services = service_module.LocalAIServices(
+    services = LocalAIServices(
         config=config,
         runtime=runtime,
         scheduler=_InlineScheduler(),
         embeddings=MagicMock(),
         artifacts=MagicMock(),
         telemetry=MagicMock(),
-        repo_tools=repo_tools_module.RepositoryTools(config),
+        repo_tools=RepositoryTools(config),
     )
     services.semantic_cache = _NoopSemanticCache()
     project_root = tmp_path / "project"
@@ -317,7 +278,7 @@ def test_async_reason_review_batch_resolve_project_config_through_t12_generate(t
         jobs = (
             ("reason", {"root": str(project_root), "task": "Explain issue", "complexity": "heavy"}),
             ("review", {"root": str(project_root), "task": "Review code", "context": "print(1)", "complexity": "heavy"}),
-            ("batch", {"root": str(project_root), "tasks": [{"task": "Explain project", "complexity": "fast"}]}),
+            ("batch", {"root": str(project_root), "tasks": [{"task": "Explain project", "task_type": "code", "complexity": "fast"}]}),
         )
         for action, payload in jobs:
             submitted = manager.submit(action, payload)
@@ -330,6 +291,8 @@ def test_async_reason_review_batch_resolve_project_config_through_t12_generate(t
         manager.close()
 
     assert all(result["success"] is True for result in outputs)
-    assert len(runtime.payloads) == 3
-    assert all(payload["model"] == "qwen3.5:9b" for payload in runtime.payloads)
+    project_models = profile_overrides("max", hardware)["models"]
+    assert [payload["model"] for payload in runtime.payloads] == [
+        project_models[role] for role in ("reasoning", "heavy_code", "fast_code")
+    ]
     assert all("Project-only rule." in payload["system"] for payload in runtime.payloads)

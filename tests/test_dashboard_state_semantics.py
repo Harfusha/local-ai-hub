@@ -158,7 +158,7 @@ def test_navigation_starts_new_pages_at_their_heading():
     source=extract('function switchTab(', "\ndocument.querySelectorAll('.tabbtn').forEach(b=>")
     run_javascript(source, """
 let current='overview',scrolls=0,focused=0;
-let tracesPollAbortController=null;
+const tracePollingNeeded=()=>false,cancelTraceSummaryPoll=()=>{};
 const pollTraces=()=>{};
 const pages=['overview','config'].map(id=>({id,classList:{toggle:(name,active)=>{if(active)current=id}}}));
 const tabs=pages.map(p=>({dataset:{tab:p.id},classList:{toggle:()=>{}},setAttribute:()=>{}}));

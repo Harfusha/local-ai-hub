@@ -1,0 +1,16 @@
+# GBNF grammar for Local AI Hub Preprocess Card schema
+# Enforces strictly valid JSON adhering to Preprocess Card schema
+
+root ::= "{" ws "\"purpose\":" ws string "," ws "\"symbols\":" ws string_array "," ws "\"dependencies\":" ws string_array "," ws "\"side_effects\":" ws string_array "," ws "\"risks\":" ws string_array "," ws "\"tests\":" ws string_array "," ws "\"keywords\":" ws string_array ("," ws "\"evidence\":" ws evidence_array)? ("," ws "\"thought\":" ws string)? ws "}"
+
+string_array ::= "[" ws (string (ws "," ws string)*)? ws "]"
+
+evidence_array ::= "[" ws (evidence_item (ws "," ws evidence_item)*)? ws "]"
+
+evidence_item ::= "{" ws "\"field\":" ws field_name "," ws "\"value\":" ws string "," ws "\"quote\":" ws string ws "}"
+
+field_name ::= "\"purpose\"" | "\"symbols\"" | "\"dependencies\"" | "\"side_effects\"" | "\"risks\"" | "\"tests\"" | "\"keywords\""
+
+string ::= "\"" ([^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\""
+
+ws ::= [ \t\n\r]*

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .budget import estimate_tokens, fit_text
+from .json_utils import loads_generated_json
 from .model_policy import ModelExecutionPolicy
 from .ollama import OllamaRuntime
 
@@ -95,7 +96,7 @@ class IdleGPUWorker:
         bg_ollama["keep_alive"] = str(self.cfg.get("keep_alive", "10m"))
         bg_ollama["request_attempts"] = 1
         bg_ollama["flash_attention"] = bool(self.cfg.get("flash_attention", bg_ollama.get("flash_attention", True)))
-        bg_ollama["kv_cache_type"] = str(self.cfg.get("kv_cache_type", bg_ollama.get("kv_cache_type", "q8_0")))
+        bg_ollama["kv_cache_type"] = "q4_0"
         bg_ollama["gpu_overhead_bytes"] = int(self.cfg.get("gpu_overhead_bytes", bg_ollama.get("gpu_overhead_bytes", 268435456)))
         self.runtime = OllamaRuntime(bg_config, managed_name="ollama-background")
         self.policy = ModelExecutionPolicy(bg_config)
@@ -221,14 +222,14 @@ class IdleGPUWorker:
             if time.monotonic() < self._retry_after:
                 return False
             if self._lease and self.runtime.is_online():
-                return not self._foreground_requested()
+                return self.scheduler.acquire_background_gpu(0.0) and not self._foreground_requested()
 
         with self._setup_lock:
             with self._lock:
                 if self._startup_circuit_open or time.monotonic() < self._retry_after:
                     return False
                 if self._lease and self.runtime.is_online():
-                    return not self._foreground_requested()
+                    return self.scheduler.acquire_background_gpu(0.0) and not self._foreground_requested()
 
             if not self.scheduler.acquire_background_gpu(self._idle_grace()):
                 with self._lock:
@@ -322,13 +323,22 @@ class IdleGPUWorker:
             return False
         if cpu_available and (not self.enabled or self._startup_circuit_open):
             return time.monotonic() >= getattr(self, "_cpu_retry_after", 0.0)
+        try:
+            admission = self.scheduler.status().get("gpu_admission_state")
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
         with self._lock:
             if time.monotonic() < self._retry_after:
                 return False
-            if self._lease:
+            leased = self._lease
+            if leased:
+                if admission != "background_lease":
+                    return cpu_available and time.monotonic() >= getattr(self, "_cpu_retry_after", 0.0)
                 online = self.runtime.is_online() if server_online is None else bool(server_online)
                 if online:
                     return not self._cancel.is_set()
+            elif admission != "available":
+                return cpu_available and time.monotonic() >= getattr(self, "_cpu_retry_after", 0.0)
         return self.scheduler.foreground_idle_seconds() >= self._idle_grace()
 
     def _defer_cpu_session(self, reason: str) -> None:
@@ -514,18 +524,45 @@ class IdleGPUWorker:
         if (preemptible and self._foreground_requested()) or response.get("preempted"):
             return {"success": False, "preempted": True, "error": "background request preempted by foreground work"}
         if "error" in response:
-            return {"success": False, "error": str(response["error"])}
+            failure = {**response, "success": False, "error": str(response["error"])}
+            if response.get("_lah_backend_completed") is True:
+                failure.update(error_code="local_model_error", terminal=True, retryable=False)
+            return failure
+        if response.get("done_reason") == "length":
+            return {
+                "success": False, "model": self.model,
+                "error": "local model output reached its token limit",
+                "error_code": "model_output_truncated", "output_truncated": True,
+                "stop_reason": "length", "terminal": True, "retryable": False,
+                **({"_lah_backend_completed": True} if response.get("done") is True else {}),
+            }
+        invalid_preprocess_output = (
+            {"error_code": "invalid_preprocess_json", "_lah_backend_completed": True}
+            if preprocessing and response.get("done") is True else {}
+        )
         text = str(response.get("response", "")).strip()
         try:
-            data = json.loads(text)
+            data = loads_generated_json(text)
             if not isinstance(data, dict):
-                return {"success": False, "error": f"Generated output is not a JSON object: {type(data).__name__}"}
+                return {
+                    "success": False, "model": self.model,
+                    "error": f"Generated output is not a JSON object: {type(data).__name__}",
+                    **invalid_preprocess_output,
+                }
             if isinstance(schema, dict) and "required" in schema and isinstance(schema["required"], list):
                 missing_keys = [k for k in schema["required"] if k not in data]
                 if missing_keys:
-                    return {"success": False, "error": f"Generated JSON missing required keys: {missing_keys}"}
+                    return {
+                        "success": False, "model": self.model,
+                        "error": f"Generated JSON missing required keys: {missing_keys}",
+                        **invalid_preprocess_output,
+                    }
         except Exception as exc:
-            return {"success": False, "error": f"Invalid JSON response: {str(exc)}"}
+            return {
+                "success": False, "model": self.model,
+                "error": f"Invalid JSON response: {str(exc)}",
+                **invalid_preprocess_output,
+            }
         return {
             "success": True,
             "model": self.model,
@@ -629,13 +666,14 @@ class IdleGPUWorker:
             all_results.extend([r or {"success": False, "error": "background worker returned no result"} for r in results])
         return all_results
 
-    def generate(self, *, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str = "background", preprocessing: bool = False) -> dict[str, Any]:
+    def generate(self, *, prompt: str, system: str, schema: Any, max_tokens: int, source: str = "background", preprocessing: bool = False, temperature: float = 0.2) -> dict[str, Any]:
         result = self.generate_many([{
             "prompt": prompt,
             "system": system,
             "schema": schema,
             "max_tokens": max_tokens,
             "source": source,
+            "temperature": temperature,
         }], preprocessing=preprocessing)
         return result[0] if result else {"success": False, "error": "background worker unavailable"}
 

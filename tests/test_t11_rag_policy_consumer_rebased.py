@@ -108,7 +108,7 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
     assert store.index_paths_step(
-        root=str(root), root=str(root), workspace=workspace, paths=[]
+        root=str(root),  workspace=workspace, paths=[]
     )["success"] is True
     digest_key = store._workspace_project_config_key(
         workspace, store._project_root_identity(root)
@@ -132,7 +132,7 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
             )
         con.commit()
 
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=rejected)
+    result = store.index_paths_step(root=str(root),  workspace=workspace, paths=rejected)
 
     assert result["success"] is True
     with closing(store._connect()) as con:
@@ -210,7 +210,7 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
     assert store.index_paths_step(
-        root=str(root), root=str(root), workspace=workspace, paths=[]
+        root=str(root),  workspace=workspace, paths=[]
     )["success"] is True
     with closing(store._connect()) as con:
         generation_before_policy_prune = store._workspace_index_generation(con, workspace)
@@ -234,7 +234,7 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
         )
         con.commit()
 
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=[])
+    result = store.index_paths_step(root=str(root),  workspace=workspace, paths=[])
 
     assert result["success"] is True
     with closing(store._connect()) as con:
@@ -252,7 +252,7 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     context.api.resolve_project_context = lambda root, _state_dir=None: SimpleNamespace(
         root=Path(root), settings=context.settings, config_digest="changed-policy-digest"
     )
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=[])
+    result = store.index_paths_step(root=str(root),  workspace=workspace, paths=[])
 
     assert result["success"] is True
     with closing(store._connect()) as con:

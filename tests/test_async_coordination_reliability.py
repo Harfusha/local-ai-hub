@@ -13,7 +13,7 @@ from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.agent_consistency import ConsistencyRequest
 from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.client import HubClient
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.leases import ScopeLeaseStore, _norm_rel
 from local_ai_hub.services import LocalAIServices
 import local_ai_hub.mcp_server as mcp_mod

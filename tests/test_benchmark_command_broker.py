@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+from local_ai_hub.command_broker import CommandBroker
 from tools import benchmark_command_broker as benchmark
 from tools import prepare_command_broker_fixtures as fixtures
 
@@ -192,7 +192,7 @@ def test_revision_gate_requires_clean_matching_checkouts() -> None:
 
 
 def test_source_snapshot_hashes_command_file_from_selected_checkout(tmp_path, monkeypatch) -> None:
-    command_file = tmp_path / "src" / "local_ai_hub" / "commands.py"
+    command_file = tmp_path / "src" / "local_ai_hub" / "command_broker.py"
     command_file.parent.mkdir(parents=True)
     command_file.write_text("selected checkout", encoding="utf-8")
     monkeypatch.setattr(benchmark, "_git_identity", lambda _root: {"head": "abc", "dirty": False})
@@ -203,7 +203,7 @@ def test_source_snapshot_hashes_command_file_from_selected_checkout(tmp_path, mo
 
 
 def test_run_benchmark_rejects_wrong_commands_pin_before_loading_api(tmp_path, monkeypatch) -> None:
-    command_file = tmp_path / "src" / "local_ai_hub" / "commands.py"
+    command_file = tmp_path / "src" / "local_ai_hub" / "command_broker.py"
     command_file.parent.mkdir(parents=True)
     command_file.write_text("selected checkout", encoding="utf-8")
     monkeypatch.setattr(benchmark, "_git_identity", lambda _root: {"head": "abc", "dirty": False})
@@ -212,7 +212,7 @@ def test_run_benchmark_rejects_wrong_commands_pin_before_loading_api(tmp_path, m
         raise AssertionError("benchmark must reject wrong source pin before importing code")
 
     monkeypatch.setattr(benchmark, "_load_command_api", fail_if_loaded)
-    with pytest.raises(RuntimeError, match="commands.py SHA-256 does not match expected pin"):
+    with pytest.raises(RuntimeError, match="command_broker.py SHA-256 does not match expected pin"):
         benchmark.run_benchmark(
             tmp_path,
             light_samples=1,
@@ -242,7 +242,7 @@ def test_command_api_imports_from_selected_checkout(tmp_path, monkeypatch) -> No
 
     assert stable_hash("value") == "stable"
     assert command_broker is broker_type
-    assert imports == ["local_ai_hub.cache", "local_ai_hub.commands"]
+    assert imports == ["local_ai_hub.cache", "local_ai_hub.command_broker"]
     assert benchmark.sys.path[0] == str(tmp_path / "src")
 
 

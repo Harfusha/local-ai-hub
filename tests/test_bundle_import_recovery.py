@@ -286,6 +286,7 @@ def test_bundle_import_recovers_after_store_commit_crash(tmp_path: Path, monkeyp
                 "SELECT path,content_hash FROM files WHERE root=?", (target_root_path,)
             ).fetchall()
         with closing(recovered_app.rag._connect()) as con:
+            assert recovered_app.rag._workspace_index_generation(con, target_workspace) > 0
             chunks = con.execute(
                 "SELECT path,text FROM chunks WHERE workspace=?",
                 (target_workspace,),

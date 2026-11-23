@@ -372,6 +372,8 @@ def test_gpu_worker_skips_idle_grace_only_in_preprocessing_mode(tmp_path):
             return self.busy
         def foreground_idle_seconds(self):
             return 1
+        def status(self):
+            return {"gpu_admission_state": "available"}
 
     worker = object.__new__(IdleGPUWorker)
     worker.config = {"server": {"state_dir": str(tmp_path)}}

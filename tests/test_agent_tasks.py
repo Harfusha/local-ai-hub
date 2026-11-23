@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import Any
 import pytest
 
 from local_ai_hub import agent_tasks as agent_tasks_module
@@ -1790,6 +1791,59 @@ def test_task_keyword_query_matches_each_term_across_indexed_fields(store: TaskS
     assert [task.task_id for task in store.list_tasks(query="CEIPT", include_stale=True)] == [target.task_id]
 
 
+def test_task_keyword_index_updates_checkpoint_grams_incrementally(store: TaskStore):
+    task = store.create(
+        GoalContract(goal="Checkpoint search"),
+        task_context(),
+        task_id="task-search-incremental-checkpoint",
+    )
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="edit", next_action="oldmarker"),
+        idempotency_key="search-old-marker",
+    )
+
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="edit", next_action="newmarker"),
+        idempotency_key="search-new-marker",
+    )
+
+    assert store.list_tasks(query="oldmarker") == []
+    assert [item.task_id for item in store.list_tasks(query="newmarker")] == [task.task_id]
+
+
+def test_task_keyword_index_rebuilds_if_checkpoint_finds_partial_grams(store: TaskStore):
+    task = store.create(
+        GoalContract(goal="Rare zxq marker"),
+        task_context(),
+        task_id="task-search-partial-checkpoint",
+    )
+    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
+    try:
+        con.execute(
+            "DELETE FROM agent_task_search_grams WHERE task_id=? AND gram=?",
+            (task.task_id, "zxq"),
+        )
+    finally:
+        con.close()
+
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="edit", next_action="newmarker"),
+        idempotency_key="repair-partial-search-index",
+    )
+
+    con = connect_sqlite(store.state_store.db_path)
+    try:
+        assert con.execute(
+            "SELECT 1 FROM agent_task_search_grams WHERE task_id=? AND gram=?",
+            (task.task_id, "zxq"),
+        ).fetchone() is not None
+    finally:
+        con.close()
+
+
 def test_task_keyword_query_does_not_join_grams_across_fields(store: TaskStore):
     task = store.create(
         GoalContract(goal="abcd prefix", description="cde suffix"),
@@ -2098,3 +2152,37 @@ def test_resume_refreshes_server_memory_and_starts_a_fresh_audit(store: TaskStor
         "used_ids": [],
         "not_used_reason": "Refreshed memory context has not yet been reviewed or used by the resumed task.",
     }
+
+
+def test_commit_update_only_refreshes_search_index_when_indexed_fields_change(
+    store: TaskStore, monkeypatch
+):
+    task_id = "search-index-refresh-guard"
+    task = store.create(
+        GoalContract(goal="search index refresh guard"),
+        ScopeContext(task_id=task_id),
+        task_id=task_id,
+    )
+    refreshed = []
+    monkeypatch.setattr(
+        store,
+        "_refresh_task_search_index",
+        lambda _connection, changed_task_id: refreshed.append(changed_task_id),
+    )
+
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent",
+        idempotency_key="activate-search-index-refresh-guard",
+    )
+    assert refreshed == []
+
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="verification", next_action="review changed fields"),
+        actor="agent",
+        idempotency_key="checkpoint-search-index-refresh-guard",
+    )
+    assert refreshed == [task.task_id]

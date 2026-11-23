@@ -28,7 +28,7 @@ def _config_sha(value: str = "config") -> str:
 def _fixture_source(root: Path) -> None:
     package = root / "src" / "local_ai_hub"
     package.mkdir(parents=True)
-    (package / "commands.py").write_text("VALUE = 'base'\n", encoding="utf-8")
+    (package / "command_broker.py").write_text("VALUE = 'base'\n", encoding="utf-8")
     (package / "cache.py").write_text("CACHE = True\n", encoding="utf-8")
 
 
@@ -39,9 +39,9 @@ def test_build_overlay_pins_exact_patch_and_only_changes_allowed_source(
     _fixture_source(source)
     patch = tmp_path / "t15.patch"
     patch.write_text(
-        "diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py\n"
-        "--- a/src/local_ai_hub/commands.py\n"
-        "+++ b/src/local_ai_hub/commands.py\n"
+        "diff --git a/src/local_ai_hub/command_broker.py b/src/local_ai_hub/command_broker.py\n"
+        "--- a/src/local_ai_hub/command_broker.py\n"
+        "+++ b/src/local_ai_hub/command_broker.py\n"
         "@@ -1 +1 @@\n"
         "-VALUE = 'base'\n"
         "+VALUE = 't15'\n",
@@ -60,7 +60,7 @@ def test_build_overlay_pins_exact_patch_and_only_changes_allowed_source(
         patch,
         tmp_path / "overlay",
         expected_patch_sha256=patch_hash,
-        allowed_paths=["src/local_ai_hub/commands.py"],
+        allowed_paths=["src/local_ai_hub/command_broker.py"],
         config_sha256=_config_sha(),
         harness_sha256=_harness_sha(),
         runtime_sha256=_runtime_sha(),
@@ -70,9 +70,9 @@ def test_build_overlay_pins_exact_patch_and_only_changes_allowed_source(
     assert overlay["base_source_sha256"] == baseline["source_sha256"]
     assert overlay["source_sha256"] != baseline["source_sha256"]
     assert overlay["overlay_patch_sha256"] == patch_hash
-    assert overlay["overlay_paths"] == ["src/local_ai_hub/commands.py"]
-    assert (source / "src/local_ai_hub/commands.py").read_text() == "VALUE = 'base'\n"
-    assert (tmp_path / "overlay/src/local_ai_hub/commands.py").read_text() == "VALUE = 't15'\n"
+    assert overlay["overlay_paths"] == ["src/local_ai_hub/command_broker.py"]
+    assert (source / "src/local_ai_hub/command_broker.py").read_text() == "VALUE = 'base'\n"
+    assert (tmp_path / "overlay/src/local_ai_hub/command_broker.py").read_text() == "VALUE = 't15'\n"
 
 
 def test_overlay_rejects_patch_outside_t15_allowlist(tmp_path: Path) -> None:
@@ -95,7 +95,7 @@ def test_overlay_rejects_patch_outside_t15_allowlist(tmp_path: Path) -> None:
             patch,
             tmp_path / "overlay",
             expected_patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
-            allowed_paths=["src/local_ai_hub/commands.py"],
+            allowed_paths=["src/local_ai_hub/command_broker.py"],
             config_sha256=_config_sha(),
             harness_sha256=_harness_sha(),
             runtime_sha256=_runtime_sha(),
@@ -115,9 +115,9 @@ def test_paired_measurement_rejects_incomparable_config_before_running(
     )
     patch = tmp_path / "t15.patch"
     patch.write_text(
-        "diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py\n"
-        "--- a/src/local_ai_hub/commands.py\n"
-        "+++ b/src/local_ai_hub/commands.py\n"
+        "diff --git a/src/local_ai_hub/command_broker.py b/src/local_ai_hub/command_broker.py\n"
+        "--- a/src/local_ai_hub/command_broker.py\n"
+        "+++ b/src/local_ai_hub/command_broker.py\n"
         "@@ -1 +1 @@\n"
         "-VALUE = 'base'\n"
         "+VALUE = 'overlay'\n",
@@ -128,7 +128,7 @@ def test_paired_measurement_rejects_incomparable_config_before_running(
         patch,
         tmp_path / "overlay",
         expected_patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
-        allowed_paths=["src/local_ai_hub/commands.py"],
+        allowed_paths=["src/local_ai_hub/command_broker.py"],
         config_sha256=_config_sha("config-a"),
         harness_sha256=_harness_sha(),
         runtime_sha256=_runtime_sha(),
@@ -155,9 +155,9 @@ def test_synthetic_paired_receipt_has_randomized_order_stats_and_no_claim(
     _fixture_source(source)
     patch = tmp_path / "t15.patch"
     patch.write_text(
-        "diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py\n"
-        "--- a/src/local_ai_hub/commands.py\n"
-        "+++ b/src/local_ai_hub/commands.py\n"
+        "diff --git a/src/local_ai_hub/command_broker.py b/src/local_ai_hub/command_broker.py\n"
+        "--- a/src/local_ai_hub/command_broker.py\n"
+        "+++ b/src/local_ai_hub/command_broker.py\n"
         "@@ -1 +1 @@\n"
         "-VALUE = 'base'\n"
         "+VALUE = 'overlay'\n",
@@ -174,7 +174,7 @@ def test_synthetic_paired_receipt_has_randomized_order_stats_and_no_claim(
         patch,
         tmp_path / "overlay",
         expected_patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
-        allowed_paths=["src/local_ai_hub/commands.py"],
+        allowed_paths=["src/local_ai_hub/command_broker.py"],
         **hashes,
     )
     baseline_values = iter([99.0, 1.0, 2.0, 3.0, 4.0])
@@ -274,7 +274,7 @@ def test_diagnostic_pair_allows_different_source_pins_but_never_claims_acceptanc
     current_root = tmp_path / "current"
     _fixture_source(baseline_root)
     _fixture_source(current_root)
-    (current_root / "src/local_ai_hub/commands.py").write_text(
+    (current_root / "src/local_ai_hub/command_broker.py").write_text(
         "VALUE = 'current'\n", encoding="utf-8"
     )
     shared = {
@@ -340,9 +340,9 @@ def test_paired_measurement_rejects_source_drift(tmp_path: Path) -> None:
     _fixture_source(source)
     patch = tmp_path / "t15.patch"
     patch.write_text(
-        "diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py\n"
-        "--- a/src/local_ai_hub/commands.py\n"
-        "+++ b/src/local_ai_hub/commands.py\n"
+        "diff --git a/src/local_ai_hub/command_broker.py b/src/local_ai_hub/command_broker.py\n"
+        "--- a/src/local_ai_hub/command_broker.py\n"
+        "+++ b/src/local_ai_hub/command_broker.py\n"
         "@@ -1 +1 @@\n"
         "-VALUE = 'base'\n"
         "+VALUE = 'overlay'\n",
@@ -359,12 +359,12 @@ def test_paired_measurement_rejects_source_drift(tmp_path: Path) -> None:
         patch,
         tmp_path / "overlay",
         expected_patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
-        allowed_paths=["src/local_ai_hub/commands.py"],
+        allowed_paths=["src/local_ai_hub/command_broker.py"],
         **hashes,
     )
 
     def mutate_baseline() -> float:
-        (source / "src/local_ai_hub/commands.py").write_text("VALUE = 'drift'\n")
+        (source / "src/local_ai_hub/command_broker.py").write_text("VALUE = 'drift'\n")
         return 1.0
 
     with pytest.raises(RuntimeError, match="source changed during paired benchmark"):

@@ -206,11 +206,86 @@ def test_large_merged_range_reports_exact_omitted_lines():
     ])
     assert len(merged) == 1
     assert merged[0]["start_line"] == 1
-    assert merged[0]["end_line"] == 50000
+    assert merged[0]["end_line"] == merged[0]["returned_end_line"] == 2
     assert merged[0]["original_end_line"] == 50005
-    assert merged[0]["omitted_lines"] == 5
+    assert merged[0]["omitted_lines"] == 50_003
     assert merged[0]["truncated"] is True
-    assert merged[0]["truncation_reason"] == "max_merged_lines"
+    assert merged[0]["truncation_reason"] == "unverified_in_memory_gap"
+
+
+def test_single_oversized_evidence_item_is_partial_and_recoverable(tmp_path):
+    import hashlib
+
+    source = tmp_path / "sample.py"
+    source.write_text("\n".join(f"line-{n}" for n in range(1, 50_008)) + "\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    item = merge_overlapping_evidence([{
+        "path": "sample.py",
+        "start_line": 1,
+        "end_line": 50_007,
+        "text": "stale evidence",
+        "content_hash": digest,
+        "repository_revision": "abc123",
+        "source_kind": "FTS",
+    }], root=tmp_path)[0]
+
+    assert item["partial"] is True
+    assert item["truncated"] is True
+    assert item["end_line"] == item["returned_end_line"] == 50_000
+    assert item["requested_end_line"] == item["original_end_line"] == 50_007
+    assert item["omitted_lines"] == 7
+    assert item["snapshot_verified"] is True
+    assert item["revision_verified"] is False
+    assert item["read_at"] > 0
+    assert item["slice_recovery"] == {
+        "path": "sample.py",
+        "start_line": 50_001,
+        "end_line": 50_007,
+        "content_hash": digest,
+        "repository_revision": "abc123",
+    }
+
+
+def test_single_oversized_evidence_recovery_stops_at_verified_eof(tmp_path):
+    import hashlib
+
+    source = tmp_path / "sample.py"
+    source.write_text("\n".join(f"line-{n}" for n in range(1, 50_006)) + "\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    item = merge_overlapping_evidence([{
+        "path": "sample.py",
+        "start_line": 1,
+        "end_line": 50_007,
+        "text": "stale evidence",
+        "content_hash": digest,
+        "source_kind": "FTS",
+    }], root=tmp_path)[0]
+
+    assert item["partial"] is True
+    assert item["requested_end_line"] == 50_007
+    assert item["returned_end_line"] == item["end_line"] == 50_000
+    assert item["omitted_lines"] == 5
+    assert item["slice_recovery"]["start_line"] == 50_001
+    assert item["slice_recovery"]["end_line"] == 50_005
+
+
+def test_missing_file_does_not_claim_snapshot_or_recovery(tmp_path):
+    item = merge_overlapping_evidence([{
+        "path": "missing.py",
+        "start_line": 1,
+        "end_line": 50_001,
+        "text": "stale evidence",
+        "content_hash": "a" * 64,
+        "source_kind": "FTS",
+    }], root=tmp_path)[0]
+
+    assert item["partial"] is True
+    assert item["snapshot_verified"] is False
+    assert item["slice_recovery"] is None
+    assert item["text"] == "stale evidence"
+    assert item["returned_end_line"] == 1
+    assert item["omitted_lines"] == 50_000
+    assert item["truncation_reason"] == "unverified_in_memory_gap"
 
 
 
@@ -255,7 +330,9 @@ def test_unverified_large_snapshot_discloses_missing_recovery(tmp_path):
     assert item["partial"] is True
     assert item["slice_recovery"] is None
     assert item["snapshot_verified"] is False
-    assert item["omitted_lines"] == 2
+    assert item["end_line"] == item["returned_end_line"] == 2
+    assert item["omitted_lines"] == 50_000
+    assert item["truncation_reason"] == "unverified_in_memory_gap"
 
 
 def test_evidence_disk_read_rejects_inner_symlink(tmp_path):

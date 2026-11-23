@@ -45,10 +45,10 @@ def test_live_status_handler_propagates_errors_to_shared_boundary(monkeypatch) -
 
 
 def test_live_status_named_dispatch_stays_after_auth_mode_trace_and_parse() -> None:
-    source = Path(http_server.__file__).read_text(encoding="utf-8")
+    from local_ai_hub import http_api_get
+    source = Path(http_api_get.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
-    do_get = next(node for node in handler.body if isinstance(node, ast.FunctionDef) and node.name == "do_GET")
+    do_get = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "do_GET")
     calls = [
         (node.lineno, node.func.id if isinstance(node.func, ast.Name) else node.func.attr)
         for node in ast.walk(do_get)

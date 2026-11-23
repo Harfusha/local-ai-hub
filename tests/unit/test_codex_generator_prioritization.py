@@ -6,12 +6,13 @@ from tools.setup import codex_mcp_merge, merge_autosetup_policy
 
 def test_generated_policy_contains_codex_prioritization_directive() -> None:
     policy = generate_global_policy({})
-    assert "MANDATORY LOCAL AI HUB PRIORITIZATION IN CODEX" in policy
+    assert "LOCAL AI HUB TOOL PRIORITY" in policy
     assert "native command tool" in policy
     assert "local_ai_command(action=\"run\"" not in policy
     assert "local_ai_repo" in policy
     assert "local_ai_coord" in policy
-    assert "Semantic delegation is on-demand" in policy
+    assert "Single-owner and repository scope contract" in policy
+    assert len(policy.encode("utf-8")) < 23_900
 
 
 def test_generated_token_economy_policy_includes_orchestrator() -> None:

@@ -12,12 +12,12 @@ def test_second_binding_with_stale_plan_revision_is_rejected(environment):
     for name in ("b", "c"):
         tasks.create(GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}")
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}")
     before = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
-    assert bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_b", plan_id="plan_work",
+    assert bind_plan_execution(tasks, root=str(root),  task_id="execution_b", plan_id="plan_work",
                                plan_task_id="task_work", expected_revision=before)["success"] is True
     after = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     assert after != before
     with pytest.raises(ValueError, match="expected_revision conflicts"):
-        bind_plan_execution(tasks, root=str(root), root=str(root), task_id="execution_c", plan_id="plan_work",
+        bind_plan_execution(tasks, root=str(root),  task_id="execution_c", plan_id="plan_work",
                             plan_task_id="task_work", expected_revision=before)

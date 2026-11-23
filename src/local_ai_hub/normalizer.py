@@ -59,17 +59,25 @@ STRUCTURED_OUTPUT_ROLES = {
 }
 
 
-def _mask_fenced_code(text: str) -> tuple[str, dict[str, str]]:
+def _strip_leading_format_chars(text: str) -> str:
+    start = 0
+    while start < len(text) and unicodedata.category(text[start]) == "Cf":
+        start += 1
+    return text[start:]
+
+
+def _mask_fenced_code(text: str) -> tuple[str, dict[str, str], tuple[str, str] | None]:
     """Hide fenced-code bodies from model-token cleanup, then restore them exactly."""
     lines = text.splitlines(keepends=True)
     masked: list[str] = []
     blocks: dict[str, str] = {}
+    unclosed_fence: tuple[str, str] | None = None
     index = 0
     line_index = 0
     while line_index < len(lines):
         line = lines[line_index]
         opener = re.match(r"^ {0,3}(?P<marker>`{3,}|~{3,})", line)
-        if opener is None:
+        if opener is None or (opener["marker"].startswith("`") and "`" in line[opener.end():]):
             masked.append(line)
             line_index += 1
             continue
@@ -90,12 +98,13 @@ def _mask_fenced_code(text: str) -> tuple[str, dict[str, str]]:
         if close_index is None:
             blocks[token] = "".join(lines[line_index + 1 :])
             masked.append(token)
+            unclosed_fence = (token, marker)
             line_index = len(lines)
         else:
             blocks[token + "\n"] = "".join(lines[line_index + 1 : close_index])
             masked.extend((token + "\n", lines[close_index]))
             line_index = close_index + 1
-    return "".join(masked), blocks
+    return "".join(masked), blocks, unclosed_fence
 
 # Language-agnostic structural preamble pattern:
 # A short introductory line (< 140 chars) ending with a colon or newline directly preceding a code block or list
@@ -254,7 +263,7 @@ def postprocess_model_output(
     role_lower = str(role or "general").lower()
     preserve_structured_payload = role_lower in STRUCTURED_OUTPUT_ROLES
     raw = str(text).replace("\r\n", "\n").replace("\r", "\n")
-    raw, fenced_code = _mask_fenced_code(raw)
+    raw, fenced_code, unclosed_fence = _mask_fenced_code(_strip_leading_format_chars(raw))
     
     # 1. Extract generic thinking tags regardless of model architecture
     thinking_parts: list[str] = []
@@ -295,8 +304,7 @@ def postprocess_model_output(
 
     # Some runtimes prepend BOM/zero-width format characters. They are invisible
     # in the dashboard but can break strict response-header validators.
-    while cleaned and unicodedata.category(cleaned[0]) == "Cf":
-        cleaned = cleaned[1:]
+    cleaned = _strip_leading_format_chars(cleaned)
 
     # 2. Preserve stop-token-shaped payloads in structured content; strip only a trailing runtime marker.
     if preserve_structured_payload:
@@ -315,19 +323,23 @@ def postprocess_model_output(
         cleaned = STRUCTURAL_PREAMBLE_RE.sub("", cleaned).strip()
         cleaned = CONVERSATIONAL_POSTAMBLE_RE.sub("", cleaned).strip()
 
-    # 4. Universal Markdown fence balance repair
-    if repair_fences and role_lower != "json":
-        for fence in ("```", "~~~"):
-            fence_count = cleaned.count(fence)
-            if fence_count % 2 != 0:
-                cleaned = cleaned + f"\n{fence}"
-
-    # 5. Deduplicate excessive consecutive newlines
+    # 4. Deduplicate excessive consecutive newlines outside code bodies.
     if role_lower != "json":
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
+    closing_fence = ""
+    if repair_fences and role_lower != "json" and unclosed_fence is not None:
+        token, marker = unclosed_fence
+        if token in cleaned:
+            closing_fence = marker
     for placeholder, code in fenced_code.items():
         cleaned = cleaned.replace(placeholder, code)
+        if thinking is not None:
+            thinking = thinking.replace(placeholder, code)
+
+    # 5. Close the last block with its original delimiter and keep body whitespace.
+    if closing_fence:
+        cleaned += ("" if cleaned.endswith("\n") else "\n") + closing_fence
 
     return cleaned, thinking
 

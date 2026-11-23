@@ -4,6 +4,8 @@ from concurrent.futures import Future
 from threading import Lock
 from types import SimpleNamespace
 
+import pytest
+
 import local_ai_hub.project_config as project_config
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.services import LocalAIServices
@@ -303,7 +305,11 @@ def test_rejected_completion_queues_typed_shadow_gap_decision(tmp_path) -> None:
     }
 
 
-def test_completion_next_step_uses_verified_task_context(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("status", "expected_suggestion"),
+    [("passed", "ask_human"), ("rejected", "run_test")],
+)
+def test_completion_next_step_uses_verified_task_context(tmp_path, status, expected_suggestion) -> None:
     app = LocalAIApp.__new__(LocalAIApp)
     telemetry_events = []
     decisions = []
@@ -323,7 +329,7 @@ def test_completion_next_step_uses_verified_task_context(tmp_path) -> None:
     operation = {
         "task_id": "task-1",
         "session_id": "session-1",
-        "outcome": {"status": "passed", "mutation_generation": 2},
+        "outcome": {"status": status, "mutation_generation": 2},
     }
 
     result = app._queue_laya_completion_next_step_observation(operation, str(tmp_path))
@@ -336,18 +342,34 @@ def test_completion_next_step_uses_verified_task_context(tmp_path) -> None:
         "evidence_ids": ["ev-verified-1"],
         "options": ["ask_human", "inspect_source", "retrieve_evidence", "run_test"],
         "state": {
-            "completion_status": "passed",
-            "reason_code": "completion_validation_passed",
+            "completion_status": status,
+            "reason_code": f"completion_validation_{status}",
             "mutation_generation": "2",
         },
         "training_content": {"task_input": "Run focused validation\nReview the diff"},
     }
     assert baseline == {
         "method": "pipeline_step_progress",
-        "suggestion": "ask_human",
+        "suggestion": expected_suggestion,
         "evidence_id": "ev-verified-1",
     }
     assert telemetry_events == []
+
+
+def test_completion_next_step_skips_operator_waiver_without_queueing() -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    queued = []
+    app.queue_laya_decision_observation = lambda *args: queued.append(args)
+    operation = {
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "outcome": {"status": "waived", "mutation_generation": 2},
+    }
+
+    result = app._queue_laya_completion_next_step_observation(operation, "C:/repo")
+
+    assert result == {"status": "skipped", "reason": "completion_scope_unavailable"}
+    assert queued == []
 
 
 def test_completion_outcome_without_task_id_is_skipped_before_queueing() -> None:

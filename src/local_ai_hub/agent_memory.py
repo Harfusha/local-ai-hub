@@ -17,7 +17,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import Any, Collection, Mapping
+from typing import Any, Collection, Iterator, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, MemoryKind, MemoryStatus
@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
     _NUMPY_AVAILABLE = False
 
 _logger = logging.getLogger(__name__)
+_MAX_GRAPH_EDGES = 1000
 
 _TASK_MEMORY_QUERY: ContextVar[tuple[Any, tuple[str, str], frozenset[str]] | None] = ContextVar(
     "agent_task_memory_query", default=None,
@@ -86,8 +87,14 @@ def _canonical_relation_root(root: str) -> str:
     return _normalise_scope_root(root)
 
 
-def _relation_event_stream_id(root: str, source: str, target: str) -> str:
-    return "relation:" + "".join(f"{len(part)}:{part}" for part in (root, source, target))
+def _canonical_relation_repository_id(repository_id: str) -> str:
+    if not isinstance(repository_id, str) or not repository_id or repository_id != repository_id.strip() or "\x00" in repository_id:
+        raise ValueError("relation repository_id must be a canonical non-empty string")
+    return repository_id
+
+
+def _relation_event_stream_id(repository_id: str, root: str, source: str, target: str) -> str:
+    return "relation:" + "".join(f"{len(part)}:{part}" for part in (repository_id, root, source, target))
 
 
 def _memory_deletion_event(con: Any, *, record_id: str) -> AgentEvent | None:
@@ -589,6 +596,22 @@ class MemoryStore:
                 try:
                     from .sqlite_support import validate_durable_schema
 
+                    legacy_relation_columns = [
+                        "relation_id", "source_entity", "relation", "target_entity", "weight",
+                        "metadata", "created_at", "updated_at",
+                    ]
+
+                    def needs_relation_upgrade() -> bool:
+                        columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_entity_relations)")]
+                        return columns == legacy_relation_columns
+
+                    if needs_relation_upgrade():
+                        # Recheck after taking SQLite's cross-process write lock.
+                        with write_transaction(con, rollback_label="agent relation schema upgrade"):
+                            if needs_relation_upgrade():
+                                con.execute(
+                                    "ALTER TABLE agent_entity_relations ADD COLUMN repository_id TEXT NOT NULL DEFAULT ''"
+                                )
                     validate_durable_schema(
                         con,
                         self.state_store.db_path,
@@ -611,6 +634,7 @@ class MemoryStore:
                                 ("relation", "TEXT", 1, 0), ("target_entity", "TEXT", 1, 0),
                                 ("weight", "REAL", 1, 0), ("metadata", "TEXT", 1, 0),
                                 ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
+                                ("repository_id", "TEXT", 1, 0),
                             ],
                         },
                         complete_groups=(("agent_memory_records", "agent_entity_relations"),),
@@ -727,7 +751,8 @@ class MemoryStore:
                                 weight REAL NOT NULL DEFAULT 1.0,
                                 metadata TEXT NOT NULL DEFAULT '{}',
                                 created_at REAL NOT NULL,
-                                updated_at REAL NOT NULL
+                                updated_at REAL NOT NULL,
+                                repository_id TEXT NOT NULL DEFAULT ''
                             );
                             """
                         )
@@ -754,6 +779,15 @@ class MemoryStore:
                         except sqlite3.OperationalError as exc:
                             if "no such module: fts5" not in str(exc).casefold():
                                 raise
+                        embedding_columns = [row[1] for row in con.execute("PRAGMA table_info(agent_memory_embeddings)")]
+                        if embedding_columns == ["record_id", "embedding", "created_at"]:
+                            # Historical vectors have no trustworthy model or space identity.
+                            for definition in (
+                                "embedding_space_id TEXT NOT NULL DEFAULT ''",
+                                "model_name TEXT NOT NULL DEFAULT ''",
+                                "dimension INTEGER NOT NULL DEFAULT 0",
+                            ):
+                                con.execute(f"ALTER TABLE agent_memory_embeddings ADD COLUMN {definition}")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_memory_embeddings (
@@ -948,26 +982,20 @@ class MemoryStore:
             if not isinstance(root, str):
                 return
             root = _canonical_relation_root(root)
+            repository_id = _canonical_relation_repository_id(provenance.get("repository_id"))
             relation_metadata: dict[str, Any] = {
                 "root": root,
                 "scope": scope if isinstance(scope, str) else "",
                 "scope_id": record.scope_id,
+                "provenance": {"repository_id": repository_id},
             }
-            repository_id = provenance.get("repository_id")
-            if (
-                scope == "repository"
-                and isinstance(repository_id, str)
-                and repository_id
-                and repository_id == repository_id.strip()
-                and "\x00" not in repository_id
-            ):
-                relation_metadata["provenance"] = {"repository_id": repository_id}
             for source, relation, target, weight in self._auto_link_specs(record):
                 self.record_relation(
                     source=source,
                     relation=relation,
                     target=target,
                     root=root,
+                    repository_id=repository_id,
                     weight=weight,
                     metadata=relation_metadata,
                     actor=actor,
@@ -1902,47 +1930,28 @@ class MemoryStore:
                         vector_heap: list[tuple[float, str]] = []
                         vector_limit = _bounded_memory_limit(limit, self.max_query_limit)
                         while rows := cur_emb.fetchmany(512):
-                            valid_rows = []
-                            for r in rows:
-                                r_id, r_emb, r_space, r_model, r_dim = (
-                                    r[0], r[1], str(r[2] or "").strip(), str(r[3] or "").strip(), int(r[4] or 0)
-                                )
-                                r_space = r_space or r_model
-                                if not q_space or not r_space or r_dim != q_dim or q_space != r_space:
+                            valid_rows: list[tuple[str, list[float]]] = []
+                            for r_id, emb_json, space, model, dimension in rows:
+                                r_space = str(space or "").strip() or str(model or "").strip()
+                                if not q_space or q_space != r_space:
                                     continue
-                                valid_rows.append((r_id, r_emb))
-                            if valid_rows:
-                                if _NUMPY_AVAILABLE and len(valid_rows) > 4:
-                                    rec_ids = [r[0] for r in valid_rows]
-                                    rec_vecs = [json.loads(r[1]) for r in valid_rows]
-                                    mat = np.array(rec_vecs, dtype=np.float32)
-                                    q = np.array(q_vec, dtype=np.float32)
-                                    q_norm = float(np.linalg.norm(q))
-                                    if q_norm > 0:
-                                        dots = mat @ q
-                                        norms = np.linalg.norm(mat, axis=1) * q_norm
-                                        norms[norms == 0] = 1.0
-                                        sims = dots / norms
-                                        for r_id, sim in zip(rec_ids, sims):
-                                            if sim >= min_score:
-                                                score = float(sim)
-                                                if r_id in fts_scores or r_id in exact_ids:
-                                                    vec_scores[r_id] = score
-                                                elif len(vector_heap) < vector_limit:
-                                                    heapq.heappush(vector_heap, (score, r_id))
-                                                elif (score, r_id) > vector_heap[0]:
-                                                    heapq.heapreplace(vector_heap, (score, r_id))
-                                else:
-                                    for r_id, emb_json in valid_rows:
-                                        rec_vec = json.loads(emb_json)
-                                        sim = self._cosine_similarity(q_vec, rec_vec)
-                                        if sim >= min_score:
-                                            if r_id in fts_scores or r_id in exact_ids:
-                                                vec_scores[r_id] = sim
-                                            elif len(vector_heap) < vector_limit:
-                                                heapq.heappush(vector_heap, (sim, r_id))
-                                            elif (sim, r_id) > vector_heap[0]:
-                                                heapq.heapreplace(vector_heap, (sim, r_id))
+                                try:
+                                    if int(dimension or 0) != q_dim:
+                                        continue
+                                    rec_vec = json.loads(emb_json)
+                                    if not isinstance(rec_vec, list) or len(rec_vec) != q_dim:
+                                        continue
+                                except (ValueError, TypeError, OverflowError, RecursionError):
+                                    continue
+                                valid_rows.append((r_id, rec_vec))
+                            for r_id, score in self._embedding_similarities(q_vec, valid_rows):
+                                if math.isfinite(score) and score >= min_score:
+                                    if r_id in fts_scores or r_id in exact_ids:
+                                        vec_scores[r_id] = score
+                                    elif len(vector_heap) < vector_limit:
+                                        heapq.heappush(vector_heap, (score, r_id))
+                                    elif (score, r_id) > vector_heap[0]:
+                                        heapq.heapreplace(vector_heap, (score, r_id))
                         vec_scores.update({r_id: score for score, r_id in vector_heap})
                 except Exception:
                     pass
@@ -2005,6 +2014,35 @@ class MemoryStore:
                 continue
             records.append(_sanitise_memory_record(record, reject_sensitive=False))
         return records
+
+    def _embedding_similarities(
+        self, query: list[float], rows: list[tuple[str, list[float]]],
+    ) -> Iterator[tuple[str, float]]:
+        if _NUMPY_AVAILABLE and len(rows) > 4:
+            try:
+                matrix = np.asarray([vector for _, vector in rows])
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                if matrix.shape == (len(rows), len(query)) and matrix.dtype.kind in "biuf":
+                    with np.errstate(over="ignore", invalid="ignore"):
+                        matrix = matrix.astype(np.float32, copy=False)
+                        q = np.asarray(query, dtype=np.float32)
+                        q_norm = float(np.linalg.norm(q))
+                        if not math.isfinite(q_norm) or q_norm <= 0:
+                            return
+                        norms = np.linalg.norm(matrix, axis=1) * q_norm
+                        norms[norms == 0] = 1.0
+                        scores = (matrix @ q) / norms
+                    for (record_id, _), score in zip(rows, scores):
+                        yield record_id, float(score)
+                    return
+        for record_id, vector in rows:
+            try:
+                score = self._cosine_similarity(query, vector)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            yield record_id, score
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -2519,10 +2557,17 @@ class MemoryStore:
                                     "DELETE FROM agent_memory_fts WHERE record_id = ?",
                                     (record_id,),
                                 )
-                            con.execute(
-                                "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
-                                (record_id, record_id),
-                            )
+                            try:
+                                relation_root = _canonical_relation_root(provenance.get("root"))
+                                relation_repository_id = _canonical_relation_repository_id(provenance.get("repository_id"))
+                            except ValueError:
+                                pass
+                            else:
+                                con.execute(
+                                    f"DELETE FROM agent_entity_relations WHERE repository_id = ? AND {_RELATION_ROOT_SQL} = ?"
+                                    " AND (source_entity = ? OR target_entity = ?)",
+                                    (relation_repository_id, relation_root, record_id, record_id),
+                                )
                     publish([appended.event])
                     return True, appended.event
             except Exception:
@@ -2655,18 +2700,26 @@ class MemoryStore:
             ]
             try:
                 relation_root = _canonical_relation_root(digest_record.provenance.get("root"))
+                relation_repository_id = _canonical_relation_repository_id(
+                    digest_record.provenance.get("repository_id")
+                )
                 relation_specs.extend(self._auto_link_specs(digest_record))
             except (AttributeError, TypeError, ValueError):
                 relation_specs = []
                 relation_root = ""
+                relation_repository_id = ""
             relation_rows = [
                 (
                     f"rel_{uuid.uuid4().hex[:12]}",
+                    relation_repository_id,
                     source,
                     relation,
                     target,
                     weight,
-                    json_dumps({"root": relation_root}, ensure_ascii=False),
+                    json_dumps(
+                        {"root": relation_root, "provenance": {"repository_id": relation_repository_id}},
+                        ensure_ascii=False,
+                    ),
                 )
                 for source, relation, target, weight in relation_specs
             ]
@@ -2705,19 +2758,19 @@ class MemoryStore:
                             published.append(appended.event)
                         self._save_record_row(con, record)
 
-                    for relation_index, (relation_id, source_id, relation, target_id, weight, relation_meta) in enumerate(relation_rows):
+                    for relation_index, (relation_id, repository_id, source_id, relation, target_id, weight, relation_meta) in enumerate(relation_rows):
                         con.execute(
                             """
                             INSERT INTO agent_entity_relations (
-                                relation_id, source_entity, relation, target_entity, weight,
+                                relation_id, repository_id, source_entity, relation, target_entity, weight,
                                 metadata, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (relation_id, source_id, relation, target_id, weight,
+                            (relation_id, repository_id, source_id, relation, target_id, weight,
                              relation_meta, now, now),
                         )
                         relation_event = AgentEvent.create(
-                            stream_id=_relation_event_stream_id(relation_root, source_id, target_id),
+                            stream_id=_relation_event_stream_id(repository_id, relation_root, source_id, target_id),
                             kind="relation.recorded",
                             payload={
                                 "relation_id": relation_id,
@@ -2725,6 +2778,7 @@ class MemoryStore:
                                 "relation": relation,
                                 "target": target_id,
                                 "weight": weight,
+                                "repository_id": repository_id,
                                 "metadata": {"root": relation_root},
                             },
                             idempotency_key=f"compact-relation:{digest_record.record_id}:{relation_index}",
@@ -2776,11 +2830,13 @@ class MemoryStore:
         target: str,
         *,
         root: str,
+        repository_id: str,
         weight: float = 1.0,
         metadata: dict[str, Any] | None = None,
         actor: str = "agent",
     ) -> dict[str, Any]:
         canonical_root = _canonical_relation_root(root)
+        canonical_repository_id = _canonical_relation_repository_id(repository_id)
         relation_metadata = dict(metadata or {})
         if "root" in relation_metadata and relation_metadata["root"] != canonical_root:
             raise ValueError("relation metadata root must match root")
@@ -2790,9 +2846,9 @@ class MemoryStore:
         now = time.time()
         meta_json = json_dumps(relation_metadata, ensure_ascii=False)
         event = AgentEvent.create(
-            stream_id=_relation_event_stream_id(canonical_root, source.strip(), target.strip()),
+            stream_id=_relation_event_stream_id(canonical_repository_id, canonical_root, source.strip(), target.strip()),
             kind="relation.recorded",
-            payload={"relation_id": rel_id, "source": source, "relation": relation, "target": target, "weight": weight, "metadata": relation_metadata},
+            payload={"relation_id": rel_id, "source": source, "relation": relation, "target": target, "weight": weight, "repository_id": canonical_repository_id, "metadata": relation_metadata},
             actor=actor,
         )
 
@@ -2803,10 +2859,10 @@ class MemoryStore:
                     con.execute(
                         """
                         INSERT INTO agent_entity_relations (
-                            relation_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            relation_id, repository_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (rel_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
+                        (rel_id, canonical_repository_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
                     )
                     appended = self.state_store.append_in_transaction(
                         con, event, strict_idempotency=True
@@ -2834,6 +2890,7 @@ class MemoryStore:
             "source_entity": source,
             "relation": relation,
             "target_entity": target,
+            "repository_id": canonical_repository_id,
             "weight": weight,
             "metadata": relation_metadata,
         }
@@ -2843,6 +2900,7 @@ class MemoryStore:
         entity: str = "",
         *,
         root: str,
+        repository_id: str,
         source_entity: str | None = None,
         target_entity: str | None = None,
         direction: str = "both",
@@ -2850,12 +2908,13 @@ class MemoryStore:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         canonical_root = _canonical_relation_root(root)
+        canonical_repository_id = _canonical_relation_repository_id(repository_id)
         self._init_table()
         def _fetch():
             con = connect_sqlite(self.state_store.db_path)
             try:
-                params: list[Any] = [canonical_root]
-                where_clauses: list[str] = [f"{_RELATION_ROOT_SQL} = ?"]
+                params: list[Any] = [canonical_repository_id, canonical_root]
+                where_clauses: list[str] = ["repository_id = ?", f"{_RELATION_ROOT_SQL} = ?"]
                 if source_entity and target_entity:
                     where_clauses.append("source_entity = ? AND target_entity = ?")
                     params.extend([source_entity.strip(), target_entity.strip()])
@@ -2906,10 +2965,13 @@ class MemoryStore:
         start_entity: str,
         *,
         root: str,
+        repository_id: str,
         max_depth: int = 2,
         max_nodes: int = 50,
     ) -> dict[str, Any]:
+        """Return a bounded subgraph with up to 1,000 highest-ranked edges."""
         canonical_root = _canonical_relation_root(root)
+        canonical_repository_id = _canonical_relation_repository_id(repository_id)
         self._init_table()
         start = start_entity.strip()
         if not start:
@@ -2941,11 +3003,11 @@ class MemoryStore:
                         f"""
                         SELECT CASE WHEN source_entity = ? THEN target_entity ELSE source_entity END
                         FROM agent_entity_relations
-                        WHERE {_RELATION_ROOT_SQL} = ? AND (source_entity = ? OR target_entity = ?)
+                        WHERE repository_id = ? AND {_RELATION_ROOT_SQL} = ? AND (source_entity = ? OR target_entity = ?)
                         """,
-                        (curr, canonical_root, curr, curr),
+                        (curr, canonical_repository_id, canonical_root, curr, curr),
                     )
-                    for (neighbor,) in cur.fetchall():
+                    for (neighbor,) in cur:
                         neighbor_str = str(neighbor or "").strip()
                         if not neighbor_str:
                             continue
@@ -2956,6 +3018,7 @@ class MemoryStore:
                             visited[neighbor_str] = depth + 1
                             queue.append((neighbor_str, depth + 1))
                     if truncated:
+                        cur.close()
                         break
 
                 node_list = sorted(visited.keys())
@@ -2972,16 +3035,22 @@ class MemoryStore:
 
                 placeholders = ",".join("?" for _ in node_list)
                 edge_sql = f"""
-                SELECT DISTINCT relation_id, source_entity, relation, target_entity, weight, metadata, updated_at
+                SELECT relation_id, source_entity, relation, target_entity, weight, metadata, updated_at
                 FROM agent_entity_relations
-                WHERE {_RELATION_ROOT_SQL} = ?
+                WHERE repository_id = ? AND {_RELATION_ROOT_SQL} = ?
                   AND source_entity IN ({placeholders}) AND target_entity IN ({placeholders})
-                ORDER BY weight DESC, updated_at DESC
+                ORDER BY weight DESC, updated_at DESC, relation_id
+                LIMIT ?
                 """
-                cur_edges = con.execute(edge_sql, (canonical_root,) + tuple(node_list) + tuple(node_list))
+                cur_edges = con.execute(
+                    edge_sql, (canonical_repository_id, canonical_root, *node_list, *node_list, _MAX_GRAPH_EDGES + 1),
+                )
                 collected_edges = []
                 seen_edges = set()
-                for row in cur_edges.fetchall():
+                for index, row in enumerate(cur_edges):
+                    if index == _MAX_GRAPH_EDGES:
+                        truncated = True
+                        break
                     rel_id = str(row[0] or "")
                     edge_key = rel_id or (str(row[1]), str(row[2]), str(row[3]))
                     if edge_key in seen_edges:

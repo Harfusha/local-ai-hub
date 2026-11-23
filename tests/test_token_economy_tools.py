@@ -121,11 +121,9 @@ def test_token_economy_policy_generation(generated_policies: Path):
     policy = generate_token_economy_policy()
     assert "<!-- BEGIN TOKEN ECONOMY POLICY -->" in policy
     assert "<!-- END TOKEN ECONOMY POLICY -->" in policy
-    trigger = next(line for line in policy.splitlines() if line.startswith("- Before coding or repository work"))
-    assert "repo-map" in policy
-    assert "trim-run" in policy
-    assert "tokcount" in policy
-    assert "ast-grep" in policy
+    trigger = next(line for line in policy.splitlines() if line.startswith("- Before repository work"))
+    detailed_skill = (generated_policies.parent / "skills" / "token-economizer" / "SKILL.md").read_text(encoding="utf-8")
+    assert all(tool in detailed_skill for tool in ("trim-run", "tokcount"))
     install_prompt = (Path(__file__).resolve().parents[1] / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
     update_prompt = (Path(__file__).resolve().parents[1] / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
     agents_file = (generated_policies / "token-economy-policy.md").read_text(encoding="utf-8")
@@ -140,7 +138,8 @@ def test_response_budget_and_fallback_contracts_match_all_agent_instructions(gen
         TOKEN_ECONOMIZER_SKILL_MD,
         (root / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
         (root / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
-        (generated_policies / "agent-policy.md").read_text(encoding="utf-8"),
+        (generated_policies / "token-economy-policy.md").read_text(encoding="utf-8"),
+        (generated_policies.parent / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8"),
         (root / "skills" / "tool-orchestration" / "SKILL.md").read_text(encoding="utf-8"),
     )
     budget_contract = (
@@ -149,13 +148,23 @@ def test_response_budget_and_fallback_contracts_match_all_agent_instructions(gen
         "Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.",
         "Reject `max_response_tokens` below 128; never raise the request silently.",
     )
-    fallback_contract = (
-        "For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.",
-        "On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.",
-    )
+    from local_ai_hub.generator import generate_global_policy
 
-    for contract in (*budget_contract, *fallback_contract):
-        assert all(contract in text for text in instructions), contract
+    global_instructions = (generate_global_policy({}), instructions[3], instructions[4])
+    compact_fallback = (
+        "Use authorized native tools when the schema has no matching Hub action; after an advertised action fails, "
+        "fallback requires explicit `terminal=true` and `retryable=false`. Full routing and scope rules are in `local-ai-orchestrator`."
+    )
+    detailed_instructions = (instructions[0], instructions[2], instructions[6])
+    detailed_fallback = "After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`."
+
+    for contract in budget_contract:
+        assert all(contract in text for text in (instructions[0], instructions[2], instructions[6])), contract
+    assert all(compact_fallback in text for text in global_instructions)
+    assert all(detailed_fallback in text for text in detailed_instructions)
+    assert "If the live schema has no action for an operation, use the authorized native tool directly." in instructions[6]
+    assert "A transport failure without those fields does not authorize fallback." in instructions[6]
+    assert "Apply terminal/retryable fallback gates only after calling an advertised Hub action." in instructions[7]
 
 
 def test_token_economizer_skill_md(tmp_path: Path):
