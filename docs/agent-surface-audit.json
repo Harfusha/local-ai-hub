@@ -792,6 +792,32 @@
         "action_literals": []
       }
     },
+    "GET /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Local dashboard reads verified release availability and installation results.",
+      "response_policy": "Preserve release identity, status and errors for the local operator.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": ["error", "success"],
+        "response_producers": ["controller.install", "controller.status", "local:result", "self._handle_dashboard_updates"],
+        "action_literals": []
+      }
+    },
+    "POST /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "The local dashboard can refresh release availability or confirm an exact update and restart.",
+      "response_policy": "Preserve the launch result and errors. Release and target are confined by the managed updater.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_updates_1",
+        "literal_response_fields": ["error", "success"],
+        "response_producers": ["controller.install", "controller.status", "local:result", "self._handle_dashboard_updates"],
+        "action_literals": []
+      }
+    },
     "GET /api/mode": {
       "decision": "retain",
       "role": "readiness_or_control",
@@ -901,9 +927,9 @@
     },
     "GET /api/repair-priorities": {
       "decision": "retain",
-      "role": "dashboard_aggregate",
-      "reason": "Read-only operator repair triage derived from scoped health, projected telemetry and endpoint summaries. Suggested actions are advisory, not executed automatically.",
-      "response_policy": "Preserve ranked advisory priorities, health status and aggregated evidence; raw errors, prompts, traces and internal runtime snapshots remain subject to diagnostic projection.",
+      "role": "operator",
+      "reason": "Consolidated runtime and telemetry repair suggestions for operator review; detailed evidence follows the diagnostics gate.",
+      "response_policy": "Preserve success and degraded state, dependency status, aggregate telemetry, priorities, quality evidence, and time window. Detailed diagnostics remain gated; do not expose raw traces.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",

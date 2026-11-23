@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
+from local_ai_hub import context_warmup
 from local_ai_hub.context_warmup import ContextWarmup
 
 
@@ -48,7 +50,9 @@ def test_failure_uses_short_backoff_and_can_retry(monkeypatch) -> None:
 
 def test_expired_queue_item_is_not_invoked_and_records_expired(monkeypatch) -> None:
     warmup = ContextWarmup()
-    monkeypatch.setattr(warmup, "_QUEUE_TTL_SECONDS", 0.0)
+    ticks = iter((0.0,))
+    expired_at = warmup._QUEUE_TTL_SECONDS + 1.0
+    monkeypatch.setattr(context_warmup, "time", SimpleNamespace(monotonic=lambda: next(ticks, expired_at)))
     invoked = threading.Event()
     try:
         assert warmup.submit("expired", lambda: invoked.set())

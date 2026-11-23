@@ -52,7 +52,8 @@ def test_service_hubctl_timeout_alignment():
     assert sig.parameters["timeout"].default == 12.0
 
     hubctl_src = inspect.getsource(hubctl._service)
-    assert "timeout=35" in hubctl_src
+    assert "timeout = _startup_wait_seconds() + 10.0" in hubctl_src
+    assert "else 35.0" in hubctl_src
 
 
 def test_learning_store_thread_safe_and_status_validation(tmp_path: Path):
@@ -221,7 +222,6 @@ def test_task_store_lock_and_retry(tmp_path: Path):
             contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
             context=ScopeContext(repository_id="repo1"),
             repo_root=str(tmp_path),
-        root=str(tmp_path),
         )
     finally:
         trace_context.reset_context(context_token)

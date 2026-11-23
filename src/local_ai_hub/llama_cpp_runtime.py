@@ -536,7 +536,7 @@ class LlamaCppManagedRuntime:
             if self.llama_config.get("managed_with_ollama") is True:
                 return [("CUDA0", timeout)]
             return [("CUDA0", timeout), ("none", timeout)]
-        return [("SYCL0", 25.0), ("none", timeout)] if intel_windows_gpu else [("none", timeout)]
+        return [("SYCL0", min(timeout, 60.0)), ("none", timeout)] if intel_windows_gpu else [("none", timeout)]
 
     def _managed_pid_alive(self) -> bool:
         try:

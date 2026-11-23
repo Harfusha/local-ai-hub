@@ -381,6 +381,9 @@ def test_opt_in_fresh_command_dispatches_bounded_local_diagnostic(tmp_path, monk
 
 def test_opt_in_diagnostic_timeout_is_visible(tmp_path, monkeypatch):
     import json
+    import threading
+    from types import SimpleNamespace
+    from local_ai_hub import services as services_module
     from local_ai_hub.app import LocalAIApp
     from test_work_orchestrator import init_repo
 
@@ -396,8 +399,23 @@ def test_opt_in_diagnostic_timeout_is_visible(tmp_path, monkeypatch):
     )
     app = LocalAIApp(str(config))
     try:
+        class ExpiredTimer:
+            def __init__(self, interval, callback):
+                assert interval == 10.0
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+            def cancel(self):
+                pass
+
+        threading_probe = SimpleNamespace(**vars(threading))
+        threading_probe.Timer = ExpiredTimer
+        monkeypatch.setattr(services_module, "threading", threading_probe)
+
         def slow_reason(_args, *, cancel_event):
-            assert cancel_event.wait(15)
+            assert cancel_event.is_set()
             return {"success": True, "text": "late advice"}
         monkeypatch.setattr(app.services, "reason", slow_reason)
         result = app.commands.run("git diff --exit-code", str(root), force=True)

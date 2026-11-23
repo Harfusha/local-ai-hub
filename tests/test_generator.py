@@ -18,6 +18,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from local_ai_hub.generator import (
+    SINGLE_OWNER_CONTRACT,
     generate_token_economy_policy,
     generate_skill_markdown,
     generate_skill_references,
@@ -198,6 +199,10 @@ class TestSkillReferences:
 
 
 class TestGlobalPolicyGeneration:
+    def test_global_policy_references_single_owner_contract_in_installed_skill(self):
+        assert "Single-owner and repository scope contract" in generate_global_policy({})
+        assert SINGLE_OWNER_CONTRACT in generate_skill_markdown({})
+
     def test_policy_markers_and_content(self):
         policy = generate_global_policy({"ollama": {"enabled": True}})
         assert "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->" in policy
@@ -243,7 +248,7 @@ class TestGlobalPolicyGeneration:
         for content in generated:
             policy = content.lower()
             assert "reuse fresh sufficient repository evidence" in policy
-            assert "exact file or symbol lookups" in policy
+            assert "bounded indexed/source lookup" in policy
             assert "do not preprocess or compile adaptive context first" in policy
             assert "first useful operation" not in policy
             assert "preprocess\", root=abs_root) exactly once" not in policy

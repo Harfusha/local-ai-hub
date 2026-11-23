@@ -4,9 +4,11 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub import external_tools
 from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPStdioClient
 
 
@@ -642,10 +644,13 @@ def test_query_serena_search_timeout_includes_backend_lock_wait(tmp_path: Path, 
         },
     })
     captured: list[float | None] = []
+    now = 100.0
+    monkeypatch.setattr(external_tools, "time", SimpleNamespace(monotonic=lambda: now))
 
     class DelayedBackendOperation:
         def __enter__(self):
-            time.sleep(0.05)
+            nonlocal now
+            now += 0.125
 
         def __exit__(self, exc_type, exc, traceback):
             return False
@@ -660,7 +665,7 @@ def test_query_serena_search_timeout_includes_backend_lock_wait(tmp_path: Path, 
         result = ext.query_serena(str(root), "search", query="needle")
         assert result["success"] is True
         assert len(captured) == 1
-        assert captured[0] is not None and 0 < captured[0] <= 1.95
+        assert captured[0] == 1.875
     finally:
         ext.close()
 

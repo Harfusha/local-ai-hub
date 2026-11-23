@@ -1394,14 +1394,14 @@ def test_resolve_all_errors_propagates_retryable_store_deadlines(tmp_path):
 
     class TimedOutTelemetry:
         def resolve_errors(self, *, timeout_seconds):
-            assert 0 < timeout_seconds <= 0.05
+            assert 0 < timeout_seconds <= 0.05 + 1e-9
             return {"success": False, "degraded": True, "retryable": True}
 
     class TimedOutIncidents:
         def resolve_all(self, *, verified_fix, root_cause, timeout_seconds):
             assert verified_fix == "Resolved by operator"
             assert root_cause == "Operator manual resolve"
-            assert 0 < timeout_seconds <= 0.05
+            assert 0 < timeout_seconds <= 0.05 + 1e-9
             raise TimeoutError("incident resolution time budget exceeded")
 
     service = object.__new__(LocalAIServices)

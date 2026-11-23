@@ -249,7 +249,8 @@ class WinAppAdapter:
         self.sandbox = mode == 'desktop_sandbox'
         if self.sandbox and not config.get('sandbox_enabled', False):
             raise PermissionError('Windows Sandbox must be explicitly enabled and prepared by the operator')
-        self._deadline = time.monotonic() + request.get('timeout_seconds', config.get('timeout_seconds', 20))
+        self._started_at = time.monotonic()
+        self._timeout = request.get('timeout_seconds', config.get('timeout_seconds', 20))
         self.output, self.persist_binary = Path(state_dir), persist_binary
         self.window = request.get('window_id')
         if type(self.window) is not int or not 0 < self.window < 1 << 63:
@@ -270,7 +271,7 @@ class WinAppAdapter:
             raise PermissionError('window executable is not the configured desktop target; browsers require browser sessions')
 
     def _remaining(self):
-        value = self._deadline - time.monotonic()
+        value = self._timeout - (time.monotonic() - self._started_at)
         if value <= 0:
             raise TimeoutError('desktop operation deadline exceeded')
         return value
@@ -297,7 +298,8 @@ if ($taskProcessId -eq 0) { throw 'window missing' }; $taskProcess=Get-Process -
         return identity
 
     def execute(self, request, timeout):
-        self._deadline = time.monotonic() + timeout
+        self._started_at = time.monotonic()
+        self._timeout = timeout
         if self.resolver(self.window) != self.identity:
             raise PermissionError('window process identity changed')
         command = request.get('command')

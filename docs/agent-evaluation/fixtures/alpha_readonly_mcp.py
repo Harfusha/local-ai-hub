@@ -6,11 +6,6 @@ from pathlib import Path
 import sys
 import tomllib
 
-import anyio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
-
 HERE = Path(__file__).resolve().parent
 WORKSPACE = (HERE / "workspace").resolve()
 ROOT = (WORKSPACE / "repo").resolve()
@@ -55,11 +50,16 @@ env = {key: value for key, value in os.environ.items()
        if key not in {"LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"}}
 env.update(LOCAL_AI_CONFIG=str(CONFIG),
            PYTHONPATH=str(SOURCE / "src"), PYTHONDONTWRITEBYTECODE="1")
-params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"],
-                               env=env, cwd=str(HERE))
 
 
 async def run() -> None:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    params = StdioServerParameters(
+        command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"],
+        env=env, cwd=str(HERE),
+    )
     async with stdio_client(params) as (reader, writer):
         async with ClientSession(reader, writer) as session:
             await session.initialize()
@@ -67,4 +67,7 @@ async def run() -> None:
             print(result.model_dump_json(exclude_none=True))
 
 
-anyio.run(run)
+if __name__ == "__main__":
+    import anyio
+
+    anyio.run(run)

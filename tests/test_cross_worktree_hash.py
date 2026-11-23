@@ -171,10 +171,10 @@ def test_file_card_cache_hits_share_one_writer_transaction(tmp_path: Path, monke
         connection_count = 0
         transaction_count = 0
 
-        def counted_connect():
-            nonlocal connection_count
-            connection_count += 1
-            return original_connect()
+        def counted_submit(operation, *, timeout=None, priority=1):
+            def counted_operation(con):
+                connection_ids.append(id(con))
+                return operation(con)
 
         def counted_write(operation, **kwargs):
             def record(con):

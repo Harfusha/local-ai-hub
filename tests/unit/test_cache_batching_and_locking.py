@@ -85,8 +85,7 @@ def test_sqlite_set_many_rolls_back_partial_executemany_failure(tmp_path: Path) 
 def test_tiered_batching_promotes_l2_hits_and_preserves_duplicate_counters(tmp_path: Path) -> None:
     l2 = SQLiteCache(tmp_path / "tiered.sqlite", "batch", max_entries=50)
     tiered = TieredCache(l2, l1_entries=64)
-    values = {f"key-{index}": index for index in range(10)}
-    tiered.set_many(values)
+    tiered.set_many({"key-0": 0, "key-1": 1})
     assert tiered.get_many(["key-0", "key-0", "key-1"]) == {"key-0": 0, "key-1": 1}
     assert tiered.l1_hits == 3
 

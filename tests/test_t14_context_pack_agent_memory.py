@@ -60,6 +60,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         safe = app.agent_memory.record(MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope="repository",
+            scope_id=coordination_id,
             key="safe fact",
             value="repository fresh value",
             status=MemoryStatus.CONFIRMED,
@@ -70,6 +71,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         stale = app.agent_memory.record(MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope="repository",
+            scope_id=coordination_id,
             key="stale fact",
             value="old changed-path value",
             status=MemoryStatus.CONFIRMED,

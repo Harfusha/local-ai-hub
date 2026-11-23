@@ -55,9 +55,12 @@ def test_disabled_batch_replacement_does_not_call_engine() -> None:
     services.deterministic.batch_replace.assert_not_called()
 
 
-def test_disabled_mcp_rollout_features_do_not_call_server(monkeypatch) -> None:
+def test_disabled_mcp_rollout_features_reject_writes_and_skip_enrichment(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "FEATURES", FeatureSet({"features": {"repo": True}}))
-    post = MagicMock()
+    post = MagicMock(side_effect=lambda endpoint, *args, **_kwargs: (
+        {"success": True, "results": [], "total_matches": 0, "has_more": False, "offset": 0, "limit": 24}
+        if endpoint == "/api/search" else {"success": True}
+    ))
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 
     batch = mcp_server.local_ai_repo(
@@ -67,9 +70,11 @@ def test_disabled_mcp_rollout_features_do_not_call_server(monkeypatch) -> None:
 
     assert batch["success"] is False
     assert batch["status_code"] == 400
-    assert search["feature"] == "enriched_search"
-    assert post.call_count == 1
-    assert post.call_args.args[0] == "/api/telemetry/tool-accounting"
+    assert search["success"] is True
+    assert search["degraded"] is True and search["fallback_used"] is True
+    search_call = next(call for call in post.call_args_list if call.args[0] == "/api/search")
+    assert search_call.args[1]["enrich"] is False
+    assert "/api/code/batch_replace" not in [call.args[0] for call in post.call_args_list]
 
 
 def test_disabled_batch_schema_projection_tolerates_missing_optional_mcp_sdk() -> None:

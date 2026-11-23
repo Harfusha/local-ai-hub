@@ -74,6 +74,23 @@ def test_native_start_does_not_spawn_duplicate_after_scheduler_race(monkeypatch)
     spawn.assert_not_called()
 
 
+def test_startup_wait_uses_configured_cold_start_grace(monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_startup_grace", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+
+    monkeypatch.setattr(service, "CFG", {"headless": {"startup_grace_seconds": 75}})
+    assert service._startup_wait_seconds() == 80.0
+
+    monkeypatch.setattr(service, "CFG", {"headless": {"startup_grace_seconds": 999}})
+    assert service._startup_wait_seconds() == 180.0
+
+    monkeypatch.setattr(service, "CFG", {"headless": {"startup_grace_seconds": "invalid"}})
+    assert service._startup_wait_seconds() == 125.0
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows service launcher only")
 def test_all_supervisor_pids_does_not_match_its_own_powershell_query(monkeypatch):
     module = importlib.util.spec_from_file_location(

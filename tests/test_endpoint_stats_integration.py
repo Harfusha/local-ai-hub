@@ -164,17 +164,30 @@ def test_dashboard_renders_distinct_exact_and_historical_project_filters(tmp_pat
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
-            "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
-            "--user-data-dir=" + str(tmp_path / "browser"), "--virtual-time-budget=4000", "--dump-dom",
-            f"http://127.0.0.1:{server.server_address[1]}/browser-probe"], capture_output=True,
-            text=True, timeout=30, **hidden_run_kwargs())
-        if result.returncode in (-6, 134) and "ZygoteHostImpl::Init" in result.stderr:
-            pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
-        assert result.returncode == 0, result.stderr[-1000:]
-        if not result.stdout.strip():
+        result = None
+        try:
+            result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
+                "--user-data-dir=" + str(tmp_path / "browser"), "--virtual-time-budget=4000", "--dump-dom",
+                f"http://127.0.0.1:{server.server_address[1]}/browser-probe"], capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=30, **hidden_run_kwargs())
+            stdout, stderr = result.stdout, result.stderr
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = exc.stdout or "", exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            assert 'data-result="pass"' in stdout, (
+                "Edge timed out before dashboard probe completed: " + stderr[-1000:] + stdout[-1500:]
+            )
+        if result is not None:
+            if result.returncode in (-6, 134) and "ZygoteHostImpl::Init" in stderr:
+                pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
+            assert result.returncode == 0, stderr[-1000:]
+        if not stdout.strip():
             pytest.skip("The installed headless browser did not return DOM output")
-        assert 'data-result="pass"' in result.stdout, result.stdout[-1500:]
+        assert 'data-result="pass"' in stdout, stdout[-1500:]
     finally:
         server.shutdown()
         server.server_close()

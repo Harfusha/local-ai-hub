@@ -14,6 +14,7 @@ from local_ai_hub.agent_tasks import (
 )
 from local_ai_hub.work_fencing import FencingLeaseStore, LeaseLostError
 from local_ai_hub.agent_semaphores import SemaphoreStore
+import local_ai_hub.agent_semaphores as semaphore_module
 from local_ai_hub.resilience import RecoveryJournal
 
 
@@ -282,10 +283,12 @@ def test_unknown_state_never_reported_as_success(tmp_path: Path):
     assert (entry.get("response") or {}).get("success") is not True
 
 
-def test_semaphore_crash_and_expiry_recovery(tmp_path: Path):
+def test_semaphore_crash_and_expiry_recovery(tmp_path: Path, monkeypatch):
     """Verifies SemaphoreStore handles crash/stale holders without double commit or deadlocks."""
     sem_db = tmp_path / "semaphores.sqlite3"
     store1 = SemaphoreStore(sem_db)
+    clock = [1000.0]
+    monkeypatch.setattr(semaphore_module.time, "time", lambda: clock[0])
 
     # Acquire with short TTL = 0.1s
     res1 = store1.acquire("gpu_worker", owner="worker_1", capacity=1, ttl_seconds=0.1)
@@ -298,7 +301,7 @@ def test_semaphore_crash_and_expiry_recovery(tmp_path: Path):
     assert res2["acquired"] is False
 
     # Simulate crash of worker_1 and passage of time (stale lease expiry)
-    time.sleep(0.15)
+    clock[0] += 0.2
 
     # Fresh store connection acquires after expiry
     store2 = SemaphoreStore(sem_db)

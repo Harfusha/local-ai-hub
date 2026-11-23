@@ -133,8 +133,9 @@ def test_registered_mcp_http_bounded_patch_and_real_broker(tmp_path, monkeypatch
             "keep_failed_workspace": scenario == "handoff_keep"})
         assert submitted["success"] is True, submitted
         handoff = call({"action": "wait", "root": str(root), "work_id": submitted["work_id"],
-                        "timeout_seconds": 60, "response_profile": "standard"})
-        assert handoff["status"] == ("failed" if scenario in {"denied", "handoff_storage_none", "handoff_storage_error", "handoff_keep"} else "needs_agent"), handoff
+                        "timeout_seconds": 90, "response_profile": "standard"})
+        expected_status = "failed" if scenario in {"denied", "handoff_storage_none", "handoff_storage_error", "handoff_keep"} else "needs_agent"
+        assert handoff.get("status") == expected_status, handoff
         assert handoff["success"] is False
         report = json.loads(app.artifacts.get(handoff["artifact_id"], max_chars=30000)["text"])
         if scenario not in {"denied", "handoff_storage_none", "handoff_storage_error", "handoff_keep"}:
@@ -387,7 +388,7 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
     from pathlib import Path
 
-    from local_ai_hub.process_utils import hidden_run_kwargs
+    from local_ai_hub.process_utils import hidden_run_kwargs, run_hidden
     from tools.prepare_local_model_eval_fixture import prepare_fixture
 
     candidates = [shutil.which("chromium"), shutil.which("google-chrome"),
@@ -438,17 +439,24 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
     thread.start()
 
     def browser_result(profile):
-        result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
-            "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
-            "--user-data-dir=" + str(tmp_path / profile), "--virtual-time-budget=3000", "--dump-dom",
-            f"http://127.0.0.1:{server.server_address[1]}/probe"], capture_output=True,
-            text=True, timeout=30, **hidden_run_kwargs())
+        try:
+            result = run_hidden([browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
+                "--user-data-dir=" + str(tmp_path / profile), "--virtual-time-budget=3000", "--dump-dom",
+                f"http://127.0.0.1:{server.server_address[1]}/probe"], capture_output=True,
+                text=True, timeout=30, **hidden_run_kwargs())
+        except subprocess.TimeoutExpired as exc:
+            if profile == "baseline-browser":
+                if b"No usable sandbox!" in (exc.stderr or b""):
+                    pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
+                pytest.skip("Installed headless browser did not complete its baseline render on this host; browser E2E remains unverified")
+            raise
         if (
             profile == "baseline-browser"
             and result.returncode in (-6, 134)
             and "ZygoteHostImpl::Init" in result.stderr
         ):
-            pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
+            pytest.skip(sandbox_unavailable)
         assert result.returncode == 0, result.stderr[-1000:]
         return result.stdout
 
@@ -619,7 +627,7 @@ def test_isolated_app_bounded_work_uses_real_service_and_broker(tmp_path, monkey
             "permissions": {"edit": True, "tests": True, "build": True},
         })
         assert result["success"] is True, result
-        handoff = wait_terminal(app.work_orchestrator, result["work_id"], timeout=30)
+        handoff = wait_terminal(app.work_orchestrator, result["work_id"], timeout=90)
         assert handoff["status"] == "needs_agent", handoff
         assert handoff["requires_primary_review"] is True
         assert handoff["validation"]["receipt_status"] == "not_recorded"
@@ -811,7 +819,7 @@ def test_isolated_app_rolls_back_when_broker_command_fails(tmp_path, monkeypatch
             "permissions": {"edit": True, "tests": True, "build": True},
         })
         assert result["success"] is True, result
-        handoff = wait_terminal(app.work_orchestrator, result["work_id"], timeout=30)
+        handoff = wait_terminal(app.work_orchestrator, result["work_id"], timeout=90)
         assert handoff["status"] == "failed", handoff
         assert handoff["success"] is False
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"

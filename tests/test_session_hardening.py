@@ -1,4 +1,5 @@
 import pytest
+from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.external_tools import ExternalCodeIntelligence
 from local_ai_hub.services import LocalAIServices
@@ -38,7 +39,11 @@ def test_review_diff_custom_diff_truncated_key():
     services.config = {}
     services.model_policy = DummyPolicy()
     services.router = DummyRouter()
-    services.deterministic = None
+    class DummyDeterministic:
+        def diff_facts(self, _diff):
+            return {"files": ["a.txt"], "additions": 1, "deletions": 1, "hunks": 1}
+
+    services.deterministic = DummyDeterministic()
     services.incident_store = None
     services._resident_optimize = lambda route, *a, **kw: route
     services.delegate = lambda payload, **kwargs: {

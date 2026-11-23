@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import tomllib
 from pathlib import Path
@@ -102,6 +103,7 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native broad discovery" in skill
+    assert "pinned documentation" in skill
     assert "semantic" in skill and "native command tool" in skill
     assert "local_ai_command" not in skill
     assert "CodeGraphContext" in skill and "optional standalone CLI/MCP" in skill
@@ -264,11 +266,11 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in skip_parts for part in path.parts) or path.name in skip_files or path.name.startswith(".coverage"):
+        relative = path.relative_to(ROOT)
+        if any(part in skip_parts for part in relative.parts) or path.name in skip_files or path.name.startswith(".coverage"):
             continue
         if path.parent == ROOT / "docs" and path.name.startswith("integration-"):
             continue  # internal integration notes are excluded from the source distribution
-        relative = path.relative_to(ROOT)
         if relative.parts[:2] == ("docs", "integration") or (
             path.parent == ROOT / "docs"
             and re.match(r"(?:SYNC_|STASH_|T\d+.*(?:SYNC|HANDOFF|FILES)|WORKTREE_|PRIORITY_STASH)", path.name, re.IGNORECASE)
@@ -279,7 +281,6 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
             continue
         if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
             continue
-        relative = path.relative_to(ROOT)
         if relative in {
             Path("docs/agent-evaluation/results.md"),
             Path("docs/agent-evaluation/evaluation-key.md"),

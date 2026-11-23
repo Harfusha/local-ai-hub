@@ -1307,7 +1307,7 @@ def test_conflicting_high_confidence_records_are_quarantined(store: MemoryStore)
 
 
 def test_quarantine_record_and_event_roll_back_when_transaction_budget_expires(
-    store: MemoryStore, monkeypatch
+    store: MemoryStore, monkeypatch, expired_sqlite_transaction
 ):
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
@@ -1318,13 +1318,7 @@ def test_quarantine_record_and_event_roll_back_when_transaction_budget_expires(
     )
     store.record(record, actor="user", idempotency_key="quarantine-timeout-create")
 
-    def _expired_transaction(con, **kwargs):
-        kwargs.pop("max_duration_seconds", None)
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_memory, "write_transaction", _expired_transaction)
+    monkeypatch.setattr(agent_memory, "write_transaction", expired_sqlite_transaction)
     with pytest.raises(TimeoutError, match="duration budget"):
         store.quarantine(
             record.record_id,

@@ -631,6 +631,10 @@ def test_embedding_model_residency_uses_embed_api(tmp_path: Path, monkeypatch: p
     details = iter(([], [{"name": "qwen3-embedding:0.6b", "size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}]))
     monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: next(details))
     requests: list[tuple[str, dict]] = []
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: (
+        [{"name": "qwen3-embedding:0.6b", "size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}]
+        if requests else []
+    ))
 
     def request(endpoint: str, payload: dict, timeout=None, **_kwargs):
         requests.append((endpoint, payload))
@@ -640,8 +644,9 @@ def test_embedding_model_residency_uses_embed_api(tmp_path: Path, monkeypatch: p
     runtime.prepare_model("qwen3-embedding:0.6b")
 
     assert requests == [
-        ("/api/embed", {"model": "qwen3-embedding:0.6b", "input": [""], "keep_alive": "24h"})
+        ("/api/embed", {"model": "qwen3-embedding:0.6b", "input": [""], "keep_alive": "24h"}),
     ]
+    assert runtime.loaded_model_details()[0]["name"] == "qwen3-embedding:0.6b"
 
 
 def test_code_index_production_contract_methods_use_persistent_index(tmp_path: Path):

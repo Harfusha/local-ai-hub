@@ -7,9 +7,10 @@ import os
 import socket
 import tempfile
 import sys
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -18,6 +19,25 @@ if str(SRC) not in sys.path:
 
 
 import pytest
+
+
+@pytest.fixture
+def expired_sqlite_transaction(monkeypatch):
+    from local_ai_hub import sqlite_support
+
+    @contextmanager
+    def expire_at_commit(connection, **kwargs):
+        kwargs["max_duration_seconds"] = 1.0
+        now = 0.0
+        clock = SimpleNamespace(**vars(sqlite_support.time))
+        clock.monotonic = lambda: now
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite_support, "time", clock)
+            with sqlite_support.write_transaction(connection, **kwargs) as transaction:
+                yield transaction
+                now = 2.0
+
+    return expire_at_commit
 
 
 @pytest.fixture

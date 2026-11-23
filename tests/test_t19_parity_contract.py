@@ -56,7 +56,7 @@ def test_current_runtime_contract_matches_between_canonical_prompts(tmp_path: Pa
         "CodeGraph remains optional external standalone tooling outside Hub setup/runtime",
         "If the live MCP schema has no action for the operation, skip Hub and use the authorized native tool directly",
     )
-    assert all(item in install_contract for item in expected)
+    assert [item for item in expected if item not in install_contract] == []
     assert T19_RUNTIME_PARITY_CONTRACT in generated
     assert T19_RUNTIME_PARITY_CONTRACT in written_skill
     assert "CodeGraphContext" not in sdk

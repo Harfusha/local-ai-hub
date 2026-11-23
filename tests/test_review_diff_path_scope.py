@@ -59,14 +59,14 @@ def test_review_diff_refreshes_vram_before_sizing_model_prompt():
 
     service = SimpleNamespace(
         config={},
-        deterministic=None,
+        deterministic=SimpleNamespace(diff_facts=lambda _diff: {"files": ["a.py"]}),
         incident_store=None,
         router=SimpleNamespace(classify=lambda *args: {'model': 'fast-model', 'complexity': 'fast'}),
         _resident_optimize=lambda route, *args: route,
         model_policy=ModelPolicy(),
         vram_balancer=VramBalancer(),
     )
-    diff = '--- a/a.py\\n+++ b/a.py\\n@@ -1 +1 @@\\n-old\\n+new\\n'
+    diff = '--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n'
 
     result = LocalAIServices.review_diff(service, {'diff': diff})
 

@@ -164,6 +164,7 @@ def install_test_work_attempt_fence(broker, store, *, work_id="task-owned", owne
     """Model T16 passing a task-owned live attempt into broker mutation calls."""
     broker.set_fencing_lease_store(store)
     attempts = {}
+    attempts_lock = threading.Lock()
 
     def wrap(method_name, root_getter):
         original = getattr(broker, method_name)
@@ -185,12 +186,13 @@ def install_test_work_attempt_fence(broker, store, *, work_id="task-owned", owne
                 resource = str(Path(root).resolve())
                 current_work_id = str(task_id)
                 key = (resource, current_work_id)
-                attempt = attempts.get(key)
-                if attempt is None:
-                    attempt = store.claim_attempt(
-                        resource, current_work_id, owner_id, ttl_seconds=3600.0
-                    )
-                    attempts[key] = attempt
+                with attempts_lock:
+                    attempt = attempts.get(key)
+                    if attempt is None:
+                        attempt = store.claim_attempt(
+                            resource, current_work_id, owner_id, ttl_seconds=3600.0
+                        )
+                        attempts[key] = attempt
                 kwargs["_work_attempt_fence"] = attempt
             return original(*args, **kwargs)
 

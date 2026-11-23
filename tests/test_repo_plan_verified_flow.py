@@ -402,37 +402,27 @@ def test_recovery_allows_unrelated_plan_edits(environment, monkeypatch):
     assert plan["tasks"]["task_work"]["next_action"] == "continue"
 
 
-def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment, monkeypatch):
+def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment):
     _, tasks, _, _, storage, _, binding, _ = environment
     stale = tasks.get("execution_a")
-    entered, release, committed = Event(), Event(), Event()
-    real_sync = agent_bridge.sync_checkpoint_to_plan
-    real_project = tasks._sync_project_plan_checkpoint
+    entered, release = Event(), Event()
 
-    def slow_sync(*args, **kwargs):
-        if kwargs.get("next_action") == "":
-            entered.set()
-            assert release.wait(10)
-        return real_sync(*args, **kwargs)
+    def project_stale_checkpoint():
+        # Pause before taking the lock so either hash-stripe assignment works.
+        entered.set()
+        assert release.wait(15)
+        return tasks._sync_project_plan_checkpoint(stale)
 
-    def notify(state):
-        if state.checkpoint.next_action == "new action":
-            committed.set()
-        return real_project(state)
-
-    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", slow_sync)
-    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", notify)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(real_project, stale)
+        first = pool.submit(project_stale_checkpoint)
         try:
             assert entered.wait(10)
             second = pool.submit(tasks.checkpoint, "execution_a", TaskCheckpoint(
                 phase="implementation", next_action="new action"), actor="agent_a")
-            assert committed.wait(10)
+            assert second.result(timeout=10).checkpoint.next_action == "new action"
         finally:
             release.set()
         first.result(timeout=10)
-        second.result(timeout=10)
     plan, _ = storage.read_plan_file(binding.plan_rel_path)
     assert plan["tasks"]["task_work"]["next_action"] == "new action"
 
@@ -659,6 +649,30 @@ def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(attempt, ("b", "c")))
     assert sorted(results) == [False, True]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows file-sharing semantics")
+def test_task_binding_retries_transient_windows_replacement_failure(environment, monkeypatch):
+    root, tasks, _, _, _, manager, binding, _ = environment
+    target = root / ".local-ai-hub/local/task_bindings.json"
+    replace = os.replace
+    attempts = []
+
+    def replace_with_contention(source, destination, **kwargs):
+        if Path(destination) == target:
+            attempts.append(destination)
+            if len(attempts) == 1:
+                raise PermissionError("task binding briefly held open by a reader")
+        return replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(os, "replace", replace_with_contention)
+    manager.bind_task(
+        binding.task_id, binding.plan_id, binding.plan_task_id, binding.plan_rel_path,
+        contract_revision=2, task_store=tasks,
+    )
+
+    assert len(attempts) == 2
+    assert agent_bridge.TaskBindingManager(root).get_binding(binding.task_id).contract_revision == 2
 
 
 def test_separate_processes_cannot_bind_two_active_attempts(environment):

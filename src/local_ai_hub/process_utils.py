@@ -906,7 +906,6 @@ def pid_alive(pid: int) -> bool:
         return False
     if os.name == "nt":
         try:
-            import ctypes
             # SYNCHRONIZE is sufficient for a non-blocking wait on the process object.
             # Merely opening a handle is not enough: exited processes can remain
             # handleable until their final handle is closed.

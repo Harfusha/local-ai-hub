@@ -862,7 +862,10 @@ class AgentStateStore:
         self._ensure_schema()
 
         def _do_append() -> AppendResult:
-            con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=2.0)
+            # Connection pragmas and BEGIN IMMEDIATE can each wait on the same
+            # external lock. Keep each wait short so the five retry attempts
+            # stay within the caller's bounded append latency.
+            con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=0.5)
             try:
                 with write_transaction(con, max_duration_seconds=2.0):
                     return self.append_in_transaction(

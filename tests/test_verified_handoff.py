@@ -159,7 +159,6 @@ def _run_handoff(tmp_path, validation_command="git diff --check", command_id="")
         task_id=task_id,
         actor="handoff-owner",
         repo_root=str(root),
-    root=str(root),
     )
     verification_store = VerificationStore(task_state, task_store=tasks, artifact_store=artifacts)
     orch = WorkOrchestrator(

@@ -826,6 +826,29 @@ def test_t6_14_benchmark_persist_atomic(tmp_path: Path):
     }
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows file-sharing semantics")
+def test_benchmark_retries_transient_windows_file_replacement(tmp_path: Path, monkeypatch):
+    target = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(benchmarks_path=target)
+    runner._persist_record({"model": "original"})
+    replace = os.replace
+    attempts = 0
+
+    def replace_with_contention(source, destination):
+        nonlocal attempts
+        if Path(destination) == target:
+            attempts += 1
+            if attempts == 1:
+                raise PermissionError("benchmark history temporarily held open")
+        return replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace_with_contention)
+    runner._persist_record({"model": "new"})
+
+    assert attempts == 2
+    assert json.loads(target.read_text(encoding="utf-8")) == [{"model": "original"}, {"model": "new"}]
+
+
 def test_t6_14_benchmark_persist_atomic_across_processes(tmp_path: Path):
     """C14: independent runner processes preserve every shared-file update."""
     import multiprocessing

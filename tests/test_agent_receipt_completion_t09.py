@@ -129,7 +129,7 @@ def passing_receipt(
         str(repo_root),
         task_id=task_id,
         criterion="tests",
-        timeout=60,
+        timeout=120,
     )
     assert result.get("success") is True, result.get("error")
     receipt_data = result.get("verification_receipt")

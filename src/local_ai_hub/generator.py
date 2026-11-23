@@ -256,14 +256,13 @@ def _categorized_operational_triggers(fs: FeatureSet) -> list[str]:
 def context_pack_guidance() -> str:
     """Compact contract for the guarded repository-context operation."""
     return (
-        " Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. "
+        " Reuse fresh sufficient repository evidence. For exact facts, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. "
         'When non-trivial planning, editing, review or testing lacks sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once before native broad discovery. '
+        "On first stable-root work, inspect repository config and derive only evidenced exclusions, uncommon extensions, pinned documentation, and entry points; preserve defaults, then preprocess once to register. "
         "Preprocess only when the root is unindexed or its evidence is stale; never wait, poll or force-refresh preprocessing. Its adaptive orchestrator fuses deterministic and "
         "indexed evidence with Serena, the built-in code index, bounded lexical search and RAG when available; "
-        "it deduplicates, rewards cross-backend agreement, preserves file diversity and degrades per backend. "
-        "Send the task/context, not a handmade list of grep terms. Reuse existing evidence and reuse candidates "
-        "first; require evidence IDs for every factual claim. Deterministic/indexed evidence is authoritative; "
-        "local models may rank, select, or compress structured evidence only and must not invent repository facts. "
+        "It deduplicates and preserves file diversity. "
+        "Send task/context, not grep terms. Reuse candidates first, then carry forward evidence IDs and artifact slices; cite every factual claim. Deterministic/indexed evidence is authoritative; models only rank, select or compress structured evidence. "
         "Guarded scope or drift overrides require an explicit `override_reason` and approval when requested. "
         "Omit raw model/debug fields unless explicitly requested through `extra_fields`; responses remain compact; "
         "aggregate response budget defaults to approximately 3200 tokens. The canonical adaptive context pack is the default."
@@ -299,7 +298,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or Hub repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.
-- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup directly before native broad discovery.
+- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup for exact facts. Do not preprocess or compile adaptive context first.
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
 
 
@@ -393,7 +392,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     # Keep exact lookups cheap and reuse current evidence. Preprocess only to
     # repair a missing or stale index; it is not a mandatory task ritual.
     repo_gate_lines: list[str] = [
-        "Reuse fresh sufficient evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
+        "Reuse fresh sufficient evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first.",
+        context_pack_guidance().strip(),
     ]
     step_num = 2
     if fs.repo and "solve" in fs.supported_repo_actions():
@@ -626,6 +626,10 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
+## Single-owner and repository scope contract
+
+{SINGLE_OWNER_CONTRACT}
+
 ## Ownership and tiering
 
     The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. {work_owner_note}
@@ -642,7 +646,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain the preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- Before native discovery or validation, retain the preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 {audit_fallback}
 - A Hub-classified unknown command requires `native_fallback_allowed=true` plus native-tool authorization for the exact command and scope. `native_fallback_allowed=false`, a dangerous command, or a policy denial blocks fallback; this rule does not apply when the live schema has no action.
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
@@ -654,7 +658,7 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 
 {repo_gate_section}
 
-For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -953,8 +957,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic delegation is on-demand under the active schema and quality gates; tier-available semantic actions only. Cloud planning is never blocked by mandatory local handoffs; deterministic/indexed "
-            "evidence governs facts, symbols, diffs and tests. Check model availability."
+            "\n- Use tier-available semantic actions only. " + _semantic_handoff_contract(fs)
         )
     if fs.work_orchestrator:
         if "submit" in fs.supported_work_actions():
@@ -983,31 +986,31 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     repo_task_first = ""
     if fs.repo:
         repo_actions = set(fs.supported_repo_actions())
-        cmd_gate = " Use bounded host-native validation commands after fresh repository evidence exists."
-        agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
+        cmd_gate = " Validate with bounded host-native commands."
+        agent_os_gate = ' For code changes, create an Agent OS task and query project memory.' if fs.agent_os else ""
         review_actions = {"review", "second_opinion"} & set(fs.supported_task_actions())
         review_action_text = "|".join(sorted(review_actions))
-        task_review_hint = f' Actively use `local_ai_task(action="{review_action_text}")` for validation before finalizing.' if review_actions else ""
+        task_review_hint = f' Use exposed `local_ai_task(action="{review_action_text}")` before finalizing.' if review_actions else ""
         repo_task_first = (
             "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
             + _repo_context_note(list(repo_actions))
-            + (' On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.' if fs.preprocessing else "")
+            + (' On first stable-root work, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; derive only evidence-backed exclusions, uncommon extensions, pinned documentation, and entry points; preserve defaults, then call `preprocess` once to register. Never force-refresh or poll.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
-            + (' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
-            + f"{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
+            + (' Use `local_ai_repo(action="solve")` after evidence for implementation, diagnosis, refactoring or complex review.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
+            + f"{task_review_hint} After edits, run indexed impact/review/security/evidence before targeted validation.\n"
         )
 
     cmd_route_hint = "\nRun bounded validation commands with the agent host native command tool.\n"
 
     coord_memo_hint = ""
     if fs.coord:
-        memory_hint = ' Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`.' if fs.agent_os else ""
+        memory_hint = ' Reuse supplied memory before `solve`/model calls; use scoped `local_ai_coord(action="memory_find")` when needed.' if fs.agent_os else ""
         findings_target = "permitted scoped Agent OS memory or the existing operator-approved coordination file." if fs.agent_os else "the existing operator-approved coordination file."
         coord_memo_hint = (
             f"{memory_hint}"
-            " Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope."
-            f" For overlapping edits use `local_ai_coord` leases; record concise findings in {findings_target}"
+            " Workspace `memo_*` is unavailable through restricted endpoints; never bypass a terminal 403."
+            f" Lease overlapping edits; record findings in {findings_target}"
         )
 
     prioritization_bullets = []
@@ -1020,19 +1023,19 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + ". Use only live MCP action enums; runtime authorization and quality gates apply."
         )
     prioritization_bullets.append(
-        "> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, stop only the gated mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools."
+        "> - **Git operations**: The live MCP schema determines available Hub actions. `git_status`/`git_diff` inspect; `synthesize_commit` drafts only. None commits or pushes. Hub prioritization adds no Git approval/receipt gate; follow only explicit project gates naming exposed actions, and stop only the gated mutation if unavailable. Dashboard diagnostics change detail only."
     )
     prioritization_bullets.append(
-        "> - **Unsupported Hub operations**: If the live MCP schema has no action for the requested operation, do not call Hub or wait for an error; use the authorized native tool directly (for example, `git worktree list`). Hub failure fallback rules apply only after calling an advertised Hub action."
+        "> - **Unsupported Hub operations**: If the live schema has no action, use the authorized native tool directly without calling Hub. Fallback rules apply only after an advertised Hub action fails terminally and non-retryably."
     )
     prioritization_bullets.append(
-        "> - **Plan response budgets**: For a large plan, call `plan_board_view` with `plan_id` and put the exact plan task ID in `query`; use that card's `plan_file_revision`. Avoid full-plan responses. On budget rejection, narrow the query or fetch an exact artifact slice; do not replay the oversized request or raise its cap silently."
+        "> - **Plan budgets**: For a large plan, use `plan_board_view` with `plan_id` and the exact task ID in `query`; retain `plan_file_revision`. On budget rejection, narrow the query or fetch a smaller artifact slice; never replay the oversized request or raise its cap."
     )
     prioritization_bullets.append(
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
     )
     prioritization_bullets.append(
-        "> - **Retry and retrieval discipline**: Stop escalating when evidence is sufficient; reuse fresh cached results and bounded evidence. For `in_progress=true` or `outcome_unknown`, do independent work and never poll or repeat the identical operation. Do not fan out duplicate retrieval layers. For an advertised Hub action that fails, fallback requires explicit `terminal=true` and `retryable=false`."
+        "> - **Retries and retrieval**: Reuse fresh evidence and stop when sufficient. For `in_progress`/`outcome_unknown`, do independent work; never poll, repeat, or duplicate retrieval. After an advertised Hub action, fallback requires `terminal=true` and `retryable=false`."
     )
     if fs.repo:
         prioritization_bullets.append(
@@ -1054,6 +1057,10 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             review_label = "Semantic Review" if review_action == "review" else "Second Opinion"
             prioritization_bullets.append(
                 f"> - **{review_label}**: Call `local_ai_task(action=\"{review_action}\")` before finalizing non-trivial edits."
+            )
+        elif "compress" in task_action_list:
+            prioritization_bullets.append(
+                "> - **Semantic Compression**: Use `local_ai_task(action=\"compress\")` to condense evidence after deterministic/indexed retrieval."
             )
     prioritization_bullets.append(
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
@@ -1078,7 +1085,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         'Only on the user\'s explicit task instruction, `task_complete` accepts `operator_waiver={"consent":true,"reason":"..."}`. It records unverified completion, not passing receipts; ownership, repository scope, mutation fences and safety checks remain. Retain the instruction; never invent consent.\n\n'
         "Keep Agent OS tasks/counters. Explicit approval: `task_budget_increase` uses write-authorized broker, absolute root, audit reason; canonical loopback needs no token or special owner/admin token. Failed-task increases preserve status/owner; resume separate. Never edit task storage. `curate_dataset` needs absolute root.\n\n"
         "Explicit approval: `task_repair_session` repairs only unbound tasks via write-authorized broker; require absolute root, task/session IDs and audit reason; bind same task/session to plan.\n\n"
-        f"{SINGLE_OWNER_CONTRACT}\n\n"
+        "Load the always-loaded `local-ai-orchestrator` skill and follow its **Single-owner and repository scope contract**.\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recommended Hub routes (apply the matching route by default):\n{recipe_lines}\n\n"
         "Direct ownership is the default. Do not delegate audits, inventory, status checks or routine work; see the simplified workflow spec.\n"
@@ -1093,21 +1100,19 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " generated artifacts and other workspace side effects. Never label side-effecting work read-only;"
         " assign validation separately.\n"
         "- Before native discovery or validation retain Hub action, absolute root, status,"
-        " cache/in_progress state and evidence IDs. Native discovery requires an explicit Hub result with `terminal=true` and `retryable=false`.\n"
+        " cache/in_progress state and evidence IDs when a Hub action was called. Fallback after an advertised action requires an explicit result with `terminal=true` and `retryable=false`.\n"
         + "- Authorized independent subagents remain permission- and scope-controlled; main agent integrates. Never delegate audit-only work.\n"
         "- Avoid parallel duplicate commands/scopes. Tool labels are not evidence;"
         " retain exact action, arguments, result and ownership in the audit record.\n"
         + ("\nBackground preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.\n" if fs.preprocessing else "")
         + f"{repo_task_first}\n"
         "Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.\n\n"
-        "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. After Hub failure, native fallback requires `terminal=true` and `retryable=false`. Never enlarge timeouts, force-refresh, or poll transient results.\n"
+        "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress=true`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. Stop escalating when evidence is sufficient. Do not fan out overlapping retrieval. Never enlarge timeouts, force-refresh, or poll transient results.\n"
         f"{cmd_route_hint}{coord_memo_hint}\n"
-        " After edits, use indexed impact/review plus targeted cached validation;"
-        " do not rerun broad discovery merely because files changed."
-        " `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons."
-        " If an optional backend degrades, accept the hub's deterministic/index fallback."
-        " If the Hub is unavailable, make one bounded health/retry attempt; transport failures without terminal, non-retryable status do not authorize fallback."
-        " Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.\n\n"
+        " After edits, run indexed impact/review/security/evidence, then targeted validation."
+        " `force`/`preprocess_refresh` are recovery controls, never retries; accept deterministic/index fallback if an optional backend degrades."
+        " A health check cannot authorize fallback after an advertised action; fallback requires explicit `terminal=true` and `retryable=false`."
+        " Never loop on health, status, preprocessing, model startup, backends, or commands.\n\n"
         + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
            "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "
            "Non-overlapping dirty Git hunks may be preserved; overlapping edits require an active path lease claimed with the actual execution owner, then pass its exact `owner` and returned `lease_id`. "

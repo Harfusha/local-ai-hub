@@ -1,0 +1,15 @@
+<!-- BEGIN TOKEN ECONOMY POLICY -->
+- Before coding or repository work, load `local-ai-orchestrator` and `token-economizer` when installed, even under deadline pressure.
+- Zero full-file dumping: Never read >80-line files in full; use `local_ai_repo(action="context")`/`repo-map`, `grep-ast`, targeted line slices, or `local_ai_artifact(action="slice")`.
+- Search: Prefer Hub `code_index`/`search`, Serena LSP, or `ast-grep` for code and symbols; bounded `rg -m 5`/`fd` is fallback-only, before opening files.
+- Compress repo snapshots with `repomix --compress`/`files-to-prompt -c`; use `tokcount` for exact tokens.
+- Run tests/builds with the native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines. Use `jq` for JSON.
+- Surgical edits: Prefer targeted block replacements over rewriting entire files.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
+- Local model routing follows the active `integrated` hardware profile and user overrides. This profile exposes `local_ai_task` actions: `compress`|`route`|`benchmark`|`hardware_benchmark`|`evaluation_record`|`evaluation_report`|`status`|`wait`|`result`|`cancel`|`candidate_create`|`candidate_promote`|`vision`|`transcribe`|`browser`|`eval_suite`|`prompt_eval`|`eval_drift`; use only these actions. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
+<!-- END TOKEN ECONOMY POLICY -->

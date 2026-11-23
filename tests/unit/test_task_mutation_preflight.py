@@ -261,7 +261,7 @@ def test_registered_mcp_task_list_rejects_budget_too_small_without_dropping_task
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
     monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
     result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
-        "action": "task_list", "root": str(tmp_path), "max_response_tokens": 512,
+        "action": "task_list", "root": str(tmp_path), "limit": 20, "max_response_tokens": 512,
     }))
     contents = result[0] if isinstance(result, tuple) else result
     visible = json.loads(next(item.text for item in contents if item.type == "text"))

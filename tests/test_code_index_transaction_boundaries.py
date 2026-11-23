@@ -8,7 +8,7 @@ from local_ai_hub.repo_tools import RepositoryTools
 
 
 def test_remove_indexed_paths_rolls_back_when_transaction_budget_expires(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, expired_sqlite_transaction
 ):
     index = CodeIndex(
         {"server": {"state_dir": str(tmp_path / "state")}},
@@ -25,14 +25,8 @@ def test_remove_indexed_paths_rolls_back_when_transaction_budget_expires(
         )
         con.commit()
 
-    def _expired_transaction(con, **kwargs):
-        kwargs.pop("max_duration_seconds", None)
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
     monkeypatch.setattr(
-        code_index, "write_transaction", _expired_transaction, raising=False
+        code_index, "write_transaction", expired_sqlite_transaction, raising=False
     )
     with pytest.raises(TimeoutError, match="duration budget"):
         index._remove_indexed_paths(root, [indexed_path])

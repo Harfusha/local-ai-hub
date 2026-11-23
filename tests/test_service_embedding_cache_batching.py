@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ class DummyRuntime:
         return {
             "success": True,
             "embeddings": [
-                [float((hash(t) + j) % 100) / 100.0 for j in range(128)]
+                [byte / 255.0 for byte in hashlib.blake2s(t.encode(), digest_size=16).digest() * 8]
                 for t in inputs
             ],
         }

@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..file_locks import exclusive_file_update
+from ..file_locks import exclusive_file_update, replace_with_windows_retry
 from ..process_utils import clean_git_env, hidden_run_kwargs
 
 from .schema_validation import (
@@ -523,19 +523,7 @@ class RepoPlanStorage:
                 f.flush()
                 os.fsync(f.fileno())
 
-            # Windows-friendly retry loop for os.replace in case of AV / sharing locks
-            last_err: Exception | None = None
-            for attempt in range(8):
-                try:
-                    os.replace(temp_path, target_path)
-                    last_err = None
-                    break
-                except (PermissionError, OSError) as exc:
-                    last_err = exc
-                    time.sleep(0.02 * (2**attempt))
-
-            if last_err is not None:
-                raise OSError(f"Failed to atomically write {target_path}: {last_err}") from last_err
+            replace_with_windows_retry(temp_path, target_path)
         finally:
             if temp_created and temp_path.exists():
                 try:

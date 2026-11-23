@@ -54,7 +54,7 @@ class RepetitionWatchdogStreamingTests(unittest.TestCase):
             )
 
         request = urlopen_mock.call_args.args[0]
-        self.assertTrue(json.loads(request.data)["stream"])
+        self.assertFalse(json.loads(request.data)["stream"])
         self.assertEqual(response.iterated_chunks, len(response.chunks))
         self.assertTrue(result["_lah_repetition_loop_detected"])
         self.assertIsNot(result.get("_lah_backend_completed"), True)

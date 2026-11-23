@@ -20,6 +20,21 @@ _HELD = threading.local()
 _LOGGER = logging.getLogger(__name__)
 
 
+def replace_with_windows_retry(source: Path, target: Path) -> None:
+    """Retry atomic replacement when Windows temporarily denies file sharing."""
+    if os.name != "nt":
+        os.replace(source, target)
+        return
+    for attempt in range(8):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if attempt == 7:
+                raise OSError(f"Failed to atomically write {target}: {exc}") from exc
+            time.sleep(0.02 * (2**attempt))
+
+
 def _open_lock_file(path: Path, *, parent_fd: int | None = None) -> int:
     if os.name == "nt":
         if parent_fd is not None:
