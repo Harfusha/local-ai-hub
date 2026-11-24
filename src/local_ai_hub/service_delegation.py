@@ -418,27 +418,94 @@ class ServiceDelegationMixin:
         if not task:
             return {"success": False, "error": "task is required"}
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
-        package = build_prompt(
-            operation="speculative_draft",
-            model=fast_model,
-            role="code",
-            profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
-            task=task,
-            context=f"FILE: {file_path}\n\n{context}",
-            changed_paths=[file_path] if file_path else (),
-        )
+        models_cfg = self.config.get("models", {}) if isinstance(self.config.get("models"), dict) else {}
+        fast_model = str(models_cfg.get("fast_code", "qwen2.5-coder:3b"))
+        draft_model = str(args.get("draft_model") or models_cfg.get("draft_code", "")).strip()
+        use_cascade = bool(args.get("use_cascade", bool(draft_model and draft_model != fast_model)))
+        cascade_layers: list[str] = []
 
-        gen_result = self._generate(
-            fast_model,
-            package.user,
-            package.system + " Return the minimal valid code or diff only after grounding it in the supplied file and context.",
-            int(args.get("max_tokens", 2048)),
-            float(args.get("temperature", 0.1)),
-            source="speculative-draft",
-            priority=5,
-            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
-        )
+        if use_cascade and draft_model and draft_model != fast_model:
+            # Tier 1: Draft model generates rapid candidate patch
+            draft_package = build_prompt(
+                operation="speculative_draft",
+                model=draft_model,
+                role="code",
+                profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+                task=task,
+                context=f"FILE: {file_path}\n\n{context}",
+                changed_paths=[file_path] if file_path else (),
+            )
+            draft_res = self._generate(
+                draft_model,
+                draft_package.user,
+                draft_package.system + " Return the minimal candidate code or diff.",
+                min(int(args.get("max_tokens", 2048)), 1024),
+                float(args.get("temperature", 0.1)),
+                source="speculative-draft:tier1",
+                priority=5,
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+            )
+            candidate_val = draft_res.get("text") or draft_res.get("response") or ""
+            candidate_code = candidate_val.strip() if isinstance(candidate_val, str) else ""
+
+            if candidate_code and draft_res.get("success") is not False:
+                cascade_layers.append(draft_model)
+                refine_prompt = (
+                    f"TASK: {task}\nFILE: {file_path}\n\n"
+                    f"CANDIDATE DRAFT CODE (grounded starting proposal):\n{candidate_code}\n\n"
+                    f"CONTEXT (authority):\n{context}"
+                )
+                gen_result = self._generate(
+                    fast_model,
+                    refine_prompt,
+                    "Complete and verify the candidate code or diff against the task and context. Return clean, final code or diff only.",
+                    int(args.get("max_tokens", 2048)),
+                    float(args.get("temperature", 0.1)),
+                    source="speculative-draft:tier3",
+                    priority=5,
+                    **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+                )
+                cascade_layers.append(fast_model)
+            else:
+                package = build_prompt(
+                    operation="speculative_draft",
+                    model=fast_model,
+                    role="code",
+                    profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+                    task=task,
+                    context=f"FILE: {file_path}\n\n{context}",
+                    changed_paths=[file_path] if file_path else (),
+                )
+                gen_result = self._generate(
+                    fast_model,
+                    package.user,
+                    package.system + " Return the minimal valid code or diff only after grounding it in the supplied file and context.",
+                    int(args.get("max_tokens", 2048)),
+                    float(args.get("temperature", 0.1)),
+                    source="speculative-draft",
+                    priority=5,
+                    **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+                )
+        else:
+            package = build_prompt(
+                operation="speculative_draft",
+                model=fast_model,
+                role="code",
+                profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+                task=task,
+                context=f"FILE: {file_path}\n\n{context}",
+                changed_paths=[file_path] if file_path else (),
+            )
+            gen_result = self._generate(
+                fast_model,
+                package.user,
+                package.system + " Return the minimal valid code or diff only after grounding it in the supplied file and context.",
+                int(args.get("max_tokens", 2048)),
+                float(args.get("temperature", 0.1)),
+                source="speculative-draft",
+                priority=5,
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+            )
         if cancel_event is not None and cancel_event.is_set():
             return {"success": False, "cancelled": True, "reason": "cancelled"}
         if gen_result.get("cancelled") is True:
@@ -521,7 +588,7 @@ class ServiceDelegationMixin:
 
         if cancel_event is not None and cancel_event.is_set():
             return {"success": False, "cancelled": True, "reason": "cancelled"}
-        return {
+        res: dict[str, Any] = {
             "success": True,
             "model": fast_model,
             "draft": draft_code,
@@ -529,6 +596,11 @@ class ServiceDelegationMixin:
             "validated": bool(verification.get("tests_passed")) and verification["syntax_valid"],
             "duration_ms": gen_result.get("duration_ms", 0),
         }
+        if cascade_layers:
+            res["cascade"] = cascade_layers
+            res["draft_model"] = cascade_layers[0]
+            res["target_model"] = cascade_layers[-1]
+        return res
 
     def speculative_lint(self, args: dict[str, Any]) -> dict[str, Any]:
         """Run opt-in, read-only lint against only caller-supplied changed paths."""

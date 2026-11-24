@@ -1001,8 +1001,8 @@ class TelemetryStore(TelemetryAggregateMixin, TelemetryQueryMixin, TelemetryEven
         self._thread: threading.Thread | None = None
         state_dir.mkdir(parents=True, exist_ok=True)
         if self.enabled:
-            self._init_db_with_recovery()
             if self.mode != "minimal":
+                self._init_db_with_recovery()
                 self._thread = threading.Thread(target=self._writer_loop, name="local-ai-telemetry", daemon=True)
                 self._thread.start()
 

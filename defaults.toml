@@ -90,6 +90,7 @@ allow_hf_downloads = true
 # [hardware].profile="auto" overlays the detected profile; explicit profile
 # and model overrides take precedence. See hardware.py for the role maps.
 background_code = "qwen2.5-coder:3b"
+draft_code = "qwen2.5-coder-prep-v3:0.5b"
 fast_code = "qwen2.5-coder:3b"
 heavy_code = "qwen2.5-coder:7b"
 reasoning = "qwen3.5:9b"
@@ -870,6 +871,9 @@ max_bytes = 268435456
 # ---------------- Idle project preprocessing ----------------
 [preprocessing]
 model = "qwen2.5-coder-prep-v4:3b"
+draft_model = "qwen2.5-coder-prep-v3:0.5b"
+refiner_model = "qwen2.5-coder-prep-v3:1.5b"
+cascade_enabled = true
 # Optional bounded task-goal prediction; normal cache/freshness gates still apply.
 task_context_warmup = true
 # Opportunistic whole-project warmup. Every expensive unit is a low-priority,

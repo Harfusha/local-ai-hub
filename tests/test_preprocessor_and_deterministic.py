@@ -1149,7 +1149,7 @@ def test_deterministic_prune_removes_stale_facts_and_fts_rows(tmp_path: Path):
 def test_malformed_npm_metadata_is_skipped_with_safe_diagnostic(tmp_path: Path, caplog):
     cfg = _cfg(tmp_path)
     engine = DeterministicEngine(cfg, RepositoryTools(cfg), None)
-    with caplog.at_level("DEBUG", logger="local_ai_hub.deterministic"):
+    with caplog.at_level("DEBUG"):
         engine._extract_infra_facts("package.json", "{")
 
     messages = [record.getMessage() for record in caplog.records]

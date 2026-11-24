@@ -387,6 +387,36 @@ class PreprocessCardsMixin:
                 progressed = True
                 continue
 
+            draft_model = self._configured_preprocessing_draft_model()
+            if provisional_data is None and draft_model and self._file_card_enrichment_enabled():
+                try:
+                    draft_res = self._run_background_generate(
+                        draft_model,
+                        f"FILE: {item['path']}\n\nCURRENT SOURCE (extract facts):\n{file_text[:4000]}",
+                        "Extract basic facts for file card: {\"purpose\":\"\",\"symbols\":[],\"dependencies\":[]}.",
+                        services_module.CARD_SCHEMA,
+                        384,
+                        "preprocess:draft-card",
+                        allow_model_fallback=False,
+                    )
+                    if isinstance(draft_res, dict) and draft_res.get("success"):
+                        data_draft = draft_res.get("data") or draft_res.get("card")
+                        if isinstance(data_draft, dict) and (data_draft.get("symbols") or data_draft.get("purpose")):
+                            provisional_data = {
+                                "purpose": str(data_draft.get("purpose") or f"source file ({services_module.Path(str(item['path'])).suffix})"),
+                                "symbols": list(data_draft.get("symbols") or []),
+                                "dependencies": list(data_draft.get("dependencies") or []),
+                                "side_effects": list(data_draft.get("side_effects") or []),
+                                "risks": list(data_draft.get("risks") or []),
+                                "tests": list(data_draft.get("tests") or []),
+                                "keywords": list(data_draft.get("keywords") or [services_module.Path(str(item["path"])).stem]),
+                            }
+                            draft_key = services_module.stable_hash({"app_version": services_module.PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": f"draft-{draft_model}"})
+                            self._store_file_card(root, item, draft_key, provisional_data, "deterministic-stub", content_hash)
+                            progressed = True
+                except Exception:
+                    pass
+
             if provisional_data is None:
                 # Persist deterministic metadata before any model attempt.
                 data = {"purpose": f"source file ({services_module.Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [services_module.Path(str(item["path"])).stem]}

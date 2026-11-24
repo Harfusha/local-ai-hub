@@ -49,11 +49,13 @@ class LayaUnifiedCoordinator:
 
     def __init__(
         self,
+        mode: str = "advisory",
         default_budget: int = 8192,
         laya_runtime_adapter: Any = None,
         training_collector: LayaTrainingCollector | None = None,
         training_capture_enabled: bool = False,
     ) -> None:
+        self.mode = mode
         self.gateway = LayaActiveGateway(laya_runtime_adapter=laya_runtime_adapter)
         self.reranker = LayaCrossLingualReranker()
         self.intent_classifier = LayaEditIntentClassifier()

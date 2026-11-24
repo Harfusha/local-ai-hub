@@ -40,6 +40,16 @@ class PreprocessControlsMixin:
         configured = configured or (models.get("background_code") if isinstance(models, dict) else None)
         return str(configured or "").strip()
 
+    def _configured_preprocessing_draft_model(self) -> str:
+        config = getattr(self, "config", {})
+        if not isinstance(config, dict):
+            return ""
+        prep_cfg = config.get("preprocessing", {})
+        models = config.get("models", {})
+        configured = (prep_cfg.get("draft_model") if isinstance(prep_cfg, dict) else None)
+        configured = configured or (models.get("draft_code") if isinstance(models, dict) else None)
+        return str(configured or "").strip()
+
     def _file_card_enrichment_enabled(self) -> bool:
         if bool(self.cfg.get("disable_llm_card_synthesis", False)):
             return False

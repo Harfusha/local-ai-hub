@@ -413,6 +413,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
             "background_code": "qwen2.5-coder:1.5b",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
@@ -441,6 +442,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "preprocessing": {
             "model": "qwen2.5-coder-prep-v4:3b",
+            "draft_model": "qwen2.5-coder-prep-v3:0.5b",
             "cpu_workers": 2,
             "cpu_worker_sleep_seconds": 0.20,
             "idle_grace_seconds": 30.0,
@@ -457,6 +459,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "integrated": {
         "models": {
             "background_code": "qwen2.5-coder:1.5b",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
@@ -502,6 +505,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {
             "model": "qwen2.5-coder-prep-v4:3b",
+            "draft_model": "qwen2.5-coder-prep-v3:0.5b",
             "idle_grace_seconds": 30.0,
             "max_preprocessing_projects": 2,
             "cpu_workers": 2,
@@ -521,9 +525,10 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "low": {
         "features": {"reranker": True, "search_summaries": False, "vision": True},
-        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b"},
         "models": {
             "background_code": "qwen2.5-coder:1.5b",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
@@ -548,9 +553,10 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "balanced": {
         "features": {"reranker": True, "search_summaries": True, "vision": True},
-        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
@@ -571,6 +577,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "medium": {
         "models": {
             "background_code": "qwen2.5-coder:3b",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:7b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
@@ -588,7 +595,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "local_code_generation": True,
             "local_automation": True,
         },
-        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
@@ -629,6 +636,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "high": {
         "models": {
             "background_code": "qwen2.5-coder:3b-instruct-q4_K_M",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:7b-instruct-q4_K_M",
             "heavy_code": "qwen2.5-coder:14b-instruct-q4_K_M",
             "reasoning": "qwen3.5:9b-q4_K_M",
@@ -646,7 +654,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "local_code_generation": True,
             "local_automation": True,
         },
-        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
@@ -687,6 +695,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "max": {
         "models": {
             "background_code": "qwen2.5-coder:7b-instruct-q4_K_M",
+            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:7b-instruct-q4_K_M",
             "heavy_code": "qwen2.5-coder:14b-instruct-q4_K_M",
             "reasoning": "qwen2.5-coder:14b-instruct-q4_K_M",
@@ -706,7 +715,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "local_reranking": True,
             "local_vision": True,
         },
-        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},

@@ -99,6 +99,11 @@ class PreprocessCardStoreMixin:
                 candidate = models.get(role)
                 if isinstance(candidate, str) and candidate and candidate != model and candidate not in candidates:
                     candidates.append(candidate)
+        prep_cfg = self.config.get("preprocessing", {}) if isinstance(self.config.get("preprocessing"), dict) else {}
+        for prep_role in ("refiner_model", "draft_model"):
+            candidate = prep_cfg.get(prep_role)
+            if isinstance(candidate, str) and candidate and candidate != model and candidate not in candidates:
+                candidates.append(candidate)
         return tuple(candidates)
 
     def _file_card_pipeline_version(self) -> str:
