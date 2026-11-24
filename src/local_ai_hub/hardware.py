@@ -416,7 +416,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:7b",
+            "reasoning": "qwen2.5-coder:3b",
             "general": "qwen2.5-coder:3b",
             "vision": "qwen3-vl:4b",
         },
@@ -443,7 +443,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "preprocessing": {
             "model": "qwen2.5-coder-prep-v3:1.5b",
             "draft_model": "qwen2.5-coder-prep-v3:0.5b",
-            "refiner_model": "qwen2.5-coder-prep-v3:1.5b",
+            "refiner_model": "",
             "cascade_enabled": True,
             "cpu_workers": 2,
             "cpu_worker_sleep_seconds": 0.20,
@@ -508,7 +508,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "preprocessing": {
             "model": "qwen2.5-coder-prep-v3:1.5b",
             "draft_model": "qwen2.5-coder-prep-v3:0.5b",
-            "refiner_model": "qwen2.5-coder-prep-v3:1.5b",
+            "refiner_model": "",
             "cascade_enabled": True,
             "idle_grace_seconds": 30.0,
             "max_preprocessing_projects": 2,

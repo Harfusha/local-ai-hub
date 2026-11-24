@@ -115,10 +115,13 @@ def test_hardware_profiles_enable_cascade_by_default() -> None:
         prep = ov.get("preprocessing", {})
         assert prep.get("cascade_enabled") is True, f"cascade_enabled not True in {profile_name}"
         assert prep.get("draft_model") == "qwen2.5-coder-prep-v3:0.5b", f"draft_model mismatch in {profile_name}"
-        assert prep.get("refiner_model") == "qwen2.5-coder-prep-v3:1.5b", f"refiner_model mismatch in {profile_name}"
         assert ov.get("models", {}).get("draft_code") == "qwen2.5-coder:0.5b", f"draft_code mismatch in {profile_name}"
         if profile_name in ("cpu", "integrated"):
             assert prep.get("model") == "qwen2.5-coder-prep-v3:1.5b", f"model should be 1.5b in {profile_name}"
+            assert prep.get("refiner_model") == "", f"refiner_model should be empty/merged in {profile_name}"
         else:
             assert prep.get("model") == "qwen2.5-coder-prep-v4:3b", f"model should be 3b in {profile_name}"
+            assert prep.get("refiner_model") == "qwen2.5-coder-prep-v3:1.5b", f"refiner_model mismatch in {profile_name}"
+        if profile_name == "cpu":
+            assert ov.get("models", {}).get("reasoning") == "qwen2.5-coder:3b", "cpu reasoning should be 3b"
 
