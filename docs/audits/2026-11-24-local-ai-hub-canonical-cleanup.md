@@ -1,7 +1,7 @@
 # Local AI Hub canonical cleanup: initial inventory
 
 **Status:** Partial inventory; board retirement and several contract migrations are implemented in the current dirty worktree. Broad runtime, generator, package, dependency, and documentation audit remains open.
-**Root:** `C:\Users\Adam\.local-ai-hub`
+**Root:** `~/.local-ai-hub`
 **Branch / base:** `master` / `1b3b8819d6a36a3e938c642f8b27f4f9fe6ddf7b` (revision returned by active plan service).
 **Plan:** `plan_e2840d6c5f47`, task `task_canonical_cleanup` (authoritative master plan).
 

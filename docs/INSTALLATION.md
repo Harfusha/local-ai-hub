@@ -91,7 +91,7 @@ On Windows, the preferred persistent service identity is Task Scheduler task `Lo
 | `performance` | `orjson`, `msgspec`, `Cython` |
 | `native` | `Cython` build dependency; also included in the performance extra. The experimental native module is built separately. |
 | `profiling` | `py-spy`, `scalene` |
-| `dev` | `pytest`, `pyflakes`, `mypy`, `coverage[toml]`, `psutil`, `numpy`, `setuptools`, `wheel`, `ruff` |
+| `dev` | `pytest`, `pyflakes`, `mypy`, `coverage[toml]`, `psutil`, `numpy`, `setuptools`, `wheel`, `ruff`, `packaging` |
 
 The installer places Laya packages in the isolated `tool-envs/laya` environment.
 

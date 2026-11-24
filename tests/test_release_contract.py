@@ -35,7 +35,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         for path in base.rglob("*"):
             if path.is_file() and path.suffix in {".py", ".md", ".toml", ".yml", ".yaml"}:
                 relative = path.relative_to(ROOT)
-                if relative.parts[:2] == ("docs", "superpowers") or relative in {
+                if relative.parts[:2] in {("docs", "superpowers"), ("docs", "audits")} or relative in {
                     Path("docs/agent-evaluation/results.md"),
                     Path("docs/agent-evaluation/evaluation-key.md"),
                     Path("docs/agent-evaluation/preprocessing-card-benchmark-v1.json"),
@@ -63,6 +63,9 @@ def test_release_uses_only_current_local_ai_hub_contracts():
                     ROOT / "tests" / "test_mixed_scheduler_integration.py"}:
             # The OpenAI-compatible upstream protocol is not the retired Hub API.
             text = text.replace('/' + 'v1' + '/', 'EXTERNAL_API_ROUTE/')
+        if path == ROOT / "tests" / "test_antigravity_setup.py":
+            # Google Antigravity schema URI uses external v1 path.
+            text = text.replace('/' + 'v1' + '/', '/EXTERNAL_SCHEMA_VERSION/')
         if path.parent == ROOT / "docs" / "agent-evaluation" and path.name in {
             "local-model-gpu-cases.md", "local-model-gpu-scoring.md",
         }:
@@ -279,10 +282,15 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
             and re.match(r"(?:SYNC_|STASH_|T\d+.*(?:SYNC|HANDOFF|FILES)|WORKTREE_|PRIORITY_STASH)", path.name, re.IGNORECASE)
         ):
             continue
-        # MANIFEST.in excludes release-plan docs from the source distribution.
-        if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
+        # MANIFEST.in excludes release-plan and audit docs from the source distribution.
+        if path.relative_to(ROOT).parts[:2] in {("docs", "superpowers"), ("docs", "audits")}:
             continue
-        if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name or path.name.startswith(".local-ai-hub-"):
+        if (
+            path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"}
+            or ".local-ai-hub-backup-" in path.name
+            or path.name.startswith(".local-ai-hub-")
+            or path.name.startswith("config.toml.backup-")
+        ):
             continue
         if relative in {
             Path("docs/agent-evaluation/results.md"),

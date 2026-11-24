@@ -1,7 +1,7 @@
 {
   "name": "local-ai-hub",
-  "version": "8.0.0",
+  "version": "8.1.0",
   "release_date": "2026-11-24",
   "status": "production-ready",
-  "focus": "Release v8.0.0"
+  "focus": "Release v8.1.0 — Fine-tuned Preprocessing & Speculative Model Cascade"
 }

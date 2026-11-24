@@ -1,5 +1,13 @@
 # Changelog
 
+## 8.1.0 — 2026-11-24
+
+- [Changes in v8.1.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.1.0)
+- Multi-tier fine-tuned preprocessing and speculative draft cascade (`qwen2.5-coder-prep-v3:0.5b`, `qwen2.5-coder-prep-v3:1.5b`, `qwen2.5-coder-prep-v4:3b`).
+- Clean separation of fine-tuned preprocessing models and general coding models.
+- Profile-specific cascades: 2-tier (0.5B draft -> 1.5B main) on CPU/integrated profiles, 3-tier on dedicated GPU profiles.
+- Optimized reasoning defaults for constrained hardware profiles.
+
 ## 8.0.0 — 2026-11-24
 
 - [Changes in v8.0.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.0.0)
