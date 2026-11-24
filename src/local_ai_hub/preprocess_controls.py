@@ -45,6 +45,8 @@ class PreprocessControlsMixin:
         if not isinstance(config, dict):
             return ""
         prep_cfg = config.get("preprocessing", {})
+        if isinstance(prep_cfg, dict) and prep_cfg.get("cascade_enabled") is False:
+            return ""
         models = config.get("models", {})
         configured = (prep_cfg.get("draft_model") if isinstance(prep_cfg, dict) else None)
         configured = configured or (models.get("draft_code") if isinstance(models, dict) else None)

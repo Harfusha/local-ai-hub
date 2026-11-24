@@ -93,3 +93,28 @@ def test_preprocess_cards_uses_draft_model_cascade(tmp_path: Path, monkeypatch) 
     with closing(prep._connect()) as con:
         cards = con.execute("SELECT * FROM content_cards").fetchall()
         assert len(cards) >= 1
+
+
+def test_preprocess_cascade_disabled_toggle(tmp_path: Path) -> None:
+    cfg = {
+        "preprocessing": {
+            "model": "qwen2.5-coder-prep-v4:3b",
+            "draft_model": "qwen2.5-coder-prep-v3:0.5b",
+            "cascade_enabled": False,
+        },
+    }
+    prep = ProjectPreprocessor(cfg, None, None, None, None, RepositoryTools(cfg))
+    assert prep._configured_preprocessing_draft_model() == ""
+
+
+def test_hardware_profiles_enable_cascade_by_default() -> None:
+    from local_ai_hub.hardware import PROFILE_OVERRIDES, profile_overrides
+
+    for profile_name in PROFILE_OVERRIDES:
+        ov = profile_overrides(profile_name)
+        prep = ov.get("preprocessing", {})
+        assert prep.get("cascade_enabled") is True, f"cascade_enabled not True in {profile_name}"
+        assert prep.get("draft_model") == "qwen2.5-coder-prep-v3:0.5b", f"draft_model mismatch in {profile_name}"
+        assert prep.get("refiner_model") == "qwen2.5-coder-prep-v3:1.5b", f"refiner_model mismatch in {profile_name}"
+        assert ov.get("models", {}).get("draft_code") == "qwen2.5-coder-prep-v3:0.5b", f"draft_code mismatch in {profile_name}"
+
