@@ -73,6 +73,11 @@
           "evidence_id": "f104887ad0765a28d60ecfb55b68ecb8792e451048c4e8f9174eb8be54cde4d0",
           "kind": "evidence_reference",
           "summary": "Audit records the 10->11 incident-placeholder state migration, runtime rejection, 60 passing focused incident/migration tests, targeted compileall, 674-row API inventory with no drift, and clean diff check. Goal remains active; broader cleanup and acceptance remain."
+        },
+        {
+          "evidence_id": "20979533a98055bc98415257cbac0d7aff9756cdbd39c144701384b607854eaf",
+          "kind": "evidence_reference",
+          "summary": "Updated audit records incident initialization fail-closed validation; focused incident/migration suite passes (61), targeted compileall, 674-row API inventory no drift, and git diff check pass. Goal remains active."
         }
       ],
       "spec_refs": [
