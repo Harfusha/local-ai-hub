@@ -54,6 +54,7 @@ def decide_delivery(
     *,
     latency_budget_ms: float = 0.0,
     observed_p95_ms: float = 0.0,
+    observed_p99_ms: float = 0.0,
     samples: int = 0,
     queue_age_ms: float = 0.0,
     max_queue_age_ms: float = 0.0,
@@ -65,6 +66,7 @@ def decide_delivery(
     if mode not in _MODES:
         raise ValueError("delivery must be sync, async, or auto")
     p95 = _safe_nonnegative_float(observed_p95_ms)
+    p99 = _safe_nonnegative_float(observed_p99_ms)
     count = _safe_nonnegative_int(samples)
     queue_age = _safe_nonnegative_float(queue_age_ms)
     queue_limit = _safe_nonnegative_float(max_queue_age_ms)
@@ -94,4 +96,11 @@ def decide_delivery(
         return finish({"mode": "sync", "reason": "insufficient_latency_history", "observed_p95_ms": p95, "samples": count})
     if p95 > budget:
         return finish({"mode": "async", "reason": "p95_latency_budget_exceeded", "observed_p95_ms": p95, "samples": count})
+    # A p95-only policy still sends known long-tail endpoints through the
+    # foreground path. Require a larger sample before treating p99 as stable.
+    if count >= 20 and p99 > budget:
+        return finish({
+            "mode": "async", "reason": "p99_latency_budget_exceeded",
+            "observed_p95_ms": p95, "observed_p99_ms": p99, "samples": count,
+        })
     return finish({"mode": "sync", "reason": "p95_within_latency_budget", "observed_p95_ms": p95, "samples": count})

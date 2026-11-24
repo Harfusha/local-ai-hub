@@ -94,9 +94,9 @@ def test_generated_stdio_manifest_performs_initialize_and_complete_tools_list(tm
         ("gemini", "gemini", "json"),
         ("cursor", "cursor", "json"),
         ("windsurf", "windsurf", "json"),
-        ("copilot", "copilot", "vscode"),
+        ("copilot", "copilot", "json"),
         ("codex", "codex", "toml"),
-        ("antigravity", "gemini", "antigravity"),
+        ("antigravity", "antigravity", "antigravity"),
     ],
 )
 def test_merged_host_manifest_entry_performs_initialize_and_complete_tools_list(

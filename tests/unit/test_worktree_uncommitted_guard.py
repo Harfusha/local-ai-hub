@@ -7,7 +7,7 @@ from local_ai_hub.worktrees import (
     switch_worktree_branch,
     remove_worktree_safe,
 )
-from local_ai_hub.process_utils import remove_git_worktree
+from local_ai_hub.git_worktrees import remove_git_worktree
 
 
 def _init_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path]:

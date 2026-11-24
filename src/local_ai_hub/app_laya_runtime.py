@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from .app import (
     Any as Any,
     Mapping as Mapping,
@@ -13,12 +15,31 @@ from .app import (
 LocalAIApp = None
 
 
+def _current_laya_provider_label() -> str:
+    """Normalize the transport's provider label for attribution; never use it for auth."""
+    try:
+        from .trace_context import current_agent
+        from .client_adapters.registry import detect_client_from_header
+
+        request_agent = current_agent()
+        identity = request_agent or os.environ.get("LOCAL_AI_AGENT")
+        # Copilot shares VS Code's client adapter, but stays a distinct Laya
+        # attribution label so provider-level diagnostics do not conflate them.
+        prefix = identity.split("/")[0].split("-")[0].lower().strip() if isinstance(identity, str) else ""
+        if prefix == "copilot":
+            return "copilot"
+        return detect_client_from_header(identity) or "generic_mcp"
+    except Exception:
+        return "generic_mcp"
+
+
 class AppLayaRuntimeMixin:
     def __enter__(self) -> "LocalAIApp":
         return self
 
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
-        self.close()
+        if self.close() is not True:
+            raise RuntimeError("Local AI Hub did not close cleanly")
 
     def _close_laya_runtime_session(self, session: Any) -> bool:
         """Close a lifecycle-owned model through its capacity-aware adapter."""
@@ -52,7 +73,6 @@ class AppLayaRuntimeMixin:
                     expected_sha256=expected_sha256,
                     device_candidates=devices,
                     capacity_manager=self.scheduler,
-                    evaluation_mode=True,
                 )
                 self._laya_runtime_adapter = adapter
             return adapter
@@ -231,13 +251,13 @@ class AppLayaRuntimeMixin:
         root: str,
         baseline: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Run one typed shadow decision and capture its actual runtime outcome."""
+        """Run one typed context-source decision and capture its runtime outcome."""
         if not self._laya_inference_enabled():
             raise RuntimeError("Laya inference is disabled")
         if type(operation) is not dict or set(operation) != {
             "action", "task_id", "session_id", "evidence",
         }:
-            raise ValueError("Laya shadow evaluation fields invalid")
+            raise ValueError("Laya context-source evaluation fields invalid")
         if operation["action"] != "evaluate_context_source":
             raise ValueError("unsupported Laya runtime action")
         laya_cfg = self.config.get("laya", {})
@@ -245,15 +265,17 @@ class AppLayaRuntimeMixin:
         # Keep the service route available; the model itself loads lazily below.
         if not isinstance(runtime_cfg, dict):
             runtime_cfg = {}
-        checkpoint_path = runtime_cfg.get("checkpoint_path")
-        revision = runtime_cfg.get("revision")
-        expected_sha256 = runtime_cfg.get("expected_sha256")
-        if not isinstance(checkpoint_path, str) or not checkpoint_path:
-            raise RuntimeError("Laya shadow checkpoint is not configured")
+        from .trained_models import resolve_laya_checkpoint
+        try:
+            checkpoint_path, revision, expected_sha256 = resolve_laya_checkpoint(
+                runtime_cfg, self.config.get("models", {})
+            )
+        except Exception as exc:
+            raise RuntimeError("pinned Laya checkpoint is unavailable locally or could not be verified") from exc
         if not isinstance(revision, str) or not revision:
-            raise RuntimeError("Laya shadow revision is not configured")
+            raise RuntimeError("Laya checkpoint revision is not configured")
         if not isinstance(expected_sha256, dict) or not expected_sha256:
-            raise RuntimeError("Laya shadow checkpoint hashes are not configured")
+            raise RuntimeError("Laya checkpoint hashes are not configured")
         if type(runtime_cfg.get("allow_cpu", False)) is not bool:
             raise RuntimeError("laya.runtime.allow_cpu must be a boolean")
 
@@ -264,7 +286,7 @@ class AppLayaRuntimeMixin:
         project = resolve_project_context(canonical_root, Path(self.config["server"]["state_dir"]))
         repository_id = getattr(project, "coordination_id", None)
         if not isinstance(repository_id, str) or not repository_id:
-            raise ValueError("Laya shadow evaluation requires resolved repository identity")
+            raise ValueError("Laya context-source evaluation requires resolved repository identity")
         task_id = operation["task_id"]
         task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
         session_id = self.laya_candidates._session_for_task(task)
@@ -278,10 +300,11 @@ class AppLayaRuntimeMixin:
                 "options": list(evidence.decision_options),
             },
             decision_id="laya_" + uuid.uuid4().hex,
-            mode=DecisionMode.ADVISORY if str(laya_cfg.get("mode", "shadow")).strip().lower() == "advisory" else DecisionMode.SHADOW,
+            mode=DecisionMode.ADVISORY,
             repository_id=repository_id,
             task_id=task_id,
             session_id=session_id,
+            provider_label=_current_laya_provider_label(),
         )
         candidate = self.laya_candidates._candidate_input({
             "decision_schema_version": "laya-decision-v1",
@@ -354,9 +377,8 @@ class AppLayaRuntimeMixin:
         *,
         root: str,
         _server_baseline: Mapping[str, str] | None = None,
-        _record_capture_observation: bool = True,
     ) -> dict[str, Any]:
-        """Run a caller-requested typed shadow decision without changing Hub behavior."""
+        """Run a scoped typed Laya advisory decision."""
         if not self._laya_inference_enabled():
             raise RuntimeError("Laya inference is disabled")
         if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
@@ -382,15 +404,13 @@ class AppLayaRuntimeMixin:
         # Keep the service route available; the model itself loads lazily below.
         if not isinstance(runtime_cfg, dict):
             runtime_cfg = {}
-        checkpoint_path = runtime_cfg.get("checkpoint_path")
-        revision = runtime_cfg.get("revision")
-        expected_sha256 = runtime_cfg.get("expected_sha256")
-        if not isinstance(checkpoint_path, str) or not checkpoint_path:
-            raise RuntimeError("Laya shadow checkpoint is not configured")
-        if not isinstance(revision, str) or not revision:
-            raise RuntimeError("Laya shadow revision is not configured")
-        if not isinstance(expected_sha256, dict) or not expected_sha256:
-            raise RuntimeError("Laya shadow checkpoint hashes are not configured")
+        from .trained_models import resolve_laya_checkpoint
+        try:
+            checkpoint_path, revision, expected_sha256 = resolve_laya_checkpoint(
+                runtime_cfg, self.config.get("models", {})
+            )
+        except Exception as exc:
+            raise RuntimeError("pinned Laya checkpoint is unavailable locally or could not be verified") from exc
 
         canonical_root = str(Path(root).resolve(strict=True))
         project = resolve_project_context(canonical_root, Path(self.config["server"]["state_dir"]))
@@ -403,10 +423,11 @@ class AppLayaRuntimeMixin:
         request = DecisionRequest.from_mapping(
             {key: decision_data[key] for key in ("category", "evidence_ids", "options")},
             decision_id="laya_" + uuid.uuid4().hex,
-            mode=DecisionMode.ADVISORY if str(laya_cfg.get("mode", "shadow")).strip().lower() == "advisory" else DecisionMode.SHADOW,
+            mode=DecisionMode.ADVISORY,
             repository_id=repository_id,
             task_id=task_id,
             session_id=session_id,
+            provider_label=_current_laya_provider_label(),
         )
         if request.category is DecisionCategory.CONTEXT_SOURCE:
             raise ValueError("context_source must use the ordinary context-source evaluation contract")
@@ -435,8 +456,10 @@ class AppLayaRuntimeMixin:
                 DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
                 DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
                 DecisionCategory.DELEGATION: "pipeline_worker_escalation",
+                DecisionCategory.SUBAGENT_BUDGET: "agent_os_delegation_budget",
                 DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
                 DecisionCategory.NEXT_STEP: "pipeline_step_progress",
+                DecisionCategory.RETRIEVAL_STRATEGY: "hybrid_context_default",
             }.get(request.category)
             supplied_baseline = dict(_server_baseline)
             baseline_suggestion_valid = supplied_baseline.get("suggestion") in request.options
@@ -477,14 +500,12 @@ class AppLayaRuntimeMixin:
             except Exception as exc:
                 captured["capture_status"] = "failed"
                 captured["capture_error_type"] = type(exc).__name__
-                if _record_capture_observation:
-                    self._record_laya_capture_observation(
-                        "failed", "capture_exception", error_type=type(exc).__name__
-                    )
+                self._record_laya_capture_observation(
+                    "failed", "capture_exception", error_type=type(exc).__name__
+                )
                 raise
             captured["capture_status"] = "captured"
-            if _record_capture_observation:
-                self._record_laya_capture_observation("captured", "runtime_outcome")
+            self._record_laya_capture_observation("captured", "runtime_outcome")
 
         self._record_laya_decision_eligibility(request)
         outcome = adapter.evaluate_decision(
@@ -499,8 +520,7 @@ class AppLayaRuntimeMixin:
         if capture_status is None:
             capture_status = "failed"
             reason = "runtime_error" if outcome.runtime is None else "outcome_not_captured"
-            if _record_capture_observation:
-                self._record_laya_capture_observation("failed", reason)
+            self._record_laya_capture_observation("failed", reason)
         return {
             "success": decision.success,
             "decision": {

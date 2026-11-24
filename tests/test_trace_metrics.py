@@ -82,7 +82,7 @@ def test_request_metrics_marks_missing_or_disabled_data_unavailable(tmp_path):
 
 
 def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch, request):
-    traces = DebugTraceStore({"server": {"state_dir": str(tmp_path / "traces")}, "debug_traces": {"enabled": True}})
+    traces = DebugTraceStore({"server": {"state_dir": str(tmp_path / "traces")}, "telemetry": {"mode": "full"}})
     telemetry = TelemetryStore(tmp_path / "telemetry", flush_interval_seconds=0.01)
     request.addfinalizer(telemetry.close)
     trace_id = traces.start(
@@ -137,7 +137,7 @@ def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch, reque
 
 
 def test_trace_detail_http_still_returns_bounded_pages(tmp_path, monkeypatch):
-    traces = DebugTraceStore({"server": {"state_dir": str(tmp_path / "traces")}, "debug_traces": {"enabled": True}})
+    traces = DebugTraceStore({"server": {"state_dir": str(tmp_path / "traces")}, "telemetry": {"mode": "full"}})
     trace_id = traces.start(kind="api_request",  action="/api/reason")
     traces.event(trace_id, "output_delta", {"text": "x" * 6000})
     monkeypatch.setattr(

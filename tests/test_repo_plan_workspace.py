@@ -326,3 +326,6 @@ def test_legacy_board_adoption(workspace):
     assert "task_item_123" in tasks
     assert "task_item_456" in tasks
     assert tasks["task_item_456"]["work_status"] == "in_progress"
+
+    with pytest.raises(TypeError, match="legacy_items"):
+        ws.adopt_legacy_board_items("plan_adopted", legacy_items=legacy_items)

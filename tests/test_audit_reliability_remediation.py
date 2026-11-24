@@ -15,7 +15,7 @@ def test_private_accounting_does_not_autostart_but_foreground_requests_can(tmp_p
     from urllib.error import URLError
     from local_ai_hub.client import HubClient
     config = tmp_path / "hub.toml"
-    config.write_text("[server]\nport=1\n", encoding="utf-8")
+    config.write_text("[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=1\n", encoding="utf-8")
     client = HubClient(config_path=str(config), auto_start=True)
     calls, attempts = [], []
     def open_response(*args, **kwargs):

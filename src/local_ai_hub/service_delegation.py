@@ -176,51 +176,6 @@ class ServiceDelegationMixin:
             return attach_project_warning(result)
         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
-        if (
-            task_type_override == "auto"
-            and complexity_override == "auto"
-            and not str(args.get("model", "")).strip()
-            and isinstance(args.get("evidence_ids"), (list, tuple))
-            and args.get("evidence_ids")
-        ):
-            route_option = {
-                "fast_code": "fast",
-                "heavy_code": "smart",
-                "reasoning": "smart",
-                "general": "generic",
-            }.get(project_role)
-            evidence_id = args["evidence_ids"][0]
-            route_options = self._available_laya_model_route_options(
-                project_role, project_settings=project_settings,
-            )
-            if route_option is not None and route_option in route_options:
-                task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
-                training_content = {"task_input": task_input} if task_input else {}
-                model_response = self._laya_model_response_excerpt(result)
-                if model_response:
-                    training_content["model_response"] = model_response
-                decision_state = {
-                    "task_type": str(route.get("task_type", "general")),
-                    "complexity": str(route.get("complexity", "fast")),
-                    "semantic_required": "true" if route.get("semantic_required") is True else "false",
-                    "context_present": "true" if context else "false",
-                }
-                generator_model = self._laya_generator_model_code({"route": route})
-                if generator_model:
-                    decision_state["generator_model"] = generator_model
-                self._queue_laya_shadow_observation(
-                    args,
-                    root=str(args.get("root") or args.get("cwd") or ""),
-                    category="model_route",
-                    options=[option for option in ("fast", "smart", "generic") if option in route_options],
-                    state=decision_state,
-                    training_content=training_content,
-                    baseline={
-                        "method": "model_router_classify",
-                        "suggestion": route_option,
-                        "evidence_id": evidence_id,
-                    },
-                )
         return attach_project_warning(result)
 
     @staticmethod

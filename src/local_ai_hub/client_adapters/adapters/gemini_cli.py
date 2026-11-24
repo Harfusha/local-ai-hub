@@ -12,7 +12,8 @@ class GeminiCliAdapter(BaseClientAdapter):
     capabilities = ClientCapabilities(
         client_id="gemini_cli",
         display_name="Gemini CLI (Google)",
-        hook_support=HookSupport.FULL,
+        hook_support=HookSupport.SESSION_TOOL,
+        hook_events=("SessionStart", "BeforeAgent", "BeforeTool", "AfterTool"),
         instruction_targets=(InstructionTarget.GEMINI_MD, InstructionTarget.AGENTS_MD),
         has_token_tracking=False,
         has_reasoning_tokens=False,
@@ -25,6 +26,15 @@ class GeminiCliAdapter(BaseClientAdapter):
         """Verify presence and compatibility of Superpowers extension."""
         from local_ai_hub.repo_plan.host_hooks import inspect_superpowers
         return inspect_superpowers("gemini_cli", source_root)
+
+    def parse_hook_event(self, raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return None
+        from local_ai_hub.repo_plan.host_adapters import parse_gemini_cli_hook_event
+        try:
+            return parse_gemini_cli_hook_event(raw)
+        except (ValueError, TypeError, KeyError):
+            return None
 
 
 register_adapter("gemini_cli", GeminiCliAdapter)

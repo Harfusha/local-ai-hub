@@ -133,13 +133,7 @@ def detailed_diagnostics_enabled(config: dict[str, Any], *, store: Any = None) -
     paths = [config.get(key) for key in ("_defaults_path", "_config_path", "_runtime_override_path")]
     telemetry_cfg = config.get("telemetry", {}) if isinstance(config, dict) else {}
     telemetry_mode = str(telemetry_cfg.get("mode") or "").strip().lower()
-    if telemetry_mode == "full":
-        enabled = True
-    elif telemetry_mode in ("off", "minimal"):
-        enabled = False
-    else:
-        section = config.get("debug_traces", {}) if isinstance(config, dict) else {}
-        enabled = isinstance(section, dict) and section.get("enabled") is True
+    enabled = telemetry_mode == "full"
     if not any(paths):
         return enabled
     # With a base config, reconstruct the boolean from the same overlay order
@@ -158,11 +152,7 @@ def detailed_diagnostics_enabled(config: dict[str, Any], *, store: Any = None) -
             telemetry = settings.get("telemetry", {})
             if isinstance(telemetry, dict) and "mode" in telemetry:
                 mode = str(telemetry.get("mode") or "").strip().lower()
-                enabled = (mode == "full")
-            else:
-                section = settings.get("debug_traces", {})
-                if isinstance(section, dict) and "enabled" in section:
-                    enabled = section["enabled"] is True
+                enabled = mode == "full"
     except (OSError, ValueError, TypeError):
         return False
     return enabled
@@ -200,21 +190,33 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
     requested_extra = set(extra_fields) if isinstance(extra_fields, (set, list, tuple)) else set()
     projected = {}
     for key, item in value.items():
-        # Canonical pagination counts replace equal legacy aliases. Distinct
-        # observed counts still describe bounded/inexact searches.
-        if "returned_count" in value:
-            if key in {"matches_count", "returned_limit"} and item == value["returned_count"]:
-                continue
-            if key == "observed_match_count" and item == value.get("total_matches"):
-                continue
         # Private accounting is consumed by telemetry, never part of the wire.
         if key == "_token_accounting":
             continue
+        if not enabled and key == "routing":
+            if "routing" not in requested_extra or not isinstance(item, dict):
+                continue
+            handoff = item.get("semantic_handoff")
+            if (
+                not isinstance(handoff, dict)
+                or handoff.get("required") is not False
+                or handoff.get("advisory") is not True
+                or handoff.get("tool") != "local_ai_task"
+                or not isinstance(handoff.get("actions"), list)
+                or any(action not in {"delegate", "explore", "reason", "review", "second_opinion", "compress"} for action in handoff["actions"])
+            ):
+                continue
+            safe_handoff = {
+                name: handoff[name]
+                for name in ("required", "advisory", "tool", "actions", "bypass_tool", "bypass_action", "purpose")
+                if name in handoff and isinstance(handoff[name], (bool, str, list))
+            }
+            item = {"semantic_handoff": safe_handoff}
         aggregate_metric = _aggregate and key in {
             "cache_hits", "coalesced_waiters", "net_cloud_token_delta_est", "token_efficiency",
             "p50_duration_ms", "p95_duration_ms", "p99_duration_ms",
         }
-        if not enabled and ((key in _DETAIL_FIELDS and not aggregate_metric)
+        if not enabled and ((key in _DETAIL_FIELDS and not aggregate_metric and key != "routing")
                             or (str(key).startswith("_") and key not in _DOCUMENT_FIELDS)
                             or (key == "diagnostics" and isinstance(item, dict))):
             if key == "selection_complete" and item is False:
@@ -417,6 +419,27 @@ def project_status_response(value: Any, *, enabled: bool, **kwargs: Any) -> Any:
         ):
             continue
         projected.pop(field, None)
+    if isinstance(value, dict):
+        # These compact values are already sanitized by local_ai_status and are
+        # operational health, even though their names are also used by internal
+        # diagnostic payloads elsewhere.
+        gpu_state = value.get("gpu_admission_state")
+        if isinstance(gpu_state, str) and gpu_state in {
+            "available", "external_reservation", "background_lease",
+            "preparing_model", "inference_active", "outcome_unknown", "unknown",
+        }:
+            projected["gpu_admission_state"] = gpu_state
+        pressure = value.get("vram_pressure")
+        if isinstance(pressure, str) and pressure in {"nominal", "moderate", "high", "critical", "unknown"}:
+            projected["vram_pressure"] = pressure
+        factor = value.get("context_budget_factor")
+        if isinstance(factor, (int, float)) and not isinstance(factor, bool):
+            projected["context_budget_factor"] = factor
+        telemetry = value.get("vram_telemetry")
+        if isinstance(telemetry, dict) and set(telemetry) <= {
+            "available", "error", "sampling", "stale", "wait_timed_out",
+        }:
+            projected["vram_telemetry"] = telemetry
     dependencies = projected.get("dependency_status")
     if isinstance(dependencies, dict):
         operational = {"degraded", "status", "error", "error_type", "stale", "retryable", "available"}

@@ -197,7 +197,7 @@ def test_enabled_trace_store_preserves_complete_payload_and_token_usage(tmp_path
 
     from local_ai_hub.debug_traces import DebugTraceStore
 
-    store = DebugTraceStore({"server": {"state_dir": str(tmp_path)}, "debug_traces": {"enabled": True}})
+    store = DebugTraceStore({"server": {"state_dir": str(tmp_path)}, "telemetry": {"mode": "full"}})
     trace_id = store.start(kind="api_request",  action="/api/test")
     store.update(
         trace_id,

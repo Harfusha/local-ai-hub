@@ -12,6 +12,7 @@ class CodexAdapter(BaseClientAdapter):
         client_id="codex",
         display_name="OpenAI Codex",
         hook_support=HookSupport.FULL,
+        hook_events=("SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"),
         instruction_targets=(InstructionTarget.AGENTS_MD,),
         has_token_tracking=True,
         has_reasoning_tokens=True,

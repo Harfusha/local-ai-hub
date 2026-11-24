@@ -46,7 +46,10 @@ def mcp_diagnostics_enabled(tmp_path, monkeypatch):
     from local_ai_hub import mcp_server
 
     path = tmp_path / "diagnostic-config.toml"
-    path.write_text("[debug_traces]\nenabled=true\n", encoding="utf-8")
+    path.write_text(
+        '[local_ai_hub]\nconfig_schema_version=1\n\n[telemetry]\nmode="full"\n',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(mcp_server, "CFG", {
         **mcp_server.CFG, "_config_path": str(path),
         "_defaults_path": None, "_runtime_override_path": None,
@@ -103,6 +106,8 @@ def pytest_configure(config):
         port = guard.getsockname()[1]
         config_path = root / "config.toml"
         config_path.write_text(
+            "[local_ai_hub]\n"
+            "config_schema_version = 1\n\n"
             "[server]\n"
             'bind = "127.0.0.1"\n'
             f"port = {port}\n"

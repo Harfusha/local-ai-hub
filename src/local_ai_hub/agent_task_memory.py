@@ -60,7 +60,7 @@ class TaskMemoryMixin:
         try:
             observer(operation=operation, root=str(repository_root or ""))
         except Exception:
-            # Laya is observational; its capture path cannot affect the gate.
+            # Observation is best effort and cannot change the completion gate.
             return
 
     def set_policy_engine(self, policy_engine: Any) -> None:

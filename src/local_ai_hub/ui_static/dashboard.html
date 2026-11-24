@@ -698,7 +698,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <button class="btn warn" id="epStatsResetBtn" style="padding:4px 10px;font-size:11px">Resetovat</button>
       </div>
     </h2>
-    <p class="tiny muted" id="epStatsScopeNotice">Nové záznamy rozlišují kořeny projektů; historické skupiny podle názvu složky nelze zpětně rozdělit. Počet volání nástroje neprokazuje spuštění modelu.</p>
+    <p class="tiny muted" id="epStatsScopeNotice">Projektové filtry používají přesný kořen. Počet volání nástroje sám neprokazuje spuštění modelu.</p>
     <div style="padding:8px 14px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;font-size:11px;background:var(--panel2);align-items:center">
       <div class="subtabs" id="epStatsScopeTabs" style="margin:0;border:0;padding:0;gap:4px">
         <button class="subtab-btn active" id="epScopeActive" type="button" style="padding:3px 9px;font-size:11px">Aktivní (<span id="epCountActive">0</span>)</button>
@@ -919,7 +919,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <div class="card">
           <div class="label">Typed Decisions</div>
           <div class="value primary-metric" id="layaDecisionsCount">…</div>
-          <div class="sub" id="layaDecisionsSub">0 shadow · 0 advisory</div>
+          <div class="sub" id="layaDecisionsSub">0 advisory</div>
         </div>
         <div class="card">
           <div class="label">Decision Coverage</div>
@@ -1615,7 +1615,7 @@ if($('detailedTelemetryToggle'))$('detailedTelemetryToggle').onclick=async()=>{
   const status=$('detailedTelemetryStatus');if(status)status.textContent='';
   let failureStage='';
   try{
-    const result=await post('/api/config/update',{settings:{'debug_traces.enabled':enabled}});
+    const result=await post('/api/config/update',{settings:{'telemetry.mode':enabled?'full':'minimal'}});
     failureStage=result?.failure_stage==='persistence'?'persistence':result?.failure_stage==='validation'?'validation':'';
     if(!result?.success)throw new Error(result?.error||'Unable to update telemetry');
     if(result.applied_live!==true){
@@ -5275,7 +5275,7 @@ function filterRecentRequests(items,allItems){
 function workState(state){const value=String(state||'queued'),cls=value==='failed'||value==='error'?'bad':(value==='running'||value==='processing'?'live':'');return `<span class="work-state ${cls}">${esc(value)}</span>`}
 function workSchedulerRow(job){const inner=`<td>${workState(job.state)}</td><td><strong>#${n(job.job_id)}</strong></td><td><strong>${esc(job.model||'—')}</strong><div class="tiny">${esc(job.source||'—')}</div></td><td><span class="timing-label">wait</span> ${ms(job.wait_ms)}<div><span class="timing-label">run</span> ${ms(job.service_ms)}</div></td><td>${esc(job.wait_reason||'ready')}</td>`;return schedulerRow(job,inner,5)}
 function workActiveRequestRow(request){const inner=`<td><strong>${esc(request.request_id||'—')}</strong></td><td>${esc(request.agent||'—')}</td><td>${esc(request.action||'—')}</td><td>${age(request.age_ms)}</td>`;return requestRow(request,inner,4)}
-function requestTrace(request){return lastTraces.find(x=>String(x.request_id||'')===String(request.request_id||''))}
+function requestTrace(request){if(request?.trace_available===false||typeof request?.request_id!=='string')return null;const requestId=request.request_id.trim();if(!requestId)return null;return lastTraces.find(x=>String(x.request_id||'')===requestId)||null}
 function traceContextLabel(trace){
   if(!trace)return '';
   const source=trace.source&&trace.source!==trace.action?trace.source:'',summary=trace.summary||trace.description||trace.operation||trace.action_detail||'',requestId=trace.request_id?`req ${String(trace.request_id).slice(-8)}`:'',jobId=trace.async_job_id?`job ${String(trace.async_job_id).slice(-8)}`:'';
@@ -5600,7 +5600,7 @@ function render(s){
   rows('routes',o.execution_routes||[],x=>clickableRow(x,`<td>${esc(x.route)}</td><td>${esc(x.task_type)}</td><td>${esc(x.complexity)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.failures)}</td>`,'route_stat'),6);
 
   const lr=s.laya_runtime||{},layaCfg=s.laya||{},layaEnabled=feat.laya!==false&&layaCfg.enabled!==false;
-  const layaMode=String(layaCfg.mode||lr.mode||'shadow'),layaStatusPill=$('layaStatusPill');
+  const layaMode='advisory',layaStatusPill=$('layaStatusPill');
   if(layaStatusPill){
     if(!layaEnabled){layaStatusPill.textContent='disabled';layaStatusPill.className='pill tiny bad-t';}
     else if(lr.available){layaStatusPill.textContent=`${layaMode} · resident`;layaStatusPill.className='pill tiny ok';}
@@ -5617,17 +5617,16 @@ function render(s){
       layaRuntimeSub.textContent=`${configStr} · Unloads: ${n(lr.unload_count)}${lastErr}`;
     }
   }
-  const ld=o.laya_decisions||{},layaRecords=Number(ld.records||0),byMode=ld.by_mode||{},shadowMode=byMode.shadow||{},advisoryMode=byMode.advisory||{};
+  const ld=o.laya_decisions||{},layaRecords=Number(ld.records||0),byMode=ld.by_mode||{},advisoryMode=byMode.advisory||{};
   const layaDecisionsCount=$('layaDecisionsCount'),layaDecisionsSub=$('layaDecisionsSub');
   if(layaDecisionsCount&&layaDecisionsSub){
     layaDecisionsCount.textContent=n(layaRecords);
-    const shadowCount=(ld.counts_by_mode&&ld.counts_by_mode.shadow)||shadowMode.records||0;
     const advisoryCount=(ld.counts_by_mode&&ld.counts_by_mode.advisory)||advisoryMode.records||0;
-    layaDecisionsSub.textContent=`${n(shadowCount)} shadow · ${n(advisoryCount)} advisory · ${n(ld.invalid_records||0)} invalid`;
+    layaDecisionsSub.textContent=`${n(advisoryCount)} advisory · ${n(ld.invalid_records||0)} invalid`;
   }
   const layaCoverageVal=$('layaCoverageVal'),layaCoverageSub=$('layaCoverageSub');
   if(layaCoverageVal&&layaCoverageSub){
-    const activeSummary=byMode[layaMode]||shadowMode,cov=activeSummary.coverage;
+    const activeSummary=byMode.advisory||{},cov=activeSummary.coverage;
     if(cov&&cov.available&&cov.rate!=null){
       layaCoverageVal.textContent=`${(cov.rate*100).toFixed(1)}%`;
       layaCoverageSub.textContent=`${n(cov.recorded_decisions)} / ${n(cov.eligible_decisions)} eligible decisions`;
@@ -5639,7 +5638,7 @@ function render(s){
   }
   const layaLatencyVal=$('layaLatencyVal'),layaLatencySub=$('layaLatencySub');
   if(layaLatencyVal&&layaLatencySub){
-    const activeSummary=byMode[layaMode]||shadowMode,lat=activeSummary.latency_ms;
+    const activeSummary=byMode.advisory||{},lat=activeSummary.latency_ms;
     if(lat&&lat.available&&lat.mean!=null){
       layaLatencyVal.textContent=ms(lat.mean);
       const infMean=lat.inference_mean!=null?`infer ${ms(lat.inference_mean)}`:'';
@@ -5654,12 +5653,11 @@ function render(s){
   const categoryRows=[],allCategories=ld.counts_by_category?Object.keys(ld.counts_by_category):[];
   for(const cat of allCategories){
     const total=ld.counts_by_category[cat]||0;
-    const shCat=(shadowMode.counts_by_category&&shadowMode.counts_by_category[cat])||0;
     const advCat=(advisoryMode.counts_by_category&&advisoryMode.counts_by_category[cat])||0;
-    const modeLabel=shCat&&advCat?`${shCat} sh / ${advCat} adv`:shCat?'shadow':advCat?'advisory':'—';
-    const abstains=(shadowMode.counts_by_status&&shadowMode.counts_by_status.abstain||0)+(advisoryMode.counts_by_status&&advisoryMode.counts_by_status.abstain||0);
-    const errors=(shadowMode.counts_by_status&&shadowMode.counts_by_status.error||0)+(advisoryMode.counts_by_status&&advisoryMode.counts_by_status.error||0);
-    const skips=(shadowMode.counts_by_status&&shadowMode.counts_by_status.skipped||0)+(advisoryMode.counts_by_status&&advisoryMode.counts_by_status.skipped||0);
+    const modeLabel=advCat?'advisory':'—';
+    const abstains=advisoryMode.counts_by_status&&advisoryMode.counts_by_status.abstain||0;
+    const errors=advisoryMode.counts_by_status&&advisoryMode.counts_by_status.error||0;
+    const skips=advisoryMode.counts_by_status&&advisoryMode.counts_by_status.skipped||0;
     categoryRows.push({category:cat,mode:modeLabel,total,abstains,errors,skips});
   }
   rows('layaDecisionsBody',categoryRows,x=>`<tr><td><strong>${esc(x.category)}</strong></td><td><span class="chip">${esc(x.mode)}</span></td><td>${n(x.total)}</td><td>${n(x.abstains)}</td><td>${n(x.errors)}</td><td>${n(x.skips)}</td></tr>`,6,'No typed decision records in selected period');
@@ -5892,7 +5890,7 @@ function renderReliabilitySummary(snapshot){
 }
 
 function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.scheduler_job_id||'')===String(job.job_id||''));const id=linked?.trace_id||job.trace_id;if(id)return `<tr class="click" data-trace-id="${esc(id)}">${html}</tr>`;return clickableRow(job,html,'scheduler_job');}
-function requestRow(request,html,cols){const linked=lastTraces.find(x=>String(x.request_id||'')===String(request.request_id||''));if(linked)return `<tr class="click" data-trace-id="${esc(linked.trace_id)}">${html}</tr>`;return clickableRow(request,html,'http_request');}
+function requestRow(request,html,cols){const linked=requestTrace(request);if(linked)return `<tr class="click" data-trace-id="${esc(linked.trace_id)}">${html}</tr>`;return clickableRow(request,html,'http_request');}
 
 function renderTraceList(items){
   const base=workVisible(items||[]),kind=String($('traceKind')?.value||''),matching=base.filter(x=>!kind||x.kind===kind);
@@ -5909,19 +5907,21 @@ function renderTraceList(items){
 }
 function tracePollingNeeded(){return ['work','reliability','traceInspector'].includes(document.querySelector('.page.active')?.id);}
 async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
-  if(!isCurrent()||tracesPollInFlight)return false;
+  const kind=$('traceKind')?.value||'';
+  if(traceSummaryPoll?.kind===kind)return false;
+  if(!isCurrent()||traceSummaryPoll)return false;
   if(!tracePollingNeeded())return false;
-  tracesPollInFlight=true;
+  const poll={kind};traceSummaryPoll=poll;
   const controller=typeof AbortController==='function'?new AbortController():null;
   tracesPollAbortController=controller;
   try{
-    const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const suffix=kind?'&kind='+encodeURIComponent(kind):'',opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
     const r=await apiFetch('/api/debug-traces?limit=200'+suffix,opts);if(!isCurrent()||!tracePollingNeeded())return false;
     const d=await r.json();if(!isCurrent()||!tracePollingNeeded()||!d.success)return false;
     const items=Array.isArray(d.items)?d.items:[];
     return updateTraceSummaries(items);
   }catch(e){if(isCurrent()&&!controller?.signal.aborted)console.warn('trace refresh failed',e);return false}
-  finally{tracesPollInFlight=false;if(tracesPollAbortController===controller)tracesPollAbortController=null}
+  finally{if(traceSummaryPoll===poll)traceSummaryPoll=null}
 }
 $('traceRefresh')?.addEventListener('click',()=>pollTraces());$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
@@ -6017,7 +6017,7 @@ document.addEventListener('visibilitychange',()=>{
   if(!visible&&statusPollAbortController)statusPollAbortController.abort();
 });
 statusPoller.start();
-let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false,eventsPollHasLoaded=false;
+let liveEvents=[],eventsPollInFlight=false,eventsPollHasLoaded=false,traceSummaryPoll=null;
 let eventsPollAbortController=null,tracesPollAbortController=null;
 function eventSeverity(event){
   if(event?.success===false||Number(event?.status_code)>=400||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
@@ -6876,8 +6876,7 @@ async function loadEndpointStatsView() {
       for (const p of res.projects) {
         let label = p;
         try {
-          if (p.startsWith('legacy:')) label = 'historické: ' + decodeURIComponent(p.slice(7));
-          else if (p.startsWith('root:')) { const parts = p.split(':'); label = decodeURIComponent(parts.slice(2).join(':')) + ' · ' + parts[1].slice(0, 8); }
+          if (p.startsWith('root:')) { const parts = p.split(':'); label = decodeURIComponent(parts.slice(2).join(':')) + ' · ' + parts[1].slice(0, 8); }
         } catch {}
         opts.push(`<option value="${esc(p)}"${p === currentVal ? ' selected' : ''}>${esc(label)}</option>`);
       }
@@ -7171,7 +7170,7 @@ $('subtabEndpointStatsJump')?.addEventListener('click', () => {
 });
 $('epStatsResetBtn')?.addEventListener('click', async () => {
   const project = $('epStatsProjectSelect')?.value || '';
-  const label = project ? (project.startsWith('legacy:') ? 'historickou skupinu se stejným názvem složky' : 'vybraný kořen projektu') : 'VŠECHNY projekty globálně';
+  const label = project ? 'vybraný kořen projektu' : 'VŠECHNY projekty globálně';
   if (!confirm(`Opravdu chcete resetovat dlouhodobé statistiky pro ${label}?`)) return;
   const res = await post('/api/telemetry/endpoint-stats/reset', { root: project });
   if (res && res.success) {

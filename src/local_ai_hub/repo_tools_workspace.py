@@ -87,7 +87,7 @@ class RepoToolsWorkspaceMixin:
         if not terms and not phrase:
             return {
                 "success": True, "root": str(base), "results": [],
-                "matches_count": 0, "total_matches": 0, "has_more": False,
+                "total_matches": 0, "returned_count": 0, "has_more": False,
                 "limit": limit, "offset": offset,
                 "truncated": False, "count_exact": True,
             }
@@ -563,8 +563,8 @@ class RepoToolsWorkspaceMixin:
             "scanned_files": scanned,
             "terms": terms,
             "results": page_results,
-            "matches_count": total_matches,
             "total_matches": total_matches,
+            "returned_count": len(page_results),
             "has_more": has_more,
             "engine": candidate_engine,
             "truncated": bool(truncation_reasons or read_errors or has_more),

@@ -41,6 +41,9 @@ def running_http_hub(tmp_path):
     config_path.write_text(
         "\n".join(
             [
+                "[local_ai_hub]",
+                "config_schema_version = 1",
+                "",
                 "[server]",
                 'bind = "127.0.0.1"',
                 "port = 11435",
@@ -149,22 +152,8 @@ def test_http_post_declaration_not_found_returns_http_404(
     }
 
 
-def test_http_get_declaration_not_found_returns_http_404(
-    running_http_hub, monkeypatch, tmp_path
-):
-    base_url, app = running_http_hub
-    monkeypatch.setattr(
-        app.services,
-        "code_find_declaration",
-        lambda *args, **kwargs: {
-            "success": False,
-            "status_code": 404,
-            "terminal": True,
-            "retryable": False,
-            "error_code": "declaration_not_found",
-            "error": "Declaration of 'missing_symbol' not found",
-        },
-    )
+def test_http_get_declaration_compatibility_route_is_removed(running_http_hub, tmp_path):
+    base_url, _app = running_http_hub
     request = urllib_request.Request(
         f"{base_url}/api/code/find_declaration?root={quote(str(tmp_path))}&symbol=missing_symbol",
         headers={},
@@ -175,12 +164,7 @@ def test_http_get_declaration_not_found_returns_http_404(
         urllib_request.urlopen(request)
 
     assert exc_info.value.code == 404
-    body = json.loads(exc_info.value.read().decode("utf-8"))
-    assert body["success"] is False
-    assert body["status_code"] == 404
-    assert body["terminal"] is True
-    assert body["retryable"] is False
-    assert body["error_code"] == "declaration_not_found"
+    exc_info.value.close()
 
 
 def test_http_patch_validate_returns_successful_result_for_invalid_diff(
@@ -951,7 +935,7 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
 
     toggle_request = urllib_request.Request(
         f"{base_url}/api/config/update",
-        data=json.dumps({"settings": {"debug_traces.enabled": True}}).encode("utf-8"),
+        data=json.dumps({"settings": {"telemetry.mode": "full"}}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -1001,7 +985,7 @@ def test_http_diagnostics_export_download_restores_sqlite_snapshot(running_http_
 
         toggle = urllib_request.Request(
             f"{base_url}/api/config/update",
-            data=b'{"settings":{"debug_traces.enabled":true}}',
+            data=b'{"settings":{"telemetry.mode":"full"}}',
             headers={"Content-Type": "application/json"},
         )
         with urllib_request.urlopen(toggle, timeout=15) as response:
@@ -1044,7 +1028,7 @@ def test_http_diagnostics_export_rejects_retired_laya_consent_and_forwards_snaps
     url = f"{base_url}/api/diagnostics/export"
     toggle_request = urllib_request.Request(
         f"{base_url}/api/config/update",
-        data=json.dumps({"settings": {"debug_traces.enabled": True}}).encode("utf-8"),
+        data=json.dumps({"settings": {"telemetry.mode": "full"}}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -1361,7 +1345,7 @@ def test_http_code_completion_keeps_model_output_and_response_separate(running_h
         complete("trace-default-disabled")
 
         toggle = urllib_request.Request(
-            f"{base_url}/api/config/update", data=b'{"settings":{"debug_traces.enabled":true}}',
+            f"{base_url}/api/config/update", data=b'{"settings":{"telemetry.mode":"full"}}',
             headers={"Content-Type": "application/json"},
         )
         with urllib_request.urlopen(toggle, timeout=15) as response:
@@ -1487,52 +1471,19 @@ def test_http_post_coord_board_and_semaphore_acceptance(running_http_hub, monkey
         assert resp.status == 200
         assert json.loads(resp.read().decode("utf-8"))["success"] is True
 
-    # 2. Board item create & delete
-    monkeypatch.setattr(
-        app.services,
-        "board_item_create",
-        lambda **kwargs: {"success": True, "item_id": "item-1"},
-    )
-    monkeypatch.setattr(
-        app.services,
-        "board_item_delete",
-        lambda item_id="": {"success": True, "deleted": True},
-    )
-    req_create = urllib_request.Request(
-        f"{base_url}/api/coord/board_item_create",
-        data=json.dumps({"title": "Test Item", "root": str(tmp_path)}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Connection": "close"},
-        method="POST",
-    )
-    with urllib_request.urlopen(req_create) as resp:
-        assert resp.status == 200
-        assert json.loads(resp.read().decode("utf-8"))["success"] is True
-
-    req_delete = urllib_request.Request(
-        f"{base_url}/api/coord/board_item_delete",
-        data=json.dumps({"item_id": "item-1"}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Connection": "close"},
-        method="POST",
-    )
-    with urllib_request.urlopen(req_delete) as resp:
-        assert resp.status == 200
-        assert json.loads(resp.read().decode("utf-8"))["success"] is True
-
-    # 3. Milestone create
-    monkeypatch.setattr(
-        app.services,
-        "milestone_create",
-        lambda name="", target_date="", description="": {"success": True, "milestone": name},
-    )
-    req_m = urllib_request.Request(
-        f"{base_url}/api/coord/milestone_create",
-        data=json.dumps({"name": "v6.0", "target_date": "2026-11-15"}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Connection": "close"},
-        method="POST",
-    )
-    with urllib_request.urlopen(req_m) as resp:
-        assert resp.status == 200
-        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+    for path in (
+        "board_item_create", "board_item_update", "board_item_delete", "board_item_get",
+        "board_item_list", "board_summary", "milestone_create", "milestone_status",
+    ):
+        request = urllib_request.Request(
+            f"{base_url}/api/coord/{path}",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as rejected:
+            urllib_request.urlopen(request)
+        assert rejected.value.code == 404
 
 
 def test_http_post_context_budget_acceptance(running_http_hub, monkeypatch, tmp_path):

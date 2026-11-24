@@ -26,7 +26,6 @@ class DecisionCategory(StrEnum):
 
 
 class DecisionMode(StrEnum):
-    SHADOW = "shadow"
     ADVISORY = "advisory"
 
 
@@ -358,6 +357,7 @@ class DecisionRequest:
     session_id: str | None
     evidence_ids: tuple[str, ...]
     options: tuple[str, ...]
+    provider_label: str = "generic_mcp"
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, DecisionMode) or not isinstance(self.category, DecisionCategory):
@@ -366,6 +366,7 @@ class DecisionRequest:
         _identifier(self.repository_id, "repository_id")
         _identifier(self.session_id, "session_id")
         _identifier(self.task_id, "task_id", optional=True)
+        _identifier(self.provider_label, "provider_label")
         if not isinstance(self.evidence_ids, tuple) or len(self.evidence_ids) > 64:
             raise ValueError("invalid evidence_ids")
         for evidence_id in self.evidence_ids:
@@ -389,6 +390,7 @@ class DecisionRequest:
         repository_id: str,
         task_id: str | None,
         session_id: str,
+        provider_label: str = "generic_mcp",
     ) -> "DecisionRequest":
         """Build request from closed caller data and server-bound identity.
 
@@ -406,6 +408,7 @@ class DecisionRequest:
         repository_id = _identifier(repository_id, "repository_id")
         session_id = _identifier(session_id, "session_id")
         task_id = _identifier(task_id, "task_id", optional=True)
+        provider_label = _identifier(provider_label, "provider_label")
         decision_id = _identifier(decision_id, "decision_id")
         evidence_ids = _string_list(value["evidence_ids"], "evidence_ids", _IDENTIFIER, maximum=64)
         options = _string_list(value["options"], "options", _OPTION, maximum=32)
@@ -422,6 +425,7 @@ class DecisionRequest:
             session_id=session_id,
             evidence_ids=evidence_ids,
             options=options,
+            provider_label=provider_label,
         )
 
 
@@ -587,6 +591,7 @@ class DecisionResult:
             "repository_id": self.request.repository_id,
             "task_id": self.request.task_id,
             "session_id": self.request.session_id,
+            "provider_label": self.request.provider_label,
             "suggestion": self.suggestion,
             "reason_codes": list(self.reason_codes),
             "evidence_ids": list(self.request.evidence_ids),
@@ -621,7 +626,7 @@ def derive_watchdog_lifecycle_baseline(
     checkpoint_evidence_ids: Any,
     options: Any,
 ) -> dict[str, str] | None:
-    """Return a shadow-only watchdog baseline from typed Agent OS lifecycle state.
+    """Return deterministic watchdog baseline from typed Agent OS lifecycle state.
 
     The caller remains responsible for resolving each evidence ID against the
     authorized repository before invoking this projection.

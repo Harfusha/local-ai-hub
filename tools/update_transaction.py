@@ -171,7 +171,7 @@ def replace_install_payload(
     if _has_link_component(config_source):
         return False, f"config source path contains a link or junction: {config_source}"
     entries: list[tuple[Path, Path, bool]] = []
-    for name in ("src", "skills", "tools"):
+    for name in ("src", "skills", "tools", "plugins"):
         source, target = source_root / name, install_dir / name
         if source.resolve() != target.resolve():
             entries.append((source, target, True))

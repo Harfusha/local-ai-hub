@@ -576,7 +576,7 @@ class HttpAuthorizationMixin:
             required_text("symbol", maximum=1024)
         elif path == "/api/code/find_symbol":
             required_text("pattern", "name_path_pattern", maximum=1024)
-        elif path in {"/api/code/find_declaration", "/api/code/find_implementations", "/api/code/find_referencing_symbols"}:
+        elif path in {"/api/code/find_implementations", "/api/code/find_referencing_symbols"}:
             required_text("symbol", "name", maximum=1024)
         elif path in {"/api/code/ast_outline", "/api/code/symbols_overview", "/api/code/diagnostics"}:
             required_text("path", "file", maximum=4096)

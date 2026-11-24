@@ -100,7 +100,7 @@ def test_find_symbol_l1_cache_owns_miss_and_hit_results(
     second = idx.find_symbol(str(repo), "AwesomeService")
     assert db_queries == []
     assert second["root"] == str(repo)
-    assert second["matches_count"] == 1
+    assert second["returned_count"] == 1
     assert second["symbols"][0]["name"] == "AwesomeService"
 
     second["symbols"][0]["name"] = "hit-poisoned"
@@ -110,7 +110,7 @@ def test_find_symbol_l1_cache_owns_miss_and_hit_results(
     third = idx.find_symbol(str(repo), "AwesomeService")
     assert db_queries == []
     assert third["root"] == str(repo)
-    assert third["matches_count"] == 1
+    assert third["returned_count"] == 1
     assert third["pattern"] == "AwesomeService"
     assert third["symbols"][0]["name"] == "AwesomeService"
 

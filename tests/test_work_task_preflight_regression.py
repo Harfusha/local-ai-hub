@@ -12,7 +12,7 @@ def test_bounded_submit_requires_active_task_but_preserves_idempotent_replay(tmp
     (root / "file.py").write_text("value = 1\n", encoding="utf-8")
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["

@@ -495,7 +495,7 @@ def _materialize_search_results(
             candidate_page = allowed_results[:page_limit]
             result["results"] = candidate_page
             result["total_matches"] = None
-            result["matches_count"] = None
+            result["returned_count"] = len(candidate_page)
             result["count_exact"] = False
             result["candidate_count"] = len(allowed_results)
             result["candidate_count_exact"] = False
@@ -537,7 +537,7 @@ def _materialize_search_results(
             "results": [],
         }
     result["total_matches"] = total_matches
-    result["matches_count"] = total_matches
+    result["returned_count"] = len(allowed_results)
     result["count_exact"] = count_is_exact
     result["offset"] = offset
     result["limit"] = page_limit

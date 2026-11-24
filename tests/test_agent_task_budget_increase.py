@@ -348,7 +348,7 @@ def test_broker_accepts_ordinary_write_clients(budget_case, actor, permissions):
 def test_mcp_budget_roundtrip_retains_audit_and_counters(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
     from local_ai_hub.operational_mode import OperationalModeSnapshot
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)

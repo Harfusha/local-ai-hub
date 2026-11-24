@@ -9,11 +9,14 @@ from typing import Any, Iterable
 _DEFAULTS = {
     "generic": {"max_text": 4000, "max_evidence": 12, "raw_evidence": 4, "risks": "important", "relationships": False, "commands": True},
     "codex": {"max_text": 3000, "max_evidence": 10, "raw_evidence": 3, "risks": "critical", "relationships": False, "commands": True},
+    "antigravity": {"max_text": 3500, "max_evidence": 12, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
     "claude": {"max_text": 4500, "max_evidence": 14, "raw_evidence": 5, "risks": "all", "relationships": True, "commands": True},
     "gemini": {"max_text": 3500, "max_evidence": 12, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
     "cursor": {"max_text": 3200, "max_evidence": 11, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
     "windsurf": {"max_text": 3200, "max_evidence": 11, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
+    "devin": {"max_text": 3500, "max_evidence": 12, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
     "copilot": {"max_text": 3000, "max_evidence": 10, "raw_evidence": 3, "risks": "important", "relationships": False, "commands": True},
+    "opencode": {"max_text": 3800, "max_evidence": 11, "raw_evidence": 3, "risks": "important", "relationships": True, "commands": True},
 }
 
 VENDOR_RE = re.compile(r"site-packages|dist-packages|node_modules|python\d+[\\/]lib|node:internal|\.venv[\\/]lib", re.IGNORECASE)
@@ -21,6 +24,10 @@ VENDOR_RE = re.compile(r"site-packages|dist-packages|node_modules|python\d+[\\/]
 
 def _normalize_agent(agent: str | None) -> str:
     value = (agent or "generic").strip().lower()
+    if "antigravity" in value:
+        return "antigravity"
+    if "opencode" in value:
+        return "opencode"
     if "claude" in value:
         return "claude"
     if "gemini" in value:
@@ -29,6 +36,8 @@ def _normalize_agent(agent: str | None) -> str:
         return "cursor"
     if "windsurf" in value or "codeium" in value:
         return "windsurf"
+    if "devin" in value:
+        return "devin"
     if "copilot" in value or "vscode" in value or "github" in value:
         return "copilot"
     if "codex" in value or "openai" in value:

@@ -452,33 +452,6 @@ class OllamaModelsMixin:
         return bool(isinstance(llama, dict) and llama.get("managed_with_ollama") is True
                     and model == llama.get("managed_model_logical"))
 
-    def unload(self, model: str) -> bool:
-        """Scheduler-facing alias with cache invalidation."""
-        return self.unload_model(model)
-
-    def load_model(self, model: str, *, keep_alive: str | None = None) -> bool:
-        # This legacy API has no post-unload VRAM admission callback. Mixed
-        # models must enter through prepare_model and its scheduler admission.
-        if self.requires_post_unload_admission(model):
-            return False
-        if self.llama_cpp.supports_model(model):
-            if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 600))):
-                return True
-            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
-                return False
-        payload: dict[str, Any] = {"model": model}
-        if keep_alive:
-            payload["keep_alive"] = keep_alive
-        endpoint = "/api/generate"
-        if self._is_embedding_model(model):
-            payload["input"] = [""]
-            endpoint = "/api/embed"
-        result = self.request(endpoint, payload)
-        ok = "error" not in result
-        if ok:
-            self._invalidate_loaded_cache()
-        return ok
-
     def unload_model(
         self,
         model: str,

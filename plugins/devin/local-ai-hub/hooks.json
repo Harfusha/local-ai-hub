@@ -1,0 +1,13 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 'Use the local-ai MCP for indexed repository evidence, scoped artifacts, and active Laya routing when relevant. Host permission and approval rules remain authoritative.'}}))\"",
+          "timeout": 5
+        }
+      ]
+    }
+  ]
+}

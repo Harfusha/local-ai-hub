@@ -1,29 +1,6 @@
 # Laya Annotation and Evaluation Protocol
 
-**Status:** The Hub Laya service remains available for the Hub process lifetime.
-Eligible ordinary context requests queue bounded shadow evaluation when a useful
-unresolved gap has at least two authorized sources and verified evidence IDs,
-independent of the retired `laya.runtime.enabled` gate. The pinned provider is
-loaded on demand and held through work plus the 600-second idle window after the
-latest completed request. Capture stores only actual runtime outcomes in the
-existing local Agent State store, scoped to repository/task/session with
-revalidatable evidence provenance. Useful bounded task input and retrieved
-excerpts may be retained after recognized-secret redaction. Per-example consent
-or receipt IDs are not required. Laya outputs, deterministic outcomes and human
-labels remain separate. Natural capture, human review, labeling, group-safe
-split preparation and authorized dataset export are enabled. Model-weight
-training, benchmarking, card generation and rollout remain deferred until
-separately requested and safely approved.
-
-Naturally rejected Agent OS completion gates also queue a shadow completion-gap
-recommendation when the task has current verified checkpoint evidence. The
-candidate contains typed `not_ready` status, a reason code, mutation generation,
-and evidence IDs. It contains no task text or verifier error text; the
-authoritative completion gate remains unchanged.
-
-Existing-card export reads only selected eligible, non-deterministic cards and
-source text already stored in the Hub index. It needs no per-example consent
-manifest, makes no model calls, and generates no cards.
+**Status:** Laya runs only for an explicitly invoked active typed decision. When capture is enabled, it records actual runtime outcomes for that decision, scoped to repository/task/session and validated evidence provenance. Ordinary context retrieval, routing, completion, delegation, and watchdog events do not start background Laya inference. Human labels, deterministic outcomes, and Laya outputs remain separate. Model-weight training, benchmarking, card generation, and rollout remain deferred until separately requested.
 
 ## Paired snapshot evaluation
 
@@ -42,163 +19,11 @@ threshold decision, training, or promotion occurs. Results are
 `NOT_PREDECLARED` until authentic data and predeclared criteria support a
 separate decision.
 
-## Approved `context_source` pilot
+## Active typed decisions
 
-- Trigger: an unresolved evidence gap with at least two authorized sources.
-- Typed decision state: `gap_code=unresolved_evidence_gap`, two to four unique
-  `source_codes` from `indexed`, `artifact`, `memory`, or `rag`, aligned
-  `freshness_codes` (`current`, `stale`, `unknown`) and `coverage_codes`
-  (`complete`, `partial`, `incomplete`, `unknown`), plus one evidence ID
-  per source in the same order. For useful training examples, the ordinary
-  request hook may also pass the task query and bounded retrieved excerpts when
-  materially useful. These optional text fields are redacted and stored
-  separately from the typed codes; see Candidate handling for limits.
-  Every `memory` source also requires a parallel opaque `source_record_id` in
-  candidate provenance. It is resolved against explicit repository/task/session
-  MemoryStore scopes, active or confirmed normal-sensitivity records, and the
-  linked current EvidenceStore ID. Owner-global memory is excluded. This ID
-  stays out of Laya model input and is revalidated before export.
-- Current deterministic retrieval order is the baseline.
-- The local operator may confirm one permitted target under the versioned
-  rubric; this is the human label for the single-owner Hub. No second annotator,
-  adjudicator, SSH reviewer key, or remote quorum is required.
-- A capable local Codex/model may add a separately attributed review only when
-  the Hub binds its identity from a trusted local invocation. `model_review`
-  accepts only a candidate ID and invokes a server-configured local reviewer;
-  callers cannot submit decisions, confidence, or model identity. Without that
-  callback, the request fails closed without storing a review. The Hub's local
-  reasoning-route reviewer supports every registered typed decision category,
-  validates the server-generated category rubric and option set, and uses a
-  source-specific rubric for `context_source`. It verifies installed model
-  identity around inference and records provider/model/runtime provenance.
-  Availability depends on the installed route and is not established by
-  configuration alone. Model reviews never become human labels or
-  human-confirmed export evidence.
-- Useful only when it removes one retrieval roundtrip without losing any
-  required fact. Unauthorized, stale, or incomplete sources count as false
-  positives. Abstain when evidence is insufficient.
-- Capture resolves every evidence ID through the existing EvidenceStore
-  under the authorized repository root and rejects missing, cross-root, or
-  stale references. It also requires each source code to match route metadata
-  recorded by trusted Hub retrieval callsites in the same EvidenceStore
-  database. Current capture provenance supports `indexed` from repository and
-  deterministic retrieval, `rag` from repository-search result metadata, and
-  `artifact` after a successful `evidence_get`. For `memory`, preserve an
-  aligned opaque `source_record_id` outside model input. Revalidate it against
-  active or confirmed normal-sensitivity MemoryStore records for the exact
-  repository/task/session context, require the source evidence ID to be linked
-  from that record and current in EvidenceStore, and exclude owner-global
-  memory. Caller-supplied codes or record IDs alone cannot establish
-  provenance.
-- Capture is tied to actual typed runtime execution, not an automatic scrape or
-  synthetic inference. It requires the strict typed-input, authorized-root,
-  task/session, and evidence-provenance checks above. Model-weight training
-  remains disabled.
+Laya decisions are explicit advisory requests with closed typed options. They may use the current deterministic result as a baseline; an advisory cannot authorize actions, alter task state, or replace deterministic evidence and authorization checks. Capture stores only actual outputs from active runtime calls when enabled. It does not enqueue evaluations from ordinary context, routing, budget, completion, delegation, or watchdog processing.
 
-## Registered decision categories
-
-Every suggestion is a closed typed option, not an executable action. The
-`context_source` category uses `evaluate_context_source`; other categories use
-`evaluate_decision`.
-
-| Category | Allowed suggestions | Natural entry |
-|---|---|---|
-| `context_source` | `indexed`, `artifact`, `memory`, `rag`, `more_evidence` | Eligible ordinary context retrieval with an unresolved gap and at least two authorized sources |
-| `context_budget` | `compact`, `standard`, `expanded` | Successful retrieval/delegation without an explicit caller budget |
-| `model_route` | `fast`, `smart`, `background`, `vision`, `generic` | Automatically routed task with a successful model response |
-| `redundant_step` | `possible_duplicate`, `validation_still_required` | Direct typed request at a real decision point |
-| `next_step` | `inspect_source`, `run_test`, `retrieve_evidence`, `ask_human` | Direct typed request at a real decision point |
-| `delegation` | `review_only`, `delegate_bounded`, `no_delegation` | Successful adaptive pipeline run |
-| `completion_gap` | `missing_verification`, `resolve_blocker`, `request_human_review` | Naturally rejected completion gate with current checkpoint evidence |
-| `watchdog` | `recommend_continue`, `recommend_stop`, `recommend_human_review` | Direct typed request; Hub derives the deterministic baseline from the current task lifecycle |
-
-All requests require a real task, server-bound repository/task/session identity,
-and verified evidence. `redundant_step` and `next_step` currently have no
-automatic capture hook. A runtime candidate with no recorded deterministic
-baseline may still support local training review, but `evaluate_snapshot`
-excludes it from paired quality metrics. Laya output remains shadow-only.
-
-## Other typed decision inputs
-
-The root-authorized `POST /api/agent-state/tasks` endpoint and MCP
-`local_ai_coord(action="curate_dataset")` accept direct `evaluate_decision`
-operations. Their bounded `training_content` may include `task_input`,
-`context_excerpt`, `model_response`, and `tool_output_excerpt`; recognized
-secrets are redacted before the typed decision is sent to Laya, including
-credential fields with spaces, signatures, session identifiers, and complete
-`Cookie`/`Set-Cookie` headers and URI userinfo passwords. Raw content is
-stored separately from typed state and remains distinct from deterministic
-outcomes and human labels. Ordinary automatic model-route and context-budget
-call sites attach bounded task input, successful model-response text, and the
-typed generator model identity when it fits the state contract. The primary
-repository pipeline also captures bounded successful tool outputs when the
-request has a task ID and retrieved context contains evidence IDs. Tool output
-capture is capped at 4 KiB; automatic task input at that call site is capped at
-4 KiB and model response at 8 KiB, keeping combined raw content within the
-16 KiB decision limit. Unscoped calls and deterministic answers do not produce
-tool-output examples. The context-source pilot continues to accept only task
-input and retrieved context excerpts.
-
-The current Laya Multilingual model card reports typed-decision zero-shot
-accuracy of 0.342 against a 0.461 majority baseline and warns that its
-probabilities are uncalibrated and overconfident. This upstream result is not a
-Hub evaluation and does not prove this pilot useful.
-
-## Entry gate
-
-The approved `context_source` pilot fixes its category, minimal fields,
-deterministic baseline, label rubric, and privacy scope. `model_route`,
-`context_budget`, `completion_gap`, and `watchdog` are collection-only shadow
-categories until their own natural examples, labels, measured baselines, and
-approval gates pass. No advisory behavior is enabled by these observations.
-
-## Additional automatic shadow observations
-
-The Hub also queues three server-derived categories through the same bounded
-runtime-outcome path when a pinned local checkpoint is configured:
-
-- `model_route` follows an automatic `delegate` route after the ordinary model
-  response completes. Explicit model, task-type, or complexity overrides are
-  excluded. The baseline is the final deterministic router role mapped to
-  `fast`, `smart`, or `generic`.
-- `context_budget` follows successful repository retrieval and delegation only
-  when the caller did not set an explicit token budget. The baseline is the
-  configured fast/heavy context-token budget mapped to `compact`, `standard`,
-  or `expanded`.
-- `completion_gap` follows a naturally rejected Agent OS completion gate only
-  when current checkpoint evidence is available. It records `not_ready`, the
-  fixed rejection reason, mutation generation, and verified evidence ID; task
-  text and verifier details stay out of the candidate. The deterministic gate
-  remains authoritative, and operator waivers do not trigger capture.
-
-The pipeline also queues a typed `delegation` shadow observation after a
-successful adaptive pipeline run. Its deterministic `pipeline_worker_escalation`
-baseline records whether the pipeline selected its worker, with bounded task,
-explorer, result, and verified evidence context. The shared app callback accepts
-and validates this server-derived baseline, then sends the request through the
-existing shadow runtime and outcome store. The observation never changes the
-worker decision or deterministic pipeline behavior. Natural candidate capture
-still requires an eligible request and an actual runtime outcome; pre-runtime
-capture failures remain metadata-only.
-
-Direct typed `watchdog` decisions use the current Agent OS task lifecycle as a
-separate deterministic baseline: `draft`, `planned`, `active`, and `verifying`
-map to `recommend_continue`; `waiting`, `blocked`, `failed`, and `abandoned`
-map to `recommend_human_review`; `completed` and `cancelled` map to
-`recommend_stop`. The mapped option must be allowed by the request, and an
-evidence ID must occur in both the request and the current task checkpoint.
-Unknown lifecycle states or unlinked evidence have no baseline. The result is
-only a shadow recommendation; it never changes task lifecycle or authorizes an
-action.
-
-Every active automatic category requires an existing task and current
-root-scoped evidence IDs. The Hub
-derives repository/session identity from the authorized task and validates
-evidence provenance before queueing. The bounded raw task input is secret
-redacted and separate from typed state. These observations do not change route,
-budget, prompt, response, or deterministic behavior. They remain shadow-only;
-no category is promoted without its own paired evidence and approval. Missing
-checkpoint, scope, or evidence skips collection.
+Every request requires server-bound repository/task/session identity and verified evidence. Raw training content is bounded, redacted, stored separately from typed state, and never treated as a human label. Candidates without a recorded deterministic baseline are excluded from paired quality metrics.
 
 ## Candidate handling
 
@@ -391,19 +216,7 @@ task. Candidate text, Laya outputs, and labels remain hidden from this listing.
 
 ## Current blocker
 
-No Hub-specific category has authentic independent labels or a sealed
-group-safe holdout, so no paired quality or benefit evaluation is available.
-Server-derived deterministic baselines are recorded for the `context_source`,
-`model_route`, `context_budget`, and `completion_gap` observations; they still
-need comparison on labeled held-out data. The `context_source` pilot remains
-scoped to authorized roots, typed metadata, verified evidence IDs, and minimum
-necessary redacted raw context when useful. The state_dir-backed candidate lifecycle is
-infrastructure only: it does not prove label quality or utility. Synthetic
-tests verify support-ZIP exclusion and truthful manifests, not production-data
-quality. Evaluation thresholds remain to be predeclared. Eligible shadow
-capture is active for the approved `context_source` pilot and the
-collection-only `model_route`, `context_budget`, and `completion_gap`
-observations. No advisory or guarded execution is enabled.
+No Hub-specific category has authentic independent labels or a sealed group-safe holdout, so paired quality or benefit evaluation is unavailable. The state_dir-backed candidate lifecycle is infrastructure only; it does not establish label quality or utility. Evaluation thresholds remain to be predeclared. No advisory or guarded execution is enabled outside an explicit typed decision request.
 
 ## Fine-tuning format evidence
 

@@ -66,6 +66,14 @@ _ROUTE_PRIORITY = (
     "post_git_history_search_1",
     "post_hotspots_1",
     "post_test_matrix_1",
+    "post_repo_profile_1",
+    "post_repo_map_1",
+    "post_repo_code_index_1",
+    "post_repo_investigate_1",
+    "post_repo_diagnose_1",
+    "post_repo_briefing_1",
+    "post_repo_deterministic_1",
+    "post_repo_impact_1",
 )
 
 
@@ -276,6 +284,60 @@ def handle_post_repository_analysis(
             handler._send(200, app.services.test_matrix(root))
         else:
             handler._send(200, {"success": False, "error": "deterministic engine disabled"})
+        return True
+
+    if route_id == "post_repo_profile_1":
+        handler._send(200, app.services.repo_profile(str(payload.get("root", "."))))
+        return True
+
+    if route_id == "post_repo_map_1":
+        handler._send(200, app.services.repo_map(
+            str(payload.get("root", ".")), int(payload.get("max_symbols", 120)),
+        ))
+        return True
+
+    if route_id == "post_repo_code_index_1":
+        result = app.services.code_query(
+            payload.get("root", "."), payload.get("query", ""),
+            payload.get("limit", 24), payload.get("include_code", False),
+            payload.get("offset", 0),
+        )
+        status = int(result.pop("status_code", 200))
+        handler._send(status, result)
+        return True
+
+    if route_id == "post_repo_investigate_1":
+        handler._send(200, app.services.repo_investigate(
+            str(payload.get("root", ".")), str(payload.get("query", "")),
+            str(payload.get("path", "")), bool(payload.get("include_code", True)),
+            int(payload.get("limit", 10)),
+        ))
+        return True
+
+    if route_id == "post_repo_diagnose_1":
+        handler._send(200, app.services.repo_diagnose(
+            str(payload.get("root", ".")), str(payload.get("text", payload.get("query", ""))),
+        ))
+        return True
+
+    if route_id == "post_repo_briefing_1":
+        handler._send(200, app.services.repo_briefing(str(payload.get("root", "."))))
+        return True
+
+    if route_id == "post_repo_deterministic_1":
+        handler._send(200, app.services.deterministic_query(
+            str(payload.get("root", ".")), str(payload.get("query", "")),
+            int(payload.get("limit", 24)),
+        ))
+        return True
+
+    if route_id == "post_repo_impact_1":
+        handler._send(200, app.services.repo_impact(
+            str(payload.get("root", ".")), str(payload.get("base", "HEAD")),
+            bool(payload.get("staged", False)),
+            int(payload.get("max_symbols", app.config.get("workflow", {}).get("impact_max_symbols", 48))),
+            int(payload.get("max_dependents", app.config.get("workflow", {}).get("impact_max_dependents", 30))),
+        ))
         return True
 
     return False

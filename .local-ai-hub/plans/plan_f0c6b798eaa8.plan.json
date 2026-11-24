@@ -1,0 +1,18 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Inventory all tier model routes, audit exact FP4 variants against their runtime backend, cache per-model results, and apply only verified compatible routes during installation and config loading.",
+  "id": "plan_f0c6b798eaa8",
+  "lifecycle": "archived",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-23-installer-fp4-model-audit.md",
+      "revision": {
+        "content_sha256": "f9383883b5cb4c956405d161dc5c5955eee18fdd267fa726c8ad70eb9cb6d92f",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {},
+  "title": "Installer FP4 model audit and routing"
+}

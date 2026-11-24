@@ -29,7 +29,7 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = false\n"
-        f'\n[debug_traces]\nenabled = {str(detailed_diagnostics).lower()}\n',
+        f'\n[telemetry]\nmode = {"full" if detailed_diagnostics else "minimal"}\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
@@ -73,13 +73,6 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
 
     monkeypatch.setattr(app.services, "adaptive_context_pack", adaptive_context_pack)
     monkeypatch.setattr(app.services, "preflight_guard_task_state", lambda _request: None)
-    laya_capture_calls = []
-
-    def capture_laya_context(request, result):
-        laya_capture_calls.append((request, result))
-        return {"status": "queued"}
-
-    monkeypatch.setattr(app, "capture_laya_context_source_from_context", capture_laya_context)
     monkeypatch.setattr(
         app.agent_context, "compile",
         lambda request: CompiledContext(
@@ -145,9 +138,6 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
     assert payload["max_tokens"] == payload["token_budget"] == 512
     assert len(calls) == 1
     assert calls[0][1:] == ("adaptive", "")
-    assert len(laya_capture_calls) == 1
-    assert laya_capture_calls[0][0].task_id == "context-pack-budget-e2e"
-    assert laya_capture_calls[0][1]["success"] is True
     assert result["success"] is False
     assert result["complete"] is False
     assert result["next_action"] == "read_task_context_artifact"

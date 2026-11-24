@@ -10,7 +10,8 @@ class ClaudeAdapter(BaseClientAdapter):
     capabilities = ClientCapabilities(
         client_id="claude",
         display_name="Anthropic Claude Code",
-        hook_support=HookSupport.NONE,
+        hook_support=HookSupport.SESSION_PRE_POST_TOOL,
+        hook_events=("SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"),
         instruction_targets=(InstructionTarget.CLAUDE_MD, InstructionTarget.AGENTS_MD),
         has_token_tracking=False,
         has_reasoning_tokens=True,

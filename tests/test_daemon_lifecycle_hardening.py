@@ -13,7 +13,16 @@ from unittest import mock
 
 import pytest
 
-from local_ai_hub import command_broker as commands_module
+from command_module_patch import patch_split_command_module
+
+from local_ai_hub import (
+    command_broker as commands_module,
+    command_daemon_lifecycle,
+    command_daemon_process,
+    command_daemon_registry,
+    command_execute,
+    command_jobs,
+)
 from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.process_utils import hidden_run_kwargs
@@ -75,7 +84,7 @@ def _registry_row(broker: CommandBroker, *, process_group_id: int = 4321) -> dic
         "daemon_id": "dmn_" + "a" * 32,
         "pid": 4321,
         "process_group_id": process_group_id,
-        "job_name": commands_module._daemon_job_name("dmn_" + "a" * 32) if os.name == "nt" else None,
+        "job_name": command_jobs.daemon_job_name("dmn_" + "a" * 32) if os.name == "nt" else None,
         "identity": {"pid": 4321, "start_time": "leader-start"},
         "owner_id": broker._daemon_owner_id,
         "task_id": "daemon-test",
@@ -117,7 +126,7 @@ def test_daemon_registry_persists_process_group_id(tmp_path: Path) -> None:
         "process": LiveProcess(),
         "pid": 4321,
         "process_group_id": 4321,
-        "job_name": commands_module._daemon_job_name(daemon_id) if os.name == "nt" else None,
+        "job_name": command_jobs.daemon_job_name(daemon_id) if os.name == "nt" else None,
         "identity": {"pid": 4321, "start_time": "leader-start"},
         "owner_id": broker._daemon_owner_id,
         "task_id": "daemon-test",
@@ -139,10 +148,10 @@ def test_recovery_accepts_exited_leader_only_when_group_is_verified_alive(
 ) -> None:
     broker = _broker(tmp_path)
     _write_registry_row(broker, _registry_row(broker))
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_process_leader_exited", lambda _pid: True, raising=False)
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True, raising=False)
-    monkeypatch.setattr(commands_module, "_daemon_process_group_owned", lambda _pgid, _token: True, raising=False)
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    patch_split_command_module(monkeypatch, "_process_leader_exited", lambda _pid: True, raising=False)
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: True, raising=False)
+    patch_split_command_module(monkeypatch, "_daemon_process_group_owned", lambda _pgid, _token: True, raising=False)
 
     try:
         broker._load_daemon_registry()
@@ -163,10 +172,10 @@ def test_windows_recovery_requires_live_named_job_for_exited_leader(
 ) -> None:
     broker = _broker(tmp_path)
     _write_registry_row(broker, _registry_row(broker), version=4)
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 1234)
-    monkeypatch.setattr(commands_module, "_windows_job_has_processes", lambda _handle: job_has_processes)
-    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: None)
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(command_daemon_registry, "_open_named_daemon_job", lambda _name: 1234)
+    monkeypatch.setattr(command_daemon_registry, "_windows_job_has_processes", lambda _handle: job_has_processes)
+    patch_split_command_module(monkeypatch, "close_job_object", lambda _handle: None)
 
     try:
         broker._load_daemon_registry()
@@ -242,11 +251,11 @@ def test_windows_recovery_log_failure_releases_unadopted_resources(
         return original_open(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", open_log)
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 77)
-    monkeypatch.setattr(commands_module, "_windows_job_has_processes", lambda _handle: True)
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(command_daemon_registry, "_open_named_daemon_job", lambda _name: 77)
+    monkeypatch.setattr(command_daemon_registry, "_windows_job_has_processes", lambda _handle: True)
     close_job = mock.Mock()
-    monkeypatch.setattr(commands_module, "close_job_object", close_job)
+    patch_split_command_module(monkeypatch, "close_job_object", close_job)
     try:
         broker._load_daemon_registry()
         assert broker._daemons == {}
@@ -274,11 +283,11 @@ def test_windows_recovery_admission_failure_closes_job_without_opening_log(
         return original_open(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", reject_log_open)
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 77)
-    monkeypatch.setattr(commands_module, "_windows_job_has_processes", lambda _handle: True)
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(command_daemon_registry, "_open_named_daemon_job", lambda _name: 77)
+    monkeypatch.setattr(command_daemon_registry, "_windows_job_has_processes", lambda _handle: True)
     close_job = mock.Mock()
-    monkeypatch.setattr(commands_module, "close_job_object", close_job)
+    patch_split_command_module(monkeypatch, "close_job_object", close_job)
     try:
         broker._load_daemon_registry()
         assert broker._daemons == {}
@@ -294,7 +303,7 @@ def test_recovery_accepts_live_version_two_registry_row(
 ) -> None:
     broker = _broker(tmp_path)
     _write_registry_row(broker, _registry_row(broker), version=2)
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: {"pid": 4321, "start_time": "leader-start"})
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: {"pid": 4321, "start_time": "leader-start"})
 
     broker._load_daemon_registry()
 
@@ -317,7 +326,7 @@ def test_windows_recovery_rejects_legacy_registry_rows(
 ) -> None:
     broker = _broker(tmp_path)
     _write_registry_row(broker, _registry_row(broker), version=version)
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: {"pid": 4321, "start_time": "leader-start"})
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: {"pid": 4321, "start_time": "leader-start"})
 
     broker._load_daemon_registry()
 
@@ -330,9 +339,9 @@ def test_recovery_rejects_exited_leader_when_group_is_gone_or_indeterminate(
 ) -> None:
     broker = _broker(tmp_path)
     _write_registry_row(broker, _registry_row(broker))
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_process_leader_exited", lambda _pid: True, raising=False)
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: group_state, raising=False)
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    patch_split_command_module(monkeypatch, "_process_leader_exited", lambda _pid: True, raising=False)
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: group_state, raising=False)
 
     broker._load_daemon_registry()
 
@@ -344,10 +353,9 @@ def test_recovery_rejects_pid_reuse_even_when_group_is_alive(
 ) -> None:
     broker = _broker(tmp_path)
     _write_registry_row(broker, _registry_row(broker))
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: {"pid": 4321, "start_time": "reused"})
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True, raising=False)
-    monkeypatch.setattr(
-        commands_module, "_process_leader_exited",
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: {"pid": 4321, "start_time": "reused"})
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: True, raising=False)
+    patch_split_command_module(monkeypatch, "_process_leader_exited",
         lambda _pid: pytest.fail("reused PID must not enter orphan recovery"), raising=False,
     )
 
@@ -361,18 +369,17 @@ def test_windows_recovery_rejects_reused_pid_outside_named_job(
 ) -> None:
     broker = _broker(tmp_path)
     row = _registry_row(broker)
-    row["job_name"] = commands_module._daemon_job_name(str(row["daemon_id"]))
+    row["job_name"] = command_jobs.daemon_job_name(str(row["daemon_id"]))
     _write_registry_row(broker, row, version=4)
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(
-        commands_module, "process_identity",
+    patch_split_command_module(monkeypatch, "os", SimpleNamespace(name="nt"))
+    patch_split_command_module(monkeypatch, "process_identity",
         lambda pid: {"pid": pid, "creation_identity": 9999},
     )
-    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 77)
+    monkeypatch.setattr(command_daemon_registry, "_open_named_daemon_job", lambda _name: 77)
     close_job = mock.Mock(return_value=True)
-    monkeypatch.setattr(commands_module, "close_job_object", close_job)
+    patch_split_command_module(monkeypatch, "close_job_object", close_job)
     membership = mock.Mock(side_effect=AssertionError("reused PID must not be trusted"))
-    monkeypatch.setattr(commands_module, "_windows_job_contains_process", membership)
+    monkeypatch.setattr(command_daemon_registry, "_windows_job_contains_process", membership)
 
     broker._load_daemon_registry()
 
@@ -392,7 +399,7 @@ def test_process_group_liveness_is_tristate(
         if failure is not None:
             raise failure()
 
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix", killpg=killpg))
+    patch_split_command_module(monkeypatch, "os", SimpleNamespace(name="posix", killpg=killpg))
 
     assert commands_module._process_group_liveness(4321) is expected
 
@@ -403,8 +410,7 @@ def test_recovered_daemon_stop_fails_closed_without_process_tree_handle(
     identity = {"pid": 4321, "start_time": "leader-start"}
     process = commands_module._RecoveredDaemonProcess(4321, identity, 4321)
     info = {"process": process, "pid": 4321, "identity": identity}
-    monkeypatch.setattr(
-        commands_module, "terminate_tree",
+    patch_split_command_module(monkeypatch, "terminate_tree",
         lambda *_args, **_kwargs: pytest.fail("recovered daemon must not be signaled"),
     )
 
@@ -655,28 +661,25 @@ def test_spawn_daemon_revalidates_task_worktree_before_resume(
         return True
 
     monkeypatch.setattr(
-        commands_module, "_create_named_daemon_job", lambda _daemon_id: 77
+        command_daemon_lifecycle, "_create_named_daemon_job", lambda _daemon_id: 77
     )
-    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
+    patch_split_command_module(monkeypatch, "assign_process_to_job", lambda *_args: True)
     monkeypatch.setattr(
-        commands_module,
+        command_daemon_lifecycle,
         "_duplicate_job_handle_into_process",
         replace_worktree_after_job_anchor,
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_resume_suspended_process",
         lambda child: resume_calls.append(child.pid) or True,
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "process_identity",
         lambda pid: {"pid": pid, "start_time": "spawned"},
     )
-    monkeypatch.setattr(
-        commands_module, "terminate_job_object", terminate_suspended_job
+    patch_split_command_module(monkeypatch, "terminate_job_object", terminate_suspended_job
     )
-    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    patch_split_command_module(monkeypatch, "close_job_object", lambda _handle: True)
     monkeypatch.setattr(commands_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
 
     result = broker.spawn_daemon(
@@ -726,23 +729,21 @@ def test_spawn_daemon_reauthorizes_after_suspended_process_creation_before_resum
 
     process = SuspendedProcess()
     monkeypatch.setattr(broker, "authorize_auxiliary_action", revoke_after_create)
-    monkeypatch.setattr(commands_module, "_create_named_daemon_job", lambda _daemon_id: 77)
-    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: "fake-identity")
+    monkeypatch.setattr(command_daemon_lifecycle, "_create_named_daemon_job", lambda _daemon_id: 77)
+    patch_split_command_module(monkeypatch, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(command_daemon_lifecycle, "_duplicate_job_handle_into_process", lambda *_args: True)
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: "fake-identity")
 
     def stop_suspended_tree(info: dict[str, object]) -> bool:
         setattr(info["process"], "_local_ai_job_handle", None)
         return True
 
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_stop_daemon_tree",
         stop_suspended_tree,
     )
     _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_resume_suspended_process",
         lambda child: resume_calls.append(child.pid) or True,
     )
@@ -985,8 +986,7 @@ def test_stop_daemon_requires_policy_before_tree_cleanup(
         lambda *_args, **_kwargs: {"allowed": False, "reason": "stop grant required"},
     )
     cleanup_calls: list[int] = []
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_stop_daemon_tree",
         lambda info: cleanup_calls.append(int(info["pid"])) or True,
     )
@@ -1016,8 +1016,7 @@ def test_stop_daemon_rejects_a_different_task_owner(
     )
     cleanup_calls: list[str] = []
     with monkeypatch.context() as patch:
-        patch.setattr(
-            commands_module,
+        patch_split_command_module(patch,
             "_stop_daemon_tree",
             lambda info: cleanup_calls.append(str(info["daemon_id"])) or True,
         )
@@ -1064,8 +1063,7 @@ def test_daemon_status_is_observational_and_redacts_sensitive_command_arguments(
 ) -> None:
     broker = _broker(tmp_path)
     cleanup_calls: list[str] = []
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_stop_daemon_tree",
         lambda info: cleanup_calls.append(str(info["daemon_id"])) or True,
     )
@@ -1123,7 +1121,7 @@ def test_stop_daemon_does_not_claim_tree_stopped_when_cleanup_is_unconfirmed(
         terminate_calls.append(int(info["pid"]))
         return False
 
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", unconfirmed, raising=False)
+    patch_split_command_module(monkeypatch, "_stop_daemon_tree", unconfirmed, raising=False)
     result = broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
 
     assert terminate_calls == [daemon["pid"], daemon["pid"]]
@@ -1131,7 +1129,7 @@ def test_stop_daemon_does_not_claim_tree_stopped_when_cleanup_is_unconfirmed(
     assert result["status"] == "cleanup_unconfirmed"
     assert result["running"] is False
 
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", lambda *_args, **_kwargs: True)
+    patch_split_command_module(monkeypatch, "_stop_daemon_tree", lambda *_args, **_kwargs: True)
     assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
 
 
@@ -1183,12 +1181,12 @@ def test_spawn_daemon_retains_tracking_when_registry_and_cleanup_retry_fail(
 
     process = UnstoppableProcess()
     _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(commands_module, "process_identity", lambda pid: {"pid": pid, "creation_identity": 1})
-    monkeypatch.setattr(commands_module, "_create_named_daemon_job", lambda _daemon_id: 77)
-    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "_resume_suspended_process", lambda _child: True)
-    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    patch_split_command_module(monkeypatch, "process_identity", lambda pid: {"pid": pid, "creation_identity": 1})
+    monkeypatch.setattr(command_daemon_lifecycle, "_create_named_daemon_job", lambda _daemon_id: 77)
+    patch_split_command_module(monkeypatch, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(command_daemon_lifecycle, "_duplicate_job_handle_into_process", lambda *_args: True)
+    patch_split_command_module(monkeypatch, "_resume_suspended_process", lambda _child: True)
+    patch_split_command_module(monkeypatch, "close_job_object", lambda _handle: True)
     stop_calls = 0
 
     def fail_stop(_info: dict[str, Any]) -> bool:
@@ -1196,7 +1194,7 @@ def test_spawn_daemon_retains_tracking_when_registry_and_cleanup_retry_fail(
         stop_calls += 1
         return False
 
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", fail_stop)
+    patch_split_command_module(monkeypatch, "_stop_daemon_tree", fail_stop)
     persistence_results = iter((True, False) if os.name == "nt" else (False,))
     monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: next(persistence_results, False))
     expiry_calls: list[str] = []
@@ -1257,7 +1255,7 @@ def test_retry_stop_unpersisted_daemon_removes_tracking_after_confirmed_exit(
     daemon_id = "unpersisted-daemon"
     info = {"daemon_id": daemon_id, "process": process, "_slot_released": False}
     broker._daemons[daemon_id] = info
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", lambda _info: True)
+    patch_split_command_module(monkeypatch, "_stop_daemon_tree", lambda _info: True)
     monkeypatch.setattr(broker, "_persist_daemon_registry", lambda: True)
 
     stopped = broker._retry_stop_unpersisted_daemon(daemon_id, info)
@@ -1293,16 +1291,15 @@ def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
 
     process = StoppableProcess()
     _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "process_identity",
         lambda pid: {"pid": pid, "creation_identity": 1},
     )
-    monkeypatch.setattr(commands_module, "_create_named_daemon_job", lambda _daemon_id: 77)
-    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "_resume_suspended_process", lambda _child: True)
-    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    monkeypatch.setattr(command_daemon_lifecycle, "_create_named_daemon_job", lambda _daemon_id: 77)
+    patch_split_command_module(monkeypatch, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(command_daemon_lifecycle, "_duplicate_job_handle_into_process", lambda *_args: True)
+    patch_split_command_module(monkeypatch, "_resume_suspended_process", lambda _child: True)
+    patch_split_command_module(monkeypatch, "close_job_object", lambda _handle: True)
     stop_calls = 0
     original_stop_daemon_tree = commands_module._stop_daemon_tree
 
@@ -1313,7 +1310,7 @@ def test_spawn_daemon_retries_cleanup_when_registry_persistence_fails(
         stop_calls += 1
         return stop_calls > 1
 
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", stop_then_confirm)
+    patch_split_command_module(monkeypatch, "_stop_daemon_tree", stop_then_confirm)
     persistence_results = iter(
         (True, False, final_registry_persisted)
         if os.name == "nt"
@@ -1385,28 +1382,25 @@ def test_spawn_daemon_rejects_foreign_worktree_registration_before_resume(
         return True
 
     monkeypatch.setattr(
-        commands_module, "_create_named_daemon_job", lambda _daemon_id: 77
+        command_daemon_lifecycle, "_create_named_daemon_job", lambda _daemon_id: 77
     )
-    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
+    patch_split_command_module(monkeypatch, "assign_process_to_job", lambda *_args: True)
     monkeypatch.setattr(
-        commands_module,
+        command_daemon_lifecycle,
         "_duplicate_job_handle_into_process",
         replace_worktree_after_job_anchor,
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_resume_suspended_process",
         lambda child: resume_calls.append(child.pid) or True,
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "process_identity",
         lambda pid: {"pid": pid, "start_time": "spawned"},
     )
-    monkeypatch.setattr(
-        commands_module, "terminate_job_object", terminate_suspended_job
+    patch_split_command_module(monkeypatch, "terminate_job_object", terminate_suspended_job
     )
-    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    patch_split_command_module(monkeypatch, "close_job_object", lambda _handle: True)
     _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
 
     result = broker.spawn_daemon(
@@ -1426,10 +1420,10 @@ def test_recovered_daemon_fails_closed_without_live_kernel_handle(
 ) -> None:
     identity = {"pid": 4321, "start_time": "stable-looking-but-not-a-handle"}
     recovered = commands_module._RecoveredDaemonProcess(4321, identity)
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix"))
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: identity)
+    patch_split_command_module(monkeypatch, "os", SimpleNamespace(name="posix"))
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: identity)
     terminate = mock.Mock(side_effect=AssertionError("recovered PID must not be signaled"))
-    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
+    patch_split_command_module(monkeypatch, "terminate_tree", terminate)
 
     assert recovered.poll() is None
     assert commands_module._stop_daemon_tree(
@@ -1445,10 +1439,10 @@ def test_recovered_daemon_fails_closed_on_windows_without_job_handle(
 ) -> None:
     identity = {"pid": 4321, "creation_identity": 1234}
     recovered = commands_module._RecoveredDaemonProcess(4321, identity)
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: identity)
+    patch_split_command_module(monkeypatch, "os", SimpleNamespace(name="nt"))
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: identity)
     terminate = mock.Mock(side_effect=AssertionError("recovered PID must not be signaled"))
-    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
+    patch_split_command_module(monkeypatch, "terminate_tree", terminate)
 
     assert commands_module._stop_daemon_tree(
         {"process": recovered, "pid": 4321, "identity": identity}
@@ -1464,12 +1458,12 @@ def test_live_windows_daemon_uses_stable_job_handle(
     class LiveProcess:
         _local_ai_job_handle = 77
 
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="nt"))
+    patch_split_command_module(monkeypatch, "os", SimpleNamespace(name="nt"))
     terminate = mock.Mock()
     close = mock.Mock(return_value=True)
-    monkeypatch.setattr(commands_module, "terminate_job_object", terminate)
-    monkeypatch.setattr(commands_module, "_wait_windows_job_empty", lambda *_args: True)
-    monkeypatch.setattr(commands_module, "close_job_object", close)
+    patch_split_command_module(monkeypatch, "terminate_job_object", terminate)
+    monkeypatch.setattr(command_daemon_process, "_wait_windows_job_empty", lambda *_args: True)
+    patch_split_command_module(monkeypatch, "close_job_object", close)
 
     assert commands_module._stop_daemon_tree({"process": LiveProcess(), "pid": 4321}) is True
     terminate.assert_called_once_with(77)
@@ -1490,7 +1484,7 @@ def test_stop_daemon_does_not_kill_only_leader_when_tree_stop_fails(
     kill = mock.Mock()
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(commands_module, "_stop_daemon_tree", lambda *_args: False)
+            patch_split_command_module(patch, "_stop_daemon_tree", lambda *_args: False)
             patch.setattr(process, "kill", kill)
             patch.setattr(
                 process, "wait",
@@ -1570,7 +1564,7 @@ def test_daemon_job_stops_descendants_after_leader_exits(
             return False
         return stop_tree(info)
 
-    monkeypatch.setattr(commands_module, "_stop_daemon_tree", fail_once)
+    patch_split_command_module(monkeypatch, "_stop_daemon_tree", fail_once)
     # The launcher creates a child and publishes its PID in the task worktree.
     broker = _broker(tmp_path, allow_mutating=True)
     child_pid_file = tmp_path / "daemon-child.pid"
@@ -1624,8 +1618,7 @@ def test_daemon_ttl_retries_unconfirmed_tree_cleanup(
     assert daemon["success"] is True
     broker._daemons[daemon["daemon_id"]]["process"].wait(timeout=5)
     attempts: list[str] = []
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_stop_daemon_tree",
         lambda info: attempts.append(str(info["daemon_id"])) or False,
         raising=False,
@@ -1678,8 +1671,8 @@ def test_daemon_ttl_schedules_remaining_deadline(
         def cancel(self):
             self.cancelled = True
 
-    monkeypatch.setattr(commands_module, "threading", SimpleNamespace(Timer=RecordingTimer))
-    monkeypatch.setattr(commands_module, "time", SimpleNamespace(time=lambda: 100.0))
+    patch_split_command_module(monkeypatch, "threading", SimpleNamespace(Timer=RecordingTimer))
+    patch_split_command_module(monkeypatch, "time", SimpleNamespace(time=lambda: 100.0))
     daemon_id = "dmn_ttl_schedule"
     expires_at = 100.5
     info = {"daemon_id": daemon_id, "expires_at": expires_at}
@@ -1815,7 +1808,7 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     first = _broker(tmp_path, allow_unknown=True, allow_mutating=True)
     sequence: list[str] = []
     persist = first._persist_daemon_registry
-    duplicate = commands_module._duplicate_job_handle_into_process
+    duplicate = command_daemon_lifecycle._duplicate_job_handle_into_process
     resume = commands_module._resume_suspended_process
 
     def persist_in_order() -> bool:
@@ -1834,8 +1827,8 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
 
     with monkeypatch.context() as patch:
         patch.setattr(first, "_persist_daemon_registry", persist_in_order)
-        patch.setattr(commands_module, "_duplicate_job_handle_into_process", duplicate_in_order)
-        patch.setattr(commands_module, "_resume_suspended_process", resume_in_order)
+        patch.setattr(command_daemon_lifecycle, "_duplicate_job_handle_into_process", duplicate_in_order)
+        patch_split_command_module(patch, "_resume_suspended_process", resume_in_order)
         daemon = first.spawn_daemon(
             [sys.executable, str(launcher), str(child_pid_path)],
             str(tmp_path),
@@ -1976,12 +1969,12 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
                 return capture_popen if name == "Popen" else getattr(real_subprocess, name)
 
         with monkeypatch.context() as patch:
-            patch.setattr(commands_module, "subprocess", _SubprocessProxy())
-            patch.setattr(commands_module, "_resume_suspended_process", lambda _proc: resumed.append(True) or True)
+            patch_split_command_module(patch, "subprocess", _SubprocessProxy())
+            patch_split_command_module(patch, "_resume_suspended_process", lambda _proc: resumed.append(True) or True)
             if failure == "registry":
                 patch.setattr(failed_broker, "_persist_daemon_registry", lambda: False)
             else:
-                patch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: False)
+                patch.setattr(command_daemon_lifecycle, "_duplicate_job_handle_into_process", lambda *_args: False)
             result = failed_broker.spawn_daemon(
                 [sys.executable, "-c", "import time; time.sleep(12)"],
                 str(tmp_path), name=f"named-job-{failure}-failure", task_id="daemon-test",
@@ -2034,7 +2027,7 @@ def test_restart_reconciliation_rejects_pid_reuse(tmp_path: Path) -> None:
     assert daemon["success"] is True
 
     try:
-        with mock.patch.object(commands_module, "process_identity", return_value={"pid": daemon["pid"], "creation_identity": -1}):
+        with mock.patch.object(command_daemon_registry, "process_identity", return_value={"pid": daemon["pid"], "creation_identity": -1}):
             second = _broker(tmp_path)
         result = second.daemon_status(daemon["daemon_id"])
         assert result["success"] is False
@@ -2141,9 +2134,9 @@ def test_live_posix_daemon_tree_preserves_process_group_termination(
         def poll(self) -> None:
             return None
 
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix"))
+    patch_split_command_module(monkeypatch, "os", SimpleNamespace(name="posix"))
     terminate = mock.Mock(return_value=True)
-    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
+    patch_split_command_module(monkeypatch, "terminate_tree", terminate)
 
     result = commands_module._stop_daemon_tree(
         {"process": LiveProcess(), "pid": 4321, "identity": {"pid": 4321}, "process_group_id": 4321}

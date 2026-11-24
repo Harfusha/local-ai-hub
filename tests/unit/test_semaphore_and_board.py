@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from local_ai_hub.agent_board import BoardStore
 from local_ai_hub.agent_events import SwarmPubSub
 from local_ai_hub.agent_semaphores import SemaphoreStore
 
@@ -378,21 +377,6 @@ def test_wait_for_event_with_filter() -> None:
     assert received.get("event", {}).get("message", {}).get("task_id") == "task-42"
 
 
-def test_legacy_board_writes_are_rejected(tmp_path: Path) -> None:
-    db_path = tmp_path / "board.sqlite"
-    board = BoardStore(db_path)
-
-    milestone = board.milestone_create(
-        "v1.0", target_date="2026-11-01", description="Initial release"
-    )
-    item = board.item_create(title="Implement semaphores", status="planned")
-
-    assert milestone["success"] is False
-    assert milestone["error_code"] == "legacy_board_read_only"
-    assert item["success"] is False
-    assert item["error_code"] == "legacy_board_read_only"
-
-
 def test_mcp_coord_routing_and_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     from local_ai_hub import mcp_server as local_ai_mcp
 
@@ -448,25 +432,8 @@ def test_mcp_coord_routing_and_dispatch(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls[-1]["kwargs"]["topic"] == "build_pipeline"
     assert calls[-1]["kwargs"]["timeout"] == 15.0
 
-    # 5. Milestone Create
-    res = local_ai_mcp.local_ai_coord(
-        action="milestone_create",
-        name="v1.0",
-        target_date="2026-11-15",
-        description="First major milestone",
-    )
-    assert res["success"] is True
-    assert calls[-1]["action"] == "milestone_create"
-    assert calls[-1]["kwargs"]["name"] == "v1.0"
-
-    # 9. Milestone Status
-    res = local_ai_mcp.local_ai_coord(action="milestone_status", name="v1.0")
-    assert res["success"] is True
-    assert calls[-1]["action"] == "milestone_status"
-    assert calls[-1]["kwargs"]["name"] == "v1.0"
-
     # 10. Session Briefing
-    res = local_ai_mcp.local_ai_coord(action="session_briefing", include=["board", "semaphores"])
+    res = local_ai_mcp.local_ai_coord(action="session_briefing", root="C:/repo", include=["board", "semaphores"])
     assert res["success"] is True
     assert calls[-1]["action"] == "session_briefing"
     assert calls[-1]["kwargs"]["include"] == ["board", "semaphores"]
@@ -503,14 +470,7 @@ def test_client_coord_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
     client.coord("wait_for_event", topic="ev_topic", timeout=5.0)
     assert posted[-1]["path"] == "/api/coord/wait_for_event"
 
-    # 5. Milestones
-    client.coord("milestone_create", name="m1", target_date="2026-12-01")
-    assert posted[-1]["path"] == "/api/coord/milestone_create"
-
-    client.coord("milestone_status", name="m1")
-    assert posted[-1]["path"] == "/api/coord/milestone_status"
-
     # 7. Session briefing
-    client.coord("session_briefing", include=["board"])
+    client.coord("session_briefing", root="C:/repo", include=["board"])
     assert posted[-1]["path"] == "/api/coord/session_briefing"
 

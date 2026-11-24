@@ -38,7 +38,7 @@ def test_search_path_resolution_caching_eliminates_repeated_resolves(repo_with_f
     # First search populates resolution cache
     res1 = tools.search(root, "compute_alpha", limit=10)
     assert res1["success"] is True
-    assert res1["matches_count"] >= 2
+    assert res1["total_matches"] >= 2
 
     # Check cache has entries
     with tools._resolved_paths_lock:

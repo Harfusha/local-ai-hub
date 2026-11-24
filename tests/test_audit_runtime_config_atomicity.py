@@ -72,8 +72,10 @@ def test_runtime_reset_serializes_before_waiting_update(tmp_path: Path, monkeypa
         release_reset.set()
         executor.shutdown(wait=True, cancel_futures=True)
 
-    assert target.read_bytes() == b"from_update = true" + os.linesep.encode('ascii')
-    assert tomllib.loads(target.read_text(encoding='utf-8')) == {'from_update': True}
+    assert tomllib.loads(target.read_text(encoding='utf-8')) == {
+        "local_ai_hub": {"config_schema_version": 1},
+        "from_update": True,
+    }
     assert config_path.read_bytes() == primary_bytes
 
 
@@ -82,7 +84,7 @@ def test_runtime_override_replace_failure_preserves_both_files_and_cleans_temp(t
     primary_bytes = b"[server]\nport = 9000\n"
     config_path.write_bytes(primary_bytes)
     target = config_module.runtime_override_path(config_path)
-    original_override = b"[features]\ndashboard = true\n"
+    original_override = b"[local_ai_hub]\nconfig_schema_version = 1\n\n[features]\ndashboard = true\n"
     target.write_bytes(original_override)
     real_replace = os.replace
 

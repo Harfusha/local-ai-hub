@@ -57,7 +57,7 @@ def test_diagnostic_mode_keeps_detail_but_never_exposes_private_accounting():
 def test_user_memory_settings_and_compiler_diagnostics_remain_intact():
     result = {
         "value": {"debug": True, "telemetry": {"example": 1}},
-        "settings": {"debug_traces.enabled": False},
+        "settings": {"telemetry.mode": "minimal"},
         "state_data": {"raw": "user data"},
         "diagnostics": [{"path": "a.py", "line": 4, "message": "undefined name"}],
     }
@@ -76,11 +76,11 @@ def test_pipeline_failure_and_requested_step_results_are_actionable():
 
 def test_live_runtime_toggle_is_rechecked_without_restarting_mcp(tmp_path):
     runtime = tmp_path / "config.runtime.toml"
-    config = {"debug_traces": {"enabled": False}, "_runtime_override_path": str(runtime)}
+    config = {"telemetry": {"mode": "minimal"}, "_runtime_override_path": str(runtime)}
     assert detailed_diagnostics_enabled(config) is False
-    runtime.write_text("[debug_traces]\nenabled = true\n", encoding="utf-8")
+    runtime.write_text('[telemetry]\nmode = "full"\n', encoding="utf-8")
     assert detailed_diagnostics_enabled(config) is True
-    runtime.write_text("[debug_traces]\nenabled = false\n", encoding="utf-8")
+    runtime.write_text('[telemetry]\nmode = "minimal"\n', encoding="utf-8")
     assert detailed_diagnostics_enabled(config) is False
     runtime.write_text("malformed TOML!", encoding="utf-8")
     assert detailed_diagnostics_enabled(config) is False
@@ -89,9 +89,9 @@ def test_live_runtime_toggle_is_rechecked_without_restarting_mcp(tmp_path):
 def test_runtime_reset_does_not_restore_a_stale_startup_true(tmp_path):
     base = tmp_path / "config.toml"
     runtime = tmp_path / "config.runtime.toml"
-    base.write_text("[debug_traces]\nenabled = false\n", encoding="utf-8")
-    runtime.write_text("[debug_traces]\nenabled = true\n", encoding="utf-8")
-    config = {"debug_traces": {"enabled": True}, "_config_path": str(base),
+    base.write_text('[telemetry]\nmode = "minimal"\n', encoding="utf-8")
+    runtime.write_text('[telemetry]\nmode = "full"\n', encoding="utf-8")
+    config = {"telemetry": {"mode": "full"}, "_config_path": str(base),
               "_runtime_override_path": str(runtime)}
     assert detailed_diagnostics_enabled(config) is True
     runtime.unlink()
@@ -105,7 +105,7 @@ def test_dashboard_gate_requires_explicit_boolean_true(enabled):
 
 def test_live_store_is_authoritative_over_startup_config():
     assert detailed_diagnostics_enabled(
-        {"debug_traces": {"enabled": True}}, store=SimpleNamespace(enabled=False),
+        {"telemetry": {"mode": "full"}}, store=SimpleNamespace(enabled=False),
     ) is False
 
 
@@ -116,7 +116,7 @@ def test_live_store_is_authoritative_over_startup_config():
 def test_mcp_callers_cannot_override_disabled_dashboard_diagnostics(monkeypatch, arguments):
     from local_ai_hub import mcp_server
 
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     result = mcp_server._agent_output(
         {"success": True, "text": "answer", "telemetry": {"requests": 2}, "raw_model_output": "hidden"},
         "local_ai_repo", arguments,
@@ -129,7 +129,7 @@ def test_mcp_wire_filter_catches_accounting_added_by_pagination(monkeypatch):
     from local_ai_hub import mcp_server
     from local_ai_hub.token_accounting import json_tokens
 
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     contents, structured = mcp_server._mcp_budget_payload(
         "local_ai_repo", {"action": "code_index", "max_response_tokens": 1600},
         {"success": True, "root": "C:/repo", "query": "thing", "symbols": [
@@ -172,7 +172,7 @@ def test_detailed_wire_accounting_uses_the_final_sanitized_response(monkeypatch)
 def test_background_debug_traces_do_not_leak_into_agent_mcp_wire(monkeypatch):
     from local_ai_hub import mcp_server
 
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": True}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "full"}})
     arguments = {"action": "code_index", "max_response_tokens": 2400}
     contents, structured = mcp_server._mcp_budget_payload("local_ai_repo", arguments, {
         "success": True, "root": "C:/repo", "query": "thing",

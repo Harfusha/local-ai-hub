@@ -22,7 +22,7 @@ from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, Memo
 from local_ai_hub.command_broker import CommandBroker
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.deterministic import DeterministicEngine
-from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
+from local_ai_hub.git_worktrees import create_git_worktree, remove_git_worktree
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.token_accounting import GlobalQuotaEnforcer
 

@@ -29,7 +29,7 @@ def test_mcp_client_status_opencode(monkeypatch):
     assert res.get("hook_support") == "js_plugin"
     assert res.get("prompt_cache_shield") is True
     assert res.get("has_goal_system") is True
-    assert "local_ai_work" not in (res.get("tool_filter") or [])
+    assert "local_ai_work" in (res.get("tool_filter") or [])
     assert "local_ai_status" in (res.get("tool_filter") or [])
 
 

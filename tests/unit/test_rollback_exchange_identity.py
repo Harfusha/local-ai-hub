@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub import command_broker as commands
+from local_ai_hub import command_rollback as commands
 
 
 def _exchange_fixture(monkeypatch, *, tamper=None, before_change=False, tamper_stage=False):

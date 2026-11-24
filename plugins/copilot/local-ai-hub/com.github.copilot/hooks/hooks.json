@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "echo '{\"additionalContext\":\"Use the Local AI MCP for indexed repository evidence and scoped artifacts; use active Laya routing when available. Laya suggestions are advisory; deterministic checks and Copilot approval remain authoritative.\"}'",
+        "powershell": "Write-Output '{\"additionalContext\":\"Use the Local AI MCP for indexed repository evidence and scoped artifacts; use active Laya routing when available. Laya suggestions are advisory; deterministic checks and Copilot approval remain authoritative.\"}'",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

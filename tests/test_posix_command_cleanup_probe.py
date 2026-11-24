@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from command_module_patch import patch_split_command_module
+
 import local_ai_hub.command_broker as commands_module
 from local_ai_hub.command_broker import CommandBroker
 
@@ -40,9 +42,9 @@ def test_posix_command_normal_exit_confirms_cleanup(monkeypatch, tmp_path):
             return getattr(real_os, name)
 
     fake_os = FakePosixOs()
-    monkeypatch.setattr(commands_module, "os", fake_os)
+    patch_split_command_module(monkeypatch, "os", fake_os)
     # Exercise the fallback probe even when native tree cleanup succeeds.
-    monkeypatch.setattr(commands_module, "terminate_tree", lambda *_args, **_kwargs: False)
+    patch_split_command_module(monkeypatch, "terminate_tree", lambda *_args, **_kwargs: False)
 
     result = broker._execute(
         ["python", "-c", "print(123)"],
@@ -87,8 +89,8 @@ def test_posix_command_lingering_children_terminates_group(monkeypatch, tmp_path
             return getattr(real_os, name)
 
     fake_os = FakePosixOs()
-    monkeypatch.setattr(commands_module, "os", fake_os)
-    monkeypatch.setattr(commands_module, "terminate_tree", mock_terminate_tree)
+    patch_split_command_module(monkeypatch, "os", fake_os)
+    patch_split_command_module(monkeypatch, "terminate_tree", mock_terminate_tree)
 
     result = broker._execute(
         ["python", "-c", "print('done')"],

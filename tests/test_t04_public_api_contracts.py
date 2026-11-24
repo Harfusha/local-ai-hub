@@ -151,8 +151,7 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api, 
     root = str(tmp_path)
 
     matching = client.create_task(
-        "goal-needle",
-        acceptance_criteria=["criterion-needle"],
+        {"goal": "goal-needle", "acceptance_criteria": ["criterion-needle"]},
         task_id="query-match",
         root=root,
     )
@@ -169,13 +168,13 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api, 
         },
     })
     assert checkpoint["success"] is True
-    unrelated = client.create_task("Newest unrelated task", task_id="query-other", root=root)
+    unrelated = client.create_task({"goal": "Newest unrelated task"}, task_id="query-other", root=root)
     assert unrelated["success"] is True
 
     owner_client = type(client)(config_path=str(tmp_path / "config.toml"), auto_start=False)
     owner_client.agent = "distinct-owner"
     try:
-        owner_task = owner_client.create_task("Owner-only task", task_id="query-owner", root=root)
+        owner_task = owner_client.create_task({"goal": "Owner-only task"}, task_id="query-owner", root=root)
         assert owner_task["success"] is True
     finally:
         owner_client.close()

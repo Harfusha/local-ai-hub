@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-CURRENT_STATE_VERSION = 6
+CURRENT_STATE_VERSION = 11
 STATE_VERSION_FILE = "state_version.json"
 BOOTSTRAP_STATE_ENTRIES = {
     STATE_VERSION_FILE,

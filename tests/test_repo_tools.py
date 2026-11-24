@@ -43,7 +43,12 @@ def test_git_diff_retains_bounded_text_but_hashes_full_stream(tmp_path: Path):
 
 def _cfg(tmp_path: Path):
     path = tmp_path / "config.toml"
-    path.write_text(f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
+    path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        '[hardware]\nprofile="cpu"\n',
+        encoding="utf-8",
+    )
     return load_config(str(path))
 
 

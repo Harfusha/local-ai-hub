@@ -24,7 +24,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.install = self.root / "install"
         self.config = self.root / "input-config.toml"
         self.config.write_text("new config\n", encoding="utf-8")
-        for name in ("src", "skills", "tools"):
+        for name in ("src", "skills", "tools", "plugins"):
             directory = self.source / name
             directory.mkdir(parents=True)
             (directory / "payload.txt").write_text(f"new {name}\n", encoding="utf-8")
@@ -124,7 +124,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("rollback completed", detail)
         self.assertFalse(stop_called)
-        for name in ("src", "skills", "tools"):
+        for name in ("src", "skills", "tools", "plugins"):
             self.assertEqual((self.install / name / "payload.txt").read_text(encoding="utf-8"), f"old {name}\n")
 
     def test_swap_failure_rolls_back_prior_targets_and_preserves_user_state(self) -> None:
@@ -142,7 +142,7 @@ class UpdateTransactionTests(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertIn("rollback completed", detail)
-        for name in ("src", "skills", "tools"):
+        for name in ("src", "skills", "tools", "plugins"):
             self.assertEqual((self.install / name / "payload.txt").read_text(encoding="utf-8"), f"old {name}\n")
         self.assertEqual((self.install / "config.toml").read_text(encoding="utf-8"), "old config\n")
         self.assertEqual((self.install / ".local-ai-hub-skill-ownership.json").read_text(encoding="utf-8"), "manifest\n")
@@ -201,7 +201,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("before live install swap or service start", detail)
         self.assertIn("stop outcome unknown", detail)
-        for name in ("src", "skills", "tools"):
+        for name in ("src", "skills", "tools", "plugins"):
             self.assertEqual((self.install / name / "payload.txt").read_text(encoding="utf-8"), f"old {name}\n")
 
     def test_successful_swap_preserves_user_runtime_data(self) -> None:

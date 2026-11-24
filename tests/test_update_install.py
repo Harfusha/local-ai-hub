@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from contextlib import closing
 from threading import Thread
 
 import pytest
@@ -8,7 +10,7 @@ from tools import state_migrations, update_install
 
 
 def layout(root, version):
-    for name in ("src", "tools", "skills"):
+    for name in ("src", "tools", "skills", "plugins"):
         directory = root / name
         directory.mkdir(parents=True)
         (directory / "version.txt").write_text(version, encoding="utf-8")
@@ -142,6 +144,95 @@ def test_same_schema_backup_does_not_change_live_state(tmp_path):
     assert result["status"] == "current"
     backup, = state.parent.glob("state.backup-v3-*")
     assert (backup / "records.json").read_bytes() == (state / "records.json").read_bytes()
+
+
+def test_v8_update_runs_state_migrations_and_rolls_back_in_reverse_order(tmp_path, monkeypatch):
+    install, source = tmp_path / "install", tmp_path / "source"
+    layout(install, "7.9.9")
+    layout(source, "8.0.0")
+    (install / "config.toml").write_text("# preserve\n", encoding="utf-8")
+    venv = install / ".venv"
+    venv.mkdir()
+    (venv / "runtime.txt").write_text("old", encoding="utf-8")
+    state = install / "state"
+    state.mkdir()
+    (state / "service.managed").touch()
+    write_state_version(state, version=1)
+    database = state / "rag.sqlite3"
+    with closing(sqlite3.connect(database)) as con:
+        con.execute("CREATE TABLE rag_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        con.execute("INSERT INTO rag_meta VALUES('migration_value', 'before')")
+        con.commit()
+
+    events = []
+
+    def migrate(path):
+        events.append("state-migration")
+        with closing(sqlite3.connect(path / "rag.sqlite3")) as con:
+            con.execute("UPDATE rag_meta SET value='after' WHERE key='migration_value'")
+            con.commit()
+
+    def verify(path):
+        with closing(sqlite3.connect(path / "rag.sqlite3")) as con:
+            return con.execute("SELECT value FROM rag_meta WHERE key='migration_value'").fetchone() == ("after",)
+
+    migration = state_migrations.StateMigration(
+        1, 2, migrate, verify,
+    )
+    real_reset = update_install.apply_embedding_reset
+
+    def reset(path):
+        events.append("embedding-reset")
+        return real_reset(path)
+
+    monkeypatch.setattr(update_install, "configured_state", lambda _root: state)
+    monkeypatch.setattr(update_install, "venv_python", lambda _venv: tmp_path / "python.exe")
+    monkeypatch.setattr(update_install, "install_runtime", lambda *_args: None)
+    monkeypatch.setattr(update_install, "run_state_migrations", lambda path, **kwargs: state_migrations.run_state_migrations(
+        path, migrations=(migration,), target_version=2, **kwargs,
+    ))
+    monkeypatch.setattr(update_install, "apply_embedding_reset", reset)
+    monkeypatch.setattr(update_install, "stop_existing_runtime", lambda *_args, **_kwargs: (True, "stopped"))
+
+    def start(_install, _python, _version, restoring=False):
+        if restoring:
+            events.append("start-previous")
+            return
+        events.append("start-candidate")
+        with closing(sqlite3.connect(database)) as con:
+            assert con.execute("SELECT value FROM rag_meta WHERE key='migration_value'").fetchone() == ("after",)
+            assert con.execute("SELECT value FROM rag_meta WHERE key='embedding_reset_version'").fetchone() == ("8.0",)
+        raise RuntimeError("injected candidate health failure")
+
+    def replace_payload(_source, _install, _config, _files, **kwargs):
+        stopped, detail = kwargs["before_commit"]()
+        if not stopped:
+            return False, detail
+        try:
+            return kwargs["after_swap"]()
+        except Exception as exc:
+            restored, detail = kwargs["before_rollback"]()
+            if restored:
+                kwargs["after_rollback"]()
+            return False, str(exc) if restored else detail
+
+    monkeypatch.setattr(update_install, "start_service", start)
+    monkeypatch.setattr(update_install, "replace_install_payload", replace_payload)
+
+    result = update_install._activate(
+        source, install, state, tmp_path / "wheel.whl", tmp_path / "wheelhouse",
+        "8.0.0", "7.9.9", 1, tmp_path / "recovery",
+    )
+
+    assert events == ["state-migration", "embedding-reset", "start-candidate", "start-previous"], result["message"]
+    assert result["success"] is False
+    assert result["previous_install_restored"] is True
+    assert read_state_version(state) == 1
+    with closing(sqlite3.connect(database)) as con:
+        assert con.execute("SELECT value FROM rag_meta WHERE key='migration_value'").fetchone() == ("before",)
+        # The v8 vector wipe survives payload rollback; old embeddings must not
+        # return from the retained state snapshot.
+        assert con.execute("SELECT value FROM rag_meta WHERE key='embedding_reset_version'").fetchone() == ("8.0",)
 
 
 def test_update_lock_blocks_other_operations(tmp_path):

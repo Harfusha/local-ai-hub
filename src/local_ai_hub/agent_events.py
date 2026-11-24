@@ -271,11 +271,7 @@ class AgentStateStore:
         ("table", "laya_candidates", "laya_candidates"): "ef37fa71b3398d96b291b900caafbce1f7889173ce1bb4eb614ade833f89b24e",
         ("table", "laya_dataset_assignments", "laya_dataset_assignments"): "affe434b93da5b62b84b7f9394a3d95a56c3cf841615295fd93af15b8246cfb2",
         ("table", "laya_dataset_snapshots", "laya_dataset_snapshots"): "b9519cb0b433893db6c13c4e762cfdfca80c23725e6b5966643d9d1649b4126d",
-        ("table", "agent_memory_embeddings", "agent_memory_embeddings"): (
-            "282899bb465cddbcbe5cb4aafbac17a159860de991e61d5704bd277cf6fda810",  # fresh schema
-            "468df99dabe588d9475009d02108f2fdadfcf63e83a7aedf6d7a36a9ead965b5",  # original three columns
-            "5b98038920d6a53fdf762c6a34d729333b729ae2bd725764b2c71cbefd36369e",  # complete ALTER result
-        ),
+        ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "282899bb465cddbcbe5cb4aafbac17a159860de991e61d5704bd277cf6fda810",
         ("table", "agent_memory_fts", "agent_memory_fts"): "a3f3691e421244a8516c26f942a893b8b7a112b7771e9ba84ecded8eab4e3755",
         ("table", "agent_memory_fts_config", "agent_memory_fts_config"): "e78061e43ffaa4b703c9aa4a44e02c6bae4128c3b1aad6a4324e6d3b97772c02",
         ("table", "agent_memory_fts_content", "agent_memory_fts_content"): "3ad7416c82b07bb41be9b2d30e58886c16cef8d5ab7a31f2834dc2d087fd6368",

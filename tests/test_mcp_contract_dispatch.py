@@ -96,6 +96,35 @@ def test_mcp_dispatch_rejects_artifact_list_get_fields_before_tool_call(monkeypa
 @pytest.mark.parametrize(
     "arguments",
     [
+        {"action": "get", "id": "artifact-1"},
+        {"action": "get", "artifact_id": "artifact-1", "file": "src/a.py"},
+        {"action": "get", "artifact_id": "artifact-1", "workspace": "C:/repo"},
+        {"action": "get", "artifact_id": "artifact-1", "start_line": 2},
+        {"action": "get", "artifact_id": "artifact-1", "end_line": 3},
+    ],
+)
+def test_mcp_dispatch_rejects_artifact_compatibility_aliases(monkeypatch, arguments) -> None:
+    from local_ai_hub import mcp_server
+
+    calls: list[str] = []
+
+    async def fake_call_tool(name, _arguments, *, convert_result=False):
+        calls.append(name)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    _content, payload = asyncio.run(
+        mcp_server._compact_mcp_call_tool("local_ai_artifact", arguments)
+    )
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 400
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         {"action": "slice", "artifact_id": "artifact-1", "offset": -1},
         {"action": "slice", "artifact_id": "artifact-1", "max_chars": 0},
         {"action": "slice", "artifact_id": "artifact-1", "max_chars": 50001},

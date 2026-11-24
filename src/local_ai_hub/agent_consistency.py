@@ -77,39 +77,12 @@ class ContextPhase(str, Enum):
     HANDOFF = "handoff"
 
 
-_PHASE_ALIASES: dict[str, str] = {
-    "discovery": "discover",
-    "research": "discover",
-    "inspect": "discover",
-    "investigate": "discover",
-    "explore": "discover",
-    "analyze": "discover",
-    "analysis": "discover",
-    "planning": "plan",
-    "implement": "implementation",
-    "execution": "implementation",
-    "execute": "implementation",
-    "act": "implementation",
-    "verify": "test",
-    "verification": "test",
-    "testing": "test",
-    "tests": "test",
-    "validate": "test",
-    "validation": "test",
-    "reviewing": "review",
-    "code_review": "review",
-    "delivery": "handoff",
-    "hand_off": "handoff",
-}
-
-
 def normalize_context_phase(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("phase must be a string")
     normalized = value.strip().lower()
     if not normalized:
         return ""
-    normalized = _PHASE_ALIASES.get(normalized, normalized)
     try:
         return ContextPhase(normalized).value
     except ValueError as exc:
@@ -1131,14 +1104,12 @@ class AgentConsistencyGuard:
         return saved
 
     def record_metric(self, category: str, amount: int = 1, *, severity: str = "") -> int:
-        key = _text(category, 80).casefold().replace("-", "_")
-        if key in {"warning", "warnings", "warning_severity"}:
+        key = _text(category, 80).casefold()
+        if key == "warning":
             level = _text(severity, 40).casefold() or "warning"
-            if level in {"high-risk", "high_risk"}:
+            if level == "high-risk":
                 level = "high"
             key = f"warning_{level}" if level in {"info", "warning", "boundary", "high", "critical"} else "warning_warning"
-        aliases = {"unknown": "unknown_claims", "unknown_claim": "unknown_claims", "contract_mismatch": "contract_mismatches", "degraded_fallback": "degraded_local_model_fallback"}
-        key = aliases.get(key, key)
         if key not in _METRIC_KEYS:
             return 0
         increment = max(0, min(_safe_int(amount, 0), 100000))

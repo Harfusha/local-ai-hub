@@ -1,8 +1,8 @@
-"""Antigravity hook handler for existing Local AI Hub tool-use policy.
+"""Antigravity hooks for static Laya context and bounded tool-use policy.
 
-PreInvocation is intentionally a no-op: shadow integrations must not inject
-messages or alter host turns. PreToolUse retains the existing bounded read/search
-policy for installations that explicitly register that hook.
+SessionStart injects bounded, prompt-independent Hub/Laya guidance. PreToolUse
+enforces the shared deterministic read/search policy; normal Laya routing runs
+through the shared Hub MCP pipeline.
 """
 from __future__ import annotations
 
@@ -170,9 +170,25 @@ def _check_and_autostart_hub() -> bool:
     return False
 
 
-def handle_pre_invocation(_payload: dict[str, Any]) -> dict[str, Any]:
-    """Leave the Antigravity invocation unchanged; do not inject advice or start Hub."""
-    return {}
+def handle_session_start(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add static Hub routing guidance once without reading prompt content."""
+    workspaces = payload.get("workspacePaths")
+    if not isinstance(workspaces, list) or not any(
+        isinstance(item, str) and item.strip() for item in workspaces[:16]
+    ):
+        return {}
+    return {
+        "injectSteps": [{"systemMessage": {
+            "systemMessage": (
+                "For repository or code tasks, use the connected Local AI Hub MCP tools and "
+                "follow the local-ai-orchestrator workflow. Laya is active advisory inside the "
+                "Hub: it may guide bounded retrieval, context and model routing after Hub validation. "
+                "The Hub and host retain tool permissions, approvals, task-state changes and "
+                "completion decisions. Ignore this guidance for unrelated tasks."
+            ),
+            "metadata": {"source": "local-ai-hub"},
+        }}]
+    }
 
 
 def _is_path_whitelisted(path_str: str) -> bool:
@@ -434,12 +450,12 @@ def main(argv: list[str] | None = None) -> int:
     if not hook_type:
         if "toolCall" in payload:
             hook_type = "PreToolUse"
-        elif "invocationNum" in payload:
-            hook_type = "PreInvocation"
+        elif "workspacePaths" in payload:
+            hook_type = "SessionStart"
 
     result: dict[str, Any]
-    if hook_type == "PreInvocation":
-        result = handle_pre_invocation(payload)
+    if hook_type == "SessionStart":
+        result = handle_session_start(payload)
     elif hook_type == "PreToolUse":
         result = handle_pre_tool_use(payload)
     elif hook_type == "PostToolUse":

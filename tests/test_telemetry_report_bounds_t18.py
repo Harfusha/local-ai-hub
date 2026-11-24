@@ -25,16 +25,16 @@ def test_telemetry_report_error_rows_are_paginated(tmp_path):
             store.record_error("inference", f"generate-{index}", ValueError("invalid argument"))
         assert store.flush(5)
 
-        first = store.report(recent_errors=2, error_offset=0, _flush=False)
-        second = store.report(recent_errors=2, error_offset=2, _flush=False)
-        last = store.report(recent_errors=2, error_offset=4, _flush=False)
+        first = store.report(recent_errors=2, error_cursor="", _flush=False)
+        second = store.report(recent_errors=2, error_cursor=first["error_fingerprints_page"]["next_cursor"], _flush=False)
+        last = store.report(recent_errors=2, error_cursor=second["error_fingerprints_page"]["next_cursor"], _flush=False)
     finally:
         store.close()
 
     assert [len(page["error_fingerprints"]) for page in (first, second, last)] == [2, 2, 1]
-    assert first["error_fingerprints_page"] == {"offset": 0, "limit": 2, "total": 5, "next_offset": 2}
-    assert second["error_fingerprints_page"]["next_offset"] == 4
-    assert last["error_fingerprints_page"]["next_offset"] is None
+    assert first["error_fingerprints_page"]["next_cursor"]
+    assert second["error_fingerprints_page"]["next_cursor"]
+    assert last["error_fingerprints_page"]["next_cursor"] is None
 
 
 def test_telemetry_error_cursor_survives_rank_changes_between_pages(monkeypatch, tmp_path):
@@ -80,7 +80,7 @@ def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
     config_path.write_text(
         "\n".join([
             "[server]", 'bind = "127.0.0.1"', "port = 11498", f'state_dir = "{state_dir.as_posix()}"',
-            "[debug_traces]", "enabled = true",
+            "[telemetry]", 'mode = "full"',
         ]),
         encoding="utf-8",
     )
@@ -94,30 +94,40 @@ def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
     thread.start()
     try:
         url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2&error_offset=2&flush=1"
-        with urllib.request.urlopen(url) as response:
+        try:
+            urllib.request.urlopen(url)
+        except urllib.error.HTTPError as exc:
+            with exc:
+                assert exc.code == 400
+        else:
+            raise AssertionError("offset paging must be rejected")
+
+        cursor_base = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2"
+        cursor_url = cursor_base + "&flush=1"
+        with urllib.request.urlopen(cursor_url) as response:
             payload = json.loads(response.read().decode("utf-8"))
         assert payload["success"] is True
         assert len(payload["report"]["error_fingerprints"]) == 2
-        assert payload["report"]["error_fingerprints_page"]["offset"] == 2
         assert payload["report"]["error_fingerprints_page"]["total"] == 5
+        assert "next_cursor" in payload["report"]["error_fingerprints_page"]
+        assert "offset" not in payload["report"]["error_fingerprints_page"]
+        assert "next_offset" not in payload["report"]["error_fingerprints_page"]
 
-        bounded_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=1000000000&error_offset=-10&flush=1"
+        bounded_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=1000000000&error_cursor=&flush=1"
         with urllib.request.urlopen(bounded_url) as response:
             bounded_body = response.read()
             bounded_payload = json.loads(bounded_body.decode("utf-8"))
         page = bounded_payload["report"]["error_fingerprints_page"]
         assert page["limit"] == 100
-        assert page["offset"] == 0
         assert len(bounded_payload["report"]["error_fingerprints"]) <= page["limit"]
         assert len(bounded_body) <= 256 * 1024
 
-        cursor_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2&error_cursor="
         with urllib.request.urlopen(cursor_url) as response:
             cursor_payload = json.loads(response.read().decode("utf-8"))
         cursor_page = cursor_payload["report"]["error_fingerprints_page"]
         assert cursor_page["cursor"] == ""
         assert cursor_page["next_cursor"]
-        next_url = cursor_url + cursor_page["next_cursor"]
+        next_url = cursor_base + f"&error_cursor={cursor_page['next_cursor']}&flush=1"
         with urllib.request.urlopen(next_url) as response:
             next_payload = json.loads(response.read().decode("utf-8"))
         first_keys = {row["fingerprint"] for row in cursor_payload["report"]["error_fingerprints"]}
@@ -132,8 +142,9 @@ def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
         else:
             raise AssertionError("cursor plus explicit offset must be rejected")
 
+        malformed_cursor_url = cursor_base + "&error_cursor=not-a-valid-cursor%21&flush=1"
         try:
-            urllib.request.urlopen(cursor_url + "not-a-valid-cursor!")
+            urllib.request.urlopen(malformed_cursor_url)
         except urllib.error.HTTPError as exc:
             with exc:
                 assert exc.code == 400
@@ -179,7 +190,6 @@ def test_report_budget_truncation_advances_cursor_after_retained_rows(monkeypatc
         "scope": "window",
         "error_fingerprints": rows,
         "error_fingerprints_page": {
-            "offset": 0,
             "limit": len(rows),
             "total": len(rows),
             "cursor": "",
@@ -197,7 +207,7 @@ def test_report_budget_truncation_advances_cursor_after_retained_rows(monkeypatc
     page = bounded["error_fingerprints_page"]
 
     assert 0 < len(kept) < original_row_count
-    assert page["next_offset"] is None
+    assert "next_offset" not in page
     assert page["has_more"] is True
     assert page["next_cursor"] != seed_cursor
     assert _decode_error_page_cursor(page["next_cursor"]) == (

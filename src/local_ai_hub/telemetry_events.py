@@ -523,6 +523,7 @@ class TelemetryEventMixin:
         repository_id: str,
         task_id: str | None,
         session_id: str,
+        provider_label: str = "generic_mcp",
     ) -> bool:
         """Persist one validated Laya decision projection in existing snapshots.
 
@@ -536,6 +537,7 @@ class TelemetryEventMixin:
         for field, value in (
             ("repository_id", repository_id),
             ("session_id", session_id),
+            ("provider_label", provider_label),
         ):
             if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
                 raise ValueError(f"invalid server-bound Laya {field}")
@@ -556,12 +558,13 @@ class TelemetryEventMixin:
             metadata["repository_id"] != repository_id
             or metadata["task_id"] != server_task_id
             or metadata["session_id"] != session_id
+            or metadata["provider_label"] != provider_label
         ):
             raise ValueError("Laya metadata identity does not match server-bound context")
         mode = metadata["mode"]
         status = metadata["status"]
         category = metadata["category"]
-        if not isinstance(mode, str) or mode not in {"shadow", "advisory"}:
+        if mode != "advisory":
             raise ValueError("invalid Laya mode")
         if not isinstance(status, str) or status not in _LAYA_DECISION_STATUSES:
             raise ValueError("invalid Laya status")
@@ -647,16 +650,19 @@ class TelemetryEventMixin:
         decision_id: str,
         mode: str,
         category: str,
+        provider_label: str = "generic_mcp",
     ) -> bool:
         """Record one validated Laya inference attempt before model execution."""
         if not isinstance(decision_id, str) or not _LAYA_IDENTIFIER.fullmatch(decision_id):
             raise ValueError("invalid Laya decision_id")
-        if not isinstance(mode, str) or mode not in {"shadow", "advisory"}:
+        if mode != "advisory":
             raise ValueError("invalid Laya mode")
         if not isinstance(category, str) or category not in _LAYA_DECISION_OPTIONS:
             raise ValueError("invalid Laya category")
+        if not isinstance(provider_label, str) or not _LAYA_IDENTIFIER.fullmatch(provider_label):
+            raise ValueError("invalid Laya provider_label")
         encoded = json_dumps(
-            {"decision_id": decision_id, "mode": mode, "category": category},
+            {"decision_id": decision_id, "mode": mode, "category": category, "provider_label": provider_label},
             separators=(",", ":"), sort_keys=True,
         )
         if not self.enabled:

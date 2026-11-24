@@ -251,8 +251,8 @@ allowed_roots = ["{tmp_path.as_posix()}"]
                 return exc.code, json.loads(exc.read().decode("utf-8", errors="replace"))
 
     try:
-        # 1. Flat task_create
-        r1 = post_json("/api/agent-state/tasks", {"action": "create", "task_id": "flat-1", "goal": "Fix everything"})
+        # 1. Canonical task contract
+        r1 = post_json("/api/agent-state/tasks", {"action": "create", "task_id": "flat-1", "contract": {"goal": "Fix everything"}})
         assert r1["success"] is True
         assert r1["task"]["task_id"] == "flat-1"
 
@@ -261,7 +261,7 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             {
                 "action": "create",
                 "task_id": "budget-too-small",
-                "goal": "Budget preflight",
+                "contract": {"goal": "Budget preflight"},
                 "response_budget_tokens": 1,
             },
         )

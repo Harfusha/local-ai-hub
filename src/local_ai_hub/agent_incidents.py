@@ -221,8 +221,7 @@ class IncidentRecord:
         object.__setattr__(self, "repository_key", rk)
 
     def is_resolved(self) -> bool:
-        # Older record requests fabricated this placeholder from a root cause.
-        return self.resolved and str(self.verified_fix or "").strip().casefold() != "resolved"
+        return self.resolved
 
     def is_ignored(self) -> bool:
         return self.ignored
@@ -674,6 +673,16 @@ class IncidentStore:
                     con.close()
             with self.state_store._schema_init_lock:
                 retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            with closing(connect_sqlite(self.state_store.db_path, read_only=True)) as con:
+                placeholder = con.execute(
+                    "SELECT 1 FROM agent_incidents "
+                    "WHERE lower(trim(coalesce(verified_fix, ''))) = 'resolved' LIMIT 1"
+                ).fetchone()
+            if placeholder:
+                raise RuntimeError(
+                    "agent incident state contains a retired verified_fix placeholder; "
+                    "run the state updater migration"
+                )
             self._initialized = True
 
     def capture(self, outcome: ToolOutcome) -> IncidentRecord | None:
@@ -697,6 +706,8 @@ class IncidentStore:
         meta = outcome.metadata if isinstance(outcome.metadata, Mapping) else {}
         meta_rc = str(meta.get("root_cause") or "")
         meta_fix = str(meta.get("verified_fix") or "")
+        if meta_fix.strip().casefold() == "resolved":
+            raise ValueError("verified_fix must describe a verified fix")
         try:
             meta_conf_val = float(meta.get("confidence") or 0.0)
             meta_conf = meta_conf_val if math.isfinite(meta_conf_val) else 0.0
@@ -813,6 +824,8 @@ class IncidentStore:
         confidence: float = 1.0,
         root_cause: str | None = None,
     ) -> IncidentRecord:
+        if str(verified_fix).strip().casefold() == "resolved":
+            raise ValueError("verified_fix must describe a verified fix")
         record = self.get(incident_id)
         if not record:
             raise KeyError(f"Incident {incident_id} not found")
@@ -871,6 +884,8 @@ class IncidentStore:
         root_cause: str | None = None,
         timeout_seconds: float = 2.0,
     ) -> int:
+        if str(verified_fix).strip().casefold() == "resolved":
+            raise ValueError("verified_fix must describe a verified fix")
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return 0
         timeout_seconds = max(0.01, min(10.0, float(timeout_seconds)))
@@ -1000,15 +1015,14 @@ class IncidentStore:
         rev, fix, confidence, resolved, ignored = rows
         if ignored:
             return RetryDecision(action="proceed", reason="matching incident is ignored")
-        legacy_placeholder = isinstance(fix, str) and fix.strip().casefold() == "resolved"
-        if resolved and fix and not legacy_placeholder and confidence >= 0.8:
+        if resolved and fix and confidence >= 0.8:
             return RetryDecision(
                 action="apply_verified_fix",
                 reason="verified fix exists with high confidence",
                 verified_fix=fix,
                 confidence=confidence,
             )
-        if not resolved or legacy_placeholder:
+        if not resolved:
             if rev == state_revision:
                 return RetryDecision(
                     action="stop",
@@ -1099,7 +1113,7 @@ class IncidentStore:
                     filters.append("repository_key = ?")
                     params.append(repository_key)
                 if resolved is not None:
-                    filters.append("(resolved = 1 AND lower(trim(coalesce(verified_fix, ''))) <> 'resolved') = ?")
+                    filters.append("resolved = ?")
                     params.append(1 if resolved else 0)
                 status_norm = str(status or "").strip().lower()
                 if status_norm not in {"", "ignored", "resolved", "unresolved"}:
@@ -1107,9 +1121,9 @@ class IncidentStore:
                 if status_norm == "ignored":
                     filters.append("ignored = 1")
                 elif status_norm == "resolved":
-                    filters.extend(("ignored = 0", "resolved = 1", "lower(trim(coalesce(verified_fix, ''))) <> 'resolved'"))
+                    filters.extend(("ignored = 0", "resolved = 1"))
                 elif status_norm == "unresolved":
-                    filters.extend(("ignored = 0", "(resolved = 0 OR lower(trim(coalesce(verified_fix, ''))) = 'resolved')"))
+                    filters.extend(("ignored = 0", "resolved = 0"))
                 if filters:
                     query += " AND " + " AND ".join(filters)
                 query += " ORDER BY updated_at DESC LIMIT ?"
@@ -1145,7 +1159,7 @@ class IncidentStore:
                     val = 1 if resolved else 0
                     row = con.execute(
                         "SELECT COUNT(*) FROM agent_incidents WHERE "
-                        "(resolved = 1 AND lower(trim(coalesce(verified_fix, ''))) <> 'resolved') = ?", (val,)
+                        "resolved = ?", (val,)
                     ).fetchone()
                 return int(row[0]) if row else 0
 
@@ -1273,7 +1287,7 @@ class IncidentStore:
             root_cause=root_cause,
             verified_fix=verified_fix,
             confidence=confidence,
-            resolved=bool(resolved_val) and str(verified_fix or "").strip().casefold() != "resolved",
+            resolved=bool(resolved_val),
             ignored=bool(ignored_val),
             created_at=created_at,
             updated_at=updated_at,
@@ -1316,7 +1330,7 @@ class IncidentStore:
                        state_revision, root_cause, verified_fix, confidence, attempts, affected_paths, updated_at
                 FROM ranked
                 WHERE row_num = 1 AND resolved = 1 AND verified_fix IS NOT NULL
-                  AND trim(verified_fix) <> '' AND lower(trim(verified_fix)) <> 'resolved'
+                  AND trim(verified_fix) <> ''
                   AND confidence >= 0.6 AND ignored = 0
                 ORDER BY updated_at DESC
                 """, (repository_key,)

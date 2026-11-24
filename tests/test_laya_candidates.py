@@ -426,7 +426,7 @@ def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstrea
     request = DecisionRequest.from_mapping(
         {"category": "context_source", "evidence_ids": evidence_ids, "options": ["indexed", "artifact"]},
         decision_id="decision-1",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id="task-1",
         session_id="session-1",
@@ -473,7 +473,7 @@ def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstrea
     }
     assert event["downstream_outcome"] == {
         "status": "not_observed",
-        "reason": "shadow_only_not_user_exposed",
+        "reason": "advisory_not_applied",
     }
     assert event["runtime"]["latency_ms"] == 3.0
     assert event["runtime"]["adapter_queue_wait_ms"] == 1.25
@@ -543,7 +543,7 @@ def test_runtime_outcome_records_server_derived_baseline_for_typed_category(cand
             "options": ["missing_verification", "resolve_blocker"],
         },
         decision_id="decision-completion-gap",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id="task-1",
         session_id="session-1",
@@ -623,6 +623,7 @@ def test_runtime_outcome_records_server_derived_baseline_for_typed_category(cand
     [
         ("model_route", "model_router_classify", ["fast", "smart", "generic"], "fast"),
         ("context_budget", "repo_context_token_budget", ["compact", "standard", "expanded"], "standard"),
+        ("subagent_budget", "agent_os_delegation_budget", ["single_agent", "parallel_split", "swarm"], "single_agent"),
     ],
 )
 def test_runtime_outcome_accepts_registered_automatic_category_baselines(
@@ -637,7 +638,7 @@ def test_runtime_outcome_accepts_registered_automatic_category_baselines(
     request = DecisionRequest.from_mapping(
         {"category": category, "evidence_ids": [evidence_id], "options": options},
         decision_id=f"decision-{category}",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id="task-1",
         session_id="session-1",

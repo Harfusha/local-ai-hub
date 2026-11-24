@@ -698,7 +698,7 @@ class ConfigIdentityEmbedder:
         }
 
 
-def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_rows(tmp_path: Path):
+def test_embedding_fingerprint_change_is_degraded_and_preserves_rows(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
     (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
@@ -718,8 +718,8 @@ def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_row
 
     second_config = _config(tmp_path / "state")
     second_config["models"]["embedding_digest"] = "sha256:second"
-    with pytest.raises(RuntimeError, match="fingerprint mismatch.*offline rebuild required"):
-        RAGStore(second_config, services=embedder)
+    second = RAGStore(second_config, services=embedder)
+    assert second.index_fingerprint_mismatch is True
 
     with closing(first._connect()) as con:
         after_rows = con.execute(

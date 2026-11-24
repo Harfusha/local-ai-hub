@@ -33,6 +33,9 @@ def test_agent_config_merge_is_idempotent_and_parses_every_supported_host(tmp_pa
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(setup, "get_user_homes", lambda: [home])
+    monkeypatch.setenv("OPENCODE_HOME", str(home / "opencode"))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+    monkeypatch.setenv("COPILOT_HOME", str(home / "copilot-custom"))
     codex_home = home / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     install_skills = setup.install_agent_skills
@@ -49,7 +52,7 @@ def test_agent_config_merge_is_idempotent_and_parses_every_supported_host(tmp_pa
         ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
-        ".copilot/mcp-config.json": "servers",
+        "copilot-custom/mcp-config.json": "mcpServers",
         ".local-ai/generic-mcp.json": "mcpServers",
         ".local-ai/vscode-mcp.json": "servers",
     }
@@ -145,6 +148,7 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
         "defaults.toml",
         "automation_browser.js",
         "ui_static/*",
+        "data/*.json",
     ]
     for asset in ("app.css", "app.js", "index.html"):
         source_asset = ROOT / "src" / "local_ai_hub" / "ui_static" / asset

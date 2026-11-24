@@ -25,6 +25,11 @@ from tools.auto_update import installed_version, managed_target  # noqa: E402
 from tools.prepare_release import version_parts  # noqa: E402
 from tools.setup import run, venv_python, verify_source_revision  # noqa: E402
 from tools.setup_report import write_install_report  # noqa: E402
+from tools.config_migrations import run_config_migrations  # noqa: E402
+from tools.embedding_reset import (  # noqa: E402
+    EmbeddingResetMigrationError, apply_embedding_reset, clear_embedding_payloads,
+    discard_embedding_reset_backup, restore_embedding_reset_backup,
+)
 from tools.state_migrations import (  # noqa: E402
     StateMigrationError, inspect_state_migration_path, restore_state_backup, run_state_migrations,
 )
@@ -35,12 +40,18 @@ from tools.update_transaction import (  # noqa: E402
 
 
 def configured_state(install: Path) -> Path:
+    run_config_migrations(install / "config.toml")
     config = load_config(install / "config.toml", probe_hardware=False)
     target = Path(os.path.expandvars(os.path.expanduser(config["setup"]["install_dir"]))).absolute()
     state = Path(os.path.expandvars(os.path.expanduser(config["server"]["state_dir"]))).absolute()
     if target != install or _has_link_component(state):
         raise ValueError("installed configuration does not identify an unlinked state directory for this installation")
     return state
+
+
+def _release_requires_embedding_reset(version: str) -> bool:
+    """The persisted-vector cleanup belongs to the 8.0.0 release boundary."""
+    return version_parts(version) >= version_parts("8.0.0")
 
 
 def prepare_dependencies(python: Path, requirements: Path, wheel: Path, wheelhouse: Path) -> None:
@@ -96,7 +107,7 @@ def install_candidate(source: Path, install: Path, state: Path, wheel: Path, ver
             raise ValueError("installation changed while preparing the update or candidate is not newer")
         if configured_state(install) != state:
             raise ValueError("configured state target changed while preparing the update")
-        payload = [install / name for name in (*PAYLOAD_FILES, "src", "skills", "tools", ".venv", "config.toml")]
+        payload = [install / name for name in (*PAYLOAD_FILES, "src", "skills", "tools", "plugins", ".venv", "config.toml")]
         recovery = update_recovery_path(install)
         if install.is_relative_to(state) or any(
             state.is_relative_to(path) or path.is_relative_to(state) for path in (*payload, recovery)
@@ -129,6 +140,7 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
     start_attempted = False
     rollback_blocked = False
     migration: dict = {}
+    embedding_reset_backup: str | None = None
     failed_state: Path | None = None
     recovery.mkdir()
     (recovery / "update.json").write_text(json.dumps({
@@ -148,7 +160,7 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
         return stopped, detail
 
     def activate() -> tuple[bool, str]:
-        nonlocal migration, start_attempted
+        nonlocal migration, start_attempted, embedding_reset_backup
         if configured_state(install) != state:
             raise ValueError("release defaults change the configured state path")
         os.replace(venv, previous_venv)
@@ -159,6 +171,19 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
         except StateMigrationError as exc:
             migration["backups"] = [str(exc.backup_path)]
             raise
+        if _release_requires_embedding_reset(version):
+            try:
+                reset = apply_embedding_reset(state)
+                embedding_reset_backup = reset.get("backup")
+                migration["embedding_reset"] = reset["status"]
+                migration["embedding_reset_backup"] = embedding_reset_backup
+                for state_backup in migration.get("backups", []):
+                    clear_embedding_payloads(state_backup)
+            except EmbeddingResetMigrationError as exc:
+                embedding_reset_backup = str(exc.backup_path)
+                migration["embedding_reset"] = "failed"
+                migration["embedding_reset_backup"] = embedding_reset_backup
+                raise
         if resume_service:
             start_attempted = True
             start_service(install, python, version)
@@ -173,6 +198,10 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
             stopped, detail = stop()
             if not stopped:
                 return False, detail
+        if embedding_reset_backup and (
+            start_attempted or migration.get("embedding_reset") in {"migrated", "failed"}
+        ):
+            restore_embedding_reset_backup(state, Path(embedding_reset_backup))
         backups = migration.get("backups", [])
         if backups and (start_attempted or migration.get("status") == "migrated"):
             failed_state = restore_state_backup(state, Path(backups[0]))
@@ -194,7 +223,15 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
         before_commit=stop_before_swap, after_swap=activate, before_rollback=restore,
         after_rollback=confirm_payload_restored,
     )
+    if success and embedding_reset_backup:
+        try:
+            discard_embedding_reset_backup(state, embedding_reset_backup)
+            embedding_reset_backup = None
+        except OSError as exc:
+            detail += f". Embedding backup retained at {embedding_reset_backup}: {exc}"
     result = {"success": success, "message": detail, "backups": migration.get("backups", [])}
+    if embedding_reset_backup:
+        result["embedding_reset_backup"] = embedding_reset_backup
     if failed_state is not None:
         result["failed_candidate_state"] = str(failed_state)
     if not success and service_touched and not rollback_blocked:

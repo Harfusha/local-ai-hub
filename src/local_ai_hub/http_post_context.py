@@ -205,22 +205,6 @@ def handle_context_pack(self: Any, path: str, payload: dict[str, Any]) -> None:
                 mode=mode,
                 since_hash=str(payload.get("since_hash", "")),
             )
-            if isinstance(result, dict) and result.get("success") is True:
-                try:
-                    capture = services_module.APP.capture_laya_context_source_from_context(
-                        request,
-                        result,
-                    )
-                    if capture.get("status") not in {"queued", "disabled"}:
-                        services_module.APP.logger.debug(
-                            "Laya shadow capture skipped: %s",
-                            capture.get("reason", capture.get("status", "unknown")),
-                        )
-                except Exception as exc:
-                    services_module.APP.logger.warning(
-                        "Laya shadow capture scheduling failed: %s",
-                        type(exc).__name__,
-                    )
         except Exception as exc:
             result = {
                 "success": False,

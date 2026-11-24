@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from local_ai_hub import agent_tasks, process_utils, trace_context
+from local_ai_hub import agent_tasks, git_worktrees, process_utils, trace_context
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import (
@@ -32,7 +32,7 @@ def test_worktree_ttl_clamp_preserves_owned_metadata(tasks, tmp_path, monkeypatc
     calls = []
 
     def prepare_owned(root, *, branch_name, task_id, owner, created_at, ttl_seconds, expires_at):
-        return process_utils.PreparedGitWorktree(
+        return git_worktrees.PreparedGitWorktree(
             repo_root=str(root), base_commit_ref="HEAD", base_commit_sha="a" * 40,
             branch=branch_name, worktree_path=str(tmp_path / "owned-worktree"),
             lease_id="owned-lease", worktree_id="owned-id", task_id=task_id,
@@ -46,8 +46,8 @@ def test_worktree_ttl_clamp_preserves_owned_metadata(tasks, tmp_path, monkeypatc
         calls.append((root, metadata))
         return metadata["prepared_plan"].response_metadata()
 
-    monkeypatch.setattr(process_utils, "prepare_git_worktree", prepare_owned)
-    monkeypatch.setattr(process_utils, "create_git_worktree", create_owned)
+    monkeypatch.setattr(git_worktrees, "prepare_git_worktree", prepare_owned)
+    monkeypatch.setattr(git_worktrees, "create_git_worktree", create_owned)
     task = tasks.create(
         GoalContract(goal="bounded owned worktree"), ScopeContext(repository_id=str(tmp_path)),
         task_id="ttl-task", actor="owner", auto_worktree=True, repo_root=str(tmp_path),

@@ -16,7 +16,7 @@ from task_memory_support import repository_memory_id
 def _public_task_client(tmp_path: Path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
-        f'[server]\nbind="127.0.0.1"\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind="127.0.0.1"\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled=true\n",
         encoding="utf-8",
     )
@@ -65,7 +65,7 @@ def _public_task_client(tmp_path: Path, monkeypatch):
 def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
-        f'[server]\nbind="127.0.0.1"\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind="127.0.0.1"\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled=true\n",
         encoding="utf-8",
     )

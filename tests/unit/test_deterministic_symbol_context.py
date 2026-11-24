@@ -68,6 +68,35 @@ def test_build_symbol_context_uses_query_fallback_after_terms():
     assert truncated is False
 
 
+def test_build_symbol_context_reuses_precomputed_symbols_without_index_calls():
+    index = FakeCodeIndex()
+    indexed = {"symbols": [{
+        "kind": "function", "name": "run", "name_path": "Worker.run",
+        "path": "worker.py", "line": 8, "signature": "def run()",
+    }]}
+
+    rendered, truncated = build_symbol_context(
+        index, "C:/repo", "run", ["run"], 1000, 0, symbol_result=indexed,
+    )
+
+    assert "Worker.run (worker.py:8) -> def run()" in rendered
+    assert truncated is False
+    assert index.calls == []
+
+
+def test_build_symbol_context_does_not_repeat_empty_precomputed_search():
+    index = FakeCodeIndex()
+
+    rendered, truncated = build_symbol_context(
+        index, "C:/repo", "a long natural language query", ["long", "query"],
+        1000, 0, symbol_result={"symbols": []},
+    )
+
+    assert rendered == ""
+    assert truncated is False
+    assert index.calls == []
+
+
 def test_build_symbol_context_reports_budget_omission():
     index = FakeCodeIndex([{"symbols": [{
         "kind": "function", "name": "run", "name_path": "run",
@@ -109,6 +138,28 @@ def test_context_pack_appends_symbol_context_when_it_fits():
     assert "DETERMINISTIC FACTS:\nfacts" in result["context"]
     assert "Worker.run (worker.py:8) -> def run()" in result["context"]
     assert result["truncated"] is False
+
+
+def test_context_pack_passes_deterministic_symbols_to_builder():
+    engine = object.__new__(DeterministicEngine)
+    index = FakeCodeIndex()
+    engine.code_index = index
+    engine.evidence = None
+    engine.query = lambda *_args, **_kwargs: {
+        "evidence": [],
+        "code_index": {"symbols": [{
+            "kind": "class", "name": "Worker", "name_path": "Worker",
+            "path": "worker.py", "line": 2, "signature": "class Worker",
+        }]},
+    }
+    engine.render_answer = lambda *_args, **_kwargs: "facts"
+    engine._root = lambda root: root
+    engine._terms = lambda _query: ["Worker"]
+
+    result = engine.context_pack("C:/repo", "Worker", max_chars=1000)
+
+    assert "Worker (worker.py:2) -> class Worker" in result["context"]
+    assert index.calls == []
 
 
 def test_context_pack_marks_symbol_context_omitted_by_budget():

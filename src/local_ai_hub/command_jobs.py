@@ -30,15 +30,6 @@ __all__ = [
     "wait_windows_job_empty",
     "windows_job_contains_process",
     "windows_job_has_processes",
-    "_create_named_daemon_job",
-    "_daemon_job_name",
-    "_duplicate_job_handle_into_process",
-    "_open_named_daemon_job",
-    "_set_windows_job_kill_on_close",
-    "_terminate_and_confirm_windows_job_empty",
-    "_wait_windows_job_empty",
-    "_windows_job_contains_process",
-    "_windows_job_has_processes",
 ]
 
 
@@ -305,15 +296,3 @@ def stop_windows_job_process(process: Any, job_handle: Any = None, timeout_ms: i
         return True
     except Exception:
         return False
-
-
-# Compatibility aliases for functions previously private to commands.py
-_daemon_job_name = daemon_job_name
-_set_windows_job_kill_on_close = set_windows_job_kill_on_close
-_create_named_daemon_job = create_named_daemon_job
-_open_named_daemon_job = open_named_daemon_job
-_duplicate_job_handle_into_process = duplicate_job_handle_into_process
-_windows_job_contains_process = windows_job_contains_process
-_windows_job_has_processes = windows_job_has_processes
-_wait_windows_job_empty = wait_windows_job_empty
-_terminate_and_confirm_windows_job_empty = terminate_and_confirm_windows_job_empty

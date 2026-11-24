@@ -38,6 +38,17 @@ class RelatedPathRankingTests(unittest.TestCase):
         self.assertEqual(engine.related_paths("repo", "query", limit=1), ["src/a.py"])
         engine.query.assert_called_once_with("repo", "query", limit=24)
 
+    def test_engine_reuses_precomputed_result_without_another_index_query(self):
+        result = {"facts": [{"path": "src/a.py"}, {"path": "src/b.py"}]}
+        engine = object.__new__(DeterministicEngine)
+        engine.query = Mock(side_effect=AssertionError("query should not be repeated"))
+
+        self.assertEqual(
+            engine.related_paths("repo", "query", limit=1, result=result),
+            ["src/a.py"],
+        )
+        engine.query.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

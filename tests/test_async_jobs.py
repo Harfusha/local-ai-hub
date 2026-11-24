@@ -946,7 +946,7 @@ def test_malformed_executor_result_fails_job_without_retry(tmp_path):
 
 
 def test_async_job_trace_links_metadata_scheduler_and_terminal_state(tmp_path):
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "telemetry": {"mode": "full"}}
     store = DebugTraceStore(config)
     scheduler = _Scheduler()
     manager = AsyncJobManager(config, scheduler, _Artifacts(), lambda action, payload: {"success": True, "action": action, "task": payload.get("task")}, debug_traces=store)
@@ -967,7 +967,7 @@ def test_async_job_trace_links_metadata_scheduler_and_terminal_state(tmp_path):
 
 
 def test_recovered_async_job_reopens_terminal_trace(tmp_path, monkeypatch):
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "telemetry": {"mode": "full"}}
     store = DebugTraceStore(config)
     manager = AsyncJobManager(
         config,

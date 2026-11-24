@@ -39,6 +39,7 @@ def test_pytest_collection_ignores_inherited_operator_gaming(tmp_path: Path) -> 
     operator_state = tmp_path / "operator-state"
     operator_config = tmp_path / "operator.toml"
     operator_config.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         "port = 11435\n"
@@ -91,6 +92,9 @@ def test_pytest_collection_ignores_inherited_operator_gaming(tmp_path: Path) -> 
                 config_path.write_text(
                     chr(10).join(
                         [
+                            "[local_ai_hub]",
+                            "config_schema_version = 1",
+                            "",
                             "[server]",
                             'bind = "127.0.0.1"',
                             f"port = {_DEFAULT['server']['port']}",

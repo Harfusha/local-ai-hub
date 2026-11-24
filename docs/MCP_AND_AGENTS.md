@@ -53,6 +53,8 @@ If Serena is unavailable, the hub degrades to built-in indexes. Treat response s
 - `local_ai_status` provides compact readiness using `detail="brief"`; its typed schema also supports `extra_fields`, `max_response_tokens`, `response_profile`, and `reuse_key`. It has no `action`, `root`, or `workspace` selector. Operator decision 2026-10-29 retains this contract.
 - `local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; run no more than four steps in parallel.
 - `local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.
+- Read repository source with `local_ai_artifact(action="source", root=ABS_ROOT, path=...)`; artifact IDs use `artifact_id` on `get` and `slice`. Each action accepts only its declared fields.
+- `local_ai_coord(action="task_create")` requires one `contract` object with a non-empty `goal`; put scope and acceptance criteria inside it.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1.
 
 ## RAG document and diagram ingestion

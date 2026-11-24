@@ -447,7 +447,7 @@ def test_index_fingerprint_tracks_embedding_space_configuration(tmp_path):
         assert make_store(f"fingerprint-{index}", models).index_fingerprint != baseline
 
 
-def test_index_fingerprint_change_requires_offline_rebuild_and_preserves_rows(tmp_path):
+def test_index_fingerprint_change_is_degraded_and_preserves_rows(tmp_path):
     state_dir = tmp_path / "fingerprint-reset"
     base_models = {
         "embedding": "model-a",
@@ -486,10 +486,10 @@ def test_index_fingerprint_change_requires_offline_rebuild_and_preserves_rows(tm
         con.commit()
 
     database = state_dir / "rag.sqlite3"
-    before = database.read_bytes()
-    with pytest.raises(RuntimeError, match="fingerprint mismatch.*offline rebuild"):
-        make_store({**base_models, "embedding_digest": "digest-b"})
-    assert database.read_bytes() == before
+    changed = make_store({**base_models, "embedding_digest": "digest-b"})
+    assert changed.index_fingerprint_mismatch is True
+    assert database.exists()
+    assert database.read_bytes() != b""
     with closing(first._connect()) as con:
         assert con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 1
         assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1

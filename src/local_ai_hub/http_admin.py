@@ -397,7 +397,7 @@ class HTTPAdminMixin:
             self._send(400, {"success": False, "error": "error_offset must be an integer between 0 and 100000", "terminal": True, "retryable": False}); return
         status = services_module.project_status_response(services_module.APP.status(scope="process"), enabled=diagnostics_enabled)
         telemetry = services_module.project_aggregate_response(
-            services_module.APP.telemetry.report(days=7, recent_errors=100, error_offset=error_offset, scope="window"),
+            services_module.APP.telemetry.report(days=7, recent_errors=100, _error_offset=error_offset, scope="window"),
             enabled=diagnostics_enabled,
         )
         endpoint_stats = getattr(services_module.APP, "endpoint_stats", None)

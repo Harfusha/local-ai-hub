@@ -183,6 +183,16 @@ class Reranker:
                 "device": str(device).lower(),
                 "max_length": self.max_length,
             }
+            resolved_model_name = self.model_name
+            if self.model_name == "Harfusha/local-ai-hub-bge-reranker-v2-m3-code":
+                models_cfg = self.config.get("models", {})
+                from .trained_models import download_trained_model
+                resolved_model_name = str(download_trained_model(
+                    self.model_name,
+                    models_cfg.get("reranker_revision", ""),
+                    models_cfg.get("reranker_sha256", ""),
+                    allow_download=models_cfg.get("allow_hf_downloads") is True,
+                ))
             if backend == "openvino":
                 # See EmbeddingModel: accelerator placement belongs to the
                 # Optimum/OpenVINO model, while the SentenceTransformers wrapper
@@ -208,13 +218,16 @@ class Reranker:
                 if uses_torch_cuda(backend, device):
                     from .owned_model import OwnedNLPModel
                     models_cfg = self.config.get("models", {})
-                    return OwnedNLPModel("reranker", self.model_name, kwargs,
+                    return OwnedNLPModel("reranker", resolved_model_name, kwargs,
                         max_length=self.max_length,
-                        allow_downloads=models_cfg.get("allow_hf_downloads") is True)
+                        allow_downloads=(resolved_model_name == self.model_name
+                                         and models_cfg.get("allow_hf_downloads") is True))
                 from sentence_transformers import CrossEncoder
                 try:
-                    model = CrossEncoder(self.model_name, local_files_only=True, **kwargs)
+                    model = CrossEncoder(resolved_model_name, local_files_only=True, **kwargs)
                 except Exception:
+                    if resolved_model_name != self.model_name:
+                        raise
                     # Check local snapshot cache across standard directories
                     clean_name = str(self.model_name).replace("/", "--")
                     bases = []

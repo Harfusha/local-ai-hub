@@ -43,7 +43,7 @@ def test_status_keeps_malformed_reservation_fail_closed(tmp_path):
     assert store.path.read_text(encoding='utf-8') == 'invalid'
 
 
-def test_status_explains_valid_legacy_fence_without_releasing_it(tmp_path):
+def test_status_explains_ownerless_fence_without_releasing_it(tmp_path):
     store = ExternalGpuReservationStore(tmp_path / 'gpu')
     digest = 'd' * 64
     store.path.write_text(digest, encoding='ascii')
@@ -51,7 +51,7 @@ def test_status_explains_valid_legacy_fence_without_releasing_it(tmp_path):
     result = _scheduler(store).gpu_reservation_operation(action='status')
 
     assert result['state'] == 'unknown'
-    assert result['reason_code'] == 'legacy_digest_only_fence'
+    assert result['reason_code'] == 'reservation_fence_without_owner_metadata'
     assert store.path.read_text(encoding='ascii') == digest
 
 

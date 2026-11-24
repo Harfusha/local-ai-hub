@@ -569,7 +569,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        "\n[debug_traces]\nenabled = true\n",
+        "\n[telemetry]\nmode = \"full\"\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))

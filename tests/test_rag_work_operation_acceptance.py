@@ -124,14 +124,14 @@ def test_mcp_rag_list_returns_available_workspace_records(monkeypatch: Any) -> N
     assert result["success"] is True
 
 
-def test_mcp_rag_docset_index_uses_query_as_name_and_returns_index_receipt(
+def test_mcp_rag_docset_index_uses_workspace_as_name_and_returns_index_receipt(
     monkeypatch: Any, tmp_path: Any
 ) -> None:
     response = {"success": True, "docset": "release-notes", "indexed_documents": 2}
     backend = _Backend(response)
     _enable_rag(monkeypatch, backend)
 
-    result = mcp_server.local_ai_rag(action="docset_index", root=str(tmp_path),  query="release-notes")
+    result = mcp_server.local_ai_rag(action="docset_index", root=str(tmp_path), workspace="release-notes")
 
     assert backend.calls == [
         ("POST", "/api/rag/docset/index", {"name": "release-notes", "root": str(tmp_path)}, {"timeout": 77.0})
@@ -140,23 +140,39 @@ def test_mcp_rag_docset_index_uses_query_as_name_and_returns_index_receipt(
     assert result["success"] is True
 
 
-def test_mcp_rag_docset_search_defaults_name_and_clamps_top_k(monkeypatch: Any) -> None:
+def test_mcp_rag_docset_search_uses_workspace_and_clamps_top_k(monkeypatch: Any) -> None:
     response = {"success": True, "matches": [{"document_id": "d-2", "text": "verified release"}]}
     backend = _Backend(response)
     _enable_rag(monkeypatch, backend)
 
-    result = mcp_server.local_ai_rag(action="docset_search", query="verified release", top_k=0)
+    result = mcp_server.local_ai_rag(action="docset_search", workspace="release-notes", query="verified release", top_k=0)
 
     assert backend.calls == [
         (
             "POST",
             "/api/rag/docset/search",
-            {"name": "default", "query": "verified release", "top_k": 1},
+            {"name": "release-notes", "query": "verified release", "top_k": 1},
             {},
         )
     ]
     _assert_response_fields(result, response)
     assert result["success"] is True
+
+
+def test_mcp_rag_docset_actions_reject_implicit_names(monkeypatch: Any, tmp_path: Any) -> None:
+    backend = _Backend({"success": True})
+    _enable_rag(monkeypatch, backend)
+
+    index_result = mcp_server.local_ai_rag(
+        action="docset_index", root=str(tmp_path), query="release-notes"
+    )
+    search_result = mcp_server.local_ai_rag(action="docset_search", query="release notes")
+
+    assert index_result["success"] is False
+    assert index_result["terminal"] is True and index_result["retryable"] is False
+    assert search_result["success"] is False
+    assert search_result["terminal"] is True and search_result["retryable"] is False
+    assert backend.calls == []
 
 
 def test_mcp_rag_ingest_document_forwards_content_and_quick_timeout(monkeypatch: Any, tmp_path: Any) -> None:

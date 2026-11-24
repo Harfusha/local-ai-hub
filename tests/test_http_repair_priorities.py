@@ -200,7 +200,7 @@ def test_repair_priorities_paginates_error_groups(monkeypatch):
 
     status, payload = responses[0]
     assert status == 200
-    assert report_calls[0]["error_offset"] == 100
+    assert report_calls[0]["_error_offset"] == 100
     assert payload["coverage"]["error_groups_more"] is True
     assert payload["coverage"]["next_error_offset"] == 200
     assert payload["complete"] is False

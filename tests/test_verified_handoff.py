@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.work_orchestrator import WorkOrchestrator
-from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
+from local_ai_hub.git_worktrees import create_git_worktree, remove_git_worktree
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus, TaskStore

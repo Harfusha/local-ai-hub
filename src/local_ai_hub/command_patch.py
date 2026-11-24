@@ -508,22 +508,6 @@ class CommandPatchMixin:
                 )
             return failure
 
-    def patch_dry_run(
-        self,
-        cwd: str | Path,
-        patch: str,
-        *,
-        timeout: float | None = None,
-        allow_whitespace_fallback: bool = True,
-    ) -> dict[str, Any]:
-        """Alias for simulate_patch."""
-        return self.simulate_patch(
-            cwd,
-            patch,
-            timeout=timeout,
-            allow_whitespace_fallback=allow_whitespace_fallback,
-        )
-
     def simulate_patch(
         self,
         cwd: str | Path,

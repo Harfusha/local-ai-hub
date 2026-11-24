@@ -226,7 +226,7 @@ class CodeIndexSymbolMixin:
             "success": True,
             "root": resolved_root,
             "pattern": pat,
-            "matches_count": len(results),
+            "returned_count": len(results),
             "symbols": results,
         }
         self._symbol_l1.set(cache_key, copy.deepcopy(result))
@@ -493,7 +493,14 @@ class CodeIndexSymbolMixin:
             "edges": edges,
         }
 
-    def related_paths(self, root: str, query: str, limit: int = 30) -> list[str]:
+    def related_paths(
+        self,
+        root: str,
+        query: str,
+        limit: int = 30,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> list[str]:
         """Rank likely files entirely from the persistent code index.
 
         This is intentionally bounded and does not read repository files. It is used as
@@ -505,7 +512,9 @@ class CodeIndexSymbolMixin:
             return []
         limit = max(1, min(int(limit), 100))
         scores: dict[str, float] = {}
-        symbol_result = self.query(resolved_root, query, min(max(limit * 2, 20), 100))
+        symbol_result = result
+        if symbol_result is None:
+            symbol_result = self.query(resolved_root, query, min(max(limit * 2, 20), 100))
         for item in symbol_result.get("symbols", []) if isinstance(symbol_result, dict) else []:
             path = self._norm_rel(str(item.get("path", "")))
             if path:

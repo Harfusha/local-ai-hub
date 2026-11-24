@@ -24,7 +24,8 @@ def test_served_dashboard_discloses_trace_access_and_retention_policy():
 
 def test_dashboard_has_live_detailed_telemetry_toggle():
     assert 'id="detailedTelemetryToggle"' in DASHBOARD_HTML
-    assert "debug_traces.enabled" in DASHBOARD_HTML
+    assert "'telemetry.mode':enabled?'full':'minimal'" in DASHBOARD_HTML
+    assert "debug_traces.enabled" not in DASHBOARD_HTML
     assert "Detailed telemetry:" in DASHBOARD_HTML
     assert "traceRevealRedactedDetails" not in DASHBOARD_HTML
     assert "Complete endpoint input" not in DASHBOARD_HTML

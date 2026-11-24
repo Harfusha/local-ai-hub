@@ -1,0 +1,15 @@
+# Gemini CLI host confirmation for sensitive Hub coordinator operations.
+# Hub-side consent, ownership, and evidence checks remain authoritative.
+[[rule]]
+mcpName = "local-ai"
+toolName = "local_ai_coord"
+argsPattern = '"action"\s*:\s*"(task_repair_session|task_budget_increase|task_cleanup_worktree|task_zombie_reap|gpu_reservation_release|gpu_reservation_release_authorized|gpu_capacity_lease_release|gpu_scheduler_capacity_lease_release|plan_archive|plan_task_delete|memory_delete|blackboard_delete)"'
+decision = "ask_user"
+priority = 900
+
+[[rule]]
+mcpName = "local-ai"
+toolName = "local_ai_coord"
+argsPattern = '"action"\s*:\s*"task_complete".*"operator_waiver"\s*:'
+decision = "ask_user"
+priority = 900

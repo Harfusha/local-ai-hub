@@ -440,7 +440,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
         },
         "preprocessing": {
-            "model": "qwen2.5-coder:0.5b",
+            "model": "qwen2.5-coder-prep-v4:3b",
             "cpu_workers": 2,
             "cpu_worker_sleep_seconds": 0.20,
             "idle_grace_seconds": 30.0,
@@ -501,7 +501,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {
-            "model": "qwen2.5-coder:1.5b",
+            "model": "qwen2.5-coder-prep-v4:3b",
             "idle_grace_seconds": 30.0,
             "max_preprocessing_projects": 2,
             "cpu_workers": 2,
@@ -512,7 +512,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "async_jobs": {"max_pending": 16},
         "code_intelligence": {"max_sessions_per_backend": 2},
         "headless": {"max_sessions_per_backend": 2},
-        "debug_traces": {"max_bytes": 134217728, "max_sessions": 300},
+        "telemetry": {"max_bytes": 134217728, "max_sessions": 300},
         "work_orchestrator": {
             "max_active_work_orders": 1, "max_steps": 32, "max_llm_steps": 16,
             "max_pending_work_orders": 8, "worker_idle_seconds": 30,
@@ -521,7 +521,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "low": {
         "features": {"reranker": True, "search_summaries": False, "vision": True},
-        "preprocessing": {"model": "qwen2.5-coder:1.5b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
         "models": {
             "background_code": "qwen2.5-coder:1.5b",
             "fast_code": "qwen2.5-coder:1.5b",
@@ -548,7 +548,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "balanced": {
         "features": {"reranker": True, "search_summaries": True, "vision": True},
-        "preprocessing": {"model": "qwen2.5-coder:1.5b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
@@ -588,7 +588,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "local_code_generation": True,
             "local_automation": True,
         },
-        "preprocessing": {"model": "qwen2.5-coder:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
@@ -614,9 +614,9 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
-                "qwen-drafter": {"model": "qwen2.5-coder:7b", "timeout_seconds": 300},
-                "qwen-critic": {"model": "qwen3.5:9b", "timeout_seconds": 420},
+                "qwen-explorer": {"model": "qwen2.5-coder:7b-instruct-q4_K_M", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:7b-instruct-q4_K_M", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen3.5:9b-q4_K_M", "timeout_seconds": 420},
             }
         },
         "model_execution": {
@@ -628,11 +628,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "high": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:7b",
-            "heavy_code": "qwen2.5-coder:14b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen3.5:9b",
+            "background_code": "qwen2.5-coder:3b-instruct-q4_K_M",
+            "fast_code": "qwen2.5-coder:7b-instruct-q4_K_M",
+            "heavy_code": "qwen2.5-coder:14b-instruct-q4_K_M",
+            "reasoning": "qwen3.5:9b-q4_K_M",
+            "general": "qwen3.5:9b-q4_K_M",
             "vision": "minicpm-v:8b",
         },
         "features": {
@@ -646,7 +646,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "local_code_generation": True,
             "local_automation": True,
         },
-        "preprocessing": {"model": "qwen2.5-coder:3b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
@@ -686,11 +686,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:7b",
-            "fast_code": "qwen2.5-coder:7b",
-            "heavy_code": "qwen2.5-coder:32b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen3.5:9b",
+            "background_code": "qwen2.5-coder:7b-instruct-q4_K_M",
+            "fast_code": "qwen2.5-coder:7b-instruct-q4_K_M",
+            "heavy_code": "qwen2.5-coder:14b-instruct-q4_K_M",
+            "reasoning": "qwen2.5-coder:14b-instruct-q4_K_M",
+            "general": "qwen3.5:9b-q4_K_M",
             "vision": "minicpm-v:8b",
         },
         "features": {
@@ -706,17 +706,17 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "local_reranking": True,
             "local_vision": True,
         },
-        "preprocessing": {"model": "qwen2.5-coder:7b"},
+        "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b"},
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
-        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 12, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
-                "qwen-drafter": {"model": "qwen2.5-coder:14b", "timeout_seconds": 300},
-                "qwen-critic": {"model": "qwen2.5-coder:14b", "timeout_seconds": 420},
+                "qwen-explorer": {"model": "qwen2.5-coder:7b-instruct-q4_K_M", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:14b-instruct-q4_K_M", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen2.5-coder:14b-instruct-q4_K_M", "timeout_seconds": 420},
             }
         },
         "model_execution": {
@@ -758,6 +758,20 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         ram_gb = 0.0
     gpus_list = detected.get("gpus")
     gpus = [g for g in gpus_list if isinstance(g, dict)] if isinstance(gpus_list, list) else []
+    if profile_name == "max":
+        max_dedicated_vram_mb = 0
+        for gpu in gpus:
+            raw_vram_mb = gpu.get("vram_mb", 0)
+            if isinstance(raw_vram_mb, bool) or gpu.get("integrated"):
+                continue
+            try:
+                max_dedicated_vram_mb = max(max_dedicated_vram_mb, int(raw_vram_mb))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if max_dedicated_vram_mb >= 32 * 1024:
+            result = _deep_merge_dict(result, {
+                "models": {"heavy_code": "qwen2.5-coder:32b-instruct-q4_K_M"}
+            })
     if profile_name == "integrated":
         has_intel_gpu = any(
             str(gpu.get("vendor", "")).lower() == "intel"
@@ -789,20 +803,8 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         for gpu in gpus
     )
     has_npu = bool(detected.get("npus"))
-    has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
-    if has_fp4 and profile_name not in ("cpu", "integrated"):
-        # Prefer FP4 quantized variants whenever hardware-accelerated (e.g. Blackwell / compute capability >= 12.0)
-        fp4_models: dict[str, Any] = {}
-        curr_models = result.get("models", {})
-        if curr_models.get("general") == "qwen3.5:9b":
-            fp4_models["general"] = "qwen3.5:9b-nvfp4"
-        if curr_models.get("reasoning") == "qwen3.5:9b":
-            fp4_models["reasoning"] = "qwen3.5:9b-nvfp4"
-        if fp4_models:
-            result = _deep_merge_dict(result, {"models": fp4_models})
-        sub_critic = result.get("ollama_subagents", {}).get("profiles", {}).get("qwen-critic", {})
-        if sub_critic.get("model") == "qwen3.5:9b":
-            result = _deep_merge_dict(result, {"ollama_subagents": {"profiles": {"qwen-critic": {"model": "qwen3.5:9b-nvfp4"}}}})
+    # Quantized model selection is pinned per role above. Hardware FP4 support
+    # alone does not qualify a model/backend variant for automatic selection.
     if has_npu:
         # Keep embeddings on auto so a missing/unsupported NPU can fall through
         # to the next available GPU tier. Reranker follows the same route order.
@@ -830,6 +832,19 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
             "openvino": {"enabled": True},
         })
     result = _deep_merge_dict(result, {"features": {"local_reranking": True}})
+    fp4_routes = detected.get("fp4_model_routes")
+    if isinstance(fp4_routes, dict) and fp4_routes:
+        def apply_variant(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: apply_variant(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [apply_variant(item) for item in value]
+            if isinstance(value, str):
+                variant = fp4_routes.get(value)
+                return variant if isinstance(variant, str) and variant else value
+            return value
+
+        result = apply_variant(result)
     return result
 
 

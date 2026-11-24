@@ -42,7 +42,7 @@ def isolated_mcp_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_trace_list_filters_by_minimum_duration_and_action(tmp_path: Path) -> None:
     store = DebugTraceStore({
         "server": {"state_dir": str(tmp_path)},
-        "observability": {"debug_traces": {"enabled": True}},
+        "telemetry": {"mode": "full"},
     })
     slow_id = store.start(kind="mcp", action="search")
     fast_id = store.start(kind="mcp", action="index")

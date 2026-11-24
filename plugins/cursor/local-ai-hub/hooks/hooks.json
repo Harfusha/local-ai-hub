@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "python \"${CURSOR_PLUGIN_ROOT}/scripts/run_hub.py\" host_hooks --host cursor", "timeout": 5 }
+    ],
+    "beforeShellExecution": [
+      { "command": "python \"${CURSOR_PLUGIN_ROOT}/scripts/run_hub.py\" host_hooks --host cursor --event beforeShellExecution", "timeout": 5, "failClosed": true }
+    ],
+    "afterFileEdit": [
+      { "command": "python \"${CURSOR_PLUGIN_ROOT}/scripts/run_hub.py\" host_hooks --host cursor --event afterFileEdit", "timeout": 5 }
+    ]
+  }
+}

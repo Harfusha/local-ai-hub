@@ -52,8 +52,8 @@ def context_http_hub(tmp_path, monkeypatch):
             f'state_dir = "{state_dir.as_posix()}"',
             "[security]",
             f'allowed_roots = ["{tmp_path.as_posix()}"]',
-            "[debug_traces]",
-            "enabled = true",
+            "[telemetry]",
+            'mode = "full"',
         )),
         encoding="utf-8",
     )

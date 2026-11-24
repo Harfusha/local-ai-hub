@@ -596,22 +596,6 @@ class MemoryStore:
                 try:
                     from .sqlite_support import validate_durable_schema
 
-                    legacy_relation_columns = [
-                        "relation_id", "source_entity", "relation", "target_entity", "weight",
-                        "metadata", "created_at", "updated_at",
-                    ]
-
-                    def needs_relation_upgrade() -> bool:
-                        columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_entity_relations)")]
-                        return columns == legacy_relation_columns
-
-                    if needs_relation_upgrade():
-                        # Recheck after taking SQLite's cross-process write lock.
-                        with write_transaction(con, rollback_label="agent relation schema upgrade"):
-                            if needs_relation_upgrade():
-                                con.execute(
-                                    "ALTER TABLE agent_entity_relations ADD COLUMN repository_id TEXT NOT NULL DEFAULT ''"
-                                )
                     validate_durable_schema(
                         con,
                         self.state_store.db_path,
@@ -635,6 +619,12 @@ class MemoryStore:
                                 ("weight", "REAL", 1, 0), ("metadata", "TEXT", 1, 0),
                                 ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
                                 ("repository_id", "TEXT", 1, 0),
+                            ],
+                            "agent_memory_embeddings": [
+                                ("record_id", "TEXT", 0, 1), ("embedding", "TEXT", 1, 0),
+                                ("created_at", "REAL", 1, 0),
+                                ("embedding_space_id", "TEXT", 1, 0),
+                                ("model_name", "TEXT", 1, 0), ("dimension", "INTEGER", 1, 0),
                             ],
                         },
                         complete_groups=(("agent_memory_records", "agent_entity_relations"),),
@@ -779,15 +769,6 @@ class MemoryStore:
                         except sqlite3.OperationalError as exc:
                             if "no such module: fts5" not in str(exc).casefold():
                                 raise
-                        embedding_columns = [row[1] for row in con.execute("PRAGMA table_info(agent_memory_embeddings)")]
-                        if embedding_columns == ["record_id", "embedding", "created_at"]:
-                            # Historical vectors have no trustworthy model or space identity.
-                            for definition in (
-                                "embedding_space_id TEXT NOT NULL DEFAULT ''",
-                                "model_name TEXT NOT NULL DEFAULT ''",
-                                "dimension INTEGER NOT NULL DEFAULT 0",
-                            ):
-                                con.execute(f"ALTER TABLE agent_memory_embeddings ADD COLUMN {definition}")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_memory_embeddings (

@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 
 from local_ai_hub import services as services_module
+from local_ai_hub.service_review_diff import _review_failure_details
 from local_ai_hub.services import LocalAIServices
+
+
+def test_review_failure_preserves_safe_http_status_code():
+    assert _review_failure_details({"status_code": 422}) == {"status_code": 422}
+    assert _review_failure_details({"status_code": True}) == {}
 
 
 def test_chunked_review_uses_available_synthesis_output_budget(monkeypatch):

@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.agent_blackboard import BlackboardSection, merge_sections
-from local_ai_hub.agent_board import BoardStore
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_semaphores import SemaphoreStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
@@ -40,7 +39,7 @@ def test_t3_01_swarm_dag_error_dict_fails_step(tmp_path: Path):
 
 
 def test_t3_02_session_briefing_handles_taskstate_objects(tmp_path: Path):
-    """T3-02 (T10): BoardStore.session_briefing populates active_tasks from TaskState objects."""
+    """T3-02 (T10): canonical repository briefing filters active TaskState objects."""
     db_path = tmp_path / "state.sqlite3"
     state_store = AgentStateStore(db_path=db_path)
     state_store._ensure_schema()
@@ -66,19 +65,17 @@ def test_t3_02_session_briefing_handles_taskstate_objects(tmp_path: Path):
     )
     task_store.list_tasks = MagicMock(return_value=[foreign_task, task, local_task])
 
-    services = MagicMock()
-    services.task_store = task_store
-    services.board_store = MagicMock()
-    services.board_summary = MagicMock(return_value={"counts": {}})
-    services.board_item_list = MagicMock(return_value={"items": []})
-    services.semaphores = None
-    services.plan_list = MagicMock(return_value={"plans": []})
+    from local_ai_hub.services import LocalAIServices
 
-    board_store = BoardStore(db_path=tmp_path / "board.sqlite3", services=services)
-    briefing = board_store.session_briefing(include=["active_tasks"], root=str(repo_a))
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"security": {"allowed_roots": [str(repo_a)]},
+                       "server": {"state_dir": str(tmp_path / "state")}}
+    services.task_store = task_store
+    briefing = services.session_briefing(include=["active_tasks"], root=str(repo_a))
     assert [item["task_id"] for item in briefing["active_tasks"]] == [local_task.task_id]
     assert briefing["active_tasks"][0]["goal"] == "Audit Round 3 test task"
-    assert board_store.session_briefing(include=["active_tasks"])["active_tasks"] == []
+    with pytest.raises(TypeError, match="root"):
+        services.session_briefing(include=["active_tasks"])
 
 
 def test_t3_03_semaphore_release_checks_owner(tmp_path: Path):

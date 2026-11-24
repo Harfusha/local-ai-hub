@@ -57,6 +57,7 @@ def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path
     for path in (arrivals, start_calls, daemon_owners):
         path.mkdir()
     config.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         f"[server]\nport=39123\nstate_dir='{state_dir.as_posix()}'\n"
         "[hardware]\nprofile='cpu'\nauto_tune=false\n"
         "[client]\nstartup_wait_seconds=10\nstartup_poll_seconds=0.02\n",

@@ -1038,8 +1038,7 @@ class ExternalCodeIntelligence:
                     "fallback_used": True,
                     "degraded_reason": reason,
                     "symbols": symbols,
-                    "matches": symbols,
-                    "matches_count": len(symbols),
+                    "returned_count": len(symbols),
                 }
             elif action in {"references", "find_references", "referencing"}:
                 # The optional Serena path identifies the definition. The built-in
@@ -1060,8 +1059,7 @@ class ExternalCodeIntelligence:
                     "fallback_used": True,
                     "degraded_reason": reason,
                     "references": symbols,
-                    "matches": symbols,
-                    "matches_count": len(symbols),
+                    "returned_count": len(symbols),
                     "has_more": has_more,
                     "coverage": {"complete": False, "scope": "indexed_lexical_references"},
                 }
@@ -1076,8 +1074,7 @@ class ExternalCodeIntelligence:
                     "fallback_used": True,
                     "degraded_reason": reason,
                     "results": symbols,
-                    "matches": symbols,
-                    "matches_count": len(symbols),
+                    "returned_count": len(symbols),
                 }
         except Exception as exc:
             return {

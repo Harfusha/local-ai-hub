@@ -150,8 +150,6 @@ def _replayable_plan_edit(method):
                 if method.__name__ == "adopt_legacy_board_items":
                     response_data = stored.get("client_response_data")
                     source_items = values.get("board_items")
-                    if source_items is None:
-                        source_items = values.get("legacy_items") or []
                     if (not isinstance(response_data, dict)
                             or type(response_data.get("adopted_count")) is not int
                             or not isinstance(source_items, list)
@@ -789,16 +787,15 @@ class RepoPlanWorkspace:
         self,
         plan_id: str = "default",
         board_items: list[dict[str, Any]] | None = None,
-        legacy_items: list[dict[str, Any]] | None = None,
         title: str = "",
         owner: str = "agent",
         idempotency_key: str = "",
         _client_request_fingerprint: str = "",
     ) -> dict[str, Any]:
         """Adopt SQLite board items into a file-backed plan without deleting the originals."""
-        items_to_adopt = board_items if board_items is not None else (legacy_items or [])
+        items_to_adopt = board_items
         if not isinstance(items_to_adopt, list):
-            raise RepoPlanValidationError("legacy board items must be a list")
+            raise RepoPlanValidationError("board_items must be a list")
         seen_ids: dict[str, tuple[str, dict[str, Any]]] = {}
         serialized_items: dict[str, str] = {}
         for item in items_to_adopt:

@@ -2,19 +2,16 @@
 from __future__ import annotations
 
 import sys
-import importlib.util
 from pathlib import Path
 
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-TOOLS = Path(__file__).resolve().parents[1] / "tools"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
 
 from local_ai_hub.features import FeatureSet
+from local_ai_hub.generator import generate_global_policy
 
 
 class TestFeatureSetDefaults:
@@ -260,40 +257,32 @@ class TestCustomModelNames:
 
 
 class TestBuildGlobalPolicy:
-    @pytest.fixture(autouse=True)
-    def _import_setup(self):
-        tools = Path(__file__).resolve().parents[1] / "tools" / "setup.py"
-        spec = importlib.util.spec_from_file_location("setup_module", tools)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        self.build = mod.build_global_policy
-
     def test_policy_has_markers(self):
-        policy = self.build({})
+        policy = generate_global_policy({})
         assert "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->" in policy
         assert "<!-- END LOCAL AI HUB TOOL POLICY -->" in policy
 
     def test_rag_absent_when_disabled(self):
-        assert "local_ai_rag" not in self.build({"features": {"rag": False}})
+        assert "local_ai_rag" not in generate_global_policy({"features": {"rag": False}})
 
     def test_rag_present_when_enabled(self):
-        assert "local_ai_rag" in self.build({})
+        assert "local_ai_rag" in generate_global_policy({})
 
     def test_semantic_absent_when_no_backend(self):
         cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": True}}
-        assert "semantic/graph" not in self.build(cfg)
+        assert "semantic/graph" not in generate_global_policy(cfg)
     def test_semantic_route_absent_without_serena(self):
         cfg = {"code_intelligence": {"serena_enabled": False}}
-        assert "-> semantic" not in self.build(cfg)
+        assert "-> semantic" not in generate_global_policy(cfg)
 
     def test_model_name_custom(self):
-        policy = self.build({"ollama": {"enabled": True}, "models": {"fast_code": "awesome-coder:7b"}})
+        policy = generate_global_policy({"ollama": {"enabled": True}, "models": {"fast_code": "awesome-coder:7b"}})
         assert "active hardware profile and user overrides" in policy
         assert "check installed models before inference" in policy
 
     def test_task_absent_when_ollama_off(self):
         cfg = {"ollama": {"enabled": False}, "server": {"auto_start_ollama": False}}
-        assert "Semantic delegation is on-demand and optional" not in self.build(cfg)
+        assert "Semantic delegation is on-demand and optional" not in generate_global_policy(cfg)
 
     def test_work_submission_guidance_is_high_tier_only(self):
         base = {
@@ -302,15 +291,15 @@ class TestBuildGlobalPolicy:
             "coord": {"enabled": True},
             "work_orchestrator": {"enabled": True},
         }
-        low = self.build({**base, "hardware": {"profile": "balanced"}})
-        high = self.build({**base, "features": {"bounded_local_work": True}, "hardware": {"profile": "high"}})
+        low = generate_global_policy({**base, "hardware": {"profile": "balanced"}})
+        high = generate_global_policy({**base, "features": {"bounded_local_work": True}, "hardware": {"profile": "high"}})
 
         assert 'local_ai_work(action="submit"' not in low
         assert 'local_ai_work(action="submit"' in high
 
     def test_search_summary_guidance_is_profile_aware(self):
-        low = self.build({"hardware": {"profile": "low"}})
-        balanced = self.build({"features": {"search_summaries": True}, "hardware": {"profile": "balanced"}})
+        low = generate_global_policy({"hardware": {"profile": "low"}})
+        balanced = generate_global_policy({"features": {"search_summaries": True}, "hardware": {"profile": "balanced"}})
 
         assert "summarize_results" not in low
         assert "summarize_results" in balanced
@@ -325,6 +314,9 @@ class TestRoutingEngineConfigModel:
         cfg_path.write_text(
             f'''[server]
 state_dir = "{(tmp_path / "state").as_posix()}"
+
+[local_ai_hub]
+config_schema_version = 1
 
 [models]
 fast_code = "configured-router:7b"

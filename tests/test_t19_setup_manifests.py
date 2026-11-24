@@ -90,7 +90,7 @@ def test_antigravity_manifest_parses_preserves_user_servers_and_merges_idempoten
     parsed = json.loads(path.read_text(encoding="utf-8"))
     assert parsed["custom_setting"] == "preserve"
     assert parsed["mcpServers"]["user-server"]["command"] == "user-command"
-    assert parsed["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "gemini"
+    assert parsed["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "antigravity"
 
     first_merge = path.read_bytes()
     setup.sync_antigravity_mcp_config(path, install_dir, python, None, config, False)

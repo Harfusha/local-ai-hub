@@ -6,14 +6,641 @@ import sys
 import subprocess
 import os
 import tomllib
+import sqlite3
 import pytest
 from pathlib import Path
+from local_ai_hub.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("local_ai_hub_setup", ROOT / "tools" / "setup.py")
 assert SPEC and SPEC.loader
 setup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(setup)
+
+
+@pytest.mark.parametrize(
+    "config_text,expected",
+    [
+        ("", True),
+        ("[models]\nallow_hf_downloads = false\n", False),
+    ],
+)
+def test_setup_wizard_hf_download_choice_inherits_config(tmp_path, config_text, expected):
+    config = tmp_path / "config.toml"
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n" + config_text, encoding="utf-8")
+    effective = load_config(config, probe_hardware=False)
+
+    choices = setup._setup_wizard_module.defaults_from_config(effective)
+
+    assert choices["download_hf_models"] is expected
+
+
+def test_setup_wizard_enables_devin_mcp_skills_instructions_and_hooks_by_default():
+    effective = load_config(probe_hardware=False)
+    choices = setup._setup_wizard_module.defaults_from_config(effective)
+
+    assert choices["agent_devin"] is True
+    assert choices["agent_devin_mcp"] is True
+    assert choices["agent_devin_skills"] is True
+    assert choices["agent_devin_instructions"] is True
+    assert choices["agent_devin_hooks"] is True
+    assert choices["agent_devin_plugin_route"] is False
+
+    from types import SimpleNamespace
+    args = SimpleNamespace(
+        profile=None, skip_model_pull=None, skip_tools=None, skip_token_economy=None,
+        skip_agent_config=None, skip_service=None, skip_companion_skills=None,
+        skip_laya_runtime=None, skip_ast_index=None, skip_performance=None, skip_profiling=None,
+    )
+    choices["agent_devin_plugin_route"] = True
+    setup._setup_wizard_module.apply_choices(args, effective, choices)
+    assert effective["agents"]["devin_plugin_route"] is True
+
+
+def test_setup_wizard_exposes_opencode_and_plugin_route_independently():
+    wizard = setup._setup_wizard_module
+    cfg = load_config(probe_hardware=False)
+    choices = wizard.defaults_from_config(cfg)
+
+    assert choices["agent_opencode"] is True
+    assert choices["agent_opencode_plugin"] is True
+
+    from types import SimpleNamespace
+    args = SimpleNamespace(
+        profile=None, skip_model_pull=None, skip_tools=None, skip_token_economy=None,
+        skip_agent_config=None, skip_service=None, skip_companion_skills=None,
+        skip_laya_runtime=None, skip_ast_index=None, skip_performance=None, skip_profiling=None,
+    )
+    choices["agent_opencode_plugin"] = False
+    wizard.apply_choices(args, cfg, choices)
+
+    assert cfg["agents"]["opencode"] is True
+    assert cfg["agents"]["opencode_plugin_route"] is False
+
+
+def test_opencode_setup_installs_skills_in_native_global_discovery_root(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    source = install / "skills" / "local-ai-orchestrator"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: local-ai-orchestrator\ndescription: Use when testing.\n---\n", encoding="utf-8")
+    config_root = tmp_path / ".config" / "opencode"
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [config_root])
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": False})
+    agent_components = {
+        "agent_opencode_skills": True,
+        "agent_opencode_instructions": False,
+        "agent_opencode_mcp": False,
+        "agent_opencode_plugin": False,
+    }
+
+    setup._configure_agents_impl(
+        install, Path("python"), None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+        include_companion=False,
+        agent_components=agent_components,
+    )
+
+    installed = config_root / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    assert installed.read_text(encoding="utf-8") == (source / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_opencode_config_can_select_standalone_mcp_without_wizard_state(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_mcp_merge", lambda path, *_args: calls.append(path))
+    monkeypatch.setattr(
+        setup, "sync_opencode_plugin_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plugin route selected")),
+    )
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": False})
+
+    setup._configure_agents_impl(
+        tmp_path / "install", Path("python"), None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+    )
+
+    assert calls == [tmp_path / "opencode.json"]
+
+
+def test_devin_plugin_route_skips_duplicate_global_mcp_and_reports_existing_route(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    install.mkdir()
+    devin_dir = tmp_path / "devin"
+    mcp_path = devin_dir / "mcp_config.json"
+    mcp_attempts = []
+    skill_attempts = []
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "devin_config_dir", lambda: devin_dir)
+    monkeypatch.setattr(setup, "devin_mcp_config_path", lambda: mcp_path)
+    monkeypatch.setattr(setup, "global_hub_mcp_configured", lambda path: True)
+    monkeypatch.setattr(setup, "json_mcp_merge", lambda *args, **kwargs: mcp_attempts.append(args[0]))
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *args, **kwargs: skill_attempts.append(args[1]))
+    monkeypatch.setattr(setup, "sync_devin_pre_tool_hook", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "merge_global_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "merge_token_economy_policy", lambda *_args, **_kwargs: None)
+    agents = {name: False for name in ("codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "opencode")}
+    agents.update({"devin": True, "devin_plugin_route": True})
+
+    actions = setup._configure_agents_impl(
+        install,
+        tmp_path / "python.exe",
+        None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+        include_companion=False,
+        agent_components={
+            "agent_devin_mcp": True,
+            "agent_devin_skills": True,
+            "agent_devin_hooks": True,
+        },
+    )
+
+    assert mcp_attempts == []
+    assert all(path != devin_dir / "skills" for path in skill_attempts)
+    assert any("plugin route is selected" in action.lower() for action in actions)
+    assert any("standalone Hub MCP remains" in action for action in actions)
+
+
+def test_opencode_plugin_setup_detects_duplicate_standalone_hub_mcp(tmp_path):
+    config = tmp_path / "opencode.json"
+    config.write_text(
+        json.dumps({"plugins": [{"package": "local-ai-hub"}], "mcp": {"servers": {
+            "local-ai": {"type": "local", "command": ["python", "-m", "local_ai_hub.mcp_server"]},
+            "other": {"type": "local", "command": ["other-server"]},
+        }}}),
+        encoding="utf-8",
+    )
+
+    assert setup.opencode_direct_hub_mcp_configured(config) is True
+
+    data = json.loads(config.read_text(encoding="utf-8"))
+    assert set(data["mcp"]["servers"]) == {"local-ai", "other"}
+
+
+def test_opencode_plugin_setup_allows_plugin_without_duplicate_mcp(tmp_path):
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": [{"package": "local-ai-hub"}]}), encoding="utf-8")
+
+    assert setup.opencode_direct_hub_mcp_configured(config) is False
+
+
+def test_opencode_plugin_setup_detects_jsonc_mcp_without_rewriting_it(tmp_path):
+    config = tmp_path / "opencode.jsonc"
+    config.write_text(
+        '''{
+          // Existing standalone Hub route must remain user-owned.
+          "mcp": {"servers": {
+            "local-ai": {"type": "local", "command": ["python", "-m", "local_ai_hub.mcp_server"],},
+            "other": {"type": "local", "command": ["https://example.test/a//b"],},
+          },},
+        }''',
+        encoding="utf-8",
+    )
+
+    assert setup.opencode_direct_hub_mcp_configured(config) is True
+    assert "//b" in config.read_text(encoding="utf-8")
+
+
+def test_opencode_plugin_route_does_not_add_duplicate_when_jsonc_has_standalone_hub_mcp(tmp_path, monkeypatch):
+    config = tmp_path / "opencode.jsonc"
+    config.write_text(
+        json.dumps({"mcp": {"servers": {"local-ai": {
+            "type": "local", "command": ["python", "-m", "local_ai_hub.mcp_server"],
+        }}}}),
+        encoding="utf-8",
+    )
+    plugin_attempts = []
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "sync_opencode_plugin_config", lambda *args, **kwargs: plugin_attempts.append(args[0]) or True)
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": True})
+
+    actions = setup._configure_agents_impl(
+        tmp_path / "install", Path("python"), None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+    )
+
+    assert plugin_attempts == []
+    assert not (tmp_path / "opencode.json").exists()
+    assert any("opencode.jsonc" in action and "duplicate" in action.lower() for action in actions)
+
+
+def test_opencode_standalone_route_preserves_existing_jsonc_hub_mcp(tmp_path, monkeypatch):
+    config = tmp_path / "opencode.jsonc"
+    original = json.dumps({"mcp": {"servers": {"local-ai": {"type": "local"}}}})
+    config.write_text(original, encoding="utf-8")
+    mcp_attempts = []
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_mcp_merge", lambda path, *_args, **_kwargs: mcp_attempts.append(path))
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": False})
+
+    actions = setup._configure_agents_impl(
+        tmp_path / "install", Path("python"), None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+    )
+
+    assert mcp_attempts == []
+    assert config.read_text(encoding="utf-8") == original
+    assert any("opencode.jsonc" in action and "preserved" in action.lower() for action in actions)
+
+
+def test_opencode_plugin_route_preserves_existing_jsonc_plugin(tmp_path, monkeypatch):
+    config = tmp_path / "opencode.jsonc"
+    config.write_text(json.dumps({"plugins": [{"package": str(tmp_path / "local-ai-hub")}]}), encoding="utf-8")
+    plugin_attempts = []
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "sync_opencode_plugin_config", lambda *args, **kwargs: plugin_attempts.append(args[0]) or True)
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": True})
+
+    setup._configure_agents_impl(
+        tmp_path / "install", Path("python"), None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+    )
+
+    assert plugin_attempts == []
+    assert not (tmp_path / "opencode.json").exists()
+
+
+def test_opencode_standalone_route_keeps_existing_jsonc_plugin(tmp_path, monkeypatch):
+    config = tmp_path / "opencode.jsonc"
+    original = json.dumps({"plugins": [str(tmp_path / "local-ai-hub")]})
+    config.write_text(original, encoding="utf-8")
+    mcp_attempts = []
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "opencode_mcp_merge", lambda path, *_args, **_kwargs: mcp_attempts.append(path))
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": False})
+
+    actions = setup._configure_agents_impl(
+        tmp_path / "install", Path("python"), None,
+        {"agents": agents, "setup": {"backup_existing_configs": False},
+         "tool_policy": {"install_global_instructions": False}},
+    )
+
+    assert mcp_attempts == []
+    assert config.read_text(encoding="utf-8") == original
+    assert any("plugin" in action.lower() and "opencode.jsonc" in action for action in actions)
+
+
+def test_opencode_setup_uses_canonical_or_explicit_config_root_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.delenv("OPENCODE_HOME", raising=False)
+    assert setup.opencode_config_dirs() == [tmp_path / ".config" / "opencode"]
+
+    explicit = tmp_path / "custom-opencode"
+    monkeypatch.setenv("OPENCODE_HOME", str(explicit))
+    assert setup.opencode_config_dirs() == [explicit]
+
+
+def test_claude_plugin_route_detects_global_mcp_and_hooks(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "enabledPlugins": {"local-ai-hub@local-ai-hub": True},
+        "hooks": {"SessionStart": [{"hooks": [{
+            "type": "command",
+            "command": "python host_hooks.py --host claude",
+        }]}]},
+    }), encoding="utf-8")
+    mcp = tmp_path / ".claude.json"
+    mcp.write_text(json.dumps({"mcpServers": {"local-ai": {"command": "python"}}}), encoding="utf-8")
+
+    assert setup.claude_hub_plugin_enabled(settings) is True
+    assert setup.claude_global_hub_hooks_configured(settings) is True
+    assert setup.claude_global_hub_mcp_configured(mcp) is True
+
+
+def test_claude_plugin_route_detection_keeps_unrelated_settings(tmp_path):
+    settings = tmp_path / "settings.json"
+    original = json.dumps({
+        "enabledPlugins": {"other@marketplace": True},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "user-hook"}]}]},
+    })
+    settings.write_text(original, encoding="utf-8")
+
+    assert setup.claude_hub_plugin_enabled(settings) is False
+    assert setup.claude_global_hub_hooks_configured(settings) is False
+    assert settings.read_text(encoding="utf-8") == original
+
+
+def test_claude_subagent_start_hook_installs_idempotently_without_replacing_settings(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    settings = tmp_path / "home" / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"theme": "dark", "hooks": {"SessionStart": []}}), encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_claude_subagent_start_hook(settings, install, python, False)
+    config = json.loads(settings.read_text(encoding="utf-8"))
+    assert config["theme"] == "dark"
+    assert config["hooks"]["SessionStart"] == []
+    assert config["hooks"]["SubagentStart"][0]["hooks"][0]["command"].endswith("--host claude")
+    assert setup.sync_claude_subagent_start_hook(settings, install, python, False)
+    assert len(json.loads(settings.read_text(encoding="utf-8"))["hooks"]["SubagentStart"]) == 1
+
+
+def test_gemini_extension_and_antigravity_plugin_paths_are_detected(tmp_path):
+    gemini = tmp_path / ".gemini"
+    extension = gemini / "extensions" / "local-ai-hub" / "gemini-extension.json"
+    plugin = gemini / "config" / "plugins" / "local-ai-hub" / "plugin.json"
+    extension.parent.mkdir(parents=True)
+    plugin.parent.mkdir(parents=True)
+    extension.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+    plugin.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+
+    assert setup.gemini_cli_extension_installed(gemini) is True
+    assert setup.antigravity_plugin_installed(gemini) is True
+    assert setup.gemini_cli_extension_active(gemini) is True
+
+
+def test_cursor_local_plugin_path_detects_hub_plugin(tmp_path):
+    cursor = tmp_path / ".cursor"
+    manifest = cursor / "plugins" / "local" / "local-ai-hub" / ".cursor-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+
+    assert setup.cursor_hub_plugin_installed(cursor) is True
+    assert setup.cursor_hub_plugin_installed(tmp_path / "other-cursor") is False
+
+
+def test_cursor_plugin_route_preserves_global_duplicates_and_reports_them(tmp_path):
+    cursor = tmp_path / ".cursor"
+    manifest = cursor / "plugins" / "local" / "local-ai-hub" / ".cursor-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+    mcp = cursor / "mcp.json"
+    hooks = cursor / "hooks.json"
+    mcp.write_text(json.dumps({"mcpServers": {"local-ai": {"command": "python", "args": ["hub"]}}}), encoding="utf-8")
+    hooks.write_text(json.dumps({"version": 1, "hooks": {"beforeShellExecution": [
+        {"command": "python host_hooks --host cursor --event beforeShellExecution"}
+    ]}}), encoding="utf-8")
+    before_mcp, before_hooks = mcp.read_bytes(), hooks.read_bytes()
+    actions = []
+
+    setup.configure_cursor_global_routes(
+        cursor, tmp_path / "install", tmp_path / "python.exe", None, {}, False,
+        {"agent_cursor_mcp": True, "agent_cursor_hooks": True}, actions,
+    )
+
+    assert mcp.read_bytes() == before_mcp
+    assert hooks.read_bytes() == before_hooks
+    assert any("standalone Hub MCP" in action for action in actions)
+    assert any("global Hub hooks" in action for action in actions)
+
+
+def test_cursor_without_plugin_keeps_global_mcp_setup(tmp_path):
+    cursor = tmp_path / ".cursor"
+    actions = []
+    setup.configure_cursor_global_routes(
+        cursor, tmp_path / "install", tmp_path / "python.exe", None, {}, False,
+        {"agent_cursor_mcp": True, "agent_cursor_hooks": False}, actions,
+    )
+    mcp = json.loads((cursor / "mcp.json").read_text(encoding="utf-8"))
+    assert mcp["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "cursor"
+
+
+def test_copilot_plugin_route_detects_enabled_user_and_repository_settings(tmp_path):
+    copilot = tmp_path / ".copilot"
+    copilot.mkdir()
+    spec = "local-ai-hub@local-marketplace"
+    (copilot / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {spec: True}
+    }), encoding="utf-8")
+    assert setup.copilot_hub_plugin_enabled(copilot, tmp_path / "repo") is True
+
+    (copilot / "settings.json").write_text(json.dumps({"enabledPlugins": {}}), encoding="utf-8")
+    repo_settings = tmp_path / "repo" / ".github" / "copilot" / "settings.json"
+    repo_settings.parent.mkdir(parents=True)
+    repo_settings.write_text(json.dumps({"enabledPlugins": {"local-ai-hub@another-marketplace": True}}), encoding="utf-8")
+    assert setup.copilot_hub_plugin_enabled(copilot, tmp_path / "repo") is True
+
+    repo_settings.write_text(json.dumps({"enabledPlugins": {}}), encoding="utf-8")
+    (copilot / "settings.json").write_text(json.dumps({"enabledPlugins": {spec: True}}), encoding="utf-8")
+    local_settings = repo_settings.with_name("settings.local.json")
+    local_settings.write_text(json.dumps({"enabledPlugins": {spec: False}}), encoding="utf-8")
+    assert setup.copilot_hub_plugin_enabled(copilot, tmp_path / "repo") is False
+
+
+def test_copilot_plugin_route_preserves_global_duplicates_and_reports_them(tmp_path):
+    copilot = tmp_path / ".copilot"
+    copilot.mkdir()
+    (copilot / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"local-ai-hub@local-marketplace": True}
+    }), encoding="utf-8")
+    mcp = copilot / "mcp-config.json"
+    hooks = copilot / "hooks" / "local-ai-hub.json"
+    hooks.parent.mkdir()
+    mcp.write_text(json.dumps({"mcpServers": {"local-ai": {"type": "local"}}}), encoding="utf-8")
+    hooks.write_text(json.dumps({"hooks": {"preToolUse": [{
+        "command": "python host_hooks.py --host copilot --event preToolUse"
+    }]}}), encoding="utf-8")
+    before_mcp, before_hooks = mcp.read_bytes(), hooks.read_bytes()
+    actions = []
+
+    setup.configure_copilot_global_routes(
+        copilot, tmp_path / "repo", tmp_path / "install", tmp_path / "python.exe", None, {}, False,
+        {"agent_copilot_mcp": True, "agent_copilot_hooks": True}, actions,
+    )
+
+    assert mcp.read_bytes() == before_mcp
+    assert hooks.read_bytes() == before_hooks
+    assert any("standalone Hub MCP" in action for action in actions)
+    assert any("Copilot tool hooks not installed" in action for action in actions)
+
+
+def test_copilot_plugin_route_still_installs_distinct_tool_hooks(tmp_path):
+    copilot = tmp_path / ".copilot"
+    copilot.mkdir()
+    (copilot / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"local-ai-hub@local-marketplace": True}
+    }), encoding="utf-8")
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# temporary fixture\n", encoding="utf-8")
+    actions = []
+
+    setup.configure_copilot_global_routes(
+        copilot, tmp_path / "repo", install, tmp_path / "python.exe", None, {}, False,
+        {"agent_copilot_mcp": False, "agent_copilot_hooks": True}, actions,
+    )
+
+    hooks = json.loads((copilot / "hooks" / "local-ai-hub.json").read_text(encoding="utf-8"))
+    assert set(hooks["hooks"]) == {"preToolUse", "postToolUse"}
+    assert actions == []
+
+
+def test_copilot_plugin_route_reports_only_same_event_global_hook(tmp_path):
+    copilot = tmp_path / ".copilot"
+    copilot.mkdir()
+    (copilot / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"local-ai-hub@local-marketplace": True}
+    }), encoding="utf-8")
+    hooks = copilot / "hooks" / "local-ai-hub.json"
+    hooks.parent.mkdir()
+    original = {"version": 1, "hooks": {"sessionStart": [{
+        "type": "command", "command": "python host_hooks.py --host copilot"
+    }]}}
+    hooks.write_text(json.dumps(original), encoding="utf-8")
+    actions = []
+
+    setup.configure_copilot_global_routes(
+        copilot, tmp_path / "repo", tmp_path / "install", tmp_path / "python.exe", None, {}, False,
+        {"agent_copilot_mcp": False, "agent_copilot_hooks": True}, actions,
+    )
+
+    assert json.loads(hooks.read_text(encoding="utf-8")) == original
+    assert any("SessionStart" in action for action in actions)
+
+
+@pytest.mark.parametrize("scope", ["user_settings", "repo_settings", "repo_claude", "repo_hooks", "user_hook_file"])
+def test_copilot_plugin_route_installs_only_missing_tool_hook_events(tmp_path, scope):
+    copilot = tmp_path / ".copilot"
+    copilot.mkdir()
+    user_settings = {"enabledPlugins": {"local-ai-hub@local-marketplace": True}}
+    if scope == "user_settings":
+        user_settings["hooks"] = {"preToolUse": [{
+            "type": "command", "command": "python -m local_ai_hub.repo_plan.host_hooks --host copilot"
+        }]}
+    (copilot / "settings.json").write_text(json.dumps(user_settings), encoding="utf-8")
+
+    repo = tmp_path / "repo"
+    hook_config = {"hooks": {"PreToolUse": [{
+        "type": "command", "command": "python -m local_ai_hub.repo_plan.host_hooks --host copilot"
+    }]}}
+    if scope == "repo_settings":
+        target = repo / ".github" / "copilot" / "settings.json"
+    elif scope == "repo_claude":
+        target = repo / ".claude" / "settings.local.json"
+    elif scope == "repo_hooks":
+        target = repo / ".github" / "hooks" / "hub.json"
+    elif scope == "user_hook_file":
+        target = copilot / "hooks" / "other.json"
+    else:
+        target = None
+    if target is not None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(hook_config), encoding="utf-8")
+
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# temporary fixture\n", encoding="utf-8")
+    actions = []
+    setup.configure_copilot_global_routes(
+        copilot, repo, install, tmp_path / "python.exe", None, {}, False,
+        {"agent_copilot_mcp": False, "agent_copilot_hooks": True}, actions,
+    )
+
+    managed = json.loads((copilot / "hooks" / "local-ai-hub.json").read_text(encoding="utf-8"))
+    assert set(managed["hooks"]) == {"postToolUse"}
+    assert any("pretooluse" in action.casefold() for action in actions)
+
+
+def test_copilot_without_plugin_keeps_global_mcp_setup(tmp_path):
+    copilot = tmp_path / ".copilot"
+    actions = []
+    setup.configure_copilot_global_routes(
+        copilot, tmp_path / "repo", tmp_path / "install", tmp_path / "python.exe", None, {}, False,
+        {"agent_copilot_mcp": True, "agent_copilot_hooks": False}, actions,
+    )
+    mcp = json.loads((copilot / "mcp-config.json").read_text(encoding="utf-8"))
+    assert mcp["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "copilot"
+
+
+def test_gemini_cli_extension_disabled_setting_selects_global_route(tmp_path):
+    gemini = tmp_path / ".gemini"
+    extension = gemini / "extensions" / "local-ai-hub" / "gemini-extension.json"
+    extension.parent.mkdir(parents=True)
+    extension.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+    settings = gemini / "settings.json"
+    settings.write_text(json.dumps({"extensions": {"disabled": ["local-ai-hub"]}}), encoding="utf-8")
+
+    assert setup.gemini_cli_extension_active(gemini) is False
+
+    project = tmp_path / "repo"
+    (project / ".gemini").mkdir(parents=True)
+    (project / ".gemini" / "settings.json").write_text(
+        json.dumps({"extensions": {"disabled": []}}), encoding="utf-8",
+    )
+    assert setup.gemini_cli_extension_active(gemini, project) is True
+
+
+def test_gemini_setup_preserves_plugin_and_global_routes_without_duplication(tmp_path, monkeypatch):
+    gemini = tmp_path / ".gemini"
+    install = tmp_path / "install"
+    extension = gemini / "extensions" / "local-ai-hub" / "gemini-extension.json"
+    plugin = gemini / "config" / "plugins" / "local-ai-hub" / "plugin.json"
+    extension.parent.mkdir(parents=True)
+    plugin.parent.mkdir(parents=True)
+    extension.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+    plugin.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+    gemini_settings = gemini / "settings.json"
+    antigravity_mcp = gemini / "config" / "mcp_config.json"
+    gemini_settings.parent.mkdir(parents=True, exist_ok=True)
+    gemini_settings.write_text(json.dumps({"mcpServers": {"local-ai": {"command": "keep"}}}), encoding="utf-8")
+    antigravity_mcp.write_text(json.dumps({"mcpServers": {"local-ai": {"command": "keep"}}}), encoding="utf-8")
+    before_gemini = gemini_settings.read_bytes()
+    before_antigravity = antigravity_mcp.read_bytes()
+    monkeypatch.setattr(setup, "sync_antigravity_mcp_config", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("duplicate route")))
+    actions = []
+
+    setup._configure_gemini_instance_impl(
+        gemini, install, tmp_path / "python.exe", None, {}, False, False,
+        agent_components={"agent_gemini_mcp": True, "agent_gemini_hooks": False,
+                          "agent_gemini_skills": False, "agent_gemini_instructions": False,
+                          "agent_antigravity_mcp": True},
+        manual_actions=actions,
+    )
+
+    assert gemini_settings.read_bytes() == before_gemini
+    assert antigravity_mcp.read_bytes() == before_antigravity
+    assert any("Gemini CLI extension" in action for action in actions)
+    assert any("Antigravity plugin" in action for action in actions)
 
 
 @pytest.mark.parametrize("known_backup", [True, False])
@@ -52,6 +679,344 @@ def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
     result = setup.run(['hub-test-command'], capture=True)
     assert result.stdout.strip() == 'batch-ok'
+
+
+def test_copilot_hook_installs_reversibly_and_preserves_unowned_file(tmp_path, capsys):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "home" / ".copilot" / "hooks" / "local-ai-hub.json"
+
+    assert setup.sync_copilot_tool_hooks(target, install, python, False)
+    configured = json.loads(target.read_text(encoding="utf-8"))
+    assert configured["version"] == 1
+    hook = configured["hooks"]["preToolUse"][0]
+    assert hook["command"].endswith("--host copilot --event preToolUse")
+    assert hook["timeoutSec"] == 5
+    assert "timeout" not in hook
+    post_hook = configured["hooks"]["postToolUse"][0]
+    assert post_hook["command"].endswith("--host copilot --event postToolUse")
+    assert post_hook["matcher"] == "^(create|edit)$"
+    assert post_hook["timeoutSec"] == 5
+
+    target.write_text('{"version":1,"hooks":{"custom":[]}}\n', encoding="utf-8")
+    assert not setup.sync_copilot_tool_hooks(target, install, python, False)
+    assert json.loads(target.read_text(encoding="utf-8"))["hooks"] == {"custom": []}
+
+
+def test_windsurf_hooks_install_bounded_command_read_mcp_and_edit_checks(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "windsurf_hook.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "home" / ".codeium" / "windsurf" / "hooks.json"
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_windsurf_policy_hooks(target, install, python, False)
+    configured = json.loads(target.read_text(encoding="utf-8"))
+    assert set(configured["hooks"]) == {"pre_run_command", "pre_read_code", "pre_mcp_tool_use", "post_write_code"}
+    for event in configured["hooks"].values():
+        assert event[0]["command"].endswith('windsurf_hook.py"')
+        assert event[0]["show_output"] is True
+    assert setup.sync_windsurf_policy_hooks(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["pre_run_command"]) == 1
+
+
+def test_copilot_home_respects_environment_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-config"))
+    assert setup.copilot_home() == tmp_path / "copilot-config"
+    assert setup.copilot_hook_path() == tmp_path / "copilot-config" / "hooks" / "local-ai-hub.json"
+
+
+def test_devin_setup_uses_native_windows_config_and_pre_tool_hook(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+
+    assert setup.devin_config_dir() == tmp_path / "AppData" / "Roaming" / "devin"
+    target = setup.devin_config_dir() / "config.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps({"theme": "dark", "hooks": {"SessionStart": []}}), encoding="utf-8")
+
+    assert setup.sync_devin_pre_tool_hook(target, install, python, False)
+    configured = json.loads(target.read_text(encoding="utf-8"))
+    assert configured["theme"] == "dark"
+    group = configured["hooks"]["PreToolUse"][0]
+    assert group["matcher"] == "exec"
+    hook = group["hooks"][0]
+    assert hook["command"].endswith("--host devin --event PreToolUse")
+    assert hook["timeout"] == 5
+    assert setup.sync_devin_pre_tool_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]) == 1
+
+
+def test_devin_post_tool_hook_installs_idempotently_and_preserves_unowned_list(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "config.json"
+    target.write_text('{"theme":"dark","hooks":{"SessionStart":[]}}')
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_devin_post_tool_hook(target, install, python, False)
+    config = json.loads(target.read_text(encoding="utf-8"))
+    group = config["hooks"]["PostToolUse"][0]
+    assert group["matcher"] == "^(edit|write|apply_patch)$"
+    hook = group["hooks"][0]
+    assert hook["command"].endswith("--host devin --event PostToolUse")
+    assert hook["timeout"] == 5
+    assert config["theme"] == "dark"
+    assert setup.sync_devin_post_tool_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]) == 1
+
+    unowned = tmp_path / "unowned-config.json"
+    user_hook = {"matcher": "*", "hooks": [{"type": "command", "command": "user-hook"}]}
+    unowned.write_text(json.dumps({"hooks": {"PostToolUse": [user_hook]}}), encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    assert not setup.sync_devin_post_tool_hook(unowned, install, python, False)
+    assert json.loads(unowned.read_text(encoding="utf-8"))["hooks"]["PostToolUse"] == [user_hook]
+
+
+def test_copilot_cli_mcp_uses_native_mcp_servers_format(tmp_path):
+    path = tmp_path / "mcp-config.json"
+    entries = {"local-ai": {"command": "python", "args": ["-m", "local_ai_hub.mcp_server"]}}
+    setup.json_mcp_merge(path, entries, False)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    assert manifest["mcpServers"]["local-ai"]["command"] == "python"
+    assert "servers" not in manifest
+
+
+def test_claude_tool_policy_hook_preserves_host_approvals_and_user_hooks(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "settings.json"
+    target.write_text('{"permissions":{"defaultMode":"default"}}\n', encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_claude_pre_tool_hook(target, install, python, False)
+    settings = json.loads(target.read_text(encoding="utf-8"))
+    hook = settings["hooks"]["PreToolUse"][0]
+    assert hook["matcher"] == "Bash|PowerShell|Read"
+    assert settings["permissions"]["defaultMode"] == "default"
+    assert setup.sync_claude_pre_tool_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]) == 1
+
+    user_target = tmp_path / "user-settings.json"
+    user_target.write_text('{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[]}]}}\n', encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    assert not setup.sync_claude_pre_tool_hook(user_target, install, python, False)
+    assert json.loads(user_target.read_text(encoding="utf-8"))["hooks"]["PreToolUse"] == [{"matcher": "Write", "hooks": []}]
+
+
+def test_claude_permission_request_hook_installs_idempotently_and_preserves_unowned_list(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "settings.json"
+    target.write_text('{"permissions":{"defaultMode":"default"}}\n', encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_claude_permission_request_hook(target, install, python, False)
+    settings = json.loads(target.read_text(encoding="utf-8"))
+    hook = settings["hooks"]["PermissionRequest"][0]
+    assert hook["matcher"] == "Bash|PowerShell|Read"
+    assert settings["permissions"]["defaultMode"] == "default"
+    assert setup.sync_claude_permission_request_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["PermissionRequest"]) == 1
+
+    user_target = tmp_path / "user-settings.json"
+    user_hook = {"matcher": "Write", "hooks": []}
+    user_target.write_text(json.dumps({"hooks": {"PermissionRequest": [user_hook]}}), encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    assert not setup.sync_claude_permission_request_hook(user_target, install, python, False)
+    assert json.loads(user_target.read_text(encoding="utf-8"))["hooks"]["PermissionRequest"] == [user_hook]
+
+
+def test_claude_post_tool_hook_installs_idempotently_and_preserves_unowned_list(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "settings.json"
+    target.write_text('{"permissions":{"defaultMode":"default"}}\n', encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_claude_post_tool_hook(target, install, python, False)
+    settings = json.loads(target.read_text(encoding="utf-8"))
+    hook = settings["hooks"]["PostToolUse"][0]
+    assert hook["matcher"] == "Edit|Write"
+    assert hook["hooks"][0]["timeout"] == 5
+    assert settings["permissions"]["defaultMode"] == "default"
+    assert setup.sync_claude_post_tool_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]) == 1
+
+    unowned = tmp_path / "unowned.json"
+    user_hook = {"matcher": "*", "hooks": [{"type": "command", "command": "user-hook"}]}
+    unowned.write_text(json.dumps({"hooks": {"PostToolUse": [user_hook]}}), encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    assert not setup.sync_claude_post_tool_hook(unowned, install, python, False)
+    assert json.loads(unowned.read_text(encoding="utf-8"))["hooks"]["PostToolUse"] == [user_hook]
+
+
+def test_cursor_shell_hook_installs_fail_closed_without_granting_execution(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "hooks.json"
+    target.write_text(json.dumps({"version": 1, "hooks": {"sessionStart": [{"command": "user-hook"}]}}))
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_cursor_before_shell_hook(target, install, python, False)
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["hooks"]["sessionStart"] == [{"command": "user-hook"}]
+    entry = data["hooks"]["beforeShellExecution"][0]
+    assert entry["failClosed"] is True
+    assert entry["command"].endswith("--host cursor --event beforeShellExecution")
+    assert setup.sync_cursor_before_shell_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["beforeShellExecution"]) == 1
+
+    target.write_text(json.dumps({"version": 1, "hooks": {"beforeShellExecution": [{"command": "user-hook"}]}}))
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    assert not setup.sync_cursor_before_shell_hook(target, install, python, False)
+    assert json.loads(target.read_text(encoding="utf-8"))["hooks"]["beforeShellExecution"] == [{"command": "user-hook"}]
+
+
+def test_cursor_after_file_edit_hook_installs_idempotently_and_preserves_unowned_list(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    hook_source = install / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    hook_source.parent.mkdir(parents=True)
+    hook_source.write_text("# managed source\n", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    target = tmp_path / "hooks.json"
+    target.write_text(json.dumps({"version": 1, "hooks": {"sessionStart": [{"command": "user-hook"}]}}))
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", None)
+
+    assert setup.sync_cursor_after_file_edit_hook(target, install, python, False)
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["hooks"]["sessionStart"] == [{"command": "user-hook"}]
+    hook = data["hooks"]["afterFileEdit"][0]
+    assert hook["command"].endswith("--host cursor --event afterFileEdit")
+    assert setup.sync_cursor_after_file_edit_hook(target, install, python, False)
+    assert len(json.loads(target.read_text(encoding="utf-8"))["hooks"]["afterFileEdit"]) == 1
+
+    target.write_text(json.dumps({"version": 1, "hooks": {"afterFileEdit": [{"command": "user-hook"}]}}))
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    assert not setup.sync_cursor_after_file_edit_hook(target, install, python, False)
+    assert json.loads(target.read_text(encoding="utf-8"))["hooks"]["afterFileEdit"] == [{"command": "user-hook"}]
+
+
+def test_provider_report_does_not_confuse_setup_with_runtime_or_trust():
+    report = setup.provider_integration_status(
+        ("claude", "windsurf"),
+        {"claude": True, "windsurf": False},
+        {"claude": {"mcp": "configured"}, "windsurf": {"mcp": "not_selected"}},
+        {"claude": "configured", "windsurf": "not_supported_by_hub_setup"},
+        {"claude": "not_supported_by_hub_setup", "windsurf": "not_supported_by_hub_setup"},
+    )
+    assert report["claude"]["selected_for_setup"] is True
+    assert report["claude"]["connection"] == "not_probed_by_setup"
+    assert report["claude"]["trust"] == "host_controlled_not_observed"
+    assert report["claude"]["runtime_verification"] == "not_run"
+    assert report["windsurf"]["hooks"] == "not_supported_by_hub_setup"
+
+
+def test_provider_report_distinguishes_configured_host_install_and_enabled_states():
+    report = setup.provider_integration_status(
+        ("claude", "windsurf"),
+        {"claude": True, "windsurf": False},
+        {"claude": {"mcp": "configured", "skills": "configured"},
+         "windsurf": {"mcp": "not_selected"}},
+        {"claude": "configured", "windsurf": "not_selected"},
+        {"claude": "bundled_external_installation_and_trust_not_probed",
+         "windsurf": "not_supported_by_hub_setup"},
+    )
+
+    assert report["claude"]["configured"] == "configured_by_setup"
+    assert report["claude"]["installed"] == "not_observed_by_setup"
+    assert report["claude"]["enabled"] == "not_observed_by_setup"
+    assert report["claude"]["trust"] == "host_controlled_not_observed"
+    assert report["claude"]["connection"] == "not_probed_by_setup"
+    assert report["claude"]["runtime_verification"] == "not_run"
+    assert report["windsurf"]["configured"] == "not_selected"
+    assert json.loads(json.dumps(report)) == report
+
+
+def test_provider_manual_actions_are_not_broadcast_to_other_providers():
+    actions = [
+        "OpenCode standalone Hub MCP already exists; existing route was preserved",
+        "Gemini and Antigravity shared instructions were preserved",
+        "A path with no provider identity needs review",
+    ]
+
+    attributed = setup.provider_manual_actions(actions)
+
+    assert attributed["opencode"] == [actions[0]]
+    assert attributed["gemini"] == [actions[1]]
+    assert attributed["antigravity"] == [actions[1]]
+    assert attributed["claude"] == []
+    assert attributed["unattributed"] == [actions[2]]
+
+    assert setup.provider_setup_component_state(
+        True, manual_actions=attributed["opencode"],
+    ) == "configured_with_manual_steps"
+    assert setup.provider_setup_component_state(
+        True, manual_actions=attributed["claude"],
+    ) == "configured"
+    assert setup.provider_setup_component_state(
+        True, batch_error="write failed",
+    ) == "outcome_unknown_after_batch_error"
+
+
+def test_provider_report_does_not_claim_failure_scope_after_batch_error():
+    report = setup.provider_integration_status(
+        ("claude", "opencode"),
+        {"claude": True, "opencode": True},
+        {"claude": {"mcp": "configured"}, "opencode": {"plugin": "configured"}},
+        {"claude": "configured", "opencode": "not_separate_from_plugin"},
+        {"claude": "not_supported_by_hub_setup", "opencode": "configured"},
+        batch_error="write failed after partial setup",
+    )
+
+    assert report["claude"]["configured"] == "outcome_unknown_after_batch_error"
+    assert report["opencode"]["configured"] == "outcome_unknown_after_batch_error"
+
+
+def test_codex_plugin_packages_skills_and_all_configured_hook_surfaces():
+    plugin_root = ROOT / "plugins" / "codex" / "local-ai-hub"
+    manifest = json.loads((plugin_root / "plugin.json").read_text(encoding="utf-8"))
+    hook_config = json.loads((plugin_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+
+    assert manifest["skills"] == "./skills/"
+    onboarding = plugin_root / manifest["extensions"]["com.openai"]["onboardingSkill"].removeprefix("./")
+    assert onboarding.is_file()
+    assert set(hook_config["hooks"]) >= {
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+    }
 
 
 def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_path, monkeypatch):
@@ -267,7 +1232,7 @@ def test_direct_agent_serena_context_matches_gemini(tmp_path: Path):
     assert entries["serena"]["args"][1:3] == ["--context", "gemini"]
 
 
-def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Path, monkeypatch):
+def test_antigravity_mcp_sync_uses_its_provider_identity_and_prunes_stale_backends(tmp_path: Path, monkeypatch):
     path = tmp_path / "mcp_config.json"
     serena = tmp_path / "serena.exe"
     install_dir = tmp_path / "install"
@@ -299,8 +1264,8 @@ def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Pa
     assert set(data["mcpServers"]) == {"user-server", "local-ai"}
     local_ai = data["mcpServers"]["local-ai"]
     assert local_ai["cwd"] == str(tmp_path / "install")
-    assert local_ai["env"]["LOCAL_AI_AGENT"] == "gemini"
-    assert local_ai["env"]["LOCAL_AI_AGENT_PROFILE"] == "gemini"
+    assert local_ai["env"]["LOCAL_AI_AGENT"] == "antigravity"
+    assert local_ai["env"]["LOCAL_AI_AGENT_PROFILE"] == "antigravity"
 
 
 def test_mcp_merge_preserves_existing_isolated_hub_launch(tmp_path: Path):
@@ -430,10 +1395,12 @@ def test_config_mergers_preserve_user_content(tmp_path: Path):
         ("codex", "toml", "codex"),
         ("claude", "json", "claude"),
         ("gemini", "json", "gemini"),
-        ("antigravity", "antigravity", "gemini"),
+        ("antigravity", "antigravity", "antigravity"),
         ("cursor", "json", "cursor"),
         ("windsurf", "json", "windsurf"),
-        ("copilot", "vscode", "copilot"),
+        ("devin", "json", "devin"),
+        ("copilot", "json", "copilot"),
+        ("vscode", "vscode", "generic"),
         ("generic", "json", "generic"),
         ("vscode", "vscode", "generic"),
     ],
@@ -601,6 +1568,7 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     source.mkdir()
     example = source / "config.toml.example"
     example.write_text(
+        f'[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[setup]\ninstall_dir="{install.as_posix()}"\n[hardware]\nprofile="cpu"\n',
         encoding="utf-8",
     )
@@ -611,6 +1579,37 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     assert selected == example.resolve()
     assert selected_install == install.resolve()
     assert cfg["hardware"]["profile"] == "cpu"
+
+
+def test_v8_setup_migration_clears_active_and_retained_snapshot_vectors(tmp_path: Path, monkeypatch):
+    from tools.embedding_reset import verify_embedding_reset
+    source = tmp_path / "source"
+    state = tmp_path / "state"
+    snapshot = tmp_path / "state-backup"
+    source.mkdir()
+    state.mkdir()
+    snapshot.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nversion = "8.0.0"\n', encoding="utf-8")
+    schema = (
+        "CREATE TABLE chunks(embedding TEXT NOT NULL,embedding_space TEXT NOT NULL);"
+        "CREATE TABLE rag_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+    )
+    for root in (state, snapshot):
+        with sqlite3.connect(root / "rag.sqlite3") as con:
+            con.executescript(schema)
+            con.execute("INSERT INTO chunks VALUES('[0.1,0.2]','old-space')")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "run_state_migrations", lambda _state: {
+        "status": "current", "version": 9, "backups": [str(snapshot)],
+    })
+
+    result = setup.migrate_release_state(state)
+
+    assert result["embedding_reset"] == "migrated"
+    assert result["embedding_reset_backup"]
+    assert setup.run_state_migrations(state)["status"] == "current"
+    assert verify_embedding_reset(state)
+    assert verify_embedding_reset(snapshot)
 
 
 def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):
@@ -728,7 +1727,7 @@ def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatc
 
 def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
-    for name in ("src", "skills", "tools"):
+    for name in ("src", "skills", "tools", "plugins"):
         (source / name).mkdir(parents=True)
         (source / name / "marker.txt").write_text(name, encoding="utf-8")
     for name in ("requirements-core.txt", "defaults.toml", "pyproject.toml", "README.md"):
@@ -744,6 +1743,7 @@ def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, mon
     assert (target / "src" / "marker.txt").read_text(encoding="utf-8") == "src"
     assert (target / "skills" / "marker.txt").read_text(encoding="utf-8") == "skills"
     assert (target / "tools" / "marker.txt").read_text(encoding="utf-8") == "tools"
+    assert (target / "plugins" / "marker.txt").read_text(encoding="utf-8") == "plugins"
     assert not (target / "mcp").exists()
 
 

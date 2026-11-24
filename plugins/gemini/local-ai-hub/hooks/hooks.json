@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [
+        { "name": "local-ai-hub-session-start", "type": "command", "command": "python \"${extensionPath}/scripts/run_hub.py\" host_hooks --host gemini_cli", "timeout": 5000 }
+      ]
+    }],
+    "BeforeAgent": [{
+      "hooks": [
+        { "name": "local-ai-hub-before-agent", "type": "command", "command": "python \"${extensionPath}/scripts/run_hub.py\" host_hooks --host gemini_cli", "timeout": 5000 }
+      ]
+    }],
+    "BeforeTool": [{
+      "matcher": "read_file|run_shell_command",
+      "hooks": [
+        { "name": "local-ai-hub-before-tool", "type": "command", "command": "python \"${extensionPath}/scripts/run_hub.py\" host_hooks --host gemini_cli", "timeout": 5000 }
+      ]
+    }],
+    "AfterTool": [{
+      "matcher": "write_file|replace",
+      "hooks": [
+        { "name": "local-ai-hub-after-tool", "type": "command", "command": "python \"${extensionPath}/scripts/run_hub.py\" host_hooks --host gemini_cli", "timeout": 5000 }
+      ]
+    }]
+  }
+}

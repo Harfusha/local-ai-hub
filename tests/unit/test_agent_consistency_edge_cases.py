@@ -105,6 +105,20 @@ def test_record_metric_overflow_bool_and_reset() -> None:
     assert guard.metrics_snapshot()["reuse_candidates"] == 0
 
 
+def test_consistency_contract_rejects_retired_phase_and_metric_aliases(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="phase must be one of"):
+        ConsistencyRequest(root=str(tmp_path), phase="verification")
+
+    guard = AgentConsistencyGuard()
+    assert guard.record_metric("unknown") == 0
+    assert guard.record_metric("unknown_claim") == 0
+    assert guard.record_metric("contract_mismatch") == 0
+    assert guard.record_metric("degraded_fallback") == 0
+    assert guard.record_metric("unknown_claims") == 1
+    assert guard.record_metric("warning", severity="high-risk") == 1
+    assert guard.metrics_snapshot()["warning_high"] == 1
+
+
 def test_consistency_dataclasses_inspection_helpers(tmp_path: Path) -> None:
     req = ConsistencyRequest(
         root=str(tmp_path),

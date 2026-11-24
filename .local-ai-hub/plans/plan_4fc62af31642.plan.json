@@ -8,67 +8,87 @@
     {
       "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
       "revision": {
-        "kind": "working",
-        "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+        "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679",
+        "kind": "working"
       }
     },
     {
       "path": "docs/FINAL_COMPLETION_PLAN.md",
       "revision": {
-        "kind": "working",
-        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+        "kind": "working"
       }
     }
   ],
   "tasks": {
     "task_endpoint_routing": {
       "acceptance_criteria": [
-        "Generated MCP schemas and agent instructions use one profile capability/action source and never advertise disabled actions.",
-        "High-profile defaults enable intended profile-tier capabilities; lower profiles omit actions below their minimum tier.",
+        "Generated MCP schemas and provider instructions use one active-profile capability/action source and never advertise disabled actions.",
+        "High-profile defaults enable intended capabilities; lower profiles omit actions below their minimum tier.",
         "Static and installed skill/prompt surfaces contain no stale fixed action lists that contradict the active schema.",
         "Every enabled public MCP tool/action family has a concrete trigger; active-profile filters suppress unavailable actions.",
-        "local_ai_task is recommended for semantic review, reasoning, exploration, and evidence compression when action, backend, and quality gates pass.",
-        "Exact repository search, facts, tests, builds, and deterministic checks retain authoritative repo/native paths.",
-        "Runtime permission, quality, backend, and task-context checks remain authoritative.",
-        "Static review confirms Codex and Antigravity outputs align.",
-        "Typed host contract records host/version/surface/session ownership, events, commands, permissions, mode, identity, evidence references, and verification state.",
-        "Only Hub-managed sessions with verified identity and permissions qualify for future host actions; unknown state fails closed.",
-        "Shadow is default and metadata-only; it never sends host messages, changes turns, stops/forces continuation, approves actions, starts delegation, or stores prompts/transcripts/source.",
-        "Host observations distinguish proposed, simulated, executed, and verified; permission checks remain unknown unless observed.",
-        "Unknown or disconnected host connection status returns uncertain and persists no shadow event.",
-        "Codex App Server and Antigravity CLI stream-json have separate stage gates and honest support states; concrete client adapters remain deferred per user steering.",
-        "Hook handling no longer injects planner advice or stores full prompts by default.",
-        "Analysis/status live in docs/FINAL_COMPLETION_PLAN.md without duplicate plan or direct plan-store edits.",
-        "OpenCode integration is removed from master and preserved on a dedicated branch for future client-agnostic redesign; preservation is not runtime acceptance.",
-        "Generated API_COVERAGE.md and API_COVERAGE.json match the current source inventory and do not advertise OpenCode endpoints.",
-        "Each future shadow capability has an evidence-backed event/input gate, privacy boundary, honest support state, and separate evaluation criteria before opt-in.",
-        "Agent OS checkpoint pause/continue proposals use only typed status and presence bits, canonical source event IDs, and existing AgentStateStore; storage failure does not change task or host behavior."
+        "Semantic review, reasoning, exploration, compression, and delegation are recommended only when the action, backend, permissions, and quality gates pass.",
+        "Exact repository search, facts, tests, builds, and deterministic checks retain authoritative Hub/native routes.",
+        "Runtime permission, host trust/approval, task scope, and quality checks remain authoritative; Laya cannot grant permissions or execute tools.",
+        "A typed host contract records provider/version/surface/session ownership, events, commands, permissions, mode, identity, evidence references, and verification state.",
+        "Only Hub-managed sessions with verified identity and permissions qualify for host actions; unknown provider state fails closed.",
+        "Laya actively participates in eligible low-risk Hub decisions for every connected provider; valid recommendations affect central routing/context, with deterministic fallback for abstention, failure, invalid scope, or low confidence.",
+        "Shadow comparison is optional evaluation, not a blanket prerequisite; raw prompts, transcripts, and source are never stored by default.",
+        "Provider observations distinguish proposed, simulated, executed, and verified; permission checks remain unknown unless the host actually verifies them.",
+        "Unknown/disconnected provider status is reported uncertain and never represented as a verified handshake.",
+        "Codex, Antigravity/Gemini, Claude, Cursor, Windsurf, VS Code/Copilot, OpenCode when enabled, and extra configured MCP providers have source-backed surface, install, trust, and verification coverage.",
+        "Codex plugins/hooks and all provider-specific packages use currently documented layouts; setup preserves user configuration and never auto-trusts host hooks.",
+        "Generated API coverage and agent instructions match actual enabled provider/tool inventory; no provider is described as supported beyond its implemented surface.",
+        "Focused checks cover changed decision paths and host adapters; live handshake status is recorded separately for each available provider."
       ],
-      "blocker": "Current main-root snapshot has 24 v3 observations across six task streams at state/shadow-evaluation/exports/local-ai-hub-v3-3622e498f91c.jsonl. Every row is task.checkpointed recommend_pause with reason checkpoint_has_blockers. The one-class sample is not representative and cannot measure continue/none behavior or false negatives. Two independent human annotations and adjudication are absent. Reviewer identity, model quality, live production Codex caller, and Antigravity stream remain not_verified. Concrete IDE adapters remain deferred by user direction.",
-      "clarifications": [],
+      "blocker": "No actual provider handshake has been verified in this task. The prior Hub plan explicitly deferred concrete adapters; current user steering overrides that deferral. The local Laya service is available but the runtime status read reports model_resident=false.",
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_2026_11_23_full_provider_scope",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
+                "kind": "working"
+              }
+            },
+            {
+              "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User directs completion of Codex and all other supported providers (including Antigravity and Claude) and explicitly rejects Laya remaining shadow-only.",
+          "supersedes": []
+        }
+      ],
       "depends_on": [],
-      "description": "Concrete IDE/client adapters remain deferred per user steering. Client-neutral Agent OS checkpoint shadow producer writes v3 metadata-only observations into canonical task streams, including explicit not_proposed outcomes. The offline evaluator exports root/task-scoped observations and requires strict six-field annotations with independent and adjudication stages. One adjudicator can resolve only a disagreement between at least two independent reviewers; adjudicated_cases scores the adjudicated label, while unresolved cases remain excluded. CLI --require-double-review rejects any unannotated export observation, single-reviewer observation, or disagreement without adjudication. double_review_gate=passed proves only complete labels under supplied pseudonymous reviewer_ref values; reviewer_identity_status remains not_verified because human identity and independence are operator-attested, not technically verified. quality_status remains not_verified. Generated repository tool descriptions, skill/workflow references, and global policy name only profile-enabled repository actions. FINAL_COMPLETION_PLAN.md records client deferral, shadow privacy/status semantics, annotation workflow, reviewer identity limitation, quality gates, and the six sequential post-shadow gates. Current targeted validation on HEAD ecf259c7 (dirty tree): tests/test_agent_tasks.py tests/test_shadow_evaluation.py tests/test_host_shadow_adapters.py tests/test_host_adapters_superpowers.py tests/test_managed_host_hooks.py => 140 passed, 2 skipped (opt-in Codex smoke, symlink unavailable). These are source regressions only; no inference or live host acceptance ran.",
+      "description": "User explicitly expanded scope from Codex/Antigravity endpoint routing to full active Laya use and complete integration of every provider enabled/advertised by Local AI Hub. Implement one shared local Laya service, consistent MCP and generated instruction routes, current provider plugin/hook/setup formats, truthful per-provider capability and handshake status. Concrete client adapters are now in scope. Preserve deterministic permissions, host trust/approval, bounded privacy, and fallback contracts.",
       "kind": "code",
-      "next_action": "Fresh current dirty-HEAD source regressions are recorded in docs/FINAL_COMPLETION_PLAN.md (SHA-256 f2d708057accd021f2f00ebbc4327a5f1c96433dd8d9f949c464e1ab7f620e3c): five host/shadow test files passed 148, 2 skipped (opt-in live Codex smoke and unavailable symlink). They do not change the blocker: the 24-observation sample is one-class recommend_pause, human double labels/adjudication are absent, and live client handshakes remain user-blocked. Continue only permitted offline source/evaluator reconciliation; do not fabricate observations or labels.",
-      "title": "Codex and Antigravity host integration, shadow contract, and endpoint routing",
-      "work_phase": "implementation",
-      "work_status": "in_progress",
+      "next_action": "Inventory provider setup/manifests/hooks/skills and all Laya callers; then implement active Laya routing and current provider packaging in independently verifiable units.",
       "spec_refs": [
         {
-          "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+          "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679"
+            "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
+            "kind": "working"
           }
         },
         {
-          "path": "docs/FINAL_COMPLETION_PLAN.md",
+          "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Plná integrace Laya a všech podporovaných providerů",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
     }
   },
   "title": "Make applicable Local AI Hub endpoints default in Codex and Antigravity"

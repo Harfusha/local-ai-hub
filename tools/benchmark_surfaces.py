@@ -2988,7 +2988,7 @@ def run_benchmark(
             + "[observability]\n"
             + "enabled = false\n\n"
             + "[resilience]\nwatchdog_enabled = false\n\n"
-            + "[debug_traces]\nenabled = false\n\n"
+            + "[telemetry]\nmode = \"minimal\"\n\n"
             + _benchmark_inference_config(inference_runner),
             encoding="utf-8",
         )

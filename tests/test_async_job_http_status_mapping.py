@@ -26,6 +26,20 @@ def test_async_job_http_status_defaults_for_non_mapping_result():
     assert _async_job_http_status(["not", "a", "mapping"]) == 200
 
 
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"success": False, "error_code": "model_output_truncated", "retryable": False}, 422),
+        ({"success": False, "error_code": "local_model_error", "retryable": False}, 502),
+    ],
+)
+def test_semantic_model_failures_use_client_or_upstream_status(response, expected):
+    status, body = http_server._api_result_http_response(response)
+
+    assert status == expected
+    assert body["status_code"] == expected
+
+
 def test_async_submit_emits_explicit_admission_status(monkeypatch):
     response = {
         "success": False,

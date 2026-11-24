@@ -65,6 +65,10 @@ def _api_result_http_response(result: Any) -> tuple[int, Any]:
     result_status = body.get("status_code")
     if isinstance(result_status, int) and not isinstance(result_status, bool) and 400 <= result_status <= 599:
         status = result_status
+    elif body.get("error_code") == "model_output_truncated":
+        status = 422
+    elif body.get("error_code") == "local_model_error":
+        status = 502
     else:
         status = 503 if retryable else (409 if body.get("operation_not_started") is True else 500)
     body.setdefault("status_code", status)
@@ -518,9 +522,7 @@ def _ollama_runner_present(config: dict[str, Any]) -> bool:
 
 
 def _apply_live_debug_trace_toggle(app: Any, settings: dict[str, Any]) -> bool:
-    if "debug_traces.enabled" in settings:
-        enabled = bool(settings["debug_traces.enabled"])
-    elif "telemetry.mode" in settings:
+    if "telemetry.mode" in settings:
         enabled = (str(settings["telemetry.mode"]).strip().lower() == "full")
     else:
         return False
@@ -1442,20 +1444,11 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 
 
 def _task_create_contract(payload: Mapping[str, Any]) -> GoalContract:
-    """Parse the canonical task contract or its declared task-string shorthand."""
+    """Parse the canonical task contract object."""
     contract_data = payload.get("contract")
-    if contract_data is not None:
-        if not isinstance(contract_data, Mapping):
-            raise ValueError("contract must be an object")
-        return GoalContract.from_dict(contract_data)
-    return GoalContract.from_dict({
-        "goal": payload.get("goal", payload.get("task", "")),
-        "acceptance_criteria": payload.get("acceptance_criteria") or payload.get("criteria") or [],
-        "scope": payload.get("scope", "task"),
-        "non_goals": payload.get("non_goals") or [],
-        "constraints": payload.get("constraints") or [],
-        "risk_profile": payload.get("risk_profile", "normal"),
-    })
+    if not isinstance(contract_data, Mapping):
+        raise ValueError("contract must be an object")
+    return GoalContract.from_dict(contract_data)
 
 
 def _safe_agent(handler: Any) -> str:

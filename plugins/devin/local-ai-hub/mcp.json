@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "local-ai": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["${PLUGIN_ROOT}/scripts/run_hub.py", "mcp_server"],
+      "env": {
+        "LOCAL_AI_AGENT": "devin",
+        "LOCAL_AI_AGENT_PROFILE": "devin"
+      }
+    }
+  }
+}

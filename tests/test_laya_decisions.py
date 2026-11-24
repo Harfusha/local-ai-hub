@@ -396,6 +396,34 @@ def test_request_accepts_only_closed_categories_and_authorized_evidence_ids():
     assert request.category is DecisionCategory.CONTEXT_SOURCE
     assert request.evidence_ids == ("ev-1",)
     assert request.mode is DecisionMode.ADVISORY
+    assert request.provider_label == "generic_mcp"
+
+
+def test_request_binds_canonical_provider_label_outside_caller_mapping():
+    payload = {
+        "category": "context_source", "evidence_ids": ["ev-1"], "options": ["indexed"],
+    }
+    request = DecisionRequest.from_mapping(
+        payload,
+        decision_id="dec-provider",
+        mode=DecisionMode.ADVISORY,
+        repository_id="repo-1",
+        task_id="task-1",
+        session_id="session-1",
+        provider_label="copilot",
+    )
+    assert request.provider_label == "copilot"
+    payload["provider_label"] = "codex"
+    with pytest.raises(ValueError, match="request fields"):
+        DecisionRequest.from_mapping(
+            payload,
+            decision_id="dec-provider",
+            mode=DecisionMode.ADVISORY,
+            repository_id="repo-1",
+            task_id="task-1",
+            session_id="session-1",
+            provider_label="copilot",
+        )
 
 
 @pytest.mark.parametrize(
@@ -424,7 +452,7 @@ def test_request_rejects_aliases_raw_content_and_malformed_identity(override):
         DecisionRequest.from_mapping(
             payload,
             decision_id="dec-1",
-            mode=DecisionMode.SHADOW,
+            mode=DecisionMode.ADVISORY,
             repository_id="repo-1",
             task_id=None,
             session_id="session-1",
@@ -435,7 +463,7 @@ def test_result_rejects_suggestion_outside_options_and_projects_metadata_only():
     request = DecisionRequest.from_mapping(
         {"category": "context_source", "evidence_ids": ["ev-2"], "options": ["indexed", "artifact"]},
         decision_id="dec-2",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id=None,
         session_id="session-1",
@@ -460,7 +488,7 @@ def test_result_rejects_suggestion_outside_options_and_projects_metadata_only():
     )
     metadata = result.metadata()
 
-    assert metadata["mode"] == "shadow"
+    assert metadata["mode"] == "advisory"
     assert metadata["category"] == "context_source"
     assert metadata["evidence_ids"] == ["ev-2"]
     assert metadata["model_estimate"] is True
@@ -538,7 +566,7 @@ def test_category_options_never_claim_completion_or_encode_executable_watchdog_a
         DecisionRequest.from_mapping(
             {"category": category, "evidence_ids": [], "options": [option]},
             decision_id="dec-safe-options",
-            mode=DecisionMode.SHADOW,
+            mode=DecisionMode.ADVISORY,
             repository_id="repo-1",
             task_id=None,
             session_id="session-safe-options",
@@ -549,7 +577,7 @@ def test_watchdog_options_are_explicitly_non_authoritative_recommendations():
     request = DecisionRequest.from_mapping(
         {"category": "watchdog", "evidence_ids": ["ev-1"], "options": ["recommend_stop"]},
         decision_id="dec-watchdog",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id="task-1",
         session_id="session-1",
@@ -573,7 +601,7 @@ def test_redundant_work_category_reports_signal_without_skipping_validation():
             "options": ["possible_duplicate", "validation_still_required"],
         },
         decision_id="dec-duplicate",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id="task-1",
         session_id="session-1",
@@ -648,7 +676,7 @@ def test_non_success_result_requires_a_reason_code():
     request = DecisionRequest.from_mapping(
         {"category": "next_step", "evidence_ids": [], "options": ["inspect_source"]},
         decision_id="dec-4",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-1",
         task_id=None,
         session_id="session-4",

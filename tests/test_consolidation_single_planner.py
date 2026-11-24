@@ -4,7 +4,7 @@ Confirms that:
 1. No two independent writable planners exist.
 2. A single task change propagates across:
    - Plan file (.local-ai-hub/plans/<plan-id>.plan.json)
-   - Board view / Kanban (board_summary, board_item_list, plan_board_view)
+   - Board view / Kanban (plan_board_view)
    - Session briefing (session_briefing)
    - Context compilation (ContextCompiler / context_compile)
 3. Legacy SQLite board items are cleanly adoptable into plan files without data loss.
@@ -23,7 +23,7 @@ from local_ai_hub.repo_plan.agent_bridge import (
     TaskBindingManager,
     reconcile_contract_revision,
 )
-from local_ai_hub.agent_board import BoardStore
+from local_ai_hub.legacy_board_archive import migrate_legacy_board_database
 from local_ai_hub.agent_context import ContextCompiler, ContextRequest
 from local_ai_hub.services import LocalAIServices, AgentStateStore
 from local_ai_hub.agent_tasks import (
@@ -90,17 +90,10 @@ def test_single_source_of_truth_propagation(repo_env):
     assert create_res["success"] is True
 
     # 1. Check initial board view & summary
-    summary = services.board_summary(root=str(root))
-    assert summary["success"] is True
-    assert summary.get("source") == "repo_plan"
-    assert summary["counts"]["planned"] == 1
-    assert summary["counts"]["in_progress"] == 0
-
-    items_res = services.board_item_list(root=str(root))
-    assert items_res["success"] is True
-    assert len(items_res["items"]) == 1
-    assert items_res["items"][0]["status"] == "planned"
-    assert items_res["items"][0]["title"] == "Implement core parser"
+    board = services.plan_board_view(root=str(root))
+    assert len(board["columns"]["planned"]) == 1
+    assert len(board["columns"]["in_progress"]) == 0
+    assert board["columns"]["planned"][0]["title"] == "Implement core parser"
 
     # 2. Check session briefing initial state
     briefing = services.session_briefing(include=["board", "plans"], root=str(root))
@@ -155,15 +148,10 @@ def test_single_source_of_truth_propagation(repo_env):
     assert task_in_plan["work_phase"] == "implementation"
 
     # 6. Verify board summary and list reflect the exact same in_progress status
-    summary_after = services.board_summary(root=str(root))
-    assert summary_after["counts"]["planned"] == 0
-    assert summary_after["counts"]["in_progress"] == 1
-    assert summary_after["total_items"] == 1
-
-    items_after = services.board_item_list(root=str(root))
-    assert len(items_after["items"]) == 1
-    assert items_after["items"][0]["status"] == "in_progress"
-    assert items_after["items"][0]["details"]["next_action"] == "write test cases"
+    board_after = services.plan_board_view(root=str(root))
+    assert len(board_after["columns"]["planned"]) == 0
+    assert len(board_after["columns"]["in_progress"]) == 1
+    assert board_after["columns"]["in_progress"][0]["next_action"] == "write test cases"
 
     # 7. Verify session briefing reflects the exact same synchronized state
     briefing_after = services.session_briefing(include=["board", "plans"], root=str(root))
@@ -261,12 +249,22 @@ def test_contract_reconciliation_single_source_of_truth(repo_env):
 def test_adopt_legacy_board_no_duplicate_planner(repo_env):
     """Verify adopting legacy SQLite items converts them into the authoritative plan and removes dual writers."""
     root, state_dir, db_path, task_db_path = repo_env
-    legacy_board = BoardStore(db_path)
-
-    # Seed preserved legacy rows directly; public legacy board writes are retired.
-    legacy_board.item_list(limit=1)  # Initialize the pre-existing SQLite schema.
+    db_path = state_dir / "agent_board.sqlite"
     now = time.time()
     with closing(sqlite3.connect(db_path)) as con, con:
+        con.executescript("""
+            CREATE TABLE agent_board_items (
+                item_id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'medium', labels_json TEXT NOT NULL DEFAULT '[]',
+                assignee TEXT NOT NULL DEFAULT '', milestone TEXT NOT NULL DEFAULT '',
+                linked_task_id TEXT NOT NULL DEFAULT '', details_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            );
+            CREATE TABLE agent_milestones (
+                name TEXT PRIMARY KEY, target_date TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+            );
+        """)
         con.executemany(
             """INSERT INTO agent_board_items
                (item_id, title, status, priority, labels_json, assignee, milestone,
@@ -278,29 +276,21 @@ def test_adopt_legacy_board_no_duplicate_planner(repo_env):
             ],
         )
 
-    # Initial legacy board summary has 2 items
-    leg_summary = legacy_board.summary()
-    assert leg_summary["counts"]["total"] == 2
-
-    # Adopt into file-backed plan
-    ws = RepoPlanWorkspace(str(root))
-    items = legacy_board.item_list(limit=100)["items"]
-    adopt_res = ws.adopt_legacy_board_items(legacy_items=items, plan_id="plan_migrated", title="Migrated Plan")
+    # Update migration archives old rows; an explicit repo selection imports them.
+    migrate_legacy_board_database(state_dir)
+    services = make_services(state_dir)
+    adopt_res = services.plan_adopt_legacy_board(root=str(root), plan_id="plan_migrated", title="Migrated Plan")
     assert adopt_res["success"] is True
     assert adopt_res["tasks_imported"] == 2
 
     # Verify plan file now holds both tasks
-    plan = ws.get_plan("plan_migrated")["plan"]
+    plan = RepoPlanWorkspace(str(root)).get_plan("plan_migrated")["plan"]
     assert len(plan["tasks"]) == 2
 
-    # Verify services now routes board calls to the authoritative plan
-    services = make_services(state_dir)
-    new_summary = services.board_summary(root=str(root))
-    assert new_summary["success"] is True
-    assert new_summary.get("source") == "repo_plan"
-    assert new_summary["total_items"] == 2
-    assert new_summary["counts"]["planned"] == 1
-    assert new_summary["counts"]["in_progress"] == 1
+    # Board view reads only the resulting file-backed plan.
+    board = services.plan_board_view(root=str(root))
+    assert len(board["columns"]["planned"]) == 1
+    assert len(board["columns"]["in_progress"]) == 1
 
 
 def test_all_public_plan_http_paths_are_registered():

@@ -20,7 +20,7 @@ def test_live_status_handler_preserves_query_defaults_and_200_snapshot(monkeypat
     snapshots = []
     result = {"success": True, "status": "degraded", "dependencies": {"db": "timeout"}}
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"debug_traces": {"enabled": True}},
+        config={"telemetry": {"mode": "full"}},
         realtime_status=lambda **kwargs: snapshots.append(kwargs) or result,
     ))
     handler = http_server.Handler.__new__(http_server.Handler)

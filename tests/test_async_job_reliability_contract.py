@@ -13,6 +13,7 @@ from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.execution_pool import ExecutionPool
 from local_ai_hub.http_server import _telemetry_http_outcome
 from local_ai_hub.shutdown import CloseCoordinator
+from local_ai_hub.scheduler import QueueFullError
 
 
 class _ArtifactStore:
@@ -418,6 +419,84 @@ def test_terminal_failure_result_is_known_failed_not_outcome_unknown(manager_fac
     assert result["state"] == "failed"
     assert result["error"] == "deterministic review preflight rejection"
     assert result.get("outcome_unknown") is not True
+
+
+def test_async_scheduler_queue_rejection_is_deferred_and_retried_without_request_id(manager_factory) -> None:
+    attempts: list[str] = []
+    retried = threading.Event()
+
+    def execute(action: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        attempts.append(action)
+        if len(attempts) == 1:
+            raise QueueFullError("scheduler queue limit reached")
+        return {"success": True, "value": "completed"}
+
+    manager = manager_factory(execute)
+    original_execute = manager._execute
+    execute_count = 0
+
+    def observe_execute(job_id: str) -> dict[str, Any]:
+        nonlocal execute_count
+        result = original_execute(job_id)
+        execute_count += 1
+        if execute_count == 2:
+            retried.set()
+        return result
+
+    manager._execute = observe_execute
+    submitted = manager.submit("review_diff", {"instructions": "find defects"}, dispatch_delay_seconds=30)
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+
+    manager._execute(submitted["job_id"])
+    deferred = manager.result(submitted["job_id"])
+    row = manager._row(submitted["job_id"])
+    deferred_detail = json.loads(row["result_json"])
+    retry_timer = manager._delayed_dispatch.get(submitted["job_id"])
+
+    assert deferred["state"] == "queued"
+    assert deferred_detail["safe_to_retry"] is True
+    assert deferred_detail["retryable"] is True
+    assert deferred_detail["retry_after_seconds"] == 5
+    assert row["attempts"] == 1
+    assert row["dispatch_not_before"] > time.time()
+    assert retry_timer is not None and retry_timer.is_alive()
+    assert attempts == ["review_diff"]
+
+    assert retried.wait(10)
+    completed = manager.result(submitted["job_id"])
+    assert completed["state"] == "done"
+    assert attempts == ["review_diff", "review_diff"]
+
+
+def test_async_scheduler_queue_rejection_exhaustion_is_known_failure(manager_factory) -> None:
+    attempts: list[str] = []
+
+    def execute(action: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        attempts.append(action)
+        raise QueueFullError("scheduler queue limit reached")
+
+    manager = manager_factory(execute)
+    submitted = manager.submit("review_diff", {"instructions": "find defects"}, dispatch_delay_seconds=30)
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+
+    for attempt in range(3):
+        manager._execute(submitted["job_id"])
+        if attempt < 2:
+            _cancel_delayed_dispatch(manager, submitted["job_id"])
+            with closing(manager._connect()) as con:
+                con.execute("UPDATE async_jobs SET dispatch_not_before=0 WHERE job_id=?", (submitted["job_id"],))
+                con.commit()
+
+    result = manager.result(submitted["job_id"])
+    row = manager._row(submitted["job_id"])
+    detail = json.loads(row["result_json"])
+
+    assert result["state"] == "failed"
+    assert detail["terminal"] is True
+    assert detail["retryable"] is False
+    assert detail["safe_to_retry"] is True
+    assert "after 3 safe admission attempts" in detail["error"]
+    assert attempts == ["review_diff"] * 3
 
 
 def test_rag_gpu_admission_rejection_is_terminal_known_failure(manager_factory, tmp_path) -> None:

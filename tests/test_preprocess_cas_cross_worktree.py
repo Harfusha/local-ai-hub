@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest.mock import MagicMock
+import pytest
 from local_ai_hub.rag import RAGStore
 
 
@@ -179,7 +180,7 @@ def test_lexical_text_survives_original_worktree_purge(tmp_path: Path, monkeypat
         second.close()
 
 
-def test_preprocessor_migrates_legacy_lexical_rows_in_place(tmp_path: Path):
+def test_runtime_refuses_legacy_lexical_schema_until_update_migration(tmp_path: Path):
     import sqlite3
     import threading
     from contextlib import closing
@@ -203,12 +204,12 @@ def test_preprocessor_migrates_legacy_lexical_rows_in_place(tmp_path: Path):
             """
         )
 
-    preprocessor._init_db()
-    preprocessor._init_db()
+    with pytest.raises(sqlite3.DatabaseError, match="update-time lexical-index migration"):
+        preprocessor._init_db()
 
     with closing(sqlite3.connect(preprocessor.db_path)) as con:
-        assert con.execute("SELECT content_hash,text,text_origin FROM source_index").fetchall() == [
-            ("hash", "legacytext", "unknown"),
+        assert con.execute("SELECT content_hash,text FROM source_index").fetchall() == [
+            ("hash", "legacytext"),
         ]
         assert con.execute("SELECT root,path FROM source_fts WHERE source_fts MATCH 'legacytext'").fetchall() == [
             ("worktree_a", "src/example.py"),

@@ -189,8 +189,8 @@ def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_row
         "models": {"embedding": "configured-test", "embedding_digest": "sha256:second"},
         "rag": {"extensions": [".py"], "max_file_bytes": 1024},
     }
-    with pytest.raises(RuntimeError, match="fingerprint mismatch.*offline rebuild required"):
-        RAGStore(second_config, services=embedder)
+    second = RAGStore(second_config, services=embedder)
+    assert second.index_fingerprint_mismatch is True
 
     with closing(first._connect()) as con:
         after_rows = con.execute(

@@ -52,6 +52,7 @@ from .sqlite_support import (
 from .worktrees import discover_worktree_roots  # noqa: F401
 from .preprocess_lexical import (
     LEGACY_FTS, SHARED_FTS_ROWS, advance_fts_migration, delete_fts_rows, fts_layout, has_retired_fts,  # noqa: F401
+    has_canonical_shared_fts as has_canonical_shared_fts,
     initialize_fts_rows, insert_fts_rows, writable_fts_layout,  # noqa: F401
 )
 from .preprocess_write_actor import WriteQueueTimeout  # noqa: F401
@@ -676,6 +677,7 @@ __all__ = [
     'discover_worktree_roots',
     'ensure_incremental_vacuum',
     'fts_layout',
+    'has_canonical_shared_fts',
     'has_retired_fts',
     'incremental_vacuum',
     'initialize_fts_rows',

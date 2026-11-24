@@ -3,6 +3,30 @@ from __future__ import annotations
 from local_ai_hub.projection import AgentProjector
 
 
+def test_antigravity_and_opencode_have_distinct_output_profiles():
+    projector = AgentProjector({})
+
+    antigravity = projector.profile("antigravity")
+    opencode = projector.profile("opencode")
+
+    assert antigravity["max_text"] == 3500
+    assert antigravity["relationships"] is True
+    assert opencode["max_text"] == 3800
+    assert opencode["max_evidence"] == 11
+    assert opencode != projector.profile("generic")
+
+
+def test_agent_output_overrides_use_antigravity_and_opencode_profiles():
+    projector = AgentProjector({"agent_output": {
+        "antigravity": {"max_text": 1800},
+        "opencode": {"max_text": 2200},
+        "generic": {"max_text": 3000},
+    }})
+
+    assert projector.profile("gemini_antigravity")["max_text"] == 1800
+    assert projector.profile("opencode-local")["max_text"] == 2200
+
+
 def test_requested_empty_fields_survive_projection_without_restoring_other_noise():
     projector = AgentProjector({})
     for empty in ([], {}, "", None):

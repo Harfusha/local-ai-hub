@@ -176,7 +176,7 @@ def test_application_does_not_enable_automatic_diagnostic_without_opt_in(tmp_pat
     (root / "a.txt").write_text("new\n", encoding="utf-8")
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -202,7 +202,7 @@ def test_opt_in_failure_preview_produces_bounded_context_artifact(tmp_path):
 
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[features]\nlocal_diagnostic_dispatch = true\n",
@@ -230,7 +230,7 @@ def test_full_output_and_bounded_diagnostic_artifacts_are_distinct(tmp_path):
 
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[features]\n"
@@ -267,7 +267,7 @@ def test_sensitive_preview_does_not_create_local_diagnostic_artifact(tmp_path, s
 
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[features]\n"
@@ -292,7 +292,7 @@ def test_diagnostic_context_checks_fresh_root_and_artifact_content(tmp_path):
     root = init_repo(tmp_path)
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[features]\nlocal_diagnostic_dispatch = true\n",
@@ -331,7 +331,7 @@ def test_opt_in_fresh_command_dispatches_bounded_local_diagnostic(tmp_path, monk
     (root / "a.txt").write_text("new\n", encoding="utf-8")
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[features]\nlocal_diagnostic_dispatch = true"
@@ -391,7 +391,7 @@ def test_opt_in_diagnostic_timeout_is_visible(tmp_path, monkeypatch):
     (root / "a.txt").write_text("new\n", encoding="utf-8")
     config = tmp_path / "hub.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[features]\nlocal_diagnostic_dispatch = true"

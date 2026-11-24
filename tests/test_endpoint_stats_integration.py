@@ -59,7 +59,7 @@ def test_http_endpoint_stats_selector_and_reset_isolate_same_named_roots(tmp_pat
     from local_ai_hub.app import LocalAIApp
 
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n", encoding="utf-8")
@@ -95,13 +95,11 @@ def test_http_endpoint_stats_selector_and_reset_isolate_same_named_roots(tmp_pat
         app.close()
 
 
-def test_dashboard_renders_distinct_exact_and_historical_project_filters(tmp_path, monkeypatch):
+def test_dashboard_renders_distinct_exact_project_filters(tmp_path, monkeypatch):
     import json
     import shutil
     import subprocess
     import threading
-    from contextlib import closing
-
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.process_utils import hidden_run_kwargs
@@ -113,7 +111,7 @@ def test_dashboard_renders_distinct_exact_and_historical_project_filters(tmp_pat
     if not browser:
         pytest.skip("A Chromium-compatible browser is required")
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n", encoding="utf-8")
@@ -123,9 +121,6 @@ def test_dashboard_renders_distinct_exact_and_historical_project_filters(tmp_pat
         for _ in range(calls):
             app.endpoint_stats.record_call(item_type="mcp", item_name="test:visual", duration_ms=1,
                                            root=str(tmp_path / folder / "shared"))
-    with closing(app.endpoint_stats._connect()) as con, con:
-        con.execute("INSERT INTO endpoint_stats(scope_root,item_type,item_name,calls,success_calls,b0) VALUES(?,?,?,?,?,?)",
-                    ("shared", "mcp", "test:visual", 3, 3, 3))
     monkeypatch.setattr(http_server, "APP", app)
     from local_ai_hub.dashboard import DASHBOARD_HTML
     script = '''<script>(async function () {
@@ -133,8 +128,6 @@ def test_dashboard_renders_distinct_exact_and_historical_project_filters(tmp_pat
    await loadEndpointStatsView();
    const options = [...document.getElementById("epStatsProjectSelect").options];
    const exact = options.filter(o => o.value.startsWith("root:"));
-   const legacy = options.filter(o => o.value.startsWith("legacy:"));
-   const notice = document.getElementById("epStatsScopeNotice").textContent;
    async function count(option) {
      document.getElementById("epStatsProjectSelect").value = option.value;
      await loadEndpointStatsView();
@@ -142,11 +135,9 @@ def test_dashboard_renders_distinct_exact_and_historical_project_filters(tmp_pat
      return code ? Number(code.closest('tr').cells[2].textContent.trim()) : -1;
    }
    const exactCounts = exact.length === 2 ? [(await count(exact[0])), (await count(exact[1]))].sort() : [];
-   const legacyCount = legacy.length === 1 ? await count(legacy[0]) : -1;
    const ok = exact.length === 2 && exact[0].value !== exact[1].value &&
-     exact.every(o => o.textContent.startsWith("shared")) && legacy.length === 1 &&
-     legacy[0].textContent.includes("historick") && notice.includes("neprokazuje") &&
-     exactCounts.join(",") === "1,2" && legacyCount === 3;
+     exact.every(o => o.textContent.startsWith("shared")) &&
+     options.every(o => !o.value.startsWith("legacy:")) && exactCounts.join(",") === "1,2";
    document.body.dataset.result = ok ? "pass" : "fail";
  } catch (e) { document.body.dataset.result = "error"; document.body.dataset.reason = String(e); }
 })();</script>'''

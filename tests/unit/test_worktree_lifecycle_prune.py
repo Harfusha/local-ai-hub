@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 import local_ai_hub.process_utils as process_utils
+from local_ai_hub import git_worktrees
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
@@ -17,7 +18,7 @@ def _isolate_temp_worktrees(monkeypatch, tmp_path):
     isolated_temp = tmp_path / "test-temp"
     isolated_temp.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated_temp))
-from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree, prune_git_worktrees
+from local_ai_hub.git_worktrees import create_git_worktree, remove_git_worktree, prune_git_worktrees
 
 
 def _create_repo_and_worktree(tmp_path):
@@ -144,7 +145,7 @@ def test_remove_reports_prune_failure_after_git_removal(monkeypatch, tmp_path):
         return {"success": False, "error": "injected prune failure"}
 
     monkeypatch.setattr(process_utils, "run_hidden", record_remove)
-    monkeypatch.setattr(process_utils, "prune_git_worktrees", fail_prune)
+    monkeypatch.setattr(git_worktrees, "prune_git_worktrees", fail_prune)
     result = remove_git_worktree(repo, wt_path, worktree_id=worktree_id)
 
     assert events == ["remove", "prune"]
@@ -280,8 +281,8 @@ def test_idle_sweep_removes_only_expired_terminal_dead_owner_checkout(monkeypatc
         blockers=task.checkpoint.blockers, state_data=state_data,
     )
     task = tasks.checkpoint(task.task_id, checkpoint, actor="agent-1")
-    marker = process_utils._worktree_ownership_path(Path(wt["worktree_path"]))
-    metadata = process_utils.get_git_worktree_ownership(repo, wt["worktree_path"])
+    marker = git_worktrees._worktree_ownership_path(Path(wt["worktree_path"]))
+    metadata = git_worktrees.get_git_worktree_ownership(repo, wt["worktree_path"])
     metadata.update(created_at=wt["created_at"], expires_at=wt["expires_at"])
     marker.write_text(json.dumps(metadata), encoding="utf-8")
     monkeypatch.setattr(process_utils, "process_owner_state", lambda *_args: "stale")
@@ -307,8 +308,8 @@ def test_idle_sweep_preserves_live_or_unknown_creator(monkeypatch, tmp_path, cre
                         task.checkpoint.affected_paths, task.checkpoint.evidence_ids,
                         task.checkpoint.blockers, state_data)
     task = tasks.checkpoint(task.task_id, cp, actor="agent-1")
-    marker = process_utils._worktree_ownership_path(Path(wt["worktree_path"]))
-    metadata = process_utils.get_git_worktree_ownership(repo, wt["worktree_path"])
+    marker = git_worktrees._worktree_ownership_path(Path(wt["worktree_path"]))
+    metadata = git_worktrees.get_git_worktree_ownership(repo, wt["worktree_path"])
     metadata.update(created_at=wt["created_at"], expires_at=wt["expires_at"])
     marker.write_text(json.dumps(metadata), encoding="utf-8")
     monkeypatch.setattr(process_utils, "process_owner_state", lambda *_args: creator_state)
@@ -341,8 +342,8 @@ def test_idle_sweep_retries_pending_after_owner_resolves_dirty_checkout(monkeypa
         state_data={**completed.checkpoint.state_data, "worktree": record},
     )
     tasks.checkpoint(task.task_id, cp, actor="agent-1")
-    marker = process_utils._worktree_ownership_path(wt)
-    metadata = process_utils.get_git_worktree_ownership(repo, wt)
+    marker = git_worktrees._worktree_ownership_path(wt)
+    metadata = git_worktrees.get_git_worktree_ownership(repo, wt)
     metadata.update(created_at=record["created_at"], expires_at=record["expires_at"])
     marker.write_text(json.dumps(metadata), encoding="utf-8")
     monkeypatch.setattr(process_utils, "process_owner_state", lambda *_args: "stale")
@@ -373,8 +374,8 @@ def test_idle_sweep_does_not_start_cleanup_after_shared_budget_expires(monkeypat
         blockers=task.checkpoint.blockers, state_data={**task.checkpoint.state_data, "worktree": wt},
     )
     tasks.checkpoint(task.task_id, cp, actor="agent-1")
-    marker = process_utils._worktree_ownership_path(Path(wt["worktree_path"]))
-    metadata = process_utils.get_git_worktree_ownership(repo, wt["worktree_path"])
+    marker = git_worktrees._worktree_ownership_path(Path(wt["worktree_path"]))
+    metadata = git_worktrees.get_git_worktree_ownership(repo, wt["worktree_path"])
     metadata.update(created_at=wt["created_at"], expires_at=wt["expires_at"])
     marker.write_text(json.dumps(metadata), encoding="utf-8")
 
@@ -398,7 +399,7 @@ def test_idle_sweep_does_not_start_cleanup_after_shared_budget_expires(monkeypat
 
 def test_removal_and_prune_share_one_fake_clock_deadline(monkeypatch, tmp_path):
     repo, worktree, worktree_id = _create_repo_and_worktree(tmp_path)
-    metadata = process_utils.get_git_worktree_ownership(repo, worktree)
+    metadata = git_worktrees.get_git_worktree_ownership(repo, worktree)
     base_commit = metadata["base_commit"]
     clock = [0.0]
     deadline = 8.0

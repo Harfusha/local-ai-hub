@@ -26,11 +26,6 @@ class OllamaSubagentCatalog:
     """Configuration and safety policy for named local advisory agents."""
 
     PROFILE_NAMES = ("qwen-explorer", "qwen-drafter", "qwen-critic")
-    PROFILE_ALIASES = {
-        "explorer": "qwen-explorer",
-        "drafter": "qwen-drafter",
-        "critic": "qwen-critic",
-    }
     READ_ONLY_TOOLS = (
         "preprocessed_context",
         "deterministic_facts",
@@ -55,12 +50,11 @@ class OllamaSubagentCatalog:
 
     def resolve(self, name: str, available_models: set[str] | None = None) -> OllamaSubagentProfile:
         requested = str(name or self.default_profile).strip().lower()
-        canonical = self.PROFILE_ALIASES.get(requested, requested)
-        if canonical not in self.PROFILE_NAMES:
+        if requested not in self.PROFILE_NAMES:
             valid = ", ".join(self.PROFILE_NAMES)
             raise ValueError(f"unknown Ollama subagent profile; valid profiles: {valid}")
 
-        raw = self.raw_profiles.get(canonical, {})
+        raw = self.raw_profiles.get(requested, {})
         if not isinstance(raw, dict):
             raw = {}
         models = self.config.get("models", {})
@@ -79,9 +73,9 @@ class OllamaSubagentCatalog:
             else:
                 model_fallback_reason = "declared_model_unavailable_no_fallback"
 
-        role = str(raw.get("role", canonical.removeprefix("qwen-")))
+        role = str(raw.get("role", requested.removeprefix("qwen-")))
         return OllamaSubagentProfile(
-            name=canonical,
+            name=requested,
             role=role,
             model=model,
             declared_model=requested_model,

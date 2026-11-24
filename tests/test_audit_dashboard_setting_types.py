@@ -11,7 +11,6 @@ from local_ai_hub import http_server
 
 
 BOOLEAN_SETTINGS = (
-    "debug_traces.enabled",
     "preprocessing.enabled",
     "code_intelligence.enabled",
     "code_intelligence.serena_enabled",
@@ -31,6 +30,7 @@ BOOLEAN_SETTINGS = (
     "features.work_orchestrator",
 )
 HARDWARE_PROFILES = ("auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max")
+TELEMETRY_MODES = ("off", "minimal", "full")
 NON_BOOLEAN_JSON_VALUES = (0, 1, 1.0, None, "true", [], {})
 NON_PROFILE_JSON_VALUES = (True, False, 0, 1, 1.0, None, [], {}, "unsupported")
 
@@ -40,6 +40,7 @@ def test_type_matrix_covers_the_canonical_dashboard_setting_catalog():
 
     assert set(BOOLEAN_SETTINGS) == dashboard_contracts._BOOLEAN_SETTINGS
     assert set(HARDWARE_PROFILES) == dashboard_contracts._PROFILES
+    assert set(TELEMETRY_MODES) == dashboard_contracts._TELEMETRY_MODES
 
 
 def _dispatch_settings_update(monkeypatch, tmp_path: Path, setting: str, value, *, write_error=None):
@@ -73,7 +74,7 @@ def _dispatch_settings_update(monkeypatch, tmp_path: Path, setting: str, value, 
 
 def test_failed_setting_persistence_does_not_publish_live_toggle(monkeypatch, tmp_path):
     responses, app, original_config, writes = _dispatch_settings_update(
-        monkeypatch, tmp_path, 'debug_traces.enabled', False,
+        monkeypatch, tmp_path, 'telemetry.mode', 'minimal',
         write_error=OSError('injected setting publication failure'),
     )
     assert responses[0][0] == 400
@@ -89,8 +90,8 @@ def test_setting_persistence_error_reports_safe_stage_without_raw_details(monkey
     responses, app, original_config, writes = _dispatch_settings_update(
         monkeypatch,
         tmp_path,
-        "debug_traces.enabled",
-        False,
+        "telemetry.mode",
+        "minimal",
         write_error=OSError(secret),
     )
 
@@ -150,6 +151,21 @@ def test_hardware_profile_rejects_non_enum_json_values_without_publication(
     assert not (tmp_path / "config.runtime.toml").exists()
 
 
+@pytest.mark.parametrize("value", NON_PROFILE_JSON_VALUES)
+def test_telemetry_mode_rejects_non_enum_values_without_publication(
+    monkeypatch, tmp_path, value
+):
+    responses, app, original_config, writes = _dispatch_settings_update(
+        monkeypatch, tmp_path, "telemetry.mode", value
+    )
+
+    assert responses[0][0] == 400
+    assert writes == []
+    assert app.config == original_config
+    assert app.debug_traces.enabled is True
+    assert not (tmp_path / "config.runtime.toml").exists()
+
+
 @pytest.mark.parametrize("value", HARDWARE_PROFILES)
 def test_hardware_profile_preserves_supported_enum_strings(
     monkeypatch, tmp_path, value
@@ -163,5 +179,20 @@ def test_hardware_profile_preserves_supported_enum_strings(
     persisted_value = writes[0][1]["hardware"]["profile"]
     assert type(persisted_value) is str
     assert persisted_value == value
+
+
+@pytest.mark.parametrize("value", TELEMETRY_MODES)
+def test_dashboard_telemetry_modes_preserve_canonical_values(
+    monkeypatch, tmp_path, value
+):
+    responses, app, original_config, writes = _dispatch_settings_update(
+        monkeypatch, tmp_path, "telemetry.mode", value
+    )
+
+    assert responses[0][0] == 200
+    assert len(writes) == 1
+    assert writes[0][1]["telemetry"]["mode"] == value
+    assert app.debug_traces.enabled is (value == "full")
+    assert app.config == original_config
     assert app.config == original_config
     assert not (tmp_path / "config.runtime.toml").exists()

@@ -18,8 +18,6 @@ import shlex as shlex
 import shutil as shutil
 import signal  # noqa: F401
 import subprocess as subprocess
-import sys
-import types
 import tempfile as tempfile
 import threading
 import time as time
@@ -176,15 +174,6 @@ from .command_jobs import (
     wait_windows_job_empty as wait_windows_job_empty,
     windows_job_contains_process as windows_job_contains_process,
     windows_job_has_processes as windows_job_has_processes,
-    _create_named_daemon_job as _create_named_daemon_job,
-    _daemon_job_name as _daemon_job_name,
-    _duplicate_job_handle_into_process as _duplicate_job_handle_into_process,
-    _open_named_daemon_job as _open_named_daemon_job,
-    _set_windows_job_kill_on_close as _set_windows_job_kill_on_close,
-    _terminate_and_confirm_windows_job_empty as _terminate_and_confirm_windows_job_empty,
-    _wait_windows_job_empty as _wait_windows_job_empty,
-    _windows_job_contains_process as _windows_job_contains_process,
-    _windows_job_has_processes as _windows_job_has_processes,
 )
 from .command_rollback import (
     _MAX_ROLLBACK_PATHS as _MAX_ROLLBACK_PATHS,
@@ -225,57 +214,7 @@ from .command_rollback import (
     _same_rollback_postimage_after_owned_rename as _same_rollback_postimage_after_owned_rename,
     _patch_write_paths as _patch_write_paths,
     simulate_patch as simulate_patch,
-    patch_dry_run as patch_dry_run,
 )
-
-
-class _CommandsModuleProxy(types.ModuleType):
-    def __setattr__(self, name: str, value: Any) -> None:
-        super().__setattr__(name, value)
-        for mod in (
-            _command_jobs, _command_rollback, _command_rollback_windows,
-            *(sys.modules.get(f"{__package__}.{name}") for name in (
-                "command_daemon_process", "command_daemon_registry", "command_daemon_lifecycle", "command_run", "command_patch", "command_repair", "command_execute", "command_transaction_journal", "command_transaction_execute", "command_verification", "command_authorization", "command_classification", "command_cache", "command_diagnostics", "command_output",
-            )),
-        ):
-            if mod is None:
-                continue
-            if hasattr(mod, name):
-                setattr(mod, name, value)
-            if name.startswith('_') and hasattr(mod, name[1:]):
-                setattr(mod, name[1:], value)
-            elif not name.startswith('_') and hasattr(mod, '_' + name):
-                setattr(mod, '_' + name, value)
-
-    def __delattr__(self, name: str) -> None:
-        super().__delattr__(name)
-        for mod in (
-            _command_jobs, _command_rollback, _command_rollback_windows,
-            *(sys.modules.get(f"{__package__}.{name}") for name in (
-                "command_daemon_process", "command_daemon_registry", "command_daemon_lifecycle", "command_run", "command_patch", "command_repair", "command_execute", "command_transaction_journal", "command_transaction_execute", "command_verification", "command_authorization", "command_classification", "command_cache", "command_diagnostics", "command_output",
-            )),
-        ):
-            if mod is None:
-                continue
-            if hasattr(mod, name):
-                try:
-                    delattr(mod, name)
-                except AttributeError:
-                    pass
-            if name.startswith('_') and hasattr(mod, name[1:]):
-                try:
-                    delattr(mod, name[1:])
-                except AttributeError:
-                    pass
-            elif not name.startswith('_') and hasattr(mod, '_' + name):
-                try:
-                    delattr(mod, '_' + name)
-                except AttributeError:
-                    pass
-
-
-sys.modules[__name__].__class__ = _CommandsModuleProxy
-
 
 
 from .command_invocation_validation import (
@@ -626,7 +565,6 @@ __all__ = [
     '_BoundedStreamBuffer',
     '_COMMAND_LOG_QUEUE_MAX_CHUNKS',
     '_CommandSingleflightEvent',
-    '_CommandsModuleProxy',
     '_DIAGNOSTIC_PATTERNS',
     '_GLOBAL_WINDOWS_JOB',
     '_MAX_INVOCATION_ERROR_CHARS',
@@ -653,12 +591,9 @@ __all__ = [
     '_command_rollback',
     '_command_rollback_windows',
     '_command_streams',
-    '_create_named_daemon_job',
-    '_daemon_job_name',
     '_daemon_process_group_alive',
     '_daemon_process_group_owned',
     '_delete_windows_handle',
-    '_duplicate_job_handle_into_process',
     '_get_windows_dacl',
     '_hash_patch_target',
     '_invocation_cwd',
@@ -666,7 +601,6 @@ __all__ = [
     '_is_interactive_prompt',
     '_is_valid_project_command_env_key',
     '_linux_group_member_owns_token',
-    '_open_named_daemon_job',
     '_open_rollback_parent_handle',
     '_open_rollback_relative_handle',
     '_open_rollback_snapshot_file',
@@ -696,19 +630,14 @@ __all__ = [
     '_same_rollback_postimage_after_owned_rename',
     '_set_windows_dacl',
     '_set_windows_dacl_path',
-    '_set_windows_job_kill_on_close',
     '_snapshot_patch_targets',
     '_snapshot_rollback_scope',
     '_stable_rollback_status',
     '_stop_daemon_tree',
-    '_terminate_and_confirm_windows_job_empty',
     '_terminate_owned_linux_daemon_group',
-    '_wait_windows_job_empty',
     '_windows_dacl_bytes',
     '_windows_handle_attributes',
     '_windows_handle_identity',
-    '_windows_job_contains_process',
-    '_windows_job_has_processes',
     'annotations',
     'assign_process_to_job',
     'base64',
@@ -762,7 +691,6 @@ __all__ = [
     'ntpath',
     'open_named_daemon_job',
     'os',
-    'patch_dry_run',
     'process_identity',
     'python_inline_code_syntax_is_valid',
     'queue',
@@ -779,7 +707,6 @@ __all__ = [
     'stop_windows_job_process',
     'strip_null_redirections',
     'subprocess',
-    'sys',
     'tempfile',
     'terminate_and_confirm_windows_job_empty',
     'terminate_job_object',
@@ -787,7 +714,6 @@ __all__ = [
     'threading',
     'time',
     'tokenize_command',
-    'types',
     'uuid',
     'validate_invocation',
     'validate_transaction_output',

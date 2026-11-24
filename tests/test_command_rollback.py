@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
+
+from command_module_patch import patch_split_command_module
 from local_ai_hub import command_broker as commands_module
 from local_ai_hub.command_broker import CommandBroker, _get_windows_dacl, _windows_dacl_bytes
 from local_ai_hub.agent_events import AgentStateStore
@@ -103,7 +105,7 @@ def test_rollback_restore_oserror_marks_outcome_unknown_and_invalidates_caches(
     def fail_restore(_cwd: str, _snapshot: object) -> None:
         raise OSError("rollback restore failed")
 
-    monkeypatch.setattr(commands_module, "_restore_rollback_scope", fail_restore)
+    patch_split_command_module(monkeypatch, "_restore_rollback_scope", fail_restore)
     result = broker.run(
         command,
         str(repo),
@@ -526,7 +528,7 @@ def test_rollback_oserror_marks_outcome_unknown_invalidates_caches_and_records_i
     def fail_private_rollback_verification(*_args, **_kwargs):
         raise OSError("transaction source path changed while command was running: simulated rollback failure")
 
-    monkeypatch.setattr(commands_module, "verify_transaction_source_unchanged", fail_private_rollback_verification)
+    patch_split_command_module(monkeypatch, "verify_transaction_source_unchanged", fail_private_rollback_verification)
     receipts: list[object] = []
     monkeypatch.setattr(broker, "_record_command_verification", lambda *args, **kwargs: receipts.append((args, kwargs)))
     deleted: dict[str, list[str]] = {"success": [], "failure": [], "suppression": []}
@@ -549,7 +551,7 @@ def test_rollback_oserror_marks_outcome_unknown_invalidates_caches_and_records_i
     def fail_restore(*_args, **_kwargs):
         raise OSError("simulated rollback failure")
 
-    monkeypatch.setattr(commands_module, "_restore_rollback_scope", fail_restore)
+    patch_split_command_module(monkeypatch, "_restore_rollback_scope", fail_restore)
     def fail_execution(*_args, **_kwargs):
         owned.write_text("after", encoding="utf-8")
         return {"success": False, "exit_code": 2, "stdout": "", "stderr": "simulated command failure", "duration_ms": 1}
@@ -685,7 +687,7 @@ def test_rollback_worktree_preflight_happens_before_snapshot_handle_acquisition(
         snapshot_calls.append((cwd, paths))
         return SimpleNamespace(root_guard=123), None
 
-    monkeypatch.setattr(commands_module, "_snapshot_rollback_scope", snapshot)
+    patch_split_command_module(monkeypatch, "_snapshot_rollback_scope", snapshot)
     result = broker.run(
         'python -c "pass"',
         str(tmp_path),
@@ -723,7 +725,7 @@ def test_rollback_preserves_concurrent_replacement_when_removing_created_path(
             target.write_text("concurrent replacement\n", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(commands_module, "_rollback_postimage_at", replace_after_final_check)
+    patch_split_command_module(monkeypatch, "_rollback_postimage_at", replace_after_final_check)
     try:
         with pytest.raises(OSError, match="changed postimages"):
             commands_module._restore_rollback_scope(str(tmp_path), snapshot)
@@ -758,7 +760,7 @@ def test_windows_rollback_preserves_path_replaced_after_postimage_check(
             target.write_text("concurrent replacement\n", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(commands_module, "_rollback_postimage_at", replace_after_preopen_check)
+    patch_split_command_module(monkeypatch, "_rollback_postimage_at", replace_after_preopen_check)
     try:
         with pytest.raises(OSError, match="changed postimages"):
             commands_module._restore_rollback_scope(str(tmp_path), snapshot)
@@ -853,7 +855,7 @@ def test_windows_rollback_does_not_replace_leaf_created_after_absence_check(
             replace_if_exists=replace_if_exists,
         )
 
-    monkeypatch.setattr(commands_module, "_rename_windows_handle", create_foreign_before_rename)
+    patch_split_command_module(monkeypatch, "_rename_windows_handle", create_foreign_before_rename)
     try:
         with pytest.raises(OSError):
             commands_module._restore_rollback_scope(str(tmp_path), snapshot)
@@ -1423,7 +1425,7 @@ def test_rollback_snapshot_rejects_symlink_swapped_before_handle_open(tmp_path: 
                 pytest.skip(f"file symlink creation unavailable: {exc}")
         return original_open(parent_handle, name)
 
-    monkeypatch.setattr(commands_module, "_open_rollback_snapshot_file", swap_before_open)
+    patch_split_command_module(monkeypatch, "_open_rollback_snapshot_file", swap_before_open)
     try:
         snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
         assert swapped is True
@@ -1464,7 +1466,7 @@ def test_rollback_snapshot_rejects_junction_swapped_before_handle_open(tmp_path:
                 pytest.skip(f"junction creation unavailable: {result.stdout}{result.stderr}")
         return original_open(parent_handle, name)
 
-    monkeypatch.setattr(commands_module, "_open_rollback_snapshot_file", swap_before_open)
+    patch_split_command_module(monkeypatch, "_open_rollback_snapshot_file", swap_before_open)
     try:
         snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
         assert swapped is True
@@ -1519,7 +1521,7 @@ def test_rollback_snapshot_rejects_parent_junction_during_root_open(tmp_path: Pa
                 os.rmdir(parent)
             moved_parent.rename(parent)
 
-    monkeypatch.setattr(commands_module, "_acquire_rollback_root", redirect_during_open)
+    patch_split_command_module(monkeypatch, "_acquire_rollback_root", redirect_during_open)
     try:
         snapshot, error = commands_module._snapshot_rollback_scope(str(root), [inside.name])
         assert snapshot is None
@@ -1566,7 +1568,7 @@ def test_rollback_snapshot_rejects_parent_symlink_swapped_after_resolve(
             if moved_parent.exists():
                 moved_parent.rename(parent)
 
-    monkeypatch.setattr(commands_module, "_acquire_rollback_root", redirect_during_open)
+    patch_split_command_module(monkeypatch, "_acquire_rollback_root", redirect_during_open)
     try:
         snapshot, error = commands_module._snapshot_rollback_scope(str(root), [inside.name])
         assert snapshot is None
@@ -1600,7 +1602,7 @@ def test_rollback_snapshot_records_root_identity_from_pinned_handle(tmp_path: Pa
         monkeypatch.setattr(Path, "stat", reject_path_identity)
         return handle
 
-    monkeypatch.setattr(commands_module, "_acquire_rollback_root", acquire_then_disable_root_path_stat)
+    patch_split_command_module(monkeypatch, "_acquire_rollback_root", acquire_then_disable_root_path_stat)
     snapshot = None
     try:
         snapshot, error = commands_module._snapshot_rollback_scope(str(root), [target.name])
@@ -1639,7 +1641,7 @@ def test_rollback_snapshot_closes_file_handle_when_fstat_fails(tmp_path: Path, m
             closed.append(fd)
         real_close(fd)
 
-    monkeypatch.setattr(commands_module, "_open_rollback_snapshot_file", track_open)
+    patch_split_command_module(monkeypatch, "_open_rollback_snapshot_file", track_open)
     monkeypatch.setattr(commands_module.os, "fstat", fail_open_fstat)
     monkeypatch.setattr(commands_module.os, "close", track_close)
     try:
@@ -1802,9 +1804,9 @@ def test_rollback_restore_rejects_current_path_identity_mismatch(
         if handle != replacement_handle:
             original_close(handle)
 
-    monkeypatch.setattr(commands_module, "_acquire_rollback_root", acquire_replacement)
-    monkeypatch.setattr(commands_module, "_rollback_root_identity", identity_for_handle)
-    monkeypatch.setattr(commands_module, "_close_rollback_root", close_handle)
+    patch_split_command_module(monkeypatch, "_acquire_rollback_root", acquire_replacement)
+    patch_split_command_module(monkeypatch, "_rollback_root_identity", identity_for_handle)
+    patch_split_command_module(monkeypatch, "_close_rollback_root", close_handle)
     try:
         with pytest.raises(OSError, match="rollback root changed since snapshot"):
             commands_module._restore_rollback_scope(str(tmp_path), snapshot)
@@ -1839,7 +1841,7 @@ def test_rollback_restore_stays_inside_pinned_root_if_path_moves_after_check(
             replaced = True
         return original_open_parent(root_handle, parts, **kwargs)
 
-    monkeypatch.setattr(commands_module, "_open_rollback_parent_handle", move_root_after_identity_check)
+    patch_split_command_module(monkeypatch, "_open_rollback_parent_handle", move_root_after_identity_check)
     try:
         commands_module._restore_rollback_scope(str(root), snapshot)
 
@@ -1914,8 +1916,8 @@ def test_rollback_temp_handle_closes_when_delete_by_handle_fails(
 
     monkeypatch.setattr(msvcrt, "open_osfhandle", track_open_osfhandle)
     monkeypatch.setattr(commands_module.os, "close", track_close)
-    monkeypatch.setattr(commands_module, "_rename_windows_handle", fail_rename)
-    monkeypatch.setattr(commands_module, "_delete_windows_handle", fail_delete)
+    patch_split_command_module(monkeypatch, "_rename_windows_handle", fail_rename)
+    patch_split_command_module(monkeypatch, "_delete_windows_handle", fail_delete)
     try:
         with pytest.raises(OSError, match="injected rename failure") as raised:
             commands_module._restore_rollback_scope(str(tmp_path), snapshot)
@@ -1973,7 +1975,7 @@ def test_rollback_restore_stays_on_pinned_root_after_junction_swap(
             junction_created = True
         return identity
 
-    monkeypatch.setattr(commands_module, "_rollback_root_identity", swap_after_root_check)
+    patch_split_command_module(monkeypatch, "_rollback_root_identity", swap_after_root_check)
     try:
         with pytest.raises((OSError, ValueError)):
             commands_module._restore_rollback_scope(str(root), snapshot)
@@ -2211,7 +2213,7 @@ def test_run_does_not_restore_while_process_tree_cleanup_is_unconfirmed(
         raise AssertionError("rollback must not race an unconfirmed live writer")
 
     monkeypatch.setattr(broker, "_execute", live_writer_unconfirmed)
-    monkeypatch.setattr(commands_module, "_restore_rollback_scope", restore_must_not_run)
+    patch_split_command_module(monkeypatch, "_restore_rollback_scope", restore_must_not_run)
     result = broker.run(
         "git add owned.txt", str(tmp_path), force=True, task_id="task-owned",
         paths=[target.name], rollback_on_failure=True, rollback_paths=["owned.txt"],
@@ -2265,8 +2267,7 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
     process = LiveProcess()
     cleanup_calls: list[tuple[int, float]] = []
     monkeypatch.setattr(commands_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "terminate_tree",
         lambda pid, *, grace_seconds: cleanup_calls.append((pid, grace_seconds)) or False,
     )
@@ -2283,8 +2284,7 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
         raise ProcessLookupError
 
     monkeypatch.setattr(commands_module.os, "killpg", missing_process_group)
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "time",
         SimpleNamespace(perf_counter=lambda: 0.0, monotonic=advance_monotonic, sleep=lambda _s: None),
     )
@@ -2526,7 +2526,7 @@ def test_rollback_aborts_when_hardlink_appears_after_postimage_check(
             os.link(target, alias)
         return original_postimage_at(parent_handle, leaf)
 
-    monkeypatch.setattr(commands_module, "_rollback_postimage_at", create_alias_after_postimage_check)
+    patch_split_command_module(monkeypatch, "_rollback_postimage_at", create_alias_after_postimage_check)
     snapshot, scope_error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
     assert scope_error is None
     assert snapshot is not None
@@ -2573,8 +2573,8 @@ def test_posix_rollback_exchange_restores_concurrent_write_between_check_and_rep
         scratch.rename(right_path)
         exchanges += 1
 
-    monkeypatch.setattr(commands_module, "_rollback_postimage_at", postimage_at)
-    monkeypatch.setattr(commands_module, "_rename_exchange_at", exchange)
+    patch_split_command_module(monkeypatch, "_rollback_postimage_at", postimage_at)
+    patch_split_command_module(monkeypatch, "_rename_exchange_at", exchange)
 
     expected = SimpleNamespace(safe=True, fingerprint=original_postimage)
     with pytest.raises(OSError, match="changed during atomic exchange"):
@@ -2621,8 +2621,7 @@ def test_timeout_rollback_oserror_marks_outcome_unknown(tmp_path: Path, monkeypa
         broker, "_execute",
         lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("command", 1)),
     )
-    monkeypatch.setattr(
-        commands_module, "_restore_rollback_scope",
+    patch_split_command_module(monkeypatch, "_restore_rollback_scope",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("restore blocked")),
     )
     receipts: list[object] = []
@@ -2879,7 +2878,7 @@ def test_transaction_journal_removal_follows_durable_source_import(
             events.append("source-import")
         original_restore(root, snapshot)
 
-    monkeypatch.setattr(commands_module, "_restore_rollback_scope", track_source_import)
+    patch_split_command_module(monkeypatch, "_restore_rollback_scope", track_source_import)
     original_unlink = Path.unlink
 
     def track_journal_unlink(path: Path, *args: object, **kwargs: object) -> None:
@@ -2951,8 +2950,8 @@ def test_posix_rollback_exchange_preserves_concurrent_process_edit(
         scratch.rename(right_path)
         exchanges += 1
 
-    monkeypatch.setattr(commands_module, "_rollback_postimage_at", postimage_at)
-    monkeypatch.setattr(commands_module, "_rename_exchange_at", exchange)
+    patch_split_command_module(monkeypatch, "_rollback_postimage_at", postimage_at)
+    patch_split_command_module(monkeypatch, "_rename_exchange_at", exchange)
 
     try:
         with pytest.raises(OSError, match="changed during atomic exchange"):

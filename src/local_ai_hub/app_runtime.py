@@ -9,7 +9,6 @@ from .app import (
     ArtifactStore as ArtifactStore,
     AsyncJobManager as AsyncJobManager,
     BlackboardStore as BlackboardStore,
-    BoardStore as BoardStore,
     CodeIndex as CodeIndex,
     CommandBroker as CommandBroker,
     ContextCompiler as ContextCompiler,
@@ -68,6 +67,7 @@ from .app import (
     ensure_state_version as ensure_state_version,
     load_config as load_config,
     require_canonical_agent_state_database as require_canonical_agent_state_database,
+    shutdown_logging as shutdown_logging,
     threading as threading,
     time as time,
 )
@@ -205,14 +205,11 @@ class AppRuntimeMixin:
             local_model_reviewer=self._review_laya_candidate_locally,
         )
         from .laya_unified_coordinator import LayaUnifiedCoordinator
-        laya_mode = str(laya_cfg.get("mode", "shadow")).strip().lower()
         self.laya_coordinator = LayaUnifiedCoordinator(
-            mode=laya_mode if laya_mode in {"shadow", "advisory"} else "shadow",
             default_budget=int(self.config.get("token_saving", {}).get("max_response_tokens", 8192) or 8192),
             training_collector=self.training_collector,
             training_capture_enabled=training_capture_enabled,
         )
-        self.agent_tasks.set_laya_completion_observer(self.queue_laya_completion_observation)
         runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
         self.laya_lifecycle = LayaSessionLifecycle(
             DEFAULT_IDLE_UNLOAD_SECONDS,
@@ -221,9 +218,6 @@ class AppRuntimeMixin:
         )
         self._laya_runtime_adapter_lock = threading.Lock()
         self._laya_runtime_adapter = None
-        self._laya_capture_lock = threading.Lock()
-        self._laya_capture_queue: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-        self._laya_capture_draining = False
         self.scheduler.add_idle_maintenance_callback(self.laya_lifecycle.poll_idle_unload)
         from .automation_service import create_automation_broker
         self.automation = create_automation_broker(self.config, self.artifacts)
@@ -264,7 +258,7 @@ class AppRuntimeMixin:
             self.artifacts, self.telemetry, self.repo_tools, self.repo_state,
             code_index=self.code_index, evidence=self.evidence, learner=self.learner, tuner=self.tuner, deterministic=self.deterministic, external_tools=self.external_tools,
         )
-        self.services.set_laya_decision_observer(self.queue_laya_decision_observation)
+        self.services.set_laya_decision_evaluator(self.evaluate_laya_decision)
         self.async_jobs = AsyncJobManager(
             self.config, self.scheduler, self.artifacts, self._execute_async_task,
             debug_traces=self.debug_traces,
@@ -292,9 +286,7 @@ class AppRuntimeMixin:
         self.services.set_blackboard(self.agent_blackboard)
         from .agent_events import SwarmPubSub
         self.agent_semaphores = SemaphoreStore(state_dir / "agent_semaphores.sqlite", pubsub=SwarmPubSub.get_default(state_store=self.agent_state))
-        self.agent_board = BoardStore(state_dir / "agent_board.sqlite", services=self.services)
         self.services.set_semaphores(self.agent_semaphores)
-        self.services.set_board(self.agent_board)
         self.consistency_guard = AgentConsistencyGuard(
             self.repo_tools,
             task_store=self.agent_tasks,
@@ -441,86 +433,6 @@ class AppRuntimeMixin:
                 self.logger.debug("watchdog: scoped task reaping failed: %s", type(exc).__name__)
         return reaped
 
-    def _observe_laya_watchdog_lifecycle(self) -> None:
-        """Observe active task lifecycle states as shadow watchdog decisions."""
-        if not self._laya_inference_enabled():
-            return
-        config = getattr(self, "config", {})
-        laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
-        runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, Mapping) else {}
-        if not runtime_cfg.get("checkpoint_path"):
-            return
-        tasks = getattr(self, "agent_tasks", None)
-        if tasks is None or not hasattr(tasks, "list_tasks"):
-            return
-        try:
-            from .agent_tasks import TaskStatus, _task_scope_root
-            from .laya_decisions import (
-                DecisionCategory,
-                allowed_decision_options,
-                derive_watchdog_lifecycle_baseline,
-            )
-        except ImportError:
-            return
-
-        now = time.time()
-        cooldown = getattr(self, "_laya_watchdog_task_cooldown", None)
-        if cooldown is None:
-            cooldown = self._laya_watchdog_task_cooldown = {}
-        for tid, ts in list(cooldown.items()):
-            if now - ts > 60.0:
-                del cooldown[tid]
-
-        watchdog_options = sorted(allowed_decision_options(DecisionCategory.WATCHDOG))
-        for status in (TaskStatus.ACTIVE, TaskStatus.VERIFYING):
-            task_list = tasks.list_tasks(status=status, limit=8)
-            for task in getattr(task_list, "tasks", ()):
-                task_id = getattr(task, "task_id", None)
-                if not isinstance(task_id, str) or not task_id or task_id in cooldown:
-                    continue
-                checkpoint = getattr(task, "checkpoint", None)
-                checkpoint_evidence_ids = getattr(checkpoint, "evidence_ids", ())
-                if not checkpoint_evidence_ids:
-                    continue
-                valid_ids = [
-                    eid for eid in checkpoint_evidence_ids if isinstance(eid, str) and eid.strip()
-                ]
-                if not valid_ids:
-                    continue
-                try:
-                    repo_root = _task_scope_root(task)
-                except Exception:
-                    continue
-                if not repo_root:
-                    continue
-                baseline = derive_watchdog_lifecycle_baseline(
-                    status=getattr(task, "status", None),
-                    request_evidence_ids=valid_ids,
-                    checkpoint_evidence_ids=valid_ids,
-                    options=watchdog_options,
-                )
-                if not baseline:
-                    continue
-                evidence_id = baseline["evidence_id"]
-                operation = {
-                    "action": "evaluate_decision",
-                    "task_id": task_id,
-                    "decision": {
-                        "category": DecisionCategory.WATCHDOG.value,
-                        "evidence_ids": [evidence_id],
-                        "options": watchdog_options,
-                        "state": {
-                            "task_status": getattr(getattr(task, "status", None), "value", str(getattr(task, "status", ""))),
-                        },
-                        "training_content": {},
-                    },
-                }
-                try:
-                    self.queue_laya_decision_observation(operation, repo_root, baseline)
-                    cooldown[task_id] = now
-                except Exception as exc:
-                    self.logger.debug("watchdog: laya shadow observation failed: %s", type(exc).__name__)
-
     def _watchdog_loop(self) -> None:
         cfg = self.config.get("resilience", {})
         interval = max(1.0, float(cfg.get("watchdog_interval_seconds", 5.0)))
@@ -540,10 +452,6 @@ class AppRuntimeMixin:
                         self._reap_expired_task_scopes()
                     except Exception as exc:
                         self.logger.debug("watchdog: reap_expired_heartbeats failed: %s", type(exc).__name__)
-                    try:
-                        self._observe_laya_watchdog_lifecycle()
-                    except Exception as exc:
-                        self.logger.debug("watchdog: laya shadow observation failed: %s", type(exc).__name__)
                 sched = self.scheduler.status()
                 if (sched.get("queued", 0) or sched.get("inflight", 0)) and not self.runtime.is_online():
                     self.runtime.ensure_running()
@@ -612,6 +520,165 @@ class AppRuntimeMixin:
             return
         self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="local-ai-watchdog", daemon=True)
         self._watchdog_thread.start()
+
+    def close(self, timeout: float = 5.0) -> bool:
+        """Run each shutdown phase once, report failures, and retry only failures."""
+        close_lock = getattr(self, "_close_lock", None)
+        shutdown = getattr(self, "_shutdown", None)
+        if close_lock is None or shutdown is None:
+            return False
+
+        phases = (
+            "lint_daemons", "context_warmup", "status_dependencies", "helper_threads",
+            "recovery", "preprocessor", "external_tools", "work_orchestrator",
+            "async_jobs", "execution_pool", "background_gpu", "scheduler", "telemetry",
+            "deterministic", "code_index", "logging",
+        )
+
+        def snapshot(coordinator: dict[str, Any]) -> dict[str, Any]:
+            components = {
+                name: dict(detail)
+                for name, detail in coordinator["components"].items()
+            }
+            failed = [name for name in phases if components[name]["state"] == "failed"]
+            pending = [name for name in phases if components[name]["state"] in {"pending", "running"}]
+            return {
+                "success": not failed and not pending,
+                "failed": failed,
+                "pending": pending,
+                "components": components,
+            }
+
+        def run_phase(name: str, deadline: float) -> None:
+            remaining = max(0.0, deadline - time.monotonic())
+            if name == "lint_daemons":
+                callback = getattr(getattr(self, "services", None), "close_lint_daemons", None)
+                result = callback() if callable(callback) else None
+            elif name == "context_warmup":
+                callback = getattr(getattr(self, "services", None), "close_context_warmup", None)
+                result = callback() if callable(callback) else None
+            elif name == "status_dependencies":
+                executor = getattr(self, "_status_dependency_executor", None)
+                result = executor.shutdown(wait=True, cancel_futures=True) if executor is not None else None
+            elif name == "helper_threads":
+                for worker_name in ("_prewarm_thread", "_watchdog_thread"):
+                    worker = getattr(self, worker_name, None)
+                    if worker is None or worker is threading.current_thread():
+                        continue
+                    is_alive = getattr(worker, "is_alive", None)
+                    join = getattr(worker, "join", None)
+                    if callable(is_alive) and is_alive() and callable(join):
+                        join(timeout=max(0.0, min(1.0, remaining)))
+                        if is_alive():
+                            raise TimeoutError(f"{worker_name} is still running")
+                result = None
+            elif name == "background_gpu":
+                # Release Laya's model lease before stopping GPU admission.
+                laya = getattr(self, "laya_lifecycle", None)
+                close_laya = getattr(laya, "close", None)
+                if callable(close_laya):
+                    laya_result = close_laya(timeout=remaining)
+                    if laya_result is False:
+                        raise RuntimeError("Laya shutdown remains unconfirmed")
+                component = getattr(self, name, None)
+                callback = getattr(component, "close", None)
+                result = callback() if callable(callback) else None
+            elif name == "telemetry":
+                result = None
+                for component_name in ("endpoint_stats", "agent_incidents", "telemetry"):
+                    component = getattr(self, component_name, None)
+                    callback = getattr(component, "close", None)
+                    if not callable(callback):
+                        continue
+                    value = callback(timeout=remaining) if component_name == "agent_incidents" else callback()
+                    if value is False or (
+                        isinstance(value, Mapping)
+                        and (value.get("cleanup_unconfirmed") is True or value.get("success") is False)
+                    ):
+                        raise RuntimeError(f"{component_name} cleanup was not confirmed")
+            elif name == "logging":
+                result = shutdown_logging()
+            else:
+                component = getattr(self, name, None)
+                callback = getattr(component, "close", None)
+                result = callback() if callable(callback) else None
+
+            if result is False or (
+                isinstance(result, Mapping)
+                and (result.get("cleanup_unconfirmed") is True or result.get("success") is False)
+            ):
+                raise RuntimeError(f"{name} cleanup was not confirmed")
+
+        with close_lock:
+            shutdown.set()
+            coordinator = getattr(self, "_close_coordinator", None)
+            if not isinstance(coordinator, dict):
+                coordinator = {
+                    "components": {
+                        name: {"state": "pending", "attempts": 0, "error_type": ""}
+                        for name in phases
+                    },
+                    "thread": None,
+                }
+                self._close_coordinator = coordinator
+            worker = coordinator.get("thread")
+            if not getattr(self, "_closed", False) and not (
+                isinstance(worker, threading.Thread) and worker.is_alive()
+            ):
+                incomplete = any(
+                    detail["state"] != "completed"
+                    for detail in coordinator["components"].values()
+                )
+                if incomplete:
+                    phase_timeout = max(0.0, float(timeout))
+
+                    def coordinate_shutdown() -> None:
+                        for phase_name in phases:
+                            with close_lock:
+                                detail = coordinator["components"][phase_name]
+                                if detail["state"] == "completed":
+                                    continue
+                                detail["state"] = "running"
+                                detail["attempts"] += 1
+                                self.close_report = snapshot(coordinator)
+                            try:
+                                run_phase(phase_name, time.monotonic() + phase_timeout)
+                            except Exception as exc:
+                                with close_lock:
+                                    detail["state"] = "failed"
+                                    detail["error_type"] = type(exc).__name__
+                                    self.close_report = snapshot(coordinator)
+                                logger = getattr(self, "logger", None)
+                                log_error = getattr(logger, "error", None)
+                                if callable(log_error):
+                                    try:
+                                        log_error("Hub shutdown phase %s failed: %s", phase_name, type(exc).__name__)
+                                    except Exception:
+                                        pass
+                            else:
+                                with close_lock:
+                                    detail["state"] = "completed"
+                                    detail["error_type"] = ""
+                                    self.close_report = snapshot(coordinator)
+                        with close_lock:
+                            self._closed = bool(self.close_report.get("success"))
+                            self.close_report = snapshot(coordinator)
+
+                    worker = threading.Thread(
+                        target=coordinate_shutdown,
+                        name="local-ai-close-coordinator",
+                        daemon=True,
+                    )
+                    coordinator["thread"] = worker
+                    self.close_report = snapshot(coordinator)
+                    worker.start()
+            self.close_report = snapshot(coordinator)
+
+        if isinstance(worker, threading.Thread) and worker is not threading.current_thread():
+            worker.join(timeout=max(0.0, float(timeout)))
+        with close_lock:
+            self.close_report = snapshot(coordinator)
+            return self.close_report["success"] is True
 
     def _execute_async_task(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.async_jobs.inference_admission(action) as rejection:

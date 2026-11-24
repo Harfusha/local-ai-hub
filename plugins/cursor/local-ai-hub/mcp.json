@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "local-ai": {
+      "command": "python",
+      "args": ["${CURSOR_PLUGIN_ROOT}/scripts/run_hub.py", "mcp_server"],
+      "env": { "LOCAL_AI_AGENT": "cursor", "LOCAL_AI_AGENT_PROFILE": "cursor" }
+    }
+  }
+}

@@ -127,11 +127,11 @@ def test_http_task_query_searches_contract_checkpoint_and_owner_before_limit(liv
 
     app, client = live_api
     root = str(Path(__file__).resolve().parents[1])
-    rootless = client.create_task("Root is required", task_id="query-rootless")
+    rootless = client.create_task({"goal": "Root is required"}, task_id="query-rootless")
     assert rootless["success"] is False
     assert rootless["error_code"] == "root_required"
     created = client.create_task(
-        "goal-needle", acceptance_criteria=["criterion-needle"], task_id="query-match", root=root
+        {"goal": "goal-needle", "acceptance_criteria": ["criterion-needle"]}, task_id="query-match", root=root
     )
     assert created["success"], created
     assert client.post("/api/agent-state/tasks", {
@@ -145,7 +145,7 @@ def test_http_task_query_searches_contract_checkpoint_and_owner_before_limit(liv
             "blockers": ["blocker-needle"],
         },
     })["success"]
-    assert client.create_task("Newest unrelated task", task_id="query-other", root=root)["success"]
+    assert client.create_task({"goal": "Newest unrelated task"}, task_id="query-other", root=root)["success"]
     repository_id = resolve_project_context(
         root, configured_state_dir(app.config)
     ).coordination_id

@@ -8,8 +8,8 @@
     {
       "path": "docs/FINAL_COMPLETION_PLAN.md",
       "revision": {
-        "kind": "working",
-        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+        "kind": "working"
       }
     }
   ],
@@ -37,18 +37,63 @@
       "description": "Reconcile overlapping HUB-001–030 and 031–048 plans, later HUB-049–075, audit HUB-076–112, HUB-113–140, rounds 3–6, and prompt coverage. Carry forward only current items. Explicitly reconcile stale duplicate draft plan_a543955bee5d, whose tasks carry HUB-001–015, HUB-016–024, HUB-025–026 and HUB-027–030; verify every criterion against current source and receipts, then archive the duplicate board after transfer. Preserve plan_8a8d211b8ccc as the current HUB-001–030 audit board, including HUB-002 blocked.",
       "kind": "code",
       "next_action": "Auditní regrese kol 4, 5 a 6 (51 testů), HUB-113-140 (57 testů) a bezpečnostní testy (14 testů) úspěšně prošly v čerstvém běhu. Všechny auditní nálezy uzavřeny nebo explicitně označeny jako BLOCKED s konkrétními podmínkami.",
-      "title": "Close still-valid audit findings HUB-001 through HUB-140",
-      "work_phase": "verification",
-      "work_status": "done",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Close still-valid audit findings HUB-001 through HUB-140",
+      "work_phase": "verification",
+      "work_status": "done"
+    },
+    "task_canonical_cleanup": {
+      "acceptance_criteria": [
+        "No backward-compatibility aliases, dual reads/writes, deprecated routes, or silent old-format fallback remain in current runtime; present-day domain behavior and safety gates remain.",
+        "Every supported prior persisted/config format has an ordered, recoverable update migration that validates output and fails closed on ambiguity; current runtime opens only the canonical format.",
+        "MCP, provider packages, skills, generated instructions, and API coverage derive from the active canonical capability/action contract for every supported profile/provider.",
+        "Current documentation describes shipped behavior and migration flow; historical evidence is labeled and retained only for migration, test-oracle, or linked audit value.",
+        "Dead code, dependencies, generated copies, and artifacts are removed only with reference, packaging, migration, and test-oracle evidence.",
+        "All current worktree changes and active scoped plans are preserved and reconciled; no duplicate implementation is introduced.",
+        "Final integrated revision passes release, focused migration/contract/generator/provider checks, with live runtime/provider acceptance recorded separately."
+      ],
+      "accountable_role": "primary-agent",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "New user-approved scope (2026-11-24): remove obsolete runtime compatibility and repository ballast; upgrades convert supported prior state through explicit versioned migrations; unify MCP/provider/skill/instruction surfaces and docs. Execute from docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md; initial source findings in docs/audits/2026-11-24-local-ai-hub-canonical-cleanup.md. Preserve current user work and reconcile active scoped plans before overlapping edits.",
+      "kind": "code",
+      "next_action": "Continue the indexed audit of remaining runtime compatibility, generator duplication, documentation drift, and removable ballast; migrate supported persisted/config formats before deleting compatibility paths.",
+      "order": 8,
+      "results": [
+        {
+          "evidence_id": "f104887ad0765a28d60ecfb55b68ecb8792e451048c4e8f9174eb8be54cde4d0",
+          "kind": "evidence_reference",
+          "summary": "Audit records the 10->11 incident-placeholder state migration, runtime rejection, 60 passing focused incident/migration tests, targeted compileall, 674-row API inventory with no drift, and clean diff check. Goal remains active; broader cleanup and acceptance remain."
+        }
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Unify and clean Local AI Hub",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
     },
     "task_features": {
       "acceptance_criteria": [
@@ -67,18 +112,18 @@
       "description": "Check encrypted diagnostic export (plan/task state mismatch and unbound session), cross-vendor retrieval acceleration, smart/polyglot and next-gen preprocessing, trace inspector, existing-card export, local fine-tuning scaffold, C10 ranking, GPU co-admission and installer requirements against source and acceptance. Newer Laya capture spec supersedes older Laya proposal; synthetic card-evaluation pilot is superseded and must not trigger model downloads.",
       "kind": "code",
       "next_action": "Všech 16 designových specifikací a odpovídající implementační plány sesouhlaseny s přesnými důkazy, testy a stavem (DONE/BLOCKED/SUPERSEDED) bez duplicitních úloh.",
-      "title": "Reconcile remaining specification-led features",
-      "work_phase": "verification",
-      "work_status": "done",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Reconcile remaining specification-led features",
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_host": {
       "acceptance_criteria": [
@@ -97,18 +142,18 @@
       "description": "Verify login persistence and scheduled-task registration without duplicate Hub; restart Codex/Antigravity separately and prove live MCP handshake. Compare preserved instructions and inspect plugins through supported management. Close endpoint-routing shadow gaps with representative proposed/not_proposed data, double independent review and adjudication. Concrete IDE/client adapters remain deferred.",
       "kind": "code",
       "next_action": "Žádný restart klienta ani živý dashboard/handshake test. Pokračovat až po samostatném uživatelském pokynu; zachovat současný běžící Hub a nezakládat duplicitní službu.\n\nFresh read-only registration check 2026-11-19: no Scheduled Task named `LocalAIHubSupervisor`; HKCU Run has one `LocalAIHubSupervisor` value pointing to this checkout's `.venv/Scripts/pythonw.exe tools/service_entry.py`. Current service status shows one Hub and one supervisor, but this does not prove a real login cycle, absence of duplicate startup after logon, client loading, or MCP handshake. No login/logout, restart, dashboard, or client test was performed; retain BLOCKED under the user's explicit instruction.",
-      "title": "Complete startup, client, and host-neutral shadow acceptance",
-      "work_phase": "verification",
-      "work_status": "blocked",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Complete startup, client, and host-neutral shadow acceptance",
+      "work_phase": "verification",
+      "work_status": "blocked"
     },
     "task_inventory": {
       "acceptance_criteria": [
@@ -164,18 +209,18 @@
           "summary": "Current completion-report snapshot 2026-11-19: 16 specifications and 10 Markdown plans; fresh working-checkout release_check passed on dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5; 100k exact search completes on Debian but Windows still returns terminal 503; main board remains 6 in progress and 1 user-blocked. This records inventory and status, not final acceptance."
         }
       ],
-      "title": "Reconcile all specs, audits, handoffs, and open plans",
-      "work_phase": "verification",
-      "work_status": "done",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Reconcile all specs, audits, handoffs, and open plans",
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_laya": {
       "acceptance_criteria": [
@@ -194,18 +239,18 @@
       "description": "Confirm candidate inventory and stored count; link terminal outcomes and preserve root/task/session provenance. Verify lazy-load/idle unload only through natural events. Collect authentic examples and operator labels, then group-safe paired evaluation. Keep advisory blocked until category-specific quality criteria pass and later explicit approval exists.",
       "kind": "code",
       "next_action": "Laya telemetrie opravena v src/local_ai_hub/telemetry.py (298 testů prošlo). Inventář 5 pending kandidátů prověřen, advisory bezpečně blokován do samostatného schválení.",
-      "title": "Finish Laya shadow capture and evaluation gates",
-      "work_phase": "verification",
-      "work_status": "done",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Finish Laya shadow capture and evaluation gates",
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_ops_release": {
       "acceptance_criteria": [
@@ -257,18 +302,18 @@
           "summary": "Fresh 2026-11-19 working-checkout verification: `python tools/release_check.py --allow-installed` exited 0 with release-check: OK, and `python -m compileall -q src tools tests` exited 0. Both ran on dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5 with 347 changed paths. Final-SHA packaging/hosted CI, full behavioral suite and runtime acceptance remain open."
         }
       ],
-      "title": "Complete operational safety and final release evidence",
-      "work_phase": "verification",
-      "work_status": "done",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Complete operational safety and final release evidence",
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_runtime": {
       "acceptance_criteria": [
@@ -287,18 +332,18 @@
       "description": "Resolve the release-copy/source mismatch using the supported service update path. Preserve state/config/provider and Active mode. Verify actual Hub process identity, background progress, file-card enrichment, RAG embedding space and a fresh query; restore cap 7 only after progress. Recheck Klinika SQLite write-budget/selector findings and endpoint reliability on current runtime.",
       "kind": "code",
       "next_action": "RAG cache generace a lexikální fallback opraveny v src/local_ai_hub/rag.py (102 testů prošlo). Živý dotaz vrátil 8 výsledků. Preprocessing Klinika postoupil na 71,2 % a .local-ai-hub na 71,0 %. Kandidátní patche integrovány.",
-      "title": "Align managed Hub runtime with current preprocessing source",
-      "work_phase": "verification",
-      "work_status": "done",
       "spec_refs": [
         {
           "path": "docs/FINAL_COMPLETION_PLAN.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9"
+            "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Align managed Hub runtime with current preprocessing source",
+      "work_phase": "verification",
+      "work_status": "done"
     }
   },
   "title": "Unified Local AI Hub completion plan"

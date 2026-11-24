@@ -129,7 +129,7 @@ def _roundtrip(source_root: Path, scratch: Path) -> dict:
         hosts = {
             ".claude.json": "mcpServers", ".gemini/settings.json": "mcpServers",
             ".gemini/config/mcp_config.json": "mcpServers", ".cursor/mcp.json": "mcpServers",
-            ".codeium/windsurf/mcp_config.json": "mcpServers", ".copilot/mcp-config.json": "servers",
+            ".codeium/windsurf/mcp_config.json": "mcpServers", ".copilot/mcp-config.json": "mcpServers",
         }
         for relative, container in hosts.items():
             payload = json.loads((home / relative).read_text(encoding="utf-8"))

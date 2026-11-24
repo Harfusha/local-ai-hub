@@ -43,8 +43,8 @@ def test_real_index_fallback_finds_multiple_callers_instead_of_definition(tmp_pa
     locations = {(item["path"], item["line"]) for item in result["references"]}
     assert {("calls_one.py", 3), ("calls_two.py", 3)} <= locations
     assert all(path != "defs.py" for path, _line in locations)
-    assert result["matches"] == result["references"]
-    assert result["matches_count"] == len(raw["references"])
+    assert "matches" not in result
+    assert result["returned_count"] == len(raw["references"])
     assert result["fallback_used"] is True
     assert result["coverage"] == {"complete": False, "scope": "indexed_lexical_references"}
     limited = _fallback(index, root, limit=1)

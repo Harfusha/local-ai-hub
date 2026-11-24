@@ -14,7 +14,7 @@ def test_live_debug_trace_toggle_updates_cached_status_snapshot():
         _live_status_cache={"brief": (1.0, stale_snapshot)},
     )
 
-    assert _apply_live_debug_trace_toggle(app, {"debug_traces.enabled": True}) is True
+    assert _apply_live_debug_trace_toggle(app, {"telemetry.mode": "full"}) is True
 
     assert app.debug_traces.enabled is True
     assert stale_snapshot["debug_traces"] == {"enabled": True, "count": 2}
@@ -23,8 +23,8 @@ def test_live_debug_trace_toggle_updates_cached_status_snapshot():
 def test_live_debug_trace_toggle_rejects_other_settings_and_missing_store():
     app = SimpleNamespace(debug_traces=SimpleNamespace(enabled=False))
 
-    assert _apply_live_debug_trace_toggle(app, {"debug_traces.enabled": True, "other": 1}) is False
-    assert _apply_live_debug_trace_toggle(SimpleNamespace(), {"debug_traces.enabled": True}) is False
+    assert _apply_live_debug_trace_toggle(app, {"hardware.profile": "auto"}) is False
+    assert _apply_live_debug_trace_toggle(SimpleNamespace(), {"telemetry.mode": "full"}) is False
 
 
 def test_live_debug_trace_toggle_skips_malformed_cache_entries_without_lock():
@@ -39,7 +39,7 @@ def test_live_debug_trace_toggle_skips_malformed_cache_entries_without_lock():
         },
     )
 
-    assert _apply_live_debug_trace_toggle(app, {"debug_traces.enabled": True}) is True
+    assert _apply_live_debug_trace_toggle(app, {"telemetry.mode": "full"}) is True
     assert app.debug_traces.enabled is True
     assert snapshot_without_trace_status == {"success": True}
 
@@ -50,6 +50,6 @@ def test_live_debug_trace_toggle_skips_non_mapping_cache():
         _live_status_cache=[],
     )
 
-    assert _apply_live_debug_trace_toggle(app, {"debug_traces.enabled": True}) is True
+    assert _apply_live_debug_trace_toggle(app, {"telemetry.mode": "full"}) is True
     assert app.debug_traces.enabled is True
 

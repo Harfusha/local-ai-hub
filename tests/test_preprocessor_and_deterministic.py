@@ -20,7 +20,7 @@ from local_ai_hub.repo_tools import RepositoryTools
 def _cfg(tmp_path: Path):
     p = tmp_path / "config.toml"
     p.write_text(
-        f'''[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n''',
+        f'''[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n''',
         encoding="utf-8",
     )
     return load_config(str(p))

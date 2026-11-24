@@ -462,6 +462,16 @@ class EmbeddingModel:
             }
             models = self.config.get("models", {})
             configured_revision = models.get("embedding_revision") or models.get("model_revision")
+            resolved_model_name = self.model_name
+            if self.model_name == "Harfusha/local-ai-hub-bge-small-en-v1-5-code":
+                from .trained_models import download_trained_model
+                resolved_model_name = str(download_trained_model(
+                    self.model_name,
+                    models.get("embedding_revision", ""),
+                    models.get("embedding_sha256", ""),
+                    allow_download=models.get("allow_hf_downloads") is True,
+                ))
+                configured_revision = None
             if isinstance(configured_revision, str) and configured_revision.strip():
                 kwargs["revision"] = configured_revision.strip()
             if backend == "openvino":
@@ -492,9 +502,11 @@ class EmbeddingModel:
             def _load_st(name: str, kw: dict[str, Any]) -> Any:
                 from sentence_transformers import SentenceTransformer
                 try:
-                    return SentenceTransformer(name, local_files_only=True, **kw)
+                    return SentenceTransformer(resolved_model_name if name == self.model_name else name,
+                                               local_files_only=True, **kw)
                 except Exception:
-                    if self.config.get("models", {}).get("allow_hf_downloads") is not True:
+                    if (resolved_model_name != self.model_name
+                            or self.config.get("models", {}).get("allow_hf_downloads") is not True):
                         raise
                     return SentenceTransformer(name, **kw)
 
@@ -502,15 +514,16 @@ class EmbeddingModel:
                 nonlocal loaded_model_name
                 if uses_torch_cuda(backend, device):
                     from .owned_model import OwnedNLPModel
-                    model = OwnedNLPModel("embedding", self.model_name, kwargs,
+                    model = OwnedNLPModel("embedding", resolved_model_name, kwargs,
                         max_length=self.max_seq_length,
-                        allow_downloads=self.config.get("models", {}).get("allow_hf_downloads") is True)
+                        allow_downloads=(resolved_model_name == self.model_name
+                                         and self.config.get("models", {}).get("allow_hf_downloads") is True))
                     loaded_model_name = model.model_name
                     return model
                 try:
                     model = _load_st(self.model_name, kwargs)
                 except Exception:
-                    if self.model_name == "BAAI/bge-small-en-v1.5" or configured_revision:
+                    if resolved_model_name != self.model_name or self.model_name == "BAAI/bge-small-en-v1.5" or configured_revision:
                         raise
                     fallback_kwargs = dict(kwargs)
                     fallback_kwargs["trust_remote_code"] = False

@@ -40,17 +40,11 @@ def test_pagination_arguments_are_scoped_to_search_actions():
     assert error is not None
 
 
-def test_repo_search_contract_advertises_exact_count():
+def test_repo_search_contract_rejects_retired_exact_count():
     schema = operation_tool_input_schema("local_ai_repo")
 
-    assert schema["properties"]["exact_count"]["type"] == "boolean"
-    assert validate_operation_arguments("local_ai_repo", "search", {"exact_count": True}) is None
-    assert validate_operation_arguments(
-        "local_ai_repo", "search", {"exact_count": True, "search_mode": "lexical"},
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_repo", "search", {"exact_count": False, "search_mode": "hybrid"},
-    ) is None
+    assert "exact_count" not in schema["properties"]
+    assert validate_operation_arguments("local_ai_repo", "search", {"exact_count": True}) is not None
 
 
 @pytest.mark.parametrize(("action", "arguments"), [

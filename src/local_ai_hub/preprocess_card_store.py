@@ -17,7 +17,6 @@ class PreprocessCardStoreMixin:
         limit = max(0, min(int(limit), 64))
         if not limit:
             return []
-        settings = self._project_settings(resolved)
         terms = self.repo_tools._terms(query)
         paths: list[str] = []
         if terms:
@@ -36,6 +35,9 @@ class PreprocessCardStoreMixin:
             except Exception as lookup_exc:
                 services_module.logger.debug("Semantic card candidate lookup unavailable (%s)", type(lookup_exc).__name__)
                 pass
+        if not paths:
+            return []
+        settings = self._project_settings(resolved)
         out: list[str] = []
         seen: set[str] = set()
         for path in paths:
@@ -56,17 +58,18 @@ class PreprocessCardStoreMixin:
                 out.append(relative)
             if len(out) >= limit:
                 break
-        try:
-            context = services_module.resolve_project_context(resolved, self.state_dir)
-            usage = context.prioritize_paths(
-                out,
-                purpose="preprocess_search",
-                scope="candidate_paths",
-                repository_revision=lambda: self._external_revision(resolved),
-            )
-            out = list(usage.paths)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            pass
+        if out:
+            try:
+                context = services_module.resolve_project_context(resolved, self.state_dir)
+                usage = context.prioritize_paths(
+                    out,
+                    purpose="preprocess_search",
+                    scope="candidate_paths",
+                    repository_revision=lambda: self._external_revision(resolved),
+                )
+                out = list(usage.paths)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
         return out[:limit]
 
     def candidate_paths_lexical(self, root: str, query: str, limit: int = 32) -> list[str]:
@@ -280,9 +283,6 @@ class PreprocessCardStoreMixin:
         background_model = self._configured_preprocessing_model()
         now = services_module.time.time()
         with self._db_lock, services_module.closing(self._connect()) as con:
-            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
-            last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
-            centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
             if enrich_cards:
                 card_filter = """(card_key IS NULL OR card_key IN (
                     SELECT card_key FROM content_cards
@@ -301,9 +301,9 @@ class PreprocessCardStoreMixin:
                 card_filter = "card_key IS NULL"
                 selection_params = (root, max_bytes)
             selection = f"SELECT * FROM file_refs WHERE root=? AND {card_filter} AND size<=?"
-            order = f""" ORDER BY
-                     {last_accessed_clause}
-                     {centrality_clause}
+            order = """ ORDER BY
+                     (COALESCE(last_accessed_at, 0) > 0) DESC,
+                     COALESCE(centrality_score, 0.0) DESC,
                      CASE
                        WHEN path LIKE '%/Controllers/%' THEN 0
                        WHEN path LIKE '%/Runtime/%'     THEN 0

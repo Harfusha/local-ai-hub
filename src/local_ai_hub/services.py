@@ -307,7 +307,6 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
     blackboard: Any = None
     agent_state: Any = None
     semaphores: Any = None
-    board: Any = None
     _VISION_MAX_OUTPUT_TOKENS = 4096
     consistency_guard: Any = None
     _adaptive_relevance_backoff_init_lock = threading.Lock()
@@ -374,7 +373,7 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
             idle_ttl=lint_config.get("daemon_idle_ttl_seconds", 300),
         )
         self.task_store: Any | None = None
-        self.laya_decision_observer: Any | None = None
+        self.laya_decision_evaluator: Any | None = None
         self.verification_store: Any | None = None
         self.incident_store: Any | None = None
         self.adoption_metrics = AdoptionMetricsStore(configured_state_dir(config))
@@ -474,171 +473,74 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
     def set_task_store(self, task_store: Any) -> None:
         self.task_store = task_store
 
-    def set_laya_decision_observer(self, observer: Any) -> None:
-        if observer is not None and not callable(observer):
-            raise TypeError("Laya decision observer must be callable")
-        self.laya_decision_observer = observer
+    def set_laya_decision_evaluator(self, evaluator: Any) -> None:
+        if evaluator is not None and not callable(evaluator):
+            raise TypeError("Laya decision evaluator must be callable")
+        self.laya_decision_evaluator = evaluator
 
-    @staticmethod
-    def _laya_model_response_excerpt(result: Mapping[str, Any]) -> str:
-        """Return bounded successful model text for future Laya training review."""
-        if result.get("success") is not True:
-            return ""
-        response = result.get("text")
-        if not isinstance(response, str):
-            return ""
-        return response.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+    def evaluate_laya_advisory(
+        self, operation: Mapping[str, Any], *, root: str, baseline: Mapping[str, str],
+    ) -> str | None:
+        """Return a validated active advisory choice; unavailable paths use deterministic routing."""
+        cfg = self.config.get("laya", {})
+        if not isinstance(cfg, Mapping) or cfg.get("enabled") is not True:
+            return None
+        runtime_cfg = cfg.get("runtime", {})
+        if not isinstance(runtime_cfg, Mapping):
+            return None
+        checkpoint = runtime_cfg.get("checkpoint_path")
+        if isinstance(checkpoint, str) and checkpoint:
+            revision = runtime_cfg.get("revision")
+            hashes = runtime_cfg.get("expected_sha256")
+            checkpoint_configured = (
+                Path(checkpoint).is_absolute()
+                and Path(checkpoint).is_dir()
+                and isinstance(revision, str)
+                and bool(revision)
+                and isinstance(hashes, Mapping)
+                and bool(hashes)
+            )
+        else:
+            repo_id = runtime_cfg.get("hf_repo_id")
+            revision = runtime_cfg.get("hf_revision")
+            hashes = runtime_cfg.get("hf_sha256")
+            # Only admit a pinned allowlisted config here; checkpoint resolution below the evaluator
+            # handles cache lookup, download consent, and file hash verification.
+            from .trained_models import TRAINED_MODEL_FILES
 
-    @staticmethod
-    def _laya_generator_model_code(result: Mapping[str, Any]) -> str:
-        """Return a bounded model identity when it fits the typed state contract."""
-        route = result.get("route")
-        if not isinstance(route, Mapping):
-            return ""
-        model = route.get("model")
-        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", model):
-            return ""
-        return model
-
-    @staticmethod
-    def _laya_verified_context_excerpt(
-        evidence_store: Any,
-        evidence_ids: Sequence[str],
-        *,
-        root: str,
-        max_bytes: int = 6 * 1024,
-    ) -> str:
-        """Return bounded source text only from current, root-scoped evidence rows."""
-        fetch_many = getattr(evidence_store, "get_many", None)
-        if not callable(fetch_many) or not evidence_ids or max_bytes <= 0:
-            return ""
+            checkpoint_configured = (
+                isinstance(repo_id, str)
+                and repo_id in TRAINED_MODEL_FILES
+                and isinstance(revision, str)
+                and re.fullmatch(r"[0-9a-f]{40}", revision) is not None
+                and isinstance(hashes, Mapping)
+                and bool(hashes)
+            )
+        if not checkpoint_configured:
+            return None
+        evaluator = getattr(self, "laya_decision_evaluator", None)
+        if not callable(evaluator):
+            return None
         try:
-            rows = fetch_many(list(evidence_ids), verify=True, root=root)
-        except Exception:
-            return ""
-        if not isinstance(rows, (list, tuple)):
-            return ""
-        rows_by_id = {
-            row.get("evidence_id"): row
-            for row in rows
-            if isinstance(row, Mapping) and isinstance(row.get("evidence_id"), str)
-        }
-        excerpts: list[str] = []
-        used_bytes = 0
-        for evidence_id in evidence_ids:
-            row = rows_by_id.get(evidence_id)
-            if (
-                not isinstance(row, Mapping)
-                or row.get("success") is not True
-                or row.get("source_verified") is not True
-                or row.get("stale") is not False
-                or not isinstance(row.get("text"), str)
-            ):
-                continue
-            text = row["text"].strip()
-            if not text:
-                continue
-            prefix = "\n" if excerpts else ""
-            remaining = max_bytes - used_bytes - len(prefix.encode("utf-8"))
-            if remaining <= 0:
-                break
-            bounded = text.encode("utf-8", errors="replace")[:remaining].decode("utf-8", errors="ignore")
-            if not bounded:
-                continue
-            excerpts.append(prefix + bounded)
-            used_bytes += len((prefix + bounded).encode("utf-8"))
-            if used_bytes >= max_bytes:
-                break
-        return "".join(excerpts)
-
-    def _queue_laya_shadow_observation(
-        self,
-        args: Mapping[str, Any],
-        *,
-        root: str,
-        category: str,
-        options: Sequence[str],
-        state: Mapping[str, str],
-        training_content: Mapping[str, str],
-        baseline: Mapping[str, str],
-    ) -> bool:
-        """Queue one typed shadow decision only when real task and evidence scope exists."""
-        observer = getattr(self, "laya_decision_observer", None)
-        task_id = args.get("task_id") if isinstance(args, Mapping) else None
-        evidence_ids = args.get("evidence_ids") if isinstance(args, Mapping) else None
-        if not (isinstance(task_id, str) and task_id.strip()):
-            return False
-        task_id = task_id.strip()
-        if (type(evidence_ids) not in (list, tuple) or not evidence_ids) and isinstance(args, Mapping):
-            single_evidence = args.get("evidence_id")
-            if isinstance(single_evidence, str) and single_evidence.strip():
-                evidence_ids = [single_evidence.strip()]
+            result = evaluator(operation, root=root, _server_baseline=baseline)
+        except Exception as exc:
+            logger.debug("Laya advisory unavailable: %s", type(exc).__name__)
+            return None
+        decision = result.get("decision") if isinstance(result, Mapping) else None
+        data = operation.get("decision") if isinstance(operation, Mapping) else None
+        options = data.get("options") if isinstance(data, Mapping) else None
+        suggestion = decision.get("suggestion") if isinstance(decision, Mapping) else None
         if (
-            (type(evidence_ids) not in (list, tuple) or not evidence_ids)
-            and isinstance(baseline, Mapping)
-            and isinstance(baseline.get("evidence_id"), str)
-            and baseline.get("evidence_id").strip()
+            not isinstance(result, Mapping)
+            or result.get("success") is not True
+            or not isinstance(decision, Mapping)
+            or decision.get("mode") != "advisory"
+            or decision.get("status") != "success"
+            or not isinstance(options, list)
+            or suggestion not in options
         ):
-            evidence_ids = [baseline.get("evidence_id").strip()]
-        if (
-            not callable(observer)
-            or not isinstance(root, str)
-            or not root.strip()
-            or not isinstance(task_id, str)
-            or not task_id.strip()
-            or type(evidence_ids) not in (list, tuple)
-            or not evidence_ids
-            or len(evidence_ids) > 64
-            or any(not isinstance(item, str) or not item.strip() for item in evidence_ids)
-        ):
-            return False
-        try:
-            from .laya_decisions import DecisionCategory, DecisionInput, allowed_decision_options
-
-            decision_category = DecisionCategory(category)
-            if decision_category is DecisionCategory.CONTEXT_SOURCE:
-                return False
-            option_values = list(options)
-            if not option_values or len(set(option_values)) != len(option_values):
-                return False
-            if not set(option_values).issubset(allowed_decision_options(decision_category)):
-                return False
-            decision_input = DecisionInput.from_mapping({
-                "state": dict(state),
-                "training_content": dict(training_content),
-            })
-            baseline_value = dict(baseline)
-            if (
-                set(baseline_value) != {"method", "suggestion", "evidence_id"}
-                or baseline_value.get("suggestion") not in option_values
-                or baseline_value.get("evidence_id") not in evidence_ids
-            ):
-                return False
-            expected_method = {
-                DecisionCategory.MODEL_ROUTE: "model_router_classify",
-                DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
-                DecisionCategory.DELEGATION: "pipeline_worker_escalation",
-                DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
-                DecisionCategory.NEXT_STEP: "pipeline_step_progress",
-                DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
-            }.get(decision_category)
-            if expected_method is None or baseline_value.get("method") != expected_method:
-                return False
-            operation = {
-                "action": "evaluate_decision",
-                "task_id": task_id,
-                "decision": {
-                    "category": decision_category.value,
-                    "evidence_ids": list(evidence_ids),
-                    "options": option_values,
-                    "state": dict(decision_input.state),
-                    "training_content": dict(decision_input.training_content),
-                },
-            }
-            queued = observer(operation, root, baseline_value)
-            return isinstance(queued, Mapping) and queued.get("status") == "queued"
-        except Exception:
-            return False
+            return None
+        return suggestion
 
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
@@ -677,9 +579,6 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
 
     def set_semaphores(self, semaphores: Any) -> None:
         self.semaphores = semaphores
-
-    def set_board(self, board: Any) -> None:
-        self.board = board
 
     @staticmethod
     def _guard_truthy(value: Any) -> bool:

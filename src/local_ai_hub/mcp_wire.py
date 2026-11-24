@@ -860,42 +860,13 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 arguments["root"] = str(Path(r).resolve())
             except Exception:
                 pass
-    # Transparent aliasing to avoid unnecessary rejections and retry loops
     if name == "local_ai_coord":
-        act = str(arguments.get("action") or "").lower()
-        if act in {"task_view", "task_status", "task_info", "task_show", "view"}:
-            arguments["action"] = "task_get"
-        elif act in {"plan_view", "board_view"}:
-            arguments["action"] = "plan_board_view"
-        elif act in {"tasks", "task_all"}:
-            arguments["action"] = "task_list"
         if not arguments.get("root"):
             arguments["root"] = str(Path(".").resolve())
-        if arguments.get("action") == "task_create":
-            if not arguments.get("scope"):
-                arguments["scope"] = "task"
-        elif arguments.get("action") == "memory_record":
+        if arguments.get("action") == "memory_record":
             if not arguments.get("scope"):
                 arguments["scope"] = "repository"
-    elif name == "local_ai_artifact":
-        act = str(arguments.get("action") or "").lower()
-        if (arguments.get("path") or arguments.get("file")) and not arguments.get("artifact_id"):
-            if act in {"slice", "get", "", "source"}:
-                arguments["action"] = "source"
-                if "path" not in arguments and "file" in arguments:
-                    arguments["path"] = arguments.pop("file")
-                if "line_start" not in arguments and "start_line" in arguments:
-                    arguments["line_start"] = arguments.pop("start_line")
-                if "line_end" not in arguments and "end_line" in arguments:
-                    arguments["line_end"] = arguments.pop("end_line")
     elif name == "local_ai_repo":
-        if "pattern" in arguments and "query" not in arguments:
-            arguments["query"] = arguments.pop("pattern")
-        if "file" in arguments and "path" not in arguments:
-            arguments["path"] = arguments.pop("file")
-        if not arguments.get("root"):
-            arguments["root"] = str(Path(".").resolve())
-    elif name == "local_ai_rag":
         if not arguments.get("root"):
             arguments["root"] = str(Path(".").resolve())
 

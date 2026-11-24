@@ -24,7 +24,7 @@ def expected_prompt_policies() -> tuple[tuple[str, str, str], ...]:
         (
             setup_tools.TOKEN_ECONOMY_POLICY_BEGIN,
             setup_tools.TOKEN_ECONOMY_POLICY_END,
-            setup_tools.generate_token_economy_policy(setup_tools._DEFAULT_POLICY_CFG),
+            setup_tools.generate_token_economy_policy({}),
         ),
     )
 

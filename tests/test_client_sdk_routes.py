@@ -36,6 +36,7 @@ def live_client(tmp_path, monkeypatch, request):
     )
     hardware_profile = fixture_options.get("profile", "balanced")
     config.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
@@ -43,7 +44,7 @@ def live_client(tmp_path, monkeypatch, request):
         '[features]\nlocal_semantic_analysis = true\n'
         '[security]\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
-        f'[debug_traces]\nenabled = {str(detailed_diagnostics).lower()}\n',
+        f'[telemetry]\nmode = "{"full" if detailed_diagnostics else "minimal"}"\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -348,6 +349,7 @@ def root_scoped_live_client(tmp_path, monkeypatch):
     workspace.mkdir()
     config = tmp_path / "root-scoped-config.toml"
     config.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
@@ -375,8 +377,7 @@ def test_verification_sdk_methods_forward_root_through_allowed_http_route(root_s
     _app, client, workspace = root_scoped_live_client
     root = str(workspace)
     created = client.create_task(
-        "Verify a root-scoped SDK task",
-        acceptance_criteria=["receipt accepted"],
+        {"goal": "Verify a root-scoped SDK task", "acceptance_criteria": ["receipt accepted"]},
         task_id="sdk-root-verification",
         root=root,
     )
@@ -626,8 +627,7 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
     app, client = live_client
     root = str(tmp_path)
     created = client.create_task(
-        "SDK route flow",
-        acceptance_criteria=["change_verified"],
+        {"goal": "SDK route flow", "acceptance_criteria": ["change_verified"]},
         task_id="sdk-route-task",
         root=root,
     )

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from local_ai_hub.process_utils import simulate_git_merge
+from local_ai_hub.git_worktrees import simulate_git_merge
 
 
 @pytest.fixture
@@ -67,11 +67,11 @@ def test_loopback_merge_simulation_enforces_root_policy(conflicted_repo, monkeyp
     from local_ai_hub import http_server, mcp_server
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.client import HubClient
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees
     from unittest.mock import Mock
 
-    merge_spy = Mock(wraps=process_utils.simulate_git_merge)
-    monkeypatch.setattr(process_utils, "simulate_git_merge", merge_spy)
+    merge_spy = Mock(wraps=git_worktrees.simulate_git_merge)
+    monkeypatch.setattr(git_worktrees, "simulate_git_merge", merge_spy)
     outside = conflicted_repo.parent / (conflicted_repo.name + "_outside")
     outside.mkdir()
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)

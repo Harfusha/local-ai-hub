@@ -48,7 +48,7 @@ def test_accounting_send_resets_original_context_when_module_context_changes(mon
 
 @pytest.mark.parametrize("profile", ["", "minimal", "compact", "delta"])
 def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypatch, profile):
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     recorded = []
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *a, **k: None)
@@ -81,7 +81,7 @@ def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypat
 
 
 def test_mcp_boundary_detail_requires_dashboard_toggle(monkeypatch):
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *a, **k: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kw: None)
@@ -97,7 +97,7 @@ def test_mcp_boundary_detail_requires_dashboard_toggle(monkeypatch):
     assert explicit["response_budget"]["returned_tokens"] == json_tokens(explicit)
     debug = local_ai_task(response_profile="debug")
     assert "telemetry" not in debug
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": True}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "full"}})
     debug = local_ai_task(response_profile="debug")
     assert debug["telemetry"] == {"cpu": 1}
 

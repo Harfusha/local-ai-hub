@@ -367,7 +367,7 @@ class FeatureSet:
         coord = set(self.supported_coord_actions())
         if coord:
             lines.append("- `local_ai_coord`: substantial task/plan/receipt state and scoped memory; leases for overlapping edits; boards for tracked work; shared-state tools only when coordination is needed.")
-        if coord & {"task_repair_session", "task_budget_increase", "task_cleanup_worktree", "task_zombie_reap", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "plan_archive", "plan_task_delete", "memory_delete", "blackboard_delete", "board_item_delete"}:
+        if coord & {"task_repair_session", "task_budget_increase", "task_cleanup_worktree", "task_zombie_reap", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "plan_archive", "plan_task_delete", "memory_delete", "blackboard_delete"}:
             lines.append("- `local_ai_coord` repair/deletion/budget/GPU controls require action-specific authorization and audit fields.")
 
         if self.supported_rag_actions():

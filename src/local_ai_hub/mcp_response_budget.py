@@ -139,9 +139,7 @@ def _code_index_page_with_prefix(
         "symbols": symbols[:count],
         "offset": offset,
         "limit": requested_limit,
-        "returned_limit": count,
         "returned_count": count,
-        "matches_count": count,
         "total_matches": total,
         "has_more": has_more,
     })
@@ -167,8 +165,6 @@ def _code_index_page_with_prefix(
             "matched_terms": matched_terms,
             "query_term_coverage": round(len(matched_terms) / query_term_count, 3) if coverage_available else 0.0,
             "coverage_available": coverage_available,
-            "candidate_match_count": total,
-            "returned_symbol_count": count,
             "complete": False,
             "scope": "indexed_symbol_candidates",
         }
@@ -204,14 +200,8 @@ def _code_index_page_with_prefix(
                 *candidate["omitted_fields"], "confidence", "confidence_basis",
             ]))
         candidate["truncated"] = has_more
-        candidate["observed_match_count"] = total
         truncation = raw.get("truncation")
         truncation = dict(truncation) if isinstance(truncation, dict) else {}
-        truncation.update({
-            "result_limit": requested_limit,
-            "returned_count": count,
-            "observed_match_count": raw.get("observed_match_count", total),
-        })
         candidate["truncation"] = truncation
         response_budget = candidate.get("response_budget")
         if isinstance(response_budget, dict):
@@ -370,7 +360,7 @@ def _search_page_with_prefix(
     services_module = get_mcp_server_module()
     candidate = services_module.copy.deepcopy(raw if raw.get("success") is True and base.get("success") is False else base)
     offset = raw.get("offset", 0)
-    total = raw.get("total_matches", raw.get("matches_count", 0))
+    total = raw.get("total_matches")
     requested_limit = raw.get("limit", 24)
     has_more = bool(raw.get("has_more")) or count < len(results) or (
         isinstance(total, int) and not isinstance(total, bool)
@@ -382,9 +372,7 @@ def _search_page_with_prefix(
         "results": results[:count],
         "offset": offset,
         "limit": requested_limit,
-        "returned_limit": count,
         "returned_count": count,
-        "matches_count": count,
         "total_matches": total,
         "has_more": has_more,
     })
@@ -395,15 +383,12 @@ def _search_page_with_prefix(
     candidate["truncated"] = bool(raw.get("truncated")) or count < len(results) or has_more
     raw_truncation = raw.get("truncation")
     truncation = dict(raw_truncation) if isinstance(raw_truncation, dict) else {}
-    truncation.update({
-        "results": candidate["truncated"],
-        "returned_count": count,
-        "total_matches": total,
-    })
+    truncation.update({"results": candidate["truncated"]})
     candidate["truncation"] = truncation
     raw_coverage = raw.get("coverage")
     coverage = dict(raw_coverage) if isinstance(raw_coverage, dict) else {}
-    coverage.update({"returned": count, "offset": offset, "limit": requested_limit})
+    for key in ("returned", "offset", "limit"):
+        coverage.pop(key, None)
     if not isinstance(raw_coverage, dict) or raw_coverage.get("complete") is not True or count < len(results):
         coverage["complete"] = False
     candidate["coverage"] = coverage

@@ -772,7 +772,7 @@ def test_real_delegate_operation_stops_on_hub_disconnect(monkeypatch, operation)
             errors.append(repr(exc))
             raise
     app = SimpleNamespace(config={
-                              "server": {}, "security": {}, "debug_traces": {"enabled": False},
+                              "server": {}, "security": {}, "telemetry": {"mode": "minimal"},
                               "hardware": {"profile": "high"},
                               "features": {
                                   "local_semantic_analysis": True,
@@ -879,7 +879,7 @@ def test_hub_http_half_close_does_not_cancel_unmarked_request(monkeypatch):
         return {"success": True}
 
     app = SimpleNamespace(config={"server": {}, "security": {}, "hardware": {"profile": "balanced"},
-                                  "features": {"local_semantic_analysis": True}, "debug_traces": {"enabled": False}},
+                                  "features": {"local_semantic_analysis": True}, "telemetry": {"mode": "minimal"}},
                           services=SimpleNamespace(delegate=delegate), recovery=None)
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)

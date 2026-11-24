@@ -125,6 +125,7 @@ def test_new_agent_projection_profiles_are_recognized(tmp_path: Path):
     projector = AgentProjector({"agent_output": {}})
     assert projector.profile("Cursor")["relationships"] is True
     assert projector.profile("Windsurf")["max_text"] == 3200
+    assert projector.profile("Devin Local")["max_text"] == 3500
     assert projector.profile("GitHub Copilot")["max_text"] == 3000
 
 

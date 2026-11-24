@@ -11,21 +11,26 @@ def build_symbol_context(
     terms: Iterable[str],
     max_chars: int,
     used_chars: int,
+    *,
+    symbol_result: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """Render bounded hierarchical symbols, returning text and truncation state."""
     try:
-        symbol_result = code_index.find_symbol(root, query, depth=1, include_info=True, limit=6)
-        symbols = symbol_result.get("symbols", [])
-        if not symbols:
-            for term in terms:
-                if term.isidentifier():
-                    symbol_result = code_index.find_symbol(root, term, depth=1, include_info=True, limit=6)
-                    symbols = symbol_result.get("symbols", [])
-                    if symbols:
-                        break
+        if symbol_result is None:
+            symbol_result = code_index.find_symbol(root, query, depth=1, include_info=True, limit=6)
+            symbols = symbol_result.get("symbols", [])
             if not symbols:
-                query_result = code_index.query(root, query, limit=6)
-                symbols = query_result.get("symbols", [])
+                for term in terms:
+                    if term.isidentifier():
+                        symbol_result = code_index.find_symbol(root, term, depth=1, include_info=True, limit=6)
+                        symbols = symbol_result.get("symbols", [])
+                        if symbols:
+                            break
+                if not symbols:
+                    query_result = code_index.query(root, query, limit=6)
+                    symbols = query_result.get("symbols", [])
+        else:
+            symbols = symbol_result.get("symbols", [])
 
         if not symbols:
             return "", False

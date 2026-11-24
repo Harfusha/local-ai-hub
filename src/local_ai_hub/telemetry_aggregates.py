@@ -931,7 +931,7 @@ class TelemetryAggregateMixin:
         return res
 
     def report(
-        self, days: int = 30, *, recent_errors: int = 25, error_offset: int = 0,
+        self, days: int = 30, *, recent_errors: int = 25, _error_offset: int = 0,
         error_cursor: str | None = None, scope: str = "window", _flush: bool = True,
     ) -> dict[str, Any]:
         """Produce a prompt/source-free diagnostic report suitable for sharing."""
@@ -943,11 +943,11 @@ class TelemetryAggregateMixin:
         days = max(1, min(int(days), self.rollup_retention_days))
         cutoff, scope = self._scope_cutoff(days, scope)
         error_limit = max(1, min(int(recent_errors), 100))
-        error_offset = max(0, min(int(error_offset), 100_000))
+        error_offset = max(0, min(int(_error_offset), 100_000))
         cursor_requested = error_cursor is not None
         cursor_values = _decode_error_page_cursor(error_cursor)
         if cursor_requested and error_offset:
-            raise ValueError("error_offset cannot be combined with error_cursor")
+            raise ValueError("internal offset cannot be combined with error_cursor")
         with closing(self._connect()) as con:
             by_agent = con.execute(
                 """SELECT CASE WHEN agent='' THEN 'unknown' ELSE agent END,
@@ -1205,13 +1205,8 @@ class TelemetryAggregateMixin:
                 for r in errors
             ],
             "error_fingerprints_page": {
-                "offset": error_offset,
                 "limit": error_limit,
                 "total": error_total,
-                "next_offset": (
-                    error_offset + len(errors)
-                    if not cursor_requested and error_offset + len(errors) < error_total else None
-                ),
                 **({
                     "cursor": error_cursor or "",
                     "snapshot_id": error_snapshot_id,
@@ -1221,7 +1216,12 @@ class TelemetryAggregateMixin:
                         error_snapshot_id, error_snapshot_cutoff, errors[-1][:4]
                     )
                     if error_has_more and errors else None,
-                } if cursor_requested else {}),
+                } if cursor_requested else {
+                    "offset": error_offset,
+                    "next_offset": (
+                        error_offset + len(errors) if error_offset + len(errors) < error_total else None
+                    ),
+                }),
             },
             "daily": [
                 {

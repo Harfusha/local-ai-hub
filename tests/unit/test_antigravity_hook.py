@@ -14,7 +14,7 @@ def test_antigravity_hook_read_file_bounds():
         huge_file = tmp_path / "huge.py"
         huge_file.write_text("\n".join(f"x_{i} = {i}" for i in range(300)), encoding="utf-8")
 
-        # Full read of oversized file is gracefully clamped to 200 lines via overwrite (no hard failure)
+        # Full read above the shared 80-line budget is denied before execution.
         payload_full = {
             "toolCall": {
                 "name": "read_file",
@@ -22,21 +22,23 @@ def test_antigravity_hook_read_file_bounds():
             }
         }
         res = handle_pre_tool_use(payload_full)
-        assert res["decision"] == "allow"
-        assert res.get("overwrite", {}).get("EndLine") == 200
+        assert res["decision"] == "deny"
+        assert "lines > 80" in res["reason"]
 
-        # Moderate slice (e.g. 1-120 lines) allowed directly without error or retry
+        # A bounded 80-line slice is allowed; a wider requested slice is denied.
         payload_slice = {
             "toolCall": {
                 "name": "read_file",
                 "args": {
                     "Path": str(huge_file),
                     "StartLine": 1,
-                    "EndLine": 120,
+                    "EndLine": 80,
                 },
             }
         }
         assert handle_pre_tool_use(payload_slice)["decision"] == "allow"
+        payload_slice["toolCall"]["args"]["EndLine"] = 81
+        assert handle_pre_tool_use(payload_slice)["decision"] == "deny"
 
 
 def test_antigravity_hook_run_command_guards():

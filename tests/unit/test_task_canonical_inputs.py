@@ -14,7 +14,7 @@ from local_ai_hub.operation_contracts import operation_actions, validate_operati
 def _active_task_mode(monkeypatch, tmp_path):
     # Exercise canonical dispatch after the dashboard diagnostic opt-in.
     diagnostic_config = tmp_path / "diagnostic-config.toml"
-    diagnostic_config.write_text('[debug_traces]\nenabled=true\n', encoding="utf-8")
+    diagnostic_config.write_text('[telemetry]\nmode="full"\n', encoding="utf-8")
     monkeypatch.setattr(mcp_server, "CFG", {
         **mcp_server.CFG,
         "_defaults_path": None,

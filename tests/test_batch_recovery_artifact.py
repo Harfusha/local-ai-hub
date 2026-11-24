@@ -19,7 +19,7 @@ def qualified_batch_actions(monkeypatch):
 
 def service_with_artifacts(tmp_path):
     service = object.__new__(LocalAIServices)
-    service.config = {"debug_traces": {"enabled": False}}
+    service.config = {"telemetry": {"mode": "minimal"}}
     service.artifacts = ArtifactStore(tmp_path)
     service.scheduler = SimpleNamespace(status=lambda: {"active_model": "test"})
     service.router = SimpleNamespace(classify=lambda *_: {"model": "test"})

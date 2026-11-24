@@ -1,7 +1,16 @@
 {
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "local-ai-hub",
-  "displayName": "Local AI Hub for Codex",
   "version": "6.1.0",
-  "description": "Local AI Hub integration for Codex: AST indexing, Lossless Token Router, Agent OS memory, and local Qwen subagents.",
-  "author": "Local AI Hub Contributor"
+  "description": "Local AI Hub skills, MCP tools, and reviewed Codex lifecycle guidance.",
+  "skills": "./skills/",
+  "author": {
+    "name": "Local AI Hub Contributor"
+  },
+  "extensions": {
+    "com.openai": {
+      "hooks": "./hooks/hooks.json",
+      "onboardingSkill": "./skills/local-ai-orchestrator/SKILL.md"
+    }
+  }
 }

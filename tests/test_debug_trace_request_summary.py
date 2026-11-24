@@ -12,7 +12,7 @@ from local_ai_hub.debug_traces import DebugTraceObserver, DebugTraceStore
 
 class DebugTraceRequestSummaryTests(unittest.TestCase):
     def _store(self, state_dir: str) -> DebugTraceStore:
-        return DebugTraceStore({"server": {"state_dir": state_dir}, "debug_traces": {"enabled": True}})
+        return DebugTraceStore({"server": {"state_dir": state_dir}, "telemetry": {"mode": "full"}})
 
     def test_command_list_row_has_redacted_summary_only(self):
         with tempfile.TemporaryDirectory() as state_dir:

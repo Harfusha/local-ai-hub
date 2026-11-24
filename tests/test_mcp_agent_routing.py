@@ -251,7 +251,7 @@ def test_search_skips_unavailable_ai_summary(monkeypatch) -> None:
 
     result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle", summarize_results=True)
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["degraded"] is True
     assert result["fallback_used"] is True
     assert paths.count("/api/search") == 1
@@ -310,6 +310,30 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert "Use literal square brackets" in calls[1][1]["instruction"]
     assert "Preserve qualifiers in the coverage note" in calls[1][1]["instruction"]
     assert "If the note says may be omitted, never claim results were omitted." in calls[1][1]["instruction"]
+
+
+def test_search_ai_summary_skips_generation_without_source_excerpts(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "search_summaries", True)
+    calls = []
+
+    def post(path, payload, **kwargs):
+        calls.append(path)
+        if path == "/api/search":
+            return {
+                "success": True,
+                "results": [{"path": "src/a.py", "start_line": 16, "end_line": 16, "text": "16:"}],
+            }
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle", summarize_results=True)
+
+    assert result["results"][0]["path"] == "src/a.py"
+    assert "/api/compress" not in calls
+    assert result["ai_summary"] == {"success": False, "error": "summary unavailable: no source excerpts"}
+    assert result["ai_summary_sources"] == []
+    assert result["ai_summary_citation_validation"] == {"status": "not_checked", "reason": "no_source_excerpts"}
+    assert result["ai_summary_advisory"] is True
 
 
 def test_search_ai_summary_rejects_unknown_count_when_exact_count_is_available(monkeypatch) -> None:
@@ -619,7 +643,7 @@ def test_search_ai_summary_does_not_return_truncated_text_as_usable(monkeypatch)
 def test_low_profile_rejects_direct_semantic_reasoning(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "hardware_profile", "low")
 
-    result = local_ai_mcp.local_ai_task(action="reason", task="Analyze this")
+    result = local_ai_mcp.local_ai_task(action="reason", problem="Analyze this")
 
     assert result["success"] is False
     assert result["status_code"] == 400
@@ -642,11 +666,15 @@ def test_coord_description_and_prompts_expose_plan_workflow() -> None:
     expected_prompt = "For an existing project plan, list/get/view it with those read actions; edit a task with `plan_task_edit` and the current `expected_revision`."
     prompt_paths = [ROOT / "docs" / name for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md")]
     prompt_paths.append(ROOT / "AGENTS.md")
-    for path in prompt_paths:
+    for path in prompt_paths[:2]:
         content = path.read_text(encoding="utf-8")
         assert expected_prompt in content
         assert "gpu_reservation_release_authorized" in content
         assert "gpu_capacity_lease_release" in content
+    agent_instructions = prompt_paths[2].read_text(encoding="utf-8")
+    assert "plan_list" in agent_instructions
+    assert "plan_task_edit" in agent_instructions
+    assert "expected_revision" in agent_instructions
     for path in prompt_paths[:2]:
         prompt = path.read_text(encoding="utf-8")
         assert "gpu_reservation_status" in prompt
@@ -659,7 +687,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "submit", "status", "wait", "result", "cancel", "vision", "transcribe", "complete_code", "scaffold", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "candidate_create", "candidate_promote", "speculative_draft", "eval_suite", "prompt_eval", "eval_drift"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-            "local_ai_coord": {"claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "task_sync", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
+            "local_ai_coord": {"claim", "renew", "release", "leases", "client_status", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "task_sync", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "session_briefing"},
     }
     expected["local_ai_task"].update({"browser", "automation"})
     expected["local_ai_coord"].update({
@@ -770,7 +798,7 @@ def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
     assert "AGY" not in descriptions
     assert "bounded" in descriptions
     assert "Codex" in descriptions
-    assert "does not route or manage" in descriptions
+    assert "Native peer subagents are coordinated by Codex rather than by this Hub tool." in descriptions
     assert "review_diff" in descriptions
     assert "security_audit" in descriptions
 
@@ -1017,7 +1045,7 @@ def test_mcp_rejects_subminimum_compression_target(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *_a, **_kw: None)
     monkeypatch.setattr(local_ai_mcp, "_record_tool_accounting", lambda **_kw: None)
     result = asyncio.run(local_ai_mcp.mcp.call_tool("local_ai_task", {"action": "compress",
-        "context": "Some narrative", "max_tokens": 64, "max_response_tokens": 1200}))[1]
+        "text": "Some narrative", "max_tokens": 64, "max_response_tokens": 1200}))[1]
     assert result["success"] is False and result["operation_not_started"] is True, result
     assert calls == []
 
@@ -1156,7 +1184,7 @@ def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch)
 
 
 @pytest.mark.parametrize("existing_routing", ["legacy", ["legacy", "value"]])
-def test_non_dict_routing_is_preserved_with_semantic_handoff(
+def test_non_dict_routing_is_discarded_with_semantic_handoff(
     monkeypatch, tmp_path: Path, existing_routing
 ) -> None:
     store = AdoptionMetricsStore(tmp_path)
@@ -1171,7 +1199,7 @@ def test_non_dict_routing_is_preserved_with_semantic_handoff(
 
     result = local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
-    assert result["routing"]["value"] == existing_routing
+    assert "value" not in result["routing"]
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
         "local_ai_repo", "search", True
     )
@@ -1197,12 +1225,20 @@ def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, 
     monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
-    existing_hint = {"required": False, "tool": "external", "actions": [], "bypass_tool": "", "bypass_action": ""}
+    existing_hint = {
+        "required": False,
+        "advisory": True,
+        "tool": "local_ai_task",
+        "actions": ["delegate"],
+        "bypass_tool": "local_ai_repo",
+        "bypass_action": "search",
+        "purpose": "bounded_semantic_assistance",
+    }
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "routing": {"semantic_handoff": existing_hint}})
 
     result = local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
-    assert result["routing"]["semantic_handoff"]
+    assert result["routing"]["semantic_handoff"] == existing_hint
     assert store.report(days=1)["totals"]["recommended"] == 0
 
 
@@ -1383,7 +1419,7 @@ def test_eval_suite_is_routed_from_mcp(monkeypatch) -> None:
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
     result = local_ai_mcp.local_ai_task(action="eval_suite", task="synthetic_quality")
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert captured == {"path": "/api/task/eval_suite", "payload": {"suite_name": "synthetic_quality"}}
 
 
@@ -1540,7 +1576,7 @@ def test_second_opinion_keeps_its_projection_kind(monkeypatch) -> None:
 
     result = local_ai_mcp.local_ai_task(
         action="second_opinion",
-        task="Je tento návrh bezpečný?",
+        question="Je tento návrh bezpečný?",
         candidate="návrh řešení",
     )
 
@@ -1787,7 +1823,7 @@ def test_async_job_submit_rejects_conversation_before_http(monkeypatch):
 
 
 def test_agent_output_recursively_removes_internal_diagnostics_by_default(monkeypatch) -> None:
-    monkeypatch.setattr(local_ai_mcp, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"telemetry": {"mode": "minimal"}})
     value = {
         "success": True,
         "payload": {
@@ -1808,7 +1844,7 @@ def test_agent_output_recursively_removes_internal_diagnostics_by_default(monkey
 
 
 def test_agent_output_cannot_enable_diagnostics_via_extra_fields(monkeypatch) -> None:
-    monkeypatch.setattr(local_ai_mcp, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"telemetry": {"mode": "minimal"}})
     value = {"payload": {"telemetry": {"requests": 2}, "debug": "private"}}
 
     result = local_ai_mcp._agent_output(

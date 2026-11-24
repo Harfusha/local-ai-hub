@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _config(tmp_path: Path, extra: str = "") -> Path:
     path = tmp_path / "config.toml"
     path.write_text(
-        f'''[server]\nbind="127.0.0.1"\nport=11435\nstate_dir="{(tmp_path / 'state').as_posix()}"\nauto_start_ollama=false\nmax_request_body_bytes=4096\n\n[hardware]\nprofile="cpu"\nauto_tune=false\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\n\n[resilience]\nwatchdog_enabled=false\n\n[code_intelligence]\nenabled=false\n\n[background_gpu]\nenabled=false\n\n[observability]\nenabled=false\n\n{extra}\n''',
+        f'''[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind="127.0.0.1"\nport=11435\nstate_dir="{(tmp_path / 'state').as_posix()}"\nauto_start_ollama=false\nmax_request_body_bytes=4096\n\n[hardware]\nprofile="cpu"\nauto_tune=false\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\n\n[resilience]\nwatchdog_enabled=false\n\n[code_intelligence]\nenabled=false\n\n[background_gpu]\nenabled=false\n\n[observability]\nenabled=false\n\n{extra}\n''',
         encoding="utf-8",
     )
     return path
@@ -398,7 +398,10 @@ enabled=false
 def test_http_tokenless_json_limits_security_headers_and_binary_bundle(tmp_path: Path):
     port = _free_port(); state = tmp_path / "state"; repo = tmp_path / "repo"; repo.mkdir()
     cfg = tmp_path / "server.toml"
-    cfg.write_text(f'''[server]
+    cfg.write_text(f'''[local_ai_hub]
+config_schema_version = 1
+
+[server]
 bind="127.0.0.1"
 port={port}
 state_dir="{state.as_posix()}"
@@ -421,8 +424,8 @@ enabled=false
 enabled=false
 [observability]
 enabled=true
-[debug_traces]
-enabled=true
+[telemetry]
+mode="full"
 ''', encoding="utf-8")
     from local_ai_hub.process_utils import process_owner_record
     state.mkdir(parents=True, exist_ok=True)

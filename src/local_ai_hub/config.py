@@ -107,6 +107,21 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
+    local_hub = data.get("local_ai_hub", {})
+    if not isinstance(local_hub, dict):
+        raise ConfigError("[local_ai_hub] must be a TOML table")
+    schema_version = local_hub.get("config_schema_version", 1)
+    if type(schema_version) is not int or schema_version != 1:
+        raise ConfigError("unsupported config schema version; run the Local AI Hub updater")
+
+    if "debug_traces" in data:
+        raise ConfigError("[debug_traces] is retired; update Local AI Hub to migrate it into [telemetry]")
+    observability = data.get("observability", {})
+    if not isinstance(observability, dict):
+        raise ConfigError("[observability] must be a TOML table")
+    if "debug_traces" in observability:
+        raise ConfigError("[observability.debug_traces] is retired; update Local AI Hub to migrate it into [telemetry]")
+
     for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag", "worker_pool", "training_capture"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
@@ -226,9 +241,8 @@ def validate_config(data: dict[str, Any]) -> None:
     laya = data.get("laya", {})
     if type(laya.get("enabled", True)) is not bool:
         raise ConfigError("laya.enabled must be boolean")
-    laya_mode = str(laya.get("mode", "shadow")).strip().lower()
-    if laya_mode not in {"shadow", "advisory"}:
-        raise ConfigError("laya.mode must be shadow or advisory")
+    if "mode" in laya:
+        raise ConfigError("laya.mode is no longer supported; Laya decisions always run as active advisories")
     _number(laya, "idle_unload_seconds", minimum=600, maximum=600, label="laya.idle_unload_seconds")
     idle_unload_seconds = laya.get("idle_unload_seconds") if isinstance(laya, dict) else None
     if isinstance(idle_unload_seconds, (int, float)) and not isinstance(idle_unload_seconds, bool) and not math.isfinite(float(idle_unload_seconds)):
@@ -499,7 +513,13 @@ def save_runtime_overrides(config_path: str | os.PathLike[str], patch: dict[str,
         if reset:
             target.unlink(missing_ok=True)
             return target
-        current = _read_toml(target) if target.is_file() else {}
+        if target.is_file():
+            current = _read_toml(target)
+            hub = current.get("local_ai_hub", {})
+            if not isinstance(hub, dict) or type(hub.get("config_schema_version")) is not int or hub["config_schema_version"] != 1:
+                raise ConfigError("runtime override config_schema_version is missing or unsupported; run the Local AI Hub updater")
+        else:
+            current = {"local_ai_hub": {"config_schema_version": 1}}
         text = _dump_toml_tables(deep_merge(current, patch))
         try:
             tomllib.loads(text)
@@ -550,6 +570,18 @@ def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: b
     runtime_path = runtime_override_path(config_path)
     runtime = _read_toml(runtime_path)
 
+    for source_path, source, exists in (
+        (config_path, user, config_path.is_file()),
+        (runtime_path, runtime, runtime_path.is_file()),
+    ):
+        if exists:
+            hub = source.get("local_ai_hub", {})
+            if (not isinstance(hub, dict) or type(hub.get("config_schema_version")) is not int
+                    or hub["config_schema_version"] != 1):
+                raise ConfigError(
+                    f"{source_path} requires config_schema_version = 1; run the Local AI Hub updater to migrate it"
+                )
+
     # Hardware tuning is an overlay on defaults, then user/runtime overrides.
     # This makes the stock install portable while keeping every knob overridable.
     hardware_cfg = deep_merge(deep_merge(defaults.get("hardware", {}), user.get("hardware", {})), runtime.get("hardware", {}))
@@ -570,6 +602,10 @@ def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: b
         else:
             from .hardware import detect_hardware, profile_overrides
             detected = detect_hardware(str(hardware_cfg.get("profile", "auto")))
+            effective = deep_merge(deep_merge(defaults, user), runtime)
+            from .fp4_capabilities import configured_model_provider, static_fp4_routes
+            provider = configured_model_provider(effective)
+            detected["fp4_model_routes"] = static_fp4_routes(detected, provider)
             if bool(hardware_cfg.get("auto_tune", True)):
                 defaults = deep_merge(defaults, profile_overrides(str(detected.get("profile", "balanced")), detected))
     except Exception as exc:

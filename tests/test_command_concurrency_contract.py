@@ -14,7 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from command_module_patch import patch_split_command_module
+
 import local_ai_hub.command_broker as commands_module
+from local_ai_hub import command_daemon_process, command_execute, command_jobs
 import local_ai_hub.process_utils as process_utils_module
 from local_ai_hub.command_broker import CommandBroker, CommandInvocation
 from local_ai_hub.process_utils import pid_alive
@@ -714,10 +717,10 @@ def test_uncertain_command_results_are_not_cached(tmp_path, monkeypatch, uncerta
 def test_spawn_setup_failure_reports_unconfirmed_cleanup(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
-    monkeypatch.setattr(commands_module, "create_job_object_kill_on_close", lambda: object())
-    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: False)
-    monkeypatch.setattr(commands_module, "_terminate_and_confirm_windows_job_empty", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(commands_module, "close_job_object", lambda *_args: False)
+    patch_split_command_module(monkeypatch, "create_job_object_kill_on_close", lambda: object())
+    patch_split_command_module(monkeypatch, "assign_process_to_job", lambda *_args: False)
+    monkeypatch.setattr(command_execute, "_terminate_and_confirm_windows_job_empty", lambda *_args, **_kwargs: False)
+    patch_split_command_module(monkeypatch, "close_job_object", lambda *_args: False)
 
     class UnreapedProcess:
         pid = 4242
@@ -1618,8 +1621,8 @@ def test_patch_rollback_fingerprints_postapply_file_above_preimage_cap(tmp_path,
     _init_patch_repo(tmp_path, {"target.txt": "x\n"})
     target = tmp_path / "target.txt"
     broker = _broker(tmp_path)
-    monkeypatch.setattr(commands_module, "_MAX_ROLLBACK_FILE_BYTES", 4)
-    monkeypatch.setattr(commands_module, "_MAX_ROLLBACK_TOTAL_BYTES", 8)
+    patch_split_command_module(monkeypatch, "_MAX_ROLLBACK_FILE_BYTES", 4)
+    patch_split_command_module(monkeypatch, "_MAX_ROLLBACK_TOTAL_BYTES", 8)
     monkeypatch.setattr(
         broker,
         "run",
@@ -1678,7 +1681,7 @@ def test_early_preflight_does_not_acquire_rollback_guard(tmp_path, monkeypatch) 
     def forbidden_snapshot(*_args, **_kwargs):
         raise AssertionError("early preflight must not acquire a rollback root guard")
 
-    monkeypatch.setattr(commands_module, "_snapshot_rollback_scope", forbidden_snapshot)
+    patch_split_command_module(monkeypatch, "_snapshot_rollback_scope", forbidden_snapshot)
     result = broker.run(
         "git status --short",
         str(tmp_path),
@@ -1973,10 +1976,10 @@ def test_windows_worker_launches_python_selected_from_path(tmp_path, monkeypatch
 def test_command_job_cleanup_requires_empty_job_confirmation(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
-    monkeypatch.setattr(commands_module, "terminate_job_object", lambda handle: calls.append(("terminate", handle)) or True)
-    monkeypatch.setattr(commands_module, "_wait_windows_job_empty", lambda handle, timeout_ms=2500: calls.append(("wait", handle)) or False)
+    patch_split_command_module(monkeypatch, "terminate_job_object", lambda handle: calls.append(("terminate", handle)) or True)
+    monkeypatch.setattr(command_jobs, "wait_windows_job_empty", lambda handle, timeout_ms=2500: calls.append(("wait", handle)) or False)
 
-    assert commands_module._terminate_and_confirm_windows_job_empty("job") is False
+    assert command_jobs.terminate_and_confirm_windows_job_empty("job") is False
     assert calls == [("terminate", "job"), ("wait", "job")]
 
 
@@ -1986,15 +1989,13 @@ def test_recovered_daemon_requests_leaderless_group_cleanup_without_claiming_suc
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
     digest = "a" * 64
     terminated: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True)
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: True)
+    patch_split_command_module(monkeypatch,
         "_daemon_process_group_owned",
         lambda group_id, token_digest: group_id == pid and token_digest == digest,
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "terminate_tree",
         lambda *args, **kwargs: terminated.append((args, kwargs)) or False,
     )
@@ -2014,12 +2015,10 @@ def test_recovered_daemon_rejects_reused_leader_even_when_group_is_alive(monkeyp
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
     reused_identity = {**identity, "creation_identity": 999}
     terminated: list[int] = []
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: reused_identity)
-    monkeypatch.setattr(
-        commands_module, "_daemon_process_group_owned", lambda *_args: True
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: reused_identity)
+    patch_split_command_module(monkeypatch, "_daemon_process_group_owned", lambda *_args: True
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "terminate_tree",
         lambda current_pid, **_kwargs: terminated.append(current_pid) or True,
     )
@@ -2038,13 +2037,11 @@ def test_recovered_daemon_rejects_leaderless_group_without_ownership_proof(monke
     pid = 24569
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
     terminated: list[int] = []
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True)
-    monkeypatch.setattr(
-        commands_module, "_daemon_process_group_owned", lambda *_args: False
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: True)
+    patch_split_command_module(monkeypatch, "_daemon_process_group_owned", lambda *_args: False
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "terminate_tree",
         lambda current_pid, **_kwargs: terminated.append(current_pid) or True,
     )
@@ -2094,10 +2091,9 @@ def test_daemon_restart_requires_proof_for_leaderless_group(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: bool(group_verified))
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: bool(group_verified))
+    patch_split_command_module(monkeypatch,
         "_daemon_process_group_owned",
         lambda group_id, token_digest: (
             group_verified and group_id == pid and token_digest == digest
@@ -2186,10 +2182,9 @@ def test_daemon_registry_persists_verified_leaderless_process_group(tmp_path, mo
         def poll(self):
             return 0
 
-    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True)
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch, "process_identity", lambda _pid: None)
+    patch_split_command_module(monkeypatch, "_process_group_liveness", lambda _pgid: True)
+    patch_split_command_module(monkeypatch,
         "_daemon_process_group_owned",
         lambda group_id, token_digest: group_id == pid and token_digest == digest,
     )
@@ -2455,7 +2450,7 @@ def test_posix_cleanup_does_not_report_success_when_signals_are_denied(monkeypat
 
 
 def test_slow_log_consumer_does_not_block_child_pipes(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(commands_module, "_COMMAND_LOG_QUEUE_MAX_CHUNKS", 1)
+    patch_split_command_module(monkeypatch, "_COMMAND_LOG_QUEUE_MAX_CHUNKS", 1)
     broker = CommandBroker(
         {"commands": {"enabled": True, "max_output_chars": 512 * 1024}}
     )

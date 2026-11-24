@@ -557,7 +557,7 @@ _COORD_PROTECTED_KEYS = (
     "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
     "project_root", "counts", "total_items", "plan_filter", "plan_task_id",
     "reason_code", "reaped",
-    "client_id", "display_name", "hook_support", "instruction_targets",
+    "client_id", "display_name", "hook_support", "hook_events", "instruction_targets",
     "has_token_tracking", "has_reasoning_tokens", "has_shadow_events",
     "has_goal_system", "prompt_cache_shield", "tool_filter", "mcp_surface", "adapter_version",
 )
@@ -941,8 +941,8 @@ local_ai_repo = mcp.tool()(_instrumented_tool()(local_ai_repo))
 local_ai_repo.__doc__ = _local_ai_repo_impl.__doc__
 
 
-def _hide_disabled_batch_schema(mcp_runtime: Any, tool: Any) -> None:
-    """Project rollout-only repository fields out of optional FastMCP schemas."""
+def _project_repo_batch_schema(mcp_runtime: Any, tool: Any) -> None:
+    """Keep rollout-only fields and action typing aligned with the public schema."""
     if hasattr(mcp_runtime, "_tool_manager") and hasattr(mcp_runtime._tool_manager, "_tools"):
         repo_tool = mcp_runtime._tool_manager._tools.get("local_ai_repo")
         if repo_tool is not None:
@@ -951,15 +951,16 @@ def _hide_disabled_batch_schema(mcp_runtime: Any, tool: Any) -> None:
             repo_tool.parameters.clear()
             repo_tool.parameters.update(schema)
             properties = repo_tool.parameters.get("properties", {})
-            properties.pop("edits", None)
-            properties.pop("dry_run", None)
+            if not FEATURES.batch_replacement:
+                properties.pop("edits", None)
+                properties.pop("dry_run", None)
     action_type = _repo_action_type(FEATURES)
     annotations = getattr(tool, "__annotations__", None)
     if isinstance(annotations, dict):
         annotations["action"] = action_type
     parameters = []
     for parameter in inspect.signature(tool).parameters.values():
-        if parameter.name in {"edits", "dry_run"}:
+        if not FEATURES.batch_replacement and parameter.name in {"edits", "dry_run"}:
             continue
         if parameter.name == "action":
             parameter = parameter.replace(annotation=action_type)
@@ -968,10 +969,9 @@ def _hide_disabled_batch_schema(mcp_runtime: Any, tool: Any) -> None:
 
 
 # Keep one public MCP tool while exposing rollout fields only in enabled schemas.
-# FastMCP builds its schema at decoration time, so disabled fields need both a
+# FastMCP builds its schema at decoration time, so both feature states need a
 # runtime-schema and introspection-signature projection after registration.
-if not FEATURES.batch_replacement:
-    _hide_disabled_batch_schema(mcp, local_ai_repo)
+_project_repo_batch_schema(mcp, local_ai_repo)
 
 
 from .mcp_tools_rag import local_ai_rag
@@ -1203,7 +1203,7 @@ __all__ = [
     '_explicit_budget_rejection',
     '_guarded_context_input',
     '_guarded_field_is_safe',
-    '_hide_disabled_batch_schema',
+    '_project_repo_batch_schema',
     '_instrumented_tool',
     '_invalid_action',
     '_load_task_context',

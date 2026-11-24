@@ -1,18 +1,31 @@
 {
-  "hooks": {
-    "PreInvocation": [
+  "local-ai-hub": {
+    "enabled": true,
+    "SessionStart": [
       {
-        "command": "python -m local_ai_hub.antigravity_hook PreInvocation"
+        "type": "command",
+        "command": "python ./scripts/run_hub.py antigravity_hook SessionStart",
+        "timeout": 10
       }
     ],
     "PreToolUse": [
       {
-        "command": "python -m local_ai_hub.antigravity_hook PreToolUse"
+        "matcher": "read_file|run_command",
+        "hooks": [{
+          "type": "command",
+          "command": "python ./scripts/run_hub.py antigravity_hook PreToolUse",
+          "timeout": 15
+        }]
       }
     ],
     "PostToolUse": [
       {
-        "command": "python -m local_ai_hub.antigravity_hook PostToolUse"
+        "matcher": "edit_file|write_file",
+        "hooks": [{
+          "type": "command",
+          "command": "python ./scripts/run_hub.py antigravity_hook PostToolUse",
+          "timeout": 15
+        }]
       }
     ]
   }

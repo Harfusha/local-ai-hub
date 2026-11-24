@@ -66,7 +66,12 @@ class RAGStorageMixin:
             "chunk_overlap": rag_cfg.get("chunk_overlap_chars", 450),
         })
         self.index_reset = False
-        self._validate_existing_database(self.db_path, self.index_fingerprint)
+        self.index_fingerprint_mismatch = self._validate_existing_database(self.db_path, self.index_fingerprint)
+        if self.index_fingerprint_mismatch:
+            self.index_reset = True
+            logging.getLogger(__name__).warning(
+                "RAG index fingerprint differs; continuing with per-workspace embedding-space checks and lexical fallback"
+            )
         if not ensure_incremental_vacuum(self.db_path).get("success"):
             logging.getLogger(__name__).warning("RAG database incremental vacuum setup incomplete")
         workspace_cfg = config.get("workspace_cache", {})
@@ -93,9 +98,9 @@ class RAGStorageMixin:
             ) from exc
 
     @staticmethod
-    def _validate_existing_database(db_path: Path, fingerprint: str) -> None:
+    def _validate_existing_database(db_path: Path, fingerprint: str) -> bool:
         if not db_path.exists():
-            return
+            return False
         try:
             if db_path.stat().st_size:
                 with db_path.open("rb") as database:
@@ -157,11 +162,7 @@ class RAGStorageMixin:
                     "SELECT value FROM rag_meta WHERE key='index_fingerprint'"
                 ).fetchone()
                 stored_fingerprint = str(metadata[0]) if metadata is not None else None
-                if stored_fingerprint != fingerprint:
-                    reason = "fingerprint mismatch" if stored_fingerprint else "missing fingerprint"
-                    raise RuntimeError(
-                        f"RAG database has {reason}; explicit offline rebuild required"
-                    )
+                return stored_fingerprint != fingerprint
         except sqlite3.DatabaseError as exc:
             raise RuntimeError(
                 "RAG database is unreadable; original database and sidecars were preserved; "
@@ -193,7 +194,7 @@ class RAGStorageMixin:
             pass
 
     def _init_db(self) -> None:
-        self._validate_existing_database(self.db_path, self.index_fingerprint)
+        fingerprint_mismatch = self._validate_existing_database(self.db_path, self.index_fingerprint)
         with closing(self._connect()) as con:
             initialize_wal(con)
             con.execute(
@@ -266,6 +267,25 @@ class RAGStorageMixin:
                 "INSERT OR IGNORE INTO rag_meta(key,value) VALUES('index_fingerprint',?)",
                 (self.index_fingerprint,),
             )
+            reset_marker = con.execute(
+                "SELECT value FROM rag_meta WHERE key='embedding_reset_version'"
+            ).fetchone()
+            if reset_marker and str(reset_marker[0]) == "8.0":
+                rag_vectors = con.execute(
+                    "SELECT 1 FROM chunks WHERE embedding NOT IN ('', '[]') LIMIT 1"
+                ).fetchone()
+                content_vectors = con.execute(
+                    "SELECT 1 FROM content_rag_chunks WHERE length(embedding_blob)>0 LIMIT 1"
+                ).fetchone()
+                if not rag_vectors and not content_vectors:
+                    con.execute(
+                        "UPDATE rag_meta SET value=? WHERE key='index_fingerprint'",
+                        (self.index_fingerprint,),
+                    )
+                    self.index_fingerprint_mismatch = False
+                    self.index_reset = True
+            elif fingerprint_mismatch:
+                self.index_fingerprint_mismatch = True
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(workspace)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space ON chunks(workspace, embedding_space, path, chunk_no)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash)")
@@ -308,16 +328,16 @@ class RAGStorageMixin:
             for offset in range(0, len(normalized), 900):
                 batch = normalized[offset:offset + 900]
                 placeholders = ",".join("?" for _ in batch)
-                space_filter = ""
+                space_filter = (
+                    " AND NOT EXISTS (SELECT 1 FROM chunks c "
+                    "WHERE c.workspace=f.workspace AND c.path=f.path "
+                    "AND (c.embedding IS NULL OR trim(c.embedding) IN ('','[]')"
+                )
                 params: tuple[Any, ...] = (workspace, *batch)
                 if embedding_space:
-                    space_filter = (
-                        " AND NOT EXISTS (SELECT 1 FROM chunks c "
-                        "WHERE c.workspace=f.workspace AND c.path=f.path "
-                        "AND (COALESCE(c.embedding_space,'')<>? "
-                        "OR c.embedding IS NULL OR length(c.embedding)=0))"
-                    )
+                    space_filter += " OR COALESCE(c.embedding_space,'')<>?"
                     params = (*params, embedding_space)
+                space_filter += "))"
                 rows = con.execute(
                     f"SELECT f.path FROM files f WHERE f.workspace=? "
                     f"AND f.path IN ({placeholders}){space_filter}",

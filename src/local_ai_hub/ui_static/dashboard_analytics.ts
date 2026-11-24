@@ -70,8 +70,7 @@ async function loadEndpointStatsView() {
       for (const p of res.projects) {
         let label = p;
         try {
-          if (p.startsWith('legacy:')) label = 'historické: ' + decodeURIComponent(p.slice(7));
-          else if (p.startsWith('root:')) { const parts = p.split(':'); label = decodeURIComponent(parts.slice(2).join(':')) + ' · ' + parts[1].slice(0, 8); }
+          if (p.startsWith('root:')) { const parts = p.split(':'); label = decodeURIComponent(parts.slice(2).join(':')) + ' · ' + parts[1].slice(0, 8); }
         } catch {}
         opts.push(`<option value="${esc(p)}"${p === currentVal ? ' selected' : ''}>${esc(label)}</option>`);
       }
@@ -365,7 +364,7 @@ $('subtabEndpointStatsJump')?.addEventListener('click', () => {
 });
 $('epStatsResetBtn')?.addEventListener('click', async () => {
   const project = $('epStatsProjectSelect')?.value || '';
-  const label = project ? (project.startsWith('legacy:') ? 'historickou skupinu se stejným názvem složky' : 'vybraný kořen projektu') : 'VŠECHNY projekty globálně';
+  const label = project ? 'vybraný kořen projektu' : 'VŠECHNY projekty globálně';
   if (!confirm(`Opravdu chcete resetovat dlouhodobé statistiky pro ${label}?`)) return;
   const res = await post('/api/telemetry/endpoint-stats/reset', { root: project });
   if (res && res.success) {

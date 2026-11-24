@@ -246,11 +246,11 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
     thread.start()
     config = tmp_path / "config.toml"
     config.write_text(
-        f"[server]\nport={http.server_port}\nauto_start_ollama=false\nstate_dir="
+        f"[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport={http.server_port}\nauto_start_ollama=false\nstate_dir="
         + json.dumps((tmp_path / "state").as_posix())
         + '\n[hardware]\nprofile="cpu"\nauto_tune=false\n'
           '[ollama]\nenabled=false\n[llama_cpp]\nmode="off"\n'
-        + f'[debug_traces]\nenabled={str(detailed_diagnostics).lower()}\n'
+        + f'[telemetry]\nmode="{"full" if detailed_diagnostics else "minimal"}"\n'
         + '[mcp.response_budget.tool_tokens]\nlocal_ai_coord=3200\n', encoding="utf-8")
     bootstrap = (
         "import sys; sys.path.insert(0,sys.argv[1]); "

@@ -1,5 +1,9 @@
 # Changelog
 
+## 8.0.0 — 2026-11-24
+
+- [Changes in v8.0.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.0.0)
+
 ## 7.0.0 — 2026-11-23
 
 - [Changes in v7.0.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v7.0.0)

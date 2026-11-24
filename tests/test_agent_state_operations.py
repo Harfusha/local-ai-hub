@@ -22,6 +22,9 @@ def app_with_agent_state(tmp_path: Path) -> LocalAIApp:
     tmp_path.mkdir(parents=True, exist_ok=True)
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(f"""
+[local_ai_hub]
+config_schema_version = 1
+
 [server]
 bind = "127.0.0.1"
 port = 11488

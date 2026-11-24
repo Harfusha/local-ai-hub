@@ -406,22 +406,6 @@
         "action_literals": []
       }
     },
-    "GET /api/code/find_declaration": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve service result, status_code mapping, errors/retry/cancellation, identities, evidence and pagination; no bearer token or tenant envelope.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.code_find_declaration",
-          "local:result"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/code/find_implementations": {
       "decision": "retain",
       "role": "agent",
@@ -800,8 +784,16 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
-        "literal_response_fields": ["error", "success"],
-        "response_producers": ["controller.install", "controller.status", "local:result", "self._handle_dashboard_updates"],
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "controller.install",
+          "controller.status",
+          "local:result",
+          "self._handle_dashboard_updates"
+        ],
         "action_literals": []
       }
     },
@@ -813,8 +805,16 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_updates_1",
-        "literal_response_fields": ["error", "success"],
-        "response_producers": ["controller.install", "controller.status", "local:result", "self._handle_dashboard_updates"],
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "controller.install",
+          "controller.status",
+          "local:result",
+          "self._handle_dashboard_updates"
+        ],
         "action_literals": []
       }
     },
@@ -1198,27 +1198,6 @@
         ],
         "response_producers": [
           "APP.services.test_matrix"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /api/updates": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Local dashboard reads verified release availability and installation results.",
-      "response_policy": "Preserve release identity, status and errors for the local operator.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "controller.install",
-          "controller.status",
-          "local:result",
-          "self._handle_dashboard_updates"
         ],
         "action_literals": []
       }
@@ -1630,138 +1609,6 @@
         ]
       }
     },
-    "MCP local_ai_coord.board_item_create": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.board_item_delete": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.board_item_get": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.board_item_list": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.board_item_update": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.board_summary": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
     "MCP local_ai_coord.claim": {
       "decision": "retain",
       "role": "agent",
@@ -2093,50 +1940,6 @@
       }
     },
     "MCP local_ai_coord.memory_record": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.milestone_create": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.milestone_status": {
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
@@ -6425,7 +6228,7 @@
           "terminal"
         ],
         "response_producers": [
-          "local:res"
+          "APP.agent_state.cleanup"
         ],
         "action_literals": []
       }
@@ -6482,12 +6285,7 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_learning_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "success",
-          "terminal"
-        ],
+        "literal_response_fields": [],
         "response_producers": [],
         "action_literals": []
       }
@@ -6518,7 +6316,8 @@
           "success"
         ],
         "response_producers": [
-          "local:res"
+          "APP.swarm.cancel",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -6536,7 +6335,8 @@
           "success"
         ],
         "response_producers": [
-          "local:res"
+          "APP.swarm.dispatch",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -6554,7 +6354,8 @@
           "success"
         ],
         "response_producers": [
-          "local:res"
+          "APP.swarm.step",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -6580,19 +6381,9 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_verification_1",
-        "literal_response_fields": [
-          "error",
-          "error_code",
-          "retryable",
-          "success",
-          "terminal"
-        ],
+        "literal_response_fields": [],
         "response_producers": [],
-        "action_literals": [
-          "completion",
-          "project_command",
-          "receipt"
-        ]
+        "action_literals": []
       }
     },
     "POST /api/artifact/get": {
@@ -7048,21 +6839,6 @@
         "action_literals": []
       }
     },
-    "POST /api/code/find_declaration": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_code_find_declaration_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.code_find_declaration"
-        ],
-        "action_literals": []
-      }
-    },
     "POST /api/code/find_implementations": {
       "decision": "retain",
       "role": "agent",
@@ -7207,9 +6983,9 @@
         "handler": "post_compress_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.compress",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -7264,126 +7040,6 @@
         "response_producers": [
           "_invoke_cancellable_request",
           "local:result"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/board_item_create": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_board_item_create_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.board_item_create"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/board_item_delete": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_board_item_delete_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.board_item_delete"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/board_item_get": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_board_item_get_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.board_item_get"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/board_item_list": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_board_item_list_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.board_item_list"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/board_item_update": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_board_item_update_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.board_item_update"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/board_summary": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_board_summary_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.board_summary"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/milestone_create": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_milestone_create_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.milestone_create"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/milestone_status": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_milestone_status_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.milestone_status"
         ],
         "action_literals": []
       }
@@ -7854,9 +7510,9 @@
         "handler": "post_delegate_batch_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.batch_delegate",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -7871,9 +7527,9 @@
         "handler": "post_delegate_repo_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.delegate_repo",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -8008,9 +7664,9 @@
         "handler": "post_generate_tests_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.generate_tests",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -8033,9 +7689,17 @@
         ],
         "response_producers": [
           "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
           "app.services.find_hotspots",
           "app.services.git_diff",
           "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
           "app.services.test_matrix",
           "dict",
           "local:result",
@@ -8062,9 +7726,17 @@
         ],
         "response_producers": [
           "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
           "app.services.find_hotspots",
           "app.services.git_diff",
           "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
           "app.services.test_matrix",
           "dict",
           "local:result",
@@ -8091,9 +7763,17 @@
         ],
         "response_producers": [
           "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
           "app.services.find_hotspots",
           "app.services.git_diff",
           "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
           "app.services.test_matrix",
           "dict",
           "local:result",
@@ -8494,9 +8174,9 @@
         "handler": "post_reason_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.reason",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -8560,9 +8240,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_briefing_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.repo_briefing"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -8655,10 +8357,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_code_index_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.code_query",
-          "local:result"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -8762,9 +8485,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_deterministic_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.deterministic_query"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -8777,9 +8522,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_diagnose_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.repo_diagnose"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -8928,9 +8695,17 @@
         ],
         "response_producers": [
           "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
           "app.services.find_hotspots",
           "app.services.git_diff",
           "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
           "app.services.test_matrix",
           "dict",
           "local:result",
@@ -8947,9 +8722,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_impact_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.repo_impact"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -8962,9 +8759,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_investigate_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.repo_investigate"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -8977,9 +8796,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_map_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.repo_map"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -9055,9 +8896,31 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_profile_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.repo_profile"
+          "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
+          "app.services.find_hotspots",
+          "app.services.git_diff",
+          "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
+          "app.services.test_matrix",
+          "dict",
+          "local:result",
+          "tracker.fingerprint"
         ],
         "action_literals": []
       }
@@ -9196,9 +9059,17 @@
         ],
         "response_producers": [
           "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
           "app.services.find_hotspots",
           "app.services.git_diff",
           "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
           "app.services.test_matrix",
           "dict",
           "local:result",
@@ -9316,9 +9187,9 @@
         "handler": "post_review_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.review",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -9333,9 +9204,9 @@
         "handler": "post_review_diff_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.review_diff",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -9350,9 +9221,9 @@
         "handler": "post_route_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.route_context",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -9389,9 +9260,9 @@
         "handler": "post_second_opinion_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.second_opinion",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -9424,9 +9295,9 @@
         "handler": "post_solve_repo_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.solve_repo",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "service_method"
         ],
         "action_literals": []
       }
@@ -9668,34 +9539,21 @@
         ],
         "response_producers": [
           "app.deterministic.git_status",
+          "app.services.code_query",
+          "app.services.deterministic_query",
           "app.services.find_hotspots",
           "app.services.git_diff",
           "app.services.git_history_search",
+          "app.services.repo_briefing",
+          "app.services.repo_diagnose",
+          "app.services.repo_impact",
+          "app.services.repo_investigate",
+          "app.services.repo_map",
+          "app.services.repo_profile",
           "app.services.test_matrix",
           "dict",
           "local:result",
           "tracker.fingerprint"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/updates": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "The local dashboard can refresh release availability or confirm an exact update and restart.",
-      "response_policy": "Preserve the launch result and errors. Release and target are confined by the managed updater.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_updates_1",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "controller.install",
-          "controller.status",
-          "local:result",
-          "self._handle_dashboard_updates"
         ],
         "action_literals": []
       }

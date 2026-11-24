@@ -471,6 +471,7 @@ class ServiceGenerationMixin:
                     if response.get("done_reason") == "length":
                         return {"success": False, "error": "local model output reached its token limit",
                                 "error_code": "model_output_truncated", "model": candidate_model,
+                                "status_code": 422,
                                 "requested_model": requested_model, "text": clean_text,
                                 "output_truncated": True, "stop_reason": "length",
                                 "final_response_produced": bool(clean_text.strip()), "final_response_status": "truncated",

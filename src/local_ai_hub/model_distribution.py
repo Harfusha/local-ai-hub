@@ -13,67 +13,42 @@ import shutil
 import subprocess
 # import sys
 import tempfile
+import threading
 from typing import Any
 import urllib.request
 import urllib.error
 
 # Pinned distribution registry for Local AI Hub fine-tuned models
 DISTRIBUTION_REGISTRY: dict[str, dict[str, Any]] = {
-    "qwen2.5-coder-prep:3b": {
+    "qwen2.5-coder-prep-v4:3b": {
         "kind": "ollama_gguf",
-        "model_name": "qwen2.5-coder-prep:3b",
+        "model_name": "qwen2.5-coder-prep-v4:3b",
         "quantization": "Q4_K_M",
         "base_family": "qwen2.5-coder",
-        "filename": "qwen25-coder-3b-prep-q4_k_m.gguf",
-        "urls": [
-            "https://huggingface.co/local-ai-hub/preprocessing-models/resolve/main/qwen25-coder-3b-prep-q4_k_m.gguf",
-            "https://github.com/local-ai-hub/models/releases/download/v6.1.0/qwen25-coder-3b-prep-q4_k_m.gguf",
-        ],
-        # Local model sha256 or remote artifact sha256
-        "expected_sha256": "088ba85485564eebea76573062d94fc066a764dead450a43db5fda9d60d4c095",
-        "size_bytes": 1923956736,
+        "filename": "qwen25-coder-3b-prep-v4-q4_k_m.gguf",
+        "urls": ["https://huggingface.co/Harfusha/local-ai-hub-preprocess-qwen25-coder-3b/resolve/3e8c25fc7b6fd839701dad01dfe13a1ef4898543/qwen25-coder-3b-prep-v4-q4_k_m.gguf"],
+        "expected_sha256": "f8f815fc8d8992063c294c11a906c38899d2cd8150b5ccf2a1aeefab95983113",
+        "size_bytes": 1929902656,
     },
-    "qwen2.5-coder-prep:1.5b": {
+    "qwen2.5-coder-prep-v3:1.5b": {
         "kind": "ollama_gguf",
-        "model_name": "qwen2.5-coder-prep:1.5b",
+        "model_name": "qwen2.5-coder-prep-v3:1.5b",
         "quantization": "Q4_K_M",
         "base_family": "qwen2.5-coder",
-        "filename": "qwen25-coder-1.5b-prep-q4_k_m.gguf",
-        "urls": [
-            "https://huggingface.co/local-ai-hub/preprocessing-models/resolve/main/qwen25-coder-1.5b-prep-q4_k_m.gguf",
-            "https://github.com/local-ai-hub/models/releases/download/v6.1.0/qwen25-coder-1.5b-prep-q4_k_m.gguf",
-        ],
-        "expected_sha256": "4b681e1e0a9d18c3b7a5a3a0e69a08e6f1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
-        "size_bytes": 985661440,
+        "filename": "qwen25-coder-1.5b-prep-v3-q4_k_m.gguf",
+        "urls": ["https://huggingface.co/Harfusha/local-ai-hub-preprocess-qwen25-coder-1-5b/resolve/402474e54b881e2ade306a09afc81a29910e26ca/qwen25-coder-1.5b-prep-q4_k_m.gguf"],
+        "expected_sha256": "23c2a208cdd8fa33cc0d959f076f8b54d7021f0ce896e5323ce4df715bb2c96b",
+        "size_bytes": 986048160,
     },
-    "qwen2.5-coder-prep:0.5b": {
+    "qwen2.5-coder-prep-v3:0.5b": {
         "kind": "ollama_gguf",
-        "model_name": "qwen2.5-coder-prep:0.5b",
+        "model_name": "qwen2.5-coder-prep-v3:0.5b",
         "quantization": "Q4_K_M",
         "base_family": "qwen2.5-coder",
-        "filename": "qwen25-coder-0.5b-prep-q4_k_m.gguf",
-        "urls": [
-            "https://huggingface.co/local-ai-hub/preprocessing-models/resolve/main/qwen25-coder-0.5b-prep-q4_k_m.gguf",
-            "https://github.com/local-ai-hub/models/releases/download/v6.1.0/qwen25-coder-0.5b-prep-q4_k_m.gguf",
-        ],
-        "expected_sha256": "8a7c2b3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef",
-        "size_bytes": 398458880,
-    },
-    "laya:multilingual-v2": {
-        "kind": "safetensors_checkpoint",
-        "model_name": "laya-multilingual-decision-v2",
-        "filename": "laya-multilingual-decision-v2.zip",
-        "target_dir": "state/experiments/model-training/runs/laya/laya-multilingual-decision-v2/checkpoint",
-        "urls": [
-            "https://huggingface.co/local-ai-hub/laya/resolve/main/laya-multilingual-decision-v2.zip",
-        ],
-        "expected_sha256": {
-            "encoder/config.json": "0a8e5819bc96ee8002ede16e9937be5a3305f4afa9012f8de3e9729009596eba",
-            "model.safetensors": "461069f0854474c03e3398151276d557bc372acd9b0ebb09d4215c90e352cbd0",
-            "rl_agent_config.json": "615be2a84900f9d754703a213122f01ce30569d48cf39346b40c1cacc36943a6",
-            "tokenizer/tokenizer.json": "dbba919c6e5e492bc22beb80abb64e6fcc7e8744dc696e8388b8c977767afa4b",
-            "tokenizer/tokenizer_config.json": "107236c56e3060e9a309f560e3956070de12d01c615904f0d625d71ab8e44571",
-        },
+        "filename": "qwen25-coder-0.5b-prep-v3-q4_k_m.gguf",
+        "urls": ["https://huggingface.co/Harfusha/local-ai-hub-preprocess-qwen25-coder-0-5b/resolve/00205f82897f6a18a6df8b12f27f33dfad82b1f5/qwen25-coder-0.5b-prep-q4_k_m.gguf"],
+        "expected_sha256": "1b4a1adc42693edd4c414cbee638706ab0768f5526ba7e37f694337f088d9b54",
+        "size_bytes": 397807584,
     },
 }
 
@@ -181,11 +156,12 @@ def register_gguf_in_ollama(model_name: str, gguf_path: Path) -> bool:
             pass
 
 
-def ensure_distribution_model(
+def _ensure_distribution_model(
     identifier: str,
     root: Path | None = None,
     allow_download: bool = True,
     force_register: bool = False,
+    models_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Ensure a trained model is present, verified, and registered in Ollama / state."""
     if identifier not in DISTRIBUTION_REGISTRY:
@@ -193,7 +169,7 @@ def ensure_distribution_model(
 
     entry = DISTRIBUTION_REGISTRY[identifier]
     project_root = root or Path.cwd()
-    models_dir = project_root / "state" / "models"
+    models_dir = models_dir or project_root / "state" / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
     kind = entry["kind"]
@@ -214,6 +190,13 @@ def ensure_distribution_model(
         if target_file.is_file():
             actual_sha = compute_file_sha256(target_file)
             print(f"Local file found: {target_file} (SHA256: {actual_sha[:16]}...)")
+            if actual_sha != entry.get("expected_sha256"):
+                return {
+                    "status": "hash_mismatch",
+                    "model_name": model_name,
+                    "file": str(target_file),
+                    "error": "Local GGUF does not match the pinned trained model; refusing registration.",
+                }
             # Register in Ollama
             print(f"Registering {model_name} in Ollama from local GGUF...")
             ok = register_gguf_in_ollama(model_name, target_file)
@@ -241,7 +224,9 @@ def ensure_distribution_model(
             print(f"Attempting download of {model_name} from {url}...")
             temp_download = target_file.with_suffix(".download.tmp")
             try:
-                urllib.request.urlretrieve(url, temp_download)
+                with urllib.request.urlopen(url, timeout=120) as response, temp_download.open("wb") as sink:
+                    while chunk := response.read(8 * 1024 * 1024):
+                        sink.write(chunk)
                 # Verify sha256
                 downloaded_sha = compute_file_sha256(temp_download)
                 exp_sha = entry.get("expected_sha256")
@@ -274,3 +259,27 @@ def ensure_distribution_model(
         }
 
     return {"status": "unsupported_kind", "kind": kind}
+
+
+_DISTRIBUTION_LOCKS_GUARD = threading.Lock()
+_DISTRIBUTION_LOCKS: dict[str, threading.Lock] = {}
+
+
+def ensure_distribution_model(
+    identifier: str,
+    root: Path | None = None,
+    allow_download: bool = True,
+    force_register: bool = False,
+    models_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Serialize first-use downloads and Ollama registration per model."""
+    with _DISTRIBUTION_LOCKS_GUARD:
+        lock = _DISTRIBUTION_LOCKS.setdefault(identifier, threading.Lock())
+    with lock:
+        return _ensure_distribution_model(
+            identifier,
+            root=root,
+            allow_download=allow_download,
+            force_register=force_register,
+            models_dir=models_dir,
+        )

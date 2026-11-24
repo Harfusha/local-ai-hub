@@ -3,7 +3,7 @@
 Real-time terminal observability dashboard monitoring:
 - GPU VRAM utilization, allocated tensors, and device temperature
 - Preprocessing engine queue, content card completion, and worker status
-- Laya decision router mode (advisory/shadow), hit rate, and latest recommendation
+- Laya active advisory routing, hit rate, and latest recommendation
 - Zero-copy prompt cache active slots and hit ratio
 - Continuous active learning inbox count and recent incidents
 """

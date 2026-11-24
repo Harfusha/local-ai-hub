@@ -102,7 +102,7 @@ class TelemetryQueryMixin:
     def http_latency_estimate(self, action: str, limit: int = 200) -> dict[str, Any]:
         """Return bounded endpoint history for opt-in foreground/async delivery choice."""
         if not self.enabled:
-            return {"samples": 0, "p95_duration_ms": 0.0}
+            return {"samples": 0, "p95_duration_ms": 0.0, "p99_duration_ms": 0.0}
         self.flush(0.1)
         bounded = max(1, min(int(limit), 500))
         with closing(self._connect()) as con:
@@ -112,7 +112,11 @@ class TelemetryQueryMixin:
                 (str(action)[:160], bounded),
             ).fetchall()
         values = [float(row[0] or 0.0) for row in rows]
-        return {"samples": len(values), "p95_duration_ms": _percentile(values, 0.95)}
+        return {
+            "samples": len(values),
+            "p95_duration_ms": _percentile(values, 0.95),
+            "p99_duration_ms": _percentile(values, 0.99),
+        }
 
     def get_timeline_page(
         self,

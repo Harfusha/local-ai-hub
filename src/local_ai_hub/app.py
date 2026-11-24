@@ -80,7 +80,6 @@ from .agent_routing import RoutingEngine
 from .agent_learning import LearningStore
 from .agent_blackboard import BlackboardStore
 from .agent_semaphores import SemaphoreStore
-from .agent_board import BoardStore
 from .vram_balancer import VRAMBalancer
 from .swarm import SwarmCoordinator
 from .benchmark import HardwareBenchmarkRunner
@@ -518,10 +517,8 @@ from . import app_laya_runtime as _app_laya_runtime
 from .app_laya_runtime import AppLayaRuntimeMixin
 from . import app_laya_observation as _app_laya_observation
 from .app_laya_observation import AppLayaObservationMixin
-from . import app_capture as _app_capture
-from .app_capture import AppCaptureMixin
 
-class LocalAIApp(AppRuntimeMixin, AppStatusMixin, AppBundleMixin, AppLayaRuntimeMixin, AppLayaObservationMixin, AppCaptureMixin):
+class LocalAIApp(AppRuntimeMixin, AppStatusMixin, AppBundleMixin, AppLayaRuntimeMixin, AppLayaObservationMixin):
     vram_balancer: Any = None
     swarm: Any = None
     benchmark_runner: Any = None
@@ -571,14 +568,14 @@ class LocalAIApp(AppRuntimeMixin, AppStatusMixin, AppBundleMixin, AppLayaRuntime
 
 
 
-for _app_module in (_app_runtime, _app_status, _app_bundle, _app_laya_runtime, _app_laya_observation, _app_capture):
+for _app_module in (_app_runtime, _app_status, _app_bundle, _app_laya_runtime, _app_laya_observation):
     _app_module.LocalAIApp = LocalAIApp
 
 
 class _AppModuleProxy(types.ModuleType):
     def __setattr__(self, name: str, value: Any) -> None:
         super().__setattr__(name, value)
-        for module in (_app_runtime, _app_status, _app_bundle, _app_laya_runtime, _app_laya_observation, _app_capture):
+        for module in (_app_runtime, _app_status, _app_bundle, _app_laya_runtime, _app_laya_observation):
             if hasattr(module, name):
                 setattr(module, name, value)
 
@@ -593,7 +590,6 @@ __all__ = [
     'AgentStateStore',
     'Any',
     'AppBundleMixin',
-    'AppCaptureMixin',
     'AppLayaObservationMixin',
     'AppLayaRuntimeMixin',
     'AppRuntimeMixin',
@@ -601,7 +597,6 @@ __all__ = [
     'ArtifactStore',
     'AsyncJobManager',
     'BlackboardStore',
-    'BoardStore',
     'BundleValidationError',
     'CancelledError',
     'CodeIndex',
@@ -678,7 +673,6 @@ __all__ = [
     '__version__',
     '_accelerator_status_fallback',
     '_app_bundle',
-    '_app_capture',
     '_app_laya_observation',
     '_app_laya_runtime',
     '_app_runtime',

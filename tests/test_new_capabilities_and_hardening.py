@@ -17,7 +17,7 @@ from local_ai_hub.command_broker import CommandBroker, _is_interactive_prompt, _
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.doctor_support import install_git_precommit_hook, uninstall_git_precommit_hook
 from local_ai_hub.leases import ScopeLeaseStore
-from local_ai_hub.process_utils import list_git_worktrees, prune_git_worktrees, simulate_git_merge
+from local_ai_hub.git_worktrees import list_git_worktrees, prune_git_worktrees, simulate_git_merge
 from local_ai_hub.rag import _python_ast_chunks
 from local_ai_hub.services import LocalAIServices, vram_priority
 

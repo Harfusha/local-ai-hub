@@ -11,7 +11,8 @@ class AntigravityAdapter(BaseClientAdapter):
     capabilities = ClientCapabilities(
         client_id="antigravity",
         display_name="Google Antigravity",
-        hook_support=HookSupport.PRE_TOOL,
+        hook_support=HookSupport.INVOCATION_TOOL,
+        hook_events=("SessionStart", "PreToolUse", "PostToolUse"),
         instruction_targets=(InstructionTarget.GEMINI_MD, InstructionTarget.AGENTS_MD),
         has_token_tracking=True,
         has_reasoning_tokens=True,

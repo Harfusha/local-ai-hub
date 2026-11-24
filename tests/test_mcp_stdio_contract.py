@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import json
 from pathlib import Path
 
 import pytest
@@ -133,7 +134,12 @@ def test_stdio_handshake_publishes_all_registered_live_schemas(tmp_path: Path) -
 def test_stdio_list_hides_feature_disabled_tools(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     config = tmp_path / "disabled-features.toml"
-    config.write_text("[features]\nrag = false\ncommands = false\n", encoding="utf-8")
+    config.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n"
+        "[server]\nstate_dir = " + json.dumps((tmp_path / "disabled-state").as_posix()) + "\n"
+        "[features]\nrag = false\ncommands = false\n",
+        encoding="utf-8",
+    )
     env = os.environ.copy()
     env["LOCAL_AI_CONFIG"] = str(config)
     env["PYTHONPATH"] = os.pathsep.join(

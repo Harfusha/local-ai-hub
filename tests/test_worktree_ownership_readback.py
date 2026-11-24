@@ -2,7 +2,7 @@
 
 import subprocess
 
-from local_ai_hub import process_utils
+from local_ai_hub import process_utils, git_worktrees
 
 
 def _git(repo, *args):
@@ -23,18 +23,18 @@ def test_created_worktree_owner_roundtrips_without_legacy_marker(tmp_path):
     _git(repo, "add", "seed.txt")
     _git(repo, "commit", "-qm", "seed")
     target = tmp_path / "private-worktree"
-    created = process_utils.create_git_worktree(
+    created = git_worktrees.create_git_worktree(
         repo, branch_name="codex/ownership-test", worktree_path=target,
         task_id="owner-task", owner="owner-agent",
     )
     assert created["success"] is True, created
     try:
-        admin = process_utils._git_worktree_admin_dir(repo, target)
+        admin = git_worktrees._git_worktree_admin_dir(repo, target)
         assert admin is not None
         assert not (admin / "local_ai_hub_worktree.json").exists()
-        ownership = process_utils.get_git_worktree_ownership(repo, target)
+        ownership = git_worktrees.get_git_worktree_ownership(repo, target)
     finally:
-        removed = process_utils.remove_git_worktree(
+        removed = git_worktrees.remove_git_worktree(
             repo, target, branch_name="codex/ownership-test",
             worktree_id=created["worktree_id"],
             expected_task_id="owner-task", expected_owner="owner-agent",

@@ -521,7 +521,7 @@ class RepoToolsProjectSearchMixin:
         if not terms and not phrase:
             return {
                 "success": True, "root": str(base), "results": [], "terms": [],
-                "matches_count": 0, "total_matches": 0, "has_more": False,
+                "total_matches": 0, "returned_count": 0, "has_more": False,
                 "limit": limit, "offset": offset, "truncated": False,
                 "count_exact": True, "engine": "python_exact",
             }
@@ -1260,7 +1260,7 @@ class RepoToolsProjectSearchMixin:
         ]
         return {
             "success": True, "root": str(base), "scanned_files": scanned,
-            "terms": terms, "results": page, "matches_count": total_matches,
+            "terms": terms, "results": page, "returned_count": len(page),
             "total_matches": total_matches,
             "has_more": offset + len(page) < total_matches,
             "limit": limit, "offset": offset, "truncated": False,

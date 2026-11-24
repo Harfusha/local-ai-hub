@@ -14,23 +14,6 @@ from local_ai_hub.tool_agent import ToolAwareLocalAgent
 from local_ai_hub.services import LocalAIServices
 
 
-def test_laya_shadow_observation_skips_missing_task_and_session():
-    service = LocalAIServices.__new__(LocalAIServices)
-    queued = []
-    service.laya_decision_observer = lambda operation, root, baseline: queued.append(operation) or {"status": "queued"}
-
-    captured = service._queue_laya_shadow_observation(
-        {"evidence_ids": ["ev-1"]},
-        root="C:/repo",
-        category="model_route",
-        options=("fast", "smart"),
-        state={"request_kind": "code"},
-        training_content={},
-        baseline={"method": "model_router_classify", "suggestion": "fast", "evidence_id": "ev-1"},
-    )
-
-    assert captured is False
-    assert queued == []
 
 
 def test_laya_runtime_adapter_is_cached_once_across_concurrent_requests(monkeypatch):
@@ -78,7 +61,7 @@ def test_laya_runtime_api_needs_no_per_example_consent_before_runtime_setup():
     }
 
     app.config = {"laya": {"runtime": {"enabled": False}}}
-    with pytest.raises(RuntimeError, match="Laya shadow checkpoint is not configured"):
+    with pytest.raises(RuntimeError, match="pinned Laya checkpoint is unavailable locally or could not be verified"):
         app.evaluate_laya_context_source(operation, root="")
 
 
@@ -93,194 +76,14 @@ def test_laya_runtime_api_accepts_the_session_id_it_validates():
         "evidence": {},
     }
 
-    with pytest.raises(RuntimeError, match="Laya shadow checkpoint is not configured"):
+    with pytest.raises(RuntimeError, match="pinned Laya checkpoint is unavailable locally or could not be verified"):
         app.evaluate_laya_context_source(operation, root="")
 
 
-def test_context_capture_is_not_disabled_by_runtime_flag_and_skips_missing_task(tmp_path):
-    app = LocalAIApp.__new__(LocalAIApp)
-    app.config = {"laya": {"runtime": {"enabled": False}}}
-    observations = []
-    app.telemetry = SimpleNamespace(record_stage=lambda **event: observations.append(event))
-    request = SimpleNamespace(root=str(tmp_path), task_id="", session_id="session-1")
-
-    result = app.capture_laya_context_source_from_context(
-        request,
-        {"success": True, "query": "private query", "evidence": [{"text": "private source"}]},
-    )
-
-    assert result == {"status": "skipped", "reason": "task_identity_unavailable"}
-    assert observations == [{
-        "action": "laya_capture",
-        "stage": "skipped",
-        "bypass_reason": "task_identity_unavailable",
-        "success": True,
-    }]
 
 
-def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
-    app = LocalAIApp.__new__(LocalAIApp)
-    app.config = {"laya": {"runtime": {
-        "enabled": False,
-        "checkpoint_path": "pinned-local-checkpoint",
-        "revision": "pinned-revision",
-        "expected_sha256": {"model.safetensors": "a" * 64},
-    }}}
-    telemetry_events = []
-    log_warnings = []
-    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
-    app.logger = SimpleNamespace(warning=lambda *args: log_warnings.append(args))
-    task = SimpleNamespace(context={"session_id": "session-1"})
-    app.agent_tasks = object()
-    app.laya_candidates = SimpleNamespace(
-        _find_task=lambda *_args: task,
-        _session_for_task=lambda value: value.context["session_id"],
-    )
-    app.evidence = SimpleNamespace(
-        put_many=lambda *_args, **_kwargs: [{"evidence_id": "ev-indexed"}],
-        get_many=lambda *_args, **_kwargs: [{"success": True, "stale": False}],
-        validate_source_provenance=lambda *_args, **_kwargs: True,
-    )
-    observed = {}
-    app.evaluate_laya_context_source = lambda operation, *, root, baseline=None: observed.update(
-        operation=operation, root=root, baseline=baseline
-    ) or {"status": "captured", "candidate": {"candidate_id": "candidate-1"}}
-
-    class ImmediateExecutor:
-        def submit(self, callback, *args, **kwargs):
-            observed["callback"] = callback
-            observed["args"] = args
-            observed["kwargs"] = kwargs
-            result = callback(*args, **kwargs)
-            future = Future()
-            future.set_result(result)
-            return future
-
-    app._status_dependency_executor = ImmediateExecutor()
-    app._laya_capture_lock = threading.Lock()
-    app._laya_capture_queue = []
-    app._laya_capture_draining = False
-    app._shutdown = threading.Event()
-    request = SimpleNamespace(root=str(tmp_path), task_id="task-1", session_id="session-1", query="Find parser behavior")
-    result = {
-        "success": True,
-        "stale": False,
-        "retrieval": {
-            "backend_states": {"lexical": "used", "rag": "used"},
-            "lexical": {
-                "freshness": {"status": "current"},
-                "coverage": {"complete": False, "candidate_count": 1},
-            },
-            "semantic": {
-                "freshness": {"status": "current"},
-                "coverage": {"complete": False, "candidate_count": 1},
-            },
-        },
-        "query": "Find parser behavior",
-        "evidence": [
-            {"path": "indexed.py", "content_hash": "a" * 64, "text": "parse_request checks the route"},
-            {
-                "path": "rag.py", "content_hash": "b" * 64,
-                "semantic": True, "evidence_id": "ev-rag", "text": "RAG record: parser handles route selection",
-            },
-        ],
-    }
-
-    queued = app.capture_laya_context_source_from_context(request, result)
-    assert queued == {"status": "queued"}
-    assert [event["stage"] for event in telemetry_events] == ["queued", "captured"]
-    assert len(log_warnings) == 0
-    assert all(set(event) <= {"action", "stage", "bypass_reason", "success", "error_type"} for event in telemetry_events)
-    operation = observed["operation"]
-    assert operation["session_id"] == "session-1"
-    assert set(operation) == {"action", "task_id", "session_id", "evidence"}
-    assert operation["evidence"]["training_content"] == {
-        "task_input": "Find parser behavior",
-        "context_excerpt": "indexed: parse_request checks the route\nrag: RAG record: parser handles route selection",
-    }
-    assert observed["baseline"] == {
-        "method": "retrieval_rank_order",
-        "suggestion": "indexed",
-        "evidence_id": "ev-indexed",
-    }
 
 
-def test_ordinary_context_capture_queues_concurrent_requests_serially_and_bounded(tmp_path):
-    app = LocalAIApp.__new__(LocalAIApp)
-    app.config = {"laya": {"runtime": {
-        "enabled": True,
-        "checkpoint_path": "pinned-local-checkpoint",
-        "revision": "pinned-revision",
-        "expected_sha256": {"model.safetensors": "a" * 64},
-    }}}
-    telemetry_events = []
-    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
-    app.logger = SimpleNamespace(warning=lambda *_args: None)
-    task = SimpleNamespace(context={"session_id": "session-1"})
-    app.agent_tasks = object()
-    app.laya_candidates = SimpleNamespace(
-        _find_task=lambda *_args: task,
-        _session_for_task=lambda value: value.context["session_id"],
-    )
-    app.evidence = SimpleNamespace(
-        put_many=lambda *_args, **_kwargs: [{"evidence_id": "ev-indexed"}],
-        get_many=lambda *_args, **_kwargs: [{"success": True, "stale": False}],
-        validate_source_provenance=lambda *_args, **_kwargs: True,
-    )
-    evaluated = []
-    app.evaluate_laya_context_source = lambda operation, *, root, baseline=None: evaluated.append(
-        (operation, root, baseline)
-    ) or {"status": "captured", "candidate": {"candidate_id": f"candidate-{len(evaluated)}"}}
-
-    class DeferredExecutor:
-        def __init__(self):
-            self.submissions = []
-
-        def submit(self, callback, *args, **kwargs):
-            future = Future()
-            self.submissions.append((callback, args, kwargs, future))
-            return future
-
-    executor = DeferredExecutor()
-    app._status_dependency_executor = executor
-    app._laya_capture_inflight = threading.Lock()
-    app._laya_capture_lock = threading.Lock()
-    app._laya_capture_queue = []
-    app._laya_capture_draining = False
-    app._shutdown = threading.Event()
-    request = SimpleNamespace(root=str(tmp_path), task_id="task-1", session_id="session-1", query="Find parser behavior")
-    result = {
-        "success": True,
-        "stale": False,
-        "retrieval": {
-            "backend_states": {"lexical": "used", "rag": "used"},
-            "lexical": {"freshness": {"status": "current"}, "coverage": {"complete": False, "candidate_count": 1}},
-            "semantic": {"freshness": {"status": "current"}, "coverage": {"complete": False, "candidate_count": 1}},
-        },
-        "evidence": [
-            {"path": "indexed.py", "content_hash": "a" * 64, "text": "parse_request checks the route"},
-            {"path": "rag.py", "content_hash": "b" * 64, "semantic": True, "evidence_id": "ev-rag", "text": "RAG record: parser handles route selection"},
-        ],
-    }
-
-    first = app.capture_laya_context_source_from_context(request, result)
-    second = app.capture_laya_context_source_from_context(request, result)
-    additional = [app.capture_laya_context_source_from_context(request, result) for _ in range(14)]
-    overflow = app.capture_laya_context_source_from_context(request, result)
-    assert first == second == {"status": "queued"}
-    assert additional == [{"status": "queued"}] * 14
-    assert overflow == {"status": "skipped", "reason": "capture_queue_unavailable"}
-    assert len(app._laya_capture_queue) == 16
-    assert len(executor.submissions) == 1
-    callback, args, kwargs, future = executor.submissions[0]
-    callback(*args, **kwargs)
-    future.set_result({"status": "completed"})
-
-    assert len(evaluated) == 16
-    stages = [event["stage"] for event in telemetry_events]
-    assert stages.count("queued") == 16
-    assert stages.count("skipped") == 1
-    assert stages.count("captured") == 16
 
 
 def test_laya_runtime_decision_uses_existing_metadata_telemetry():
@@ -290,7 +93,8 @@ def test_laya_runtime_decision_uses_existing_metadata_telemetry():
         record_laya_decision=lambda metadata, **identity: calls.append((metadata, identity)) or True
     )
     request = SimpleNamespace(
-        repository_id="repo-1", task_id="task-1", session_id="session-1"
+        repository_id="repo-1", task_id="task-1", session_id="session-1",
+        provider_label="generic_mcp",
     )
     metadata = {"decision_id": "laya-1", "suggestion": "indexed"}
     decision = SimpleNamespace(metadata=lambda: metadata)
@@ -301,6 +105,7 @@ def test_laya_runtime_decision_uses_existing_metadata_telemetry():
         metadata,
         {"repository_id": "repo-1", "task_id": "task-1", "session_id": "session-1"},
     )]
+    assert calls[0][0]["provider_label"] == "generic_mcp"
 
 
 def test_laya_runtime_decision_telemetry_failure_is_logged_without_raising():
@@ -313,7 +118,8 @@ def test_laya_runtime_decision_telemetry_failure_is_logged_without_raising():
     app.telemetry = SimpleNamespace(record_laya_decision=fail_recording)
     app.logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
     request = SimpleNamespace(
-        repository_id="repo-1", task_id="task-1", session_id="session-1"
+        repository_id="repo-1", task_id="task-1", session_id="session-1",
+        provider_label="generic_mcp",
     )
     decision = SimpleNamespace(metadata=lambda: {"decision_id": "laya-1"})
 
@@ -327,7 +133,8 @@ def test_laya_runtime_decision_telemetry_rejection_is_logged_without_raising():
     app.telemetry = SimpleNamespace(record_laya_decision=lambda *_args, **_kwargs: False)
     app.logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
     request = SimpleNamespace(
-        repository_id="repo-1", task_id="task-1", session_id="session-1"
+        repository_id="repo-1", task_id="task-1", session_id="session-1",
+        provider_label="generic_mcp",
     )
     decision = SimpleNamespace(metadata=lambda: {"decision_id": "laya-1"})
 
@@ -444,6 +251,91 @@ def test_typed_laya_decision_rejects_missing_server_baseline_before_inference(tm
 
     with pytest.raises(ValueError, match="deterministic server baseline"):
         app.evaluate_laya_decision(operation, root=str(tmp_path))
+
+
+def test_typed_retrieval_advisory_accepts_pipeline_hybrid_baseline(tmp_path, monkeypatch):
+    from local_ai_hub.laya_decisions import DecisionCategory
+
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    evidence_id = "E" + "a" * 20
+    app = LocalAIApp.__new__(LocalAIApp)
+    task = SimpleNamespace(task_id="task-retrieval")
+    app._laya_inference_enabled = lambda: True
+    app.config = {
+        "laya": {
+            "enabled": True,
+            "runtime": {
+                "checkpoint_path": str(checkpoint),
+                "revision": "revision-1",
+                "expected_sha256": {"model.safetensors": "a" * 64},
+            },
+        },
+        "models": {},
+        "server": {"state_dir": str(tmp_path / "state")},
+    }
+    app.agent_tasks = object()
+    app.evidence = object()
+    app.laya_lifecycle = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda *_args: task,
+        _session_for_task=lambda _task: "session-retrieval",
+        _candidate_input=lambda value: value,
+        _validate_context_source_evidence=lambda *_args, **_kwargs: None,
+        capture_runtime_outcome=lambda *_args, **_kwargs: {"candidate_id": "candidate-1"},
+    )
+    app._record_laya_decision_eligibility = lambda _request: True
+    app._record_laya_runtime_decision = lambda *_args: None
+    app._record_laya_capture_observation = lambda *_args, **_kwargs: True
+
+    class Adapter:
+        def evaluate_decision(self, request, _decision_input, **kwargs):
+            assert request.category is DecisionCategory.RETRIEVAL_STRATEGY
+            assert kwargs["outcome_recorder"] is not None
+            decision = SimpleNamespace(
+                success=True,
+                status=SimpleNamespace(value="success"),
+                suggestion="hybrid",
+                reason_codes=("EVIDENCE_SUFFICIENT",),
+                metadata=lambda: {"success": True},
+            )
+            outcome = SimpleNamespace(
+                decision=decision,
+                runtime=SimpleNamespace(provider="stub", revision="revision-1", latency_ms=1),
+            )
+            kwargs["outcome_recorder"](request, _decision_input, outcome)
+            return outcome
+
+    app._get_laya_runtime_adapter = lambda *_args, **_kwargs: Adapter()
+    monkeypatch.setattr(
+        "local_ai_hub.project_config.resolve_project_context",
+        lambda *_args: SimpleNamespace(coordination_id="repo-retrieval"),
+    )
+    operation = {
+        "action": "evaluate_decision",
+        "task_id": "task-retrieval",
+        "decision": {
+            "category": "retrieval_strategy",
+            "evidence_ids": [evidence_id],
+            "options": ["lexical_bm25", "hybrid"],
+            "state": {"context_source": "hybrid"},
+            "training_content": {"task_input": "find the relevant code"},
+        },
+    }
+
+    result = app.evaluate_laya_decision(
+        operation,
+        root=str(tmp_path),
+        _server_baseline={
+            "method": "hybrid_context_default",
+            "suggestion": "hybrid",
+            "evidence_id": evidence_id,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["baseline"]["method"] == "hybrid_context_default"
+    assert result["decision"]["suggestion"] == "hybrid"
 
 
 def test_laya_decision_operation_rejects_caller_supplied_baseline():
@@ -633,7 +525,7 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
     assert result["capture_status"] == ("failed" if capture_fails else "captured")
     assert result["capture_error_type"] == ("OSError" if capture_fails else None)
     assert len(eligibility) == 1
-    assert eligibility[0]["mode"] == "shadow"
+    assert eligibility[0]["mode"] == "advisory"
     assert eligibility[0]["category"] == "completion_gap"
     assert len(decisions) == 1
     assert decisions[0][0]["runtime_latency_ms"] == 18.0
@@ -652,49 +544,3 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
     if capture_fails:
         expected_event["error_type"] = "OSError"
     assert observations == [expected_event]
-
-
-def test_laya_decision_queue_does_not_duplicate_capture_observation(tmp_path):
-    app = LocalAIApp.__new__(LocalAIApp)
-    observations = []
-    app.telemetry = SimpleNamespace(record_stage=lambda **event: observations.append(event))
-    app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
-
-    def evaluate_decision(*_args, _record_capture_observation=True, **_kwargs):
-        if _record_capture_observation:
-            app._record_laya_capture_observation("captured", "runtime_outcome")
-        return {"capture_status": "captured", "candidate": {"candidate_id": "candidate-1"}}
-
-    app.evaluate_laya_decision = evaluate_decision
-    app._laya_capture_lock = threading.Lock()
-    app._laya_capture_queue = [({"action": "evaluate_decision"}, str(tmp_path), {})]
-    app._laya_capture_draining = True
-    app._shutdown = threading.Event()
-
-    app._drain_laya_capture_queue()
-
-    assert [event["stage"] for event in observations] == ["captured"]
-
-
-def test_laya_decision_queue_records_missing_capture_once(tmp_path):
-    app = LocalAIApp.__new__(LocalAIApp)
-    observations = []
-    app.telemetry = SimpleNamespace(record_stage=lambda **event: observations.append(event))
-    app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
-    app.evaluate_laya_decision = lambda *_args, **_kwargs: {
-        "capture_status": "failed",
-        "candidate": {},
-    }
-    app._laya_capture_lock = threading.Lock()
-    app._laya_capture_queue = [({"action": "evaluate_decision"}, str(tmp_path), {})]
-    app._laya_capture_draining = True
-    app._shutdown = threading.Event()
-
-    app._drain_laya_capture_queue()
-
-    assert observations == [{
-        "action": "laya_capture",
-        "stage": "failed",
-        "bypass_reason": "outcome_not_captured",
-        "success": False,
-    }]

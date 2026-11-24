@@ -48,6 +48,7 @@ _RUNTIME_BASELINE_METHODS = {
     DecisionCategory.MODEL_ROUTE: "model_router_classify",
     DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
     DecisionCategory.DELEGATION: "pipeline_worker_escalation",
+    DecisionCategory.SUBAGENT_BUDGET: "agent_os_delegation_budget",
     DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
     DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
     DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
@@ -1275,7 +1276,7 @@ class LayaCandidateStore:
             "baseline": baseline_record,
             "downstream_outcome": {
                 "status": "not_observed",
-                "reason": "shadow_only_not_user_exposed",
+                "reason": "advisory_not_applied",
             },
             "runtime": {
                 "model_id": runtime.model_id,

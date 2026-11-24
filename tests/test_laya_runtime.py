@@ -116,7 +116,7 @@ def request_and_evidence():
     )
     request = DecisionRequest(
         decision_id="decision-1",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         category=DecisionCategory.CONTEXT_SOURCE,
         repository_id="repo-1",
         task_id="task-1",
@@ -149,15 +149,15 @@ def candidate(device, device_class="dgpu", *, quality_passed=None):
 
 
 def adapter(
-    tmp_path, loader, *, devices=None, evaluation_mode=True,
+    tmp_path, loader, *, devices=None, enabled=True,
     capacity_manager=None, capacity_request_bytes=None,
 ):
     return LayaRuntimeAdapter(
         checkpoint_path=make_checkpoint(tmp_path),
         revision=REVISION,
         expected_sha256=HASHES,
-        device_candidates=devices or [candidate("cuda:0")],
-        evaluation_mode=evaluation_mode,
+        device_candidates=devices or [candidate("cuda:0", quality_passed=True)],
+        enabled=enabled,
         loader=loader,
         capacity_manager=capacity_manager,
         capacity_request_bytes=capacity_request_bytes,
@@ -180,7 +180,7 @@ def test_runtime_adapter_evaluates_standalone_typed_decision_with_redacted_train
 
     request = DecisionRequest(
         decision_id="decision-standalone",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         category=DecisionCategory.NEXT_STEP,
         repository_id="repo-1",
         task_id="task-1",
@@ -352,7 +352,7 @@ def test_adapter_preserves_preconfigured_provider_close_callback(tmp_path):
     assert holder["agent"].model.parameter.device == "cuda:0"
 
 
-def test_device_selection_requires_quality_for_non_evaluation_use():
+def test_device_selection_requires_quality_passed_device():
     gpu = candidate("cuda:0", quality_passed=None)
     npu = candidate("npu:0", "npu", quality_passed=True)
     assert select_laya_device([gpu, npu]).device == "npu:0"
@@ -362,12 +362,12 @@ def test_device_selection_requires_quality_for_non_evaluation_use():
         assert "quality gate" in str(exc)
     else:
         raise AssertionError("unknown quality must not qualify a production device")
-    assert select_laya_device([gpu], evaluation_mode=True) is gpu
+    assert select_laya_device([gpu, npu]).device == "npu:0"
 
 
 def test_disabled_adapter_does_not_load_or_infer(tmp_path):
     calls = []
-    model = adapter(tmp_path, lambda *args, **kwargs: calls.append((args, kwargs)), evaluation_mode=False)
+    model = adapter(tmp_path, lambda *args, **kwargs: calls.append((args, kwargs)), enabled=False)
     request, evidence = request_and_evidence()
     result = model.evaluate_context_source(request, evidence, session_lifecycle=lifecycle())
     assert result.decision.status is DecisionStatus.SKIPPED
@@ -375,18 +375,22 @@ def test_disabled_adapter_does_not_load_or_infer(tmp_path):
     assert calls == []
 
 
-def test_adapter_rejects_advisory_mode_before_loading(tmp_path):
+def test_production_adapter_runs_advisory_only_on_quality_passed_device(tmp_path):
     calls = []
-    model = adapter(tmp_path, lambda *args, **kwargs: calls.append((args, kwargs)))
+    model = adapter(
+        tmp_path,
+        lambda _path, *, device, expected_sha256: (calls.append((device, expected_sha256)) or FakeAgent(device)),
+        devices=[candidate("cuda:0", quality_passed=True)],
+    )
     request, evidence = request_and_evidence()
     advisory_request = replace(request, mode=DecisionMode.ADVISORY)
-    try:
-        model.evaluate_context_source(advisory_request, evidence, session_lifecycle=lifecycle())
-    except ValueError as exc:
-        assert "shadow" in str(exc)
-    else:
-        raise AssertionError("explicit runtime adapter must reject advisory requests")
-    assert calls == []
+
+    result = model.evaluate_context_source(
+        advisory_request, evidence, session_lifecycle=lifecycle(),
+    )
+
+    assert result.decision.suggestion == "artifact"
+    assert calls == [("cuda:0", HASHES)]
 
 
 def test_context_source_uses_redacted_training_content_and_returns_unverified_runtime(tmp_path):
@@ -523,7 +527,7 @@ def test_provider_failure_falls_back_once_to_next_eligible_device(tmp_path):
             raise RuntimeError("private provider failure")
         return FakeAgent(device)
 
-    devices = [candidate("cuda:0"), candidate("cpu", "cpu")]
+    devices = [candidate("cuda:0", quality_passed=True), candidate("cpu", "cpu", quality_passed=True)]
     model = adapter(tmp_path, load, devices=devices)
     request, evidence = request_and_evidence()
     result = model.evaluate_context_source(request, evidence, session_lifecycle=lifecycle())
@@ -600,7 +604,7 @@ def test_unconfirmed_provider_cleanup_stops_device_fallback(tmp_path):
     model = adapter(
         tmp_path,
         load,
-        devices=[candidate("cuda:0"), candidate("cpu", "cpu")],
+        devices=[candidate("cuda:0", quality_passed=True), candidate("cpu", "cpu", quality_passed=True)],
     )
     try:
         model._load()
@@ -629,7 +633,11 @@ def test_preloaded_router_cleanup_failure_stops_device_fallback(tmp_path, monkey
 
     fake_laya = type("FakeLaya", (), {"Router": staticmethod(make_router), "__version__": "fixture"})
     _patch_laya_runtime_imports(monkeypatch, fake_laya)
-    model = adapter(tmp_path, None, devices=[candidate("cuda:0"), candidate("cpu", "cpu")])
+    model = adapter(
+        tmp_path,
+        None,
+        devices=[candidate("cuda:0", quality_passed=True), candidate("cpu", "cpu", quality_passed=True)],
+    )
 
     try:
         model._load()

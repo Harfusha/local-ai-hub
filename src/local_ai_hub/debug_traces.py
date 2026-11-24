@@ -149,15 +149,8 @@ class DebugTraceStore:
     def __init__(self, config: dict[str, Any]):
         telemetry_cfg = config.get("telemetry", {}) if isinstance(config, dict) else {}
         telemetry_mode = str(telemetry_cfg.get("mode") or "").strip().lower()
-        if telemetry_mode == "full":
-            self.enabled = True
-        elif telemetry_mode in ("off", "minimal"):
-            self.enabled = False
-        else:
-            legacy = config.get("debug_traces") or config.get("observability", {}).get("debug_traces", {})
-            self.enabled = bool(legacy.get("enabled", False)) if isinstance(legacy, dict) else False
-
-        cfg = telemetry_cfg if isinstance(telemetry_cfg, dict) and any(k in telemetry_cfg for k in ("max_bytes", "terminal_ttl_seconds", "retention_days")) else (config.get("debug_traces") or config.get("observability", {}).get("debug_traces", {}))
+        self.enabled = telemetry_mode == "full"
+        cfg = telemetry_cfg
         if not isinstance(cfg, dict):
             cfg = {}
         self.retention_days: int | None

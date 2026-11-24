@@ -7,7 +7,7 @@ import pytest
 from local_ai_hub import http_server, mcp_server
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.http_route_registry import select_http_routes
-from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
+from local_ai_hub.operation_contracts import operation_contract, operation_parameters_schema, validate_operation_arguments
 
 
 def _non_accounting_posts(posts):
@@ -156,3 +156,15 @@ def test_source_action_keeps_its_existing_exact_size_bounds(size, valid) -> None
         "local_ai_artifact", "source", {"path": "src/file.py", "max_chars": size},
     )
     assert (error is None) is valid
+
+
+def test_artifact_contract_exposes_only_canonical_action_fields() -> None:
+    contract = operation_contract("local_ai_artifact")
+    assert contract is not None
+    aliases = {"id", "file", "workspace", "start_line", "end_line"}
+    assert aliases.isdisjoint(contract["properties"])
+    assert aliases.isdisjoint(contract["actions"]["source"]["allowed"])
+    assert "root" not in contract["actions"]["get"]["allowed"]
+    assert validate_operation_arguments(
+        "local_ai_artifact", "source", {"path": "src/file.py", "slices": [{"path": "x"}]},
+    ) is not None

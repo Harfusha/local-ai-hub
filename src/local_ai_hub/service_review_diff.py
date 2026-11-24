@@ -85,6 +85,9 @@ def _review_failure_details(response: Any) -> dict[str, Any]:
         value = response.get(key)
         if isinstance(value, bool):
             details[key] = value
+    status_code = response.get("status_code")
+    if type(status_code) is int and 400 <= status_code <= 599:
+        details["status_code"] = status_code
     model = response.get("model")
     if isinstance(model, str) and model.strip():
         details["model"] = model.strip()[:120]

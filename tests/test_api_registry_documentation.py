@@ -139,9 +139,11 @@ def test_http_post_scope_binding_stays_specific_and_fail_closed():
 def test_http_post_route_dispatch_uses_route_ids_and_named_boundaries():
     rows = {row["name"]: row for row in _coverage_rows() if row.get("surface") == "HTTP POST"}
 
-    coord_dispatch = rows["/api/coord/board_item_create"]["contract"]["route_dispatch"]
-    assert any("APP.services.board_item_create" in t for t in coord_dispatch["targets"])
-    assert any("http_routes_post.py:" in e or "http_server.py:" in e for e in rows["/api/coord/board_item_create"]["evidence"])
+    retired_routes = {"/api/coord/board_item_create", "/api/coord/board_item_update",
+                      "/api/coord/board_item_delete", "/api/coord/board_item_get",
+                      "/api/coord/board_item_list", "/api/coord/board_summary",
+                      "/api/coord/milestone_create", "/api/coord/milestone_status"}
+    assert retired_routes.isdisjoint(rows)
 
     git_dispatch = rows["/api/git/status"]["contract"]["route_dispatch"]
     assert "_handle_post_repository_analysis" in git_dispatch["handler_boundaries"]

@@ -51,7 +51,7 @@ def test_readme_laya_mcp_example_passes_typed_candidate_contract():
             "options": decision["options"],
         },
         decision_id="laya-wire-1",
-        mode=DecisionMode.SHADOW,
+        mode=DecisionMode.ADVISORY,
         repository_id="repo-wire-1",
         task_id=operation["laya_operation"]["task_id"],
         session_id="session-wire-1",
@@ -270,8 +270,12 @@ def test_mcp_curate_dataset_forwards_scoped_candidate_get(monkeypatch, tmp_path)
     )
 
     assert result["success"] is True, result
-    assert len(calls) == 1
-    path, payload, _timeout = calls[0]
+    task_calls = [
+        call for call in calls
+        if call[0] == "/api/agent-state/tasks" and call[1].get("action") == "curate_dataset"
+    ]
+    assert len(task_calls) == 1
+    path, payload, _timeout = task_calls[0]
     assert path == "/api/agent-state/tasks"
     assert payload["action"] == "curate_dataset"
     assert payload["laya_operation"] == operation
@@ -316,7 +320,7 @@ def test_laya_http_wire_accepts_typed_shape_and_rejects_extra_nested_fields(monk
         {"action": "curate_dataset", "root": str(tmp_path), "laya_operation": operation},
     )
     assert valid_status == 503
-    assert valid_body["error"] == "Laya shadow checkpoint is not configured"
+    assert valid_body["error"] == "pinned Laya checkpoint is unavailable locally or could not be verified"
 
     malformed = _decision_operation()
     malformed["decision"]["caller_mode"] = "advisory"

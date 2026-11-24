@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub import process_utils
+from local_ai_hub import process_utils, git_worktrees
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -46,7 +46,7 @@ def test_git_worktree_lifecycle_uses_tracked_subprocess_runner(
 
     branch = f"t06-route-{uuid.uuid4().hex[:8]}"
     target = tmp_path / "isolated-worktree"
-    created = process_utils.create_git_worktree(
+    created = git_worktrees.create_git_worktree(
         repo,
         branch_name=branch,
         worktree_path=target,
@@ -56,14 +56,14 @@ def test_git_worktree_lifecycle_uses_tracked_subprocess_runner(
     )
     assert created["success"] is True, created
 
-    removed = process_utils.remove_git_worktree(
+    removed = git_worktrees.remove_git_worktree(
         repo,
         target,
         worktree_id=created["worktree_id"],
         branch_name=branch,
     )
     assert removed["success"] is True, removed
-    pruned = process_utils.prune_git_worktrees(repo)
+    pruned = git_worktrees.prune_git_worktrees(repo)
     assert pruned["success"] is True, pruned
     assert any("worktree" in call and "add" in call for call in tracked)
     assert any("status" in call for call in tracked)

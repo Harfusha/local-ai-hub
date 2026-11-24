@@ -9,7 +9,7 @@ import pytest
 
 COMPONENT_PHASES = (
     "recovery", "preprocessor", "external_tools", "work_orchestrator",
-    "async_jobs", "background_gpu", "scheduler", "telemetry",
+    "async_jobs", "execution_pool", "background_gpu", "scheduler", "telemetry",
     "deterministic", "code_index",
 )
 CLOSE_PHASES = (

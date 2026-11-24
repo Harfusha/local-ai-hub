@@ -2,17 +2,102 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub.http_route_registry import POST_ROUTE_HANDLER_BOUNDARIES, POST_ROUTE_REGISTRY, select_http_routes, select_post_handler
+from local_ai_hub.http_route_registry import (
+    POST_ROUTE_HANDLER_BOUNDARIES,
+    POST_ROUTE_REGISTRY,
+    POST_ROUTE_SERVICE_METHODS,
+    select_http_routes,
+    select_post_handler,
+)
+
+
+@pytest.mark.parametrize("route_id,service_name", tuple(POST_ROUTE_SERVICE_METHODS.items()))
+def test_cancellable_task_route_uses_registered_service_and_disconnect_contract(
+    monkeypatch, route_id: str, service_name: str,
+):
+    from local_ai_hub import http_server
+    from local_ai_hub.http_api_post import HttpPostHelpersMixin
+
+    calls = []
+    service_method = lambda payload: {"service": service_name, "payload": payload}
+    app = SimpleNamespace(services=SimpleNamespace(**{service_name: service_method}))
+    monkeypatch.setattr(http_server, "APP", app)
+    pool = object()
+    monkeypatch.setattr(http_server, "_ACTIVE_DELEGATES", pool)
+    connection_obj = object()
+
+    def invoke(pool_arg, operation, payload, *, connection):
+        calls.append((pool_arg, operation, payload, connection))
+        return operation(payload)
+
+    monkeypatch.setattr(http_server, "_invoke_cancellable_request", invoke)
+
+    class Handler(HttpPostHelpersMixin):
+        headers = {"X-LocalAI-Cancel-On-Disconnect": "1"}
+        connection = connection_obj
+
+        def _send(self, status, result):
+            self.response = (status, result)
+
+    handler = Handler()
+    payload = {"query": "bounded"}
+    handler._handle_post_cancellable_task_service(payload, route_ids=(route_id,))
+
+    assert select_post_handler((route_id,)) == "_handle_post_cancellable_task_service"
+    assert calls == [(pool, service_method, payload, connection_obj)]
+    assert handler.response == (200, {"service": service_name, "payload": payload})
+
+
+@pytest.mark.parametrize("route_id,service_name,payload,expected_args,expected_kwargs,status", [
+    ("post_repo_profile_1", "repo_profile", {"root": "R"}, ("R",), {}, 200),
+    ("post_repo_map_1", "repo_map", {"root": "R", "max_symbols": "3"}, ("R", 3), {}, 200),
+    ("post_repo_code_index_1", "code_query", {"root": "R", "query": "Q", "limit": 7, "include_code": True, "offset": 2}, ("R", "Q", 7, True, 2), {}, 202),
+    ("post_repo_investigate_1", "repo_investigate", {"root": "R", "query": "Q", "path": "p", "include_code": False, "limit": 4}, ("R", "Q", "p", False, 4), {}, 200),
+    ("post_repo_diagnose_1", "repo_diagnose", {"root": "R", "query": "Q"}, ("R", "Q"), {}, 200),
+    ("post_repo_briefing_1", "repo_briefing", {"root": "R"}, ("R",), {}, 200),
+    ("post_repo_deterministic_1", "deterministic_query", {"root": "R", "query": "Q", "limit": "9"}, ("R", "Q", 9), {}, 200),
+    ("post_repo_impact_1", "repo_impact", {"root": "R", "base": "B", "staged": True, "max_symbols": 5, "max_dependents": 6}, ("R", "B", True, 5, 6), {}, 200),
+])
+def test_repository_analysis_named_routes_preserve_service_arguments(
+    route_id, service_name, payload, expected_args, expected_kwargs, status,
+):
+    from local_ai_hub.http_post_repository_analysis import handle_post_repository_analysis
+
+    calls = []
+
+    def service(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"success": True, "status_code": 202} if service_name == "code_query" else {"success": True}
+
+    app = SimpleNamespace(
+        deterministic=object(),
+        services=SimpleNamespace(**{service_name: service}),
+        config={"workflow": {}},
+    )
+
+    class Handler:
+        response = None
+
+        def _send(self, response_status, result):
+            self.response = (response_status, result)
+
+    handler = Handler()
+    assert handle_post_repository_analysis(handler, payload, (route_id,), app) is True
+    assert select_post_handler((route_id,)) == "_handle_post_repository_analysis"
+    assert calls == [(expected_args, expected_kwargs)]
+    assert handler.response[0] == status
+    assert handler.response[1]["success"] is True
 
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "http_post_route_inventory_t18.json"
 _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
-_RETIRED_ROUTE_IDS = {"post_control_1", "post_command_1", "post_command_preflight_1", "post_command_speculative_lint_1", "post_command_daemon_1", "post_command_lint_fix_1", "post_command_http_probe_1", "post_command_mock_server_1", "post_command_diff_hunk_stage_1", "post_command_flaky_detect_1", "post_command_webhook_replay_1"}
+_RETIRED_ROUTE_IDS = {"post_control_1", "post_command_1", "post_command_preflight_1", "post_command_speculative_lint_1", "post_command_daemon_1", "post_command_lint_fix_1", "post_command_http_probe_1", "post_command_mock_server_1", "post_command_diff_hunk_stage_1", "post_command_flaky_detect_1", "post_command_webhook_replay_1", "post_code_find_declaration_1"}
 # Frozen, reviewed public-contract deltas from the immutable historical preimage.
 _CURRENT_ROUTE_PATHS = {
  'post_browser_capture_abandon_1': ['/api/browser/capture/stage', '/api/browser/capture/commit', '/api/browser/capture/abandon', '/api/browser/capture/purge'],
@@ -78,15 +163,7 @@ _CURRENT_ADDED_ROUTES = {
  'post_declaration_1': {'paths': ['/api/code/declaration'], 'before': 'post_repo_secret_scan_1'},
  'post_context_pack_1': {'paths': ['/api/context/pack'], 'before': 'post_ingest_document_1'},
  'post_coord_session_briefing_1': {'paths': ['/api/coord/session_briefing'], 'before': 'post_eval_suite_1'},
- 'post_coord_milestone_status_1': {'paths': ['/api/coord/milestone_status'], 'before': 'post_coord_session_briefing_1'},
- 'post_coord_milestone_create_1': {'paths': ['/api/coord/milestone_create'], 'before': 'post_coord_milestone_status_1'},
- 'post_coord_board_summary_1': {'paths': ['/api/coord/board_summary'], 'before': 'post_coord_milestone_create_1'},
- 'post_coord_board_item_list_1': {'paths': ['/api/coord/board_item_list'], 'before': 'post_coord_board_summary_1'},
- 'post_coord_board_item_delete_1': {'paths': ['/api/coord/board_item_delete'], 'before': 'post_coord_board_item_list_1'},
- 'post_coord_board_item_get_1': {'paths': ['/api/coord/board_item_get'], 'before': 'post_coord_board_item_delete_1'},
- 'post_coord_board_item_update_1': {'paths': ['/api/coord/board_item_update'], 'before': 'post_coord_board_item_get_1'},
- 'post_coord_board_item_create_1': {'paths': ['/api/coord/board_item_create'], 'before': 'post_coord_board_item_update_1'},
- 'post_coord_semaphore_status_1': {'paths': ['/api/coord/semaphore_status'], 'before': 'post_coord_board_item_create_1'},
+ 'post_coord_semaphore_status_1': {'paths': ['/api/coord/semaphore_status'], 'before': 'post_coord_session_briefing_1'},
  'post_coord_semaphore_release_1': {'paths': ['/api/coord/semaphore_release'], 'before': 'post_coord_semaphore_status_1'},
  'post_coord_semaphore_acquire_1': {'paths': ['/api/coord/semaphore_acquire'], 'before': 'post_coord_semaphore_release_1'},
  'post_coord_wait_for_event_1': {'paths': ['/api/coord/wait_for_event'], 'before': 'post_coord_semaphore_acquire_1'},

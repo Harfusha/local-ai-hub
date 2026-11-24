@@ -17,6 +17,9 @@ def running_app_client(tmp_path: Path):
     # Setup app with agent_state enabled and start it
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(f"""
+[local_ai_hub]
+config_schema_version = 1
+
 [server]
 bind = "127.0.0.1"
 port = 11489
@@ -65,7 +68,7 @@ def test_http_coord_pubsub_poll_honors_sequence_cursor(tmp_path: Path, monkeypat
 
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11489\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11489\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
@@ -203,18 +206,18 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
     # local_ai_coord actions
     c_res1 = mcp_mod.local_ai_coord(action="task_create", task_id="t1", contract={"goal": "g"})
     assert c_res1["success"] is True
-    c_res_goal_fallback = mcp_mod.local_ai_coord(
+    c_res_contract = mcp_mod.local_ai_coord(
         action="task_create",
         task_id="t-goal-fallback",
-        task="goal from task field",
-        contract={"acceptance_criteria": ["criterion"]},
+        contract={"goal": "canonical task goal", "acceptance_criteria": ["criterion"]},
     )
-    assert c_res_goal_fallback["success"] is True
-    goal_fallback_payload = next(
+    assert c_res_contract["success"] is True
+    contract_payload = next(
         call[2] for call in calls
         if call[0] == "COORD" and call[1] == "task_create" and call[2].get("task_id") == "t-goal-fallback"
     )
-    assert goal_fallback_payload["task"] == "goal from task field"
+    assert contract_payload["contract"] == {"goal": "canonical task goal", "acceptance_criteria": ["criterion"]}
+    assert "task" not in contract_payload
 
     c_res2 = mcp_mod.local_ai_coord(
         action="memory_record",
@@ -487,7 +490,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
@@ -835,7 +838,7 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
@@ -904,7 +907,7 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
@@ -988,9 +991,9 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        "\n[debug_traces]\nenabled = true\n"
+        "\n[telemetry]\nmode = \"full\"\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -1051,7 +1054,7 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11499\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11499\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
@@ -1140,7 +1143,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11500\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11500\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
@@ -1232,7 +1235,7 @@ def test_client_convenience_methods(running_app_client):
 
     client.post = mock_post
 
-    res1 = client.create_task("Fix bug", acceptance_criteria=["test_passes"], task_id="t10")
+    res1 = client.create_task({"goal": "Fix bug", "acceptance_criteria": ["test_passes"]}, task_id="t10")
     assert res1["success"] is True and res1["action"] == "create"
 
     res2 = client.get_task("t10")
@@ -1389,7 +1392,7 @@ def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11501\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11501\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )

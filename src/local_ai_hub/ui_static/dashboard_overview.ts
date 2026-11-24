@@ -516,7 +516,7 @@ if($('detailedTelemetryToggle'))$('detailedTelemetryToggle').onclick=async()=>{
   const status=$('detailedTelemetryStatus');if(status)status.textContent='';
   let failureStage='';
   try{
-    const result=await post('/api/config/update',{settings:{'debug_traces.enabled':enabled}});
+    const result=await post('/api/config/update',{settings:{'telemetry.mode':enabled?'full':'minimal'}});
     failureStage=result?.failure_stage==='persistence'?'persistence':result?.failure_stage==='validation'?'validation':'';
     if(!result?.success)throw new Error(result?.error||'Unable to update telemetry');
     if(result.applied_live!==true){

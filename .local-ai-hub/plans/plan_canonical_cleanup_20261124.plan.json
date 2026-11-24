@@ -1,0 +1,297 @@
+{
+  "accountable_role": "primary-agent",
+  "default_target_ref": "refs/heads/master",
+  "description": "User-approved whole-repository cleanup: remove legacy runtime behavior, migrate retired persisted formats on update, unify MCP/provider/skill/instruction generation and docs, remove proven ballast.",
+  "id": "plan_canonical_cleanup_20261124",
+  "lifecycle": "archived",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+      "revision": {
+        "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+      "revision": {
+        "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_cleanup_inventory": {
+      "acceptance_criteria": [
+        "Every runtime candidate is classified as migration-only, current product behavior, security boundary, historical oracle, obsolete, or unresolved with evidence.",
+        "Every provider/profile generation surface has a traced source and drift finding.",
+        "All dirty/untracked work and active-plan overlaps are preserved and classified before overlapping edits."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Classify actual callers and stored formats; map duplicate outputs, stale docs, dirty work, and active-plan overlap. No keyword-only deletion. Initial partial findings are recorded in docs/audits/2026-11-24-local-ai-hub-canonical-cleanup.md; they do not authorize removals.",
+      "kind": "code",
+      "next_action": "Continue source-linked migration-chain and caller mapping; reconcile active plan owners and update the audit before overlapping edits.",
+      "order": 1,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Inventory contracts, legacy paths, generators, and ballast",
+      "work_phase": "discovery",
+      "work_status": "in_progress"
+    },
+    "task_integrated_acceptance": {
+      "acceptance_criteria": [
+        "Release checks and targeted migration, contract, generator, and provider verification pass on integrated revision.",
+        "Every design criterion has current evidence; static, runtime, and provider acceptance are reported separately.",
+        "No goal requirement remains unresolved or unverified."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_remove_runtime_compat"
+        },
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_unify_generators"
+        },
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_reconcile_docs"
+        },
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_remove_proven_ballast"
+        }
+      ],
+      "description": "Audit final revision across migrations, runtime boundaries, generated provider/profile surfaces, docs, and removal evidence.",
+      "kind": "code",
+      "next_action": "Verify after implementation and integration.",
+      "order": 7,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Verify integrated cleanup against full goal",
+      "work_status": "planned"
+    },
+    "task_migration_boundary": {
+      "acceptance_criteria": [
+        "Each supported old persisted format has an explicit ordered migration.",
+        "Migrations preserve authoritative records, provide recoverability, validate output, and stop safely on ambiguity.",
+        "Current runtime does not read old persisted formats after migration."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_cleanup_inventory"
+        }
+      ],
+      "description": "Convert retired persisted/config formats before current runtime opens state; preserve data and fail closed on ambiguity.",
+      "kind": "code",
+      "next_action": "Implement after inventory identifies supported formats and stores.",
+      "order": 2,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Make update migrations sole old-format reader",
+      "work_status": "planned"
+    },
+    "task_reconcile_docs": {
+      "acceptance_criteria": [
+        "Current docs match implementation and generated surfaces.",
+        "Update docs describe migrations without runtime compatibility.",
+        "Retained historical artifacts have a migration, test-oracle, or evidence purpose."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_migration_boundary"
+        },
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_unify_generators"
+        }
+      ],
+      "description": "Document migration-only upgrades and current runtime rejection; label retained history.",
+      "kind": "documentation",
+      "next_action": "Reconcile docs after runtime and generator contracts are fixed.",
+      "order": 5,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Reconcile operator documentation and historical evidence",
+      "work_status": "planned"
+    },
+    "task_remove_proven_ballast": {
+      "acceptance_criteria": [
+        "Every removal is proven unused across imports, entrypoints, migrations, tests, and packaging.",
+        "No user work or supported upgrade path is removed."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_cleanup_inventory"
+        }
+      ],
+      "description": "Remove only unreachable modules, unused dependencies, duplicate outputs, and stale artifacts backed by reference evidence.",
+      "kind": "code",
+      "next_action": "Remove bounded groups after inventory and overlap review.",
+      "order": 6,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Remove proven dead code and repository ballast",
+      "work_status": "planned"
+    },
+    "task_remove_runtime_compat": {
+      "acceptance_criteria": [
+        "Current boundaries accept one canonical shape and reject retired aliases with actionable errors.",
+        "No runtime dual-read/write or compatibility adapter remains outside migration code.",
+        "Authorization, identity, privacy, path, quality, and receipt gates remain intact."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_migration_boundary"
+        }
+      ],
+      "description": "Reject old names/shapes at API, MCP, SDK, configuration, and store boundaries; preserve current product behavior and security gates.",
+      "kind": "code",
+      "next_action": "Remove only evidence-classified paths after migration acceptance.",
+      "order": 3,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Remove retired runtime aliases and compatibility paths",
+      "work_status": "planned"
+    },
+    "task_unify_generators": {
+      "acceptance_criteria": [
+        "All supported provider/profile schemas, skills, and instructions match active contracts.",
+        "Disabled actions and retired aliases are absent from generated output.",
+        "Shared contract text has one source; remaining differences represent host packaging."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_canonical_cleanup_20261124",
+          "task_id": "task_cleanup_inventory"
+        }
+      ],
+      "description": "Derive shared action/capability contracts and outputs from one active source; retain host-layout adapters.",
+      "kind": "code",
+      "next_action": "Consolidate after mapping generator sources and active overlaps.",
+      "order": 4,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-local-ai-hub-canonical-cleanup-design.md",
+          "revision": {
+            "content_sha256": "6165c2e335b7d6784d920cbd7020cd09c223a00bb92045b46d4c4095c724485e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md",
+          "revision": {
+            "content_sha256": "e0e103e474c9dc7675e2f92c1ab8ade3577b6565e4900439b826cfbbc292f9a4",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Unify MCP, provider, skill, and instruction generation",
+      "work_status": "planned"
+    }
+  },
+  "title": "Local AI Hub canonical cleanup"
+}

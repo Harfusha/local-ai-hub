@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from local_ai_hub.client_adapters.registry import (
     get_adapter,
+    detect_client,
 )
 
 from local_ai_hub.client_adapters.adapters.antigravity import (
@@ -87,8 +88,9 @@ def test_vscode_mcp_config():
     adapter = get_adapter("vscode")
     assert isinstance(adapter, VSCodeCopilotAdapter)
     config = adapter.generate_vscode_mcp_config("python.exe", "C:/Hub")
-    servers = config.get("mcpServers", {})
+    servers = config.get("servers", {})
     assert "local-ai" in servers
+    assert servers["local-ai"]["type"] == "stdio"
     assert servers["local-ai"]["command"] == "python.exe"
     assert servers["local-ai"]["cwd"] == "C:/Hub"
 
@@ -96,14 +98,49 @@ def test_vscode_mcp_config():
 def test_gemini_cli_capabilities():
     adapter = get_adapter("gemini_cli")
     assert isinstance(adapter, GeminiCliAdapter)
-    assert adapter.capabilities.hook_support.value == "full"
+    assert adapter.capabilities.hook_support.value == "session_tool"
 
 
 def test_adapter_capability_reports():
-    for client_id in ["antigravity", "codex", "claude", "opencode", "cursor", "vscode", "gemini_cli"]:
+    expected_hook_events = {
+        "generic_mcp": [],
+        "antigravity": ["SessionStart", "PreToolUse", "PostToolUse"],
+        "codex": ["SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"],
+        "claude": ["SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"],
+        "opencode": ["context", "execute.after"],
+        "cursor": ["sessionStart", "beforeShellExecution", "afterFileEdit"],
+        "windsurf": ["pre_run_command", "pre_read_code", "pre_mcp_tool_use", "post_write_code"],
+        "devin": ["SessionStart", "PreToolUse", "PostToolUse"],
+        "vscode": ["sessionStart", "preToolUse", "postToolUse"],
+        "gemini_cli": ["SessionStart", "BeforeAgent", "BeforeTool", "AfterTool"],
+    }
+    for client_id in expected_hook_events:
         adapter = get_adapter(client_id)
         report = adapter.capability_report()
         assert report["client_id"] == client_id
         assert "hook_support" in report
+        assert report["hook_events"] == expected_hook_events[client_id]
         assert "instruction_targets" in report
         assert "has_token_tracking" in report
+
+    assert get_adapter("copilot").capabilities.hook_events == tuple(expected_hook_events["vscode"])
+    assert get_adapter("gemini_antigravity").capabilities.hook_events == tuple(expected_hook_events["antigravity"])
+
+
+def test_provider_mcp_identity_resolves_to_its_own_adapter():
+    expected = {
+        "codex": "codex",
+        "antigravity": "antigravity",
+        "claude": "claude",
+        "gemini": "gemini_cli",
+        "gemini_cli": "gemini_cli",
+        "cursor": "cursor",
+        "windsurf": "windsurf",
+        "copilot": "vscode",
+        "opencode": "opencode",
+    }
+
+    for provider, client_id in expected.items():
+        adapter = get_adapter(agent_header=provider)
+        assert detect_client(provider) == client_id
+        assert adapter.client_id == client_id

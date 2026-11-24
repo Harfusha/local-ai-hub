@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "catalog_version": "2026-11-23.1",
+  "checked_at": "2026-11-23",
+  "scope": "Ollama official model-library tags for every model family used by hardware-tier routes",
+  "meaning": {
+    "fp4_available": "An exact FP4 model tag is listed by the official Ollama library.",
+    "route_eligible": "The listed variant is approved for automatic routing only on the stated provider, platform, architecture and required hardware capabilities.",
+    "not_listed": "No exact FP4 tag was found on the official Ollama tag page checked on checked_at; this is not a claim about third-party repositories."
+  },
+  "models": [
+    {
+      "model_family": "qwen2.5-coder",
+      "model_sizes_used": ["0.5b", "1.5b", "3b", "7b", "14b", "32b"],
+      "tiers": ["cpu", "integrated", "low", "balanced", "medium", "high", "max"],
+      "fp4_available": false,
+      "fp4_variant": null,
+      "status": "not_listed",
+      "route_eligible": false,
+      "reason": "No nvfp4 tag on official Ollama library tag page.",
+      "source": "https://ollama.com/library/qwen2.5-coder/tags"
+    },
+    {
+      "model_family": "qwen3-vl",
+      "model_sizes_used": ["4b"],
+      "tiers": ["cpu", "integrated", "low"],
+      "fp4_available": false,
+      "fp4_variant": null,
+      "status": "not_listed",
+      "route_eligible": false,
+      "reason": "No nvfp4 tag on official Ollama library tag page.",
+      "source": "https://ollama.com/library/qwen3-vl/tags"
+    },
+    {
+      "model_family": "minicpm-v",
+      "model_sizes_used": ["8b"],
+      "tiers": ["balanced", "medium", "high", "max"],
+      "fp4_available": false,
+      "fp4_variant": null,
+      "status": "not_listed",
+      "route_eligible": false,
+      "reason": "No nvfp4 tag on official Ollama library tag page; Q2/Q3/Q4/Q5/Q6/Q8 tags exist.",
+      "source": "https://ollama.com/library/minicpm-v/tags"
+    },
+    {
+      "model_family": "qwen3.5",
+      "model_sizes_used": ["9b"],
+      "tiers": ["balanced", "medium", "high", "max"],
+      "model": "qwen3.5:9b",
+      "aliases": ["qwen3.5:9b-q4_K_M"],
+      "fp4_available": true,
+      "fp4_variant": "qwen3.5:9b-nvfp4",
+      "format": "NVFP4",
+      "backend": "llama.cpp CUDA 13.5",
+      "provider": "auto",
+      "platforms": ["windows"],
+      "architectures": ["amd64", "x86_64"],
+      "requires_native_fp4": true,
+      "status": "measured_provisional_speed_preference",
+      "route_eligible": true,
+      "reason": "On Windows x64 with detected native FP4 support and the default auto provider, prefer this measured NVFP4 artifact for speed: quality tied 8/8 and generation was 7.6% faster in auto and 7.9% faster with W4A4. Source revisions are not commit-pinned, so this remains a provisional, platform-limited preference.",
+      "observed_runtime_evidence": {
+        "summary": "Qwen3.5 9B Q4 and NVFP4 artifacts from the Ollama tags loaded on NVIDIA GeForce RTX 5070 Ti with llama.cpp b12649 Windows CUDA 13.5. Both scored 8/8; Q4 median was 125.6 tokens/s, NVFP4 was 135.2 auto and 135.5 W4A4. The upstream source commit is not exposed; this is a provisional artifact-level speed preference, not a quality win.",
+        "source": "docs/agent-evaluation/fp4-q4-all-tier-evaluation-2026-11-23.md",
+        "q4_sha256": "02D45DC1CF451BA2475AC33B301C2DD8F985ABE4C182CE04A1F2F5BF0260278D",
+        "nvfp4_sha256": "0DB703913B6A1B057D423E9815095E9DC16499596A986446918314A48C4D9BAD"
+      },
+      "additional_published_fp4_variants_checked": [
+        {
+          "model": "qwen3.5:4b",
+          "fp4_variant": "qwen3.5:4b-nvfp4",
+          "backend": "Ollama MLX",
+          "status": "published_backend_specific",
+          "route_eligible": false,
+          "reason": "Exact tag is listed as MLX; this size is not used by current tier routing and has no model-specific quality qualification.",
+          "source": "https://ollama.com/library/qwen3.5/tags"
+        }
+      ],
+      "source": "https://ollama.com/library/qwen3.5/tags"
+    }
+  ]
+}

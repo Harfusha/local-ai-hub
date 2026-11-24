@@ -34,6 +34,26 @@ def test_endpoint_stats_read_failure_is_not_reported_as_zero(tmp_path, monkeypat
     assert report["error"] == "endpoint stats unavailable"
 
 
+def test_unknown_exact_stats_schema_fails_before_runtime_schema_writes(tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    database = tmp_path / "endpoint_stats.sqlite3"
+    with closing(sqlite3.connect(database)) as con:
+        con.execute("CREATE TABLE endpoint_stats_exact(scope_root TEXT)")
+        con.commit()
+    before = database.read_bytes()
+
+    with pytest.raises(RuntimeError, match="unsupported exact endpoint statistics schema"):
+        EndpointStatsStore(tmp_path)
+
+    assert database.read_bytes() == before
+    with closing(sqlite3.connect(database)) as con:
+        tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert tables == {"endpoint_stats_exact"}
+        assert con.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+
+
 def test_record_call_reuses_writer_connection_and_close_reopens(tmp_path, monkeypatch):
     store = EndpointStatsStore(tmp_path / "state")
     connect = store._connect
@@ -82,15 +102,13 @@ def test_record_call_uses_bounded_write_transaction_and_deduplicates(tmp_path, m
     store.close()
 
 
-def test_exact_scopes_preserve_legacy_counts_and_event_dedup_after_restart(tmp_path):
+def test_exact_scopes_reject_basename_selectors_and_deduplicate_events_after_restart(tmp_path):
     import time
     from contextlib import closing
 
     state = tmp_path / "state"
     store = EndpointStatsStore(state)
     with closing(store._connect()) as con, con:
-        con.execute("INSERT INTO endpoint_stats(scope_root,item_type,item_name,calls,success_calls,b0) VALUES(?,?,?,?,?,?)",
-                    ("shared", "mcp", "tool", 1, 1, 1))
         con.execute("INSERT INTO endpoint_call_ids(event_id,created_at) VALUES(?,?)", ("legacy-event", time.time()))
 
     root = str(tmp_path / "a" / "shared")
@@ -101,19 +119,16 @@ def test_exact_scopes_preserve_legacy_counts_and_event_dedup_after_restart(tmp_p
 
     reopened = EndpointStatsStore(state)
     assert reopened.get_stats(root=root, include_unused=False)["items"][0]["calls"] == 1
-    assert reopened.get_stats(root="legacy:shared", include_unused=False)["items"][0]["calls"] == 1
-    assert reopened.get_stats(include_unused=False)["items"][0]["calls"] == 3
+    assert reopened.get_stats(root="legacy:shared")["success"] is False
+    assert reopened.get_stats(include_unused=False)["items"][0]["calls"] == 2
     assert reopened.get_stats(root="shared")["success"] is False
 
 
-def test_project_stats_disclose_basename_grouping_and_tool_call_semantics(tmp_path):
+def test_project_stats_require_exact_roots_and_disclose_tool_call_semantics(tmp_path):
     from contextlib import closing
     from local_ai_hub.dashboard import DASHBOARD_HTML
 
     store = EndpointStatsStore(tmp_path / "state")
-    with closing(store._connect()) as con, con:
-        con.execute("INSERT INTO endpoint_stats(scope_root,item_type,item_name,calls,success_calls,b0) VALUES(?,?,?,?,?,?)",
-                    ("shared", "mcp", "local_ai_task:review", 4, 4, 4))
     store.record_call(item_type="mcp", item_name="local_ai_task:review", duration_ms=1,
                       root="C:/one/shared")
     store.record_call(item_type="mcp", item_name="local_ai_task:review", duration_ms=1,
@@ -125,23 +140,17 @@ def test_project_stats_disclose_basename_grouping_and_tool_call_semantics(tmp_pa
     assert other["root"] != report["root"] and other["items"][0]["calls"] == 1
     assert store.get_stats(root=report["root"], include_unused=False)["items"][0]["calls"] == 1
     assert store.get_stats(root="c:/ONE/shared/../shared", include_unused=False)["root"] == report["root"]
-    legacy = store.get_stats(root="legacy:shared", include_unused=False)
-    assert legacy["project_scope_precision"] == "historical_basename"
-    assert legacy["items"][0]["calls"] == 4
+    assert store.get_stats(root="legacy:shared")["success"] is False
     global_report = store.get_stats(include_unused=False)
-    assert global_report["items"][0]["calls"] == 6
+    assert global_report["items"][0]["calls"] == 2
     assert store.reset(root="C:/one/shared") is True
     assert store.get_stats(root="C:/two/shared", include_unused=False)["items"][0]["calls"] == 1
-    assert store.get_stats(root="legacy:shared", include_unused=False)["items"][0]["calls"] == 4
     assert store.get_stats(root="C:/one/shared", include_unused=False)["items"] == []
     assert store.get_stats(root="shared", include_unused=False)["success"] is False
     assert store.reset(root="shared") is False
-    assert store.reset(root="legacy:shared") is True
+    assert store.reset(root="legacy:shared") is False
     assert store.get_stats(root="C:/two/shared", include_unused=False)["items"][0]["calls"] == 1
-    assert 'id="epStatsScopeNotice"' in DASHBOARD_HTML
-    assert "historické" in DASHBOARD_HTML
     assert "neprokazuje spuštění modelu" in DASHBOARD_HTML
-    assert "historickou skupinu" in DASHBOARD_HTML
 
 
 def test_percentile_calculation():

@@ -127,6 +127,7 @@ def test_coord_description_keeps_agent_os_and_reservation_contracts() -> None:
                 "gpu_reservation_release_authorized",
                 "gpu_capacity_lease_release",
                 "plan_list",
+                "curate_dataset",
             )
 
     def actions_note(actions) -> str:
@@ -144,6 +145,13 @@ def test_coord_description_keeps_agent_os_and_reservation_contracts() -> None:
     assert "gpu_reservation_release_authorized requires explicit consent=true" in description
     assert "gpu_capacity_lease_release requires exact lease_id" in description
     assert "state_data.memory_audit.used_ids" in description
+    assert "evaluate_context_source" in description
+    assert "subagent_budget" in description
+    assert "single_agent" in description
+    assert "never launches agents" in description
+    assert "gap_code:'unresolved_evidence_gap'" in description
+    assert "memory choices require matching task-scoped source_record_ids" in description
+    assert "advisory only" in description
     assert "not_used_reason" in description
     assert "persisted real `session_id`" in description
     assert "`plan_reconcile_steering` requires a matching persisted task session" in description
@@ -199,7 +207,7 @@ def test_repo_description_keeps_disabled_and_lean_contracts() -> None:
     assert "adaptive context fuses deterministic/indexed evidence" in lean
     assert "fragment exceeds the 512-token review budget" in lean
     assert "exclude generated/minified files" in lean
-    assert "`solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`, plus real root-bound `task_id`/`session_id` for shadow capture" in lean
+    assert "`solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`" in lean
     assert "Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`" in lean
     assert "Actions: search, code_index, context, solve, review_diff" in lean
 

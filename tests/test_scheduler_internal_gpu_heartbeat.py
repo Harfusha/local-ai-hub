@@ -38,8 +38,8 @@ def test_uncertain_internal_gpu_fence_expires_and_scheduler_recovers_when_idle(t
             scheduler._mark_internal_gpu_uncertain_locked()
         time.sleep(0.45)
 
-        assert store.reap_expired() is True
         assert scheduler._external_gpu_reserved() is False
+        assert store.owns_internal_fence(digest) is False
         assert scheduler._internal_gpu_uncertain is False
         assert scheduler._internal_gpu_digest is None
     finally:

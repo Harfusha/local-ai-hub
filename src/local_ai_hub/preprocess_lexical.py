@@ -68,11 +68,49 @@ def has_retired_fts(con: sqlite3.Connection) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE name=?", (_RETIRED_FTS,)).fetchone() is not None
 
 
+def has_canonical_shared_fts(con: sqlite3.Connection) -> bool:
+    """Return whether every shared-index object needed by current runtime exists."""
+    if fts_layout(con) != SHARED_FTS_ROWS or has_retired_fts(con):
+        return False
+    columns = {
+        "source_fts_documents": ("id", "digest", "content"),
+        "source_fts_bindings": ("id", "root", "path", "document_id"),
+        "source_fts": ("root", "path", "content"),
+    }
+    for table, expected in columns.items():
+        actual = tuple(str(row[1]) for row in con.execute(f'PRAGMA table_info("{table}")'))
+        if actual != expected:
+            return False
+    objects = {
+        (str(kind), str(name))
+        for kind, name in con.execute(
+            "SELECT type,name FROM sqlite_master WHERE name IN "
+            "('source_fts_contents','source_fts_document_gc','source_fts_binding_delete',"
+            "'source_fts_binding_path','source_fts_binding_document')"
+        )
+    }
+    expected_objects = {
+        ("view", "source_fts_contents"),
+        ("trigger", "source_fts_document_gc"),
+        ("trigger", "source_fts_binding_delete"),
+        ("index", "source_fts_binding_path"),
+        ("index", "source_fts_binding_document"),
+    }
+    if not expected_objects.issubset(objects):
+        return False
+    sql_row = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='source_fts'").fetchone()
+    sql = " ".join(str(sql_row[0] or "").lower().split()) if sql_row else ""
+    return "using fts5" in sql and "content='source_fts_contents'" in sql and "content_rowid='id'" in sql
+
+
 def initialize_fts_rows(con: sqlite3.Connection) -> str:
     with write_transaction(con, rollback_label="lexical index schema"):
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='source_fts'").fetchone() is None:
             _create_shared_schema(con, LEGACY_FTS)
-        return fts_layout(con)
+        layout = fts_layout(con)
+        if layout != SHARED_FTS_ROWS or not has_canonical_shared_fts(con):
+            raise sqlite3.DatabaseError("preprocess state requires the update-time lexical-index migration")
+        return layout
 
 
 _LegacyRow = tuple[int | None, str | None, str | None, str | None]

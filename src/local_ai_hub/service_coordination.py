@@ -17,7 +17,7 @@ class ServiceCoordinationMixin:
         return self.deterministic_operation("cross-repo-contract", backend_root, {"frontend_root": frontend_root}, lambda: self.deterministic.cross_repo_contract(backend_root, frontend_root))
 
     def simulate_merge(self, root: str, source_branch: str, target_branch: str = "HEAD") -> dict[str, Any]:
-        from .process_utils import simulate_git_merge
+        from .git_worktrees import simulate_git_merge
         return simulate_git_merge(root, source_branch, target_branch=target_branch)
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
@@ -88,148 +88,48 @@ class ServiceCoordinationMixin:
             self.semaphores = SemaphoreStore(state_dir / "agent_semaphores.sqlite", pubsub=bus)
         return self.semaphores.status(name=name)
 
-    def _ensure_board(self) -> Any:
-        if self.board is None:
-            from .agent_board import BoardStore
-            state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
-            self.board = BoardStore(state_dir / "agent_board.sqlite", services=self)
-        return self.board
+    def session_briefing(self, root: str, include: list[str] | None = None) -> dict[str, Any]:
+        from .agent_tasks import _task_scope_root
+        from .repo_plan.schema_validation import RepoPlanValidationError
 
-    def board_item_create(
-        self,
-        title: str,
-        status: str = "planned",
-        priority: str = "medium",
-        labels: list[str] | None = None,
-        assignee: str = "",
-        milestone: str = "",
-        linked_task_id: str = "",
-        details: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._ensure_board().item_create(
-            title=title, status=status, priority=priority, labels=labels,
-            assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
-            details=details,
-        )
-
-    def board_item_update(
-        self,
-        item_id: str,
-        status: str | None = None,
-        priority: str | None = None,
-        labels: list[str] | None = None,
-        assignee: str | None = None,
-        milestone: str | None = None,
-        linked_task_id: str | None = None,
-        details: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._ensure_board().item_update(
-            item_id=item_id, status=status, priority=priority, labels=labels,
-            assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
-            details=details,
-        )
-
-    def board_item_get(self, item_id: str) -> dict[str, Any]:
-        return self._ensure_board().item_get(item_id)
-
-    def board_item_delete(self, item_id: str) -> dict[str, Any]:
-        return self._ensure_board().item_delete(item_id)
-
-    def board_item_list(
-        self, status: str | None = None, priority: str | None = None,
-        milestone: str | None = None, assignee: str | None = None,
-        limit: int = 50, root: str = "",
-    ) -> dict[str, Any]:
-        if root != "":
-            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
-                raise ValueError("limit must be an integer from 1 to 1000")
-            board_view = self.plan_board_view(root=root)
-            items = []
-            for column, column_items in board_view["columns"].items():
-                if status is not None and column != status:
+        ws = self._plan_workspace(root, "session_briefing", {"include": include or []})
+        selected = set(include or ["board", "plans", "active_tasks"])
+        result: dict[str, Any] = {"success": True, "timestamp": time.time(),
+                                  "root": str(ws.repo_root)}
+        if "plans" in selected:
+            result["plans"] = ws.list_plans()
+        if "board" in selected or "plan_board" in selected:
+            try:
+                board = ws.get_board_view()
+            except RepoPlanValidationError as exc:
+                result["partial"] = True
+                result.setdefault("warnings", []).append(f"Plan board unavailable: {exc}")
+            else:
+                counts = {name: len(items) for name, items in board["columns"].items()}
+                counts["total"] = sum(counts.values())
+                recent = [item for items in board["columns"].values() for item in items][:5]
+                summary = {"success": True, "counts": counts, "by_status": counts,
+                           "total_items": counts["total"], "source": "repo_plan",
+                           "root": str(ws.repo_root)}
+                result["board_summary"] = counts
+                result["board"] = {"summary": summary, "recent_items": recent}
+                result["plan_board"] = board["columns"]
+        task_store = getattr(self, "task_store", None)
+        if "active_tasks" in selected and task_store is not None:
+            active_items = []
+            for task in task_store.list_tasks(status=None, limit=100):
+                if _task_scope_root(task) != str(ws.repo_root):
                     continue
-                for item in column_items:
-                    projected = {
-                        "item_id": item["task_id"], "title": item["title"],
-                        "status": column, "priority": "medium", "labels": [],
-                        "assignee": item.get("owner", ""), "milestone": item["plan_id"],
-                        "linked_task_id": item["task_id"], "details": dict(item),
-                    }
-                    if priority is not None and projected["priority"] != priority:
-                        continue
-                    if milestone is not None and projected["milestone"] != milestone:
-                        continue
-                    if assignee is not None and projected["assignee"] != assignee:
-                        continue
-                    items.append(projected)
-            return {"success": True, "items": items[:limit], "count": len(items[:limit]),
-                    "total": len(items), "source": "repo_plan", "root": board_view["project_root"]}
-        return self._ensure_board().item_list(status=status, priority=priority, milestone=milestone,
-                                              assignee=assignee, limit=limit)
-
-    def board_summary(self, root: str = "") -> dict[str, Any]:
-        if root != "":
-            board_view = self.plan_board_view(root=root)
-            columns = board_view["columns"]
-            counts = {column: len(items) for column, items in columns.items()}
-            total = sum(counts.values())
-            counts["total"] = total
-            return {"success": True, "counts": counts, "by_status": counts,
-                    "total_items": total, "blocked_items": columns.get("blocked", []),
-                    "source": "repo_plan", "columns": columns,
-                    "root": board_view["project_root"]}
-        return self._ensure_board().summary()
-
-    def milestone_create(self, name: str, target_date: str = "", description: str = "") -> dict[str, Any]:
-        return self._ensure_board().milestone_create(name=name, target_date=target_date, description=description)
-
-    def milestone_status(self, name: str) -> dict[str, Any]:
-        return self._ensure_board().milestone_status(name=name)
-
-    def session_briefing(self, include: list[str] | None = None, root: str = "") -> dict[str, Any]:
-        if root != "":
-            from .agent_tasks import _task_scope_root
-            from .repo_plan.schema_validation import RepoPlanValidationError
-
-            ws = self._plan_workspace(root, "session_briefing", {"include": include or []})
-            selected = set(include or ["board", "plans", "active_tasks"])
-            result: dict[str, Any] = {"success": True, "timestamp": time.time(),
-                                      "root": str(ws.repo_root)}
-            if "plans" in selected:
-                result["plans"] = ws.list_plans()
-            if "board" in selected or "plan_board" in selected:
-                try:
-                    board = ws.get_board_view()
-                except RepoPlanValidationError as exc:
-                    result["partial"] = True
-                    result.setdefault("warnings", []).append(f"Plan board unavailable: {exc}")
-                else:
-                    counts = {name: len(items) for name, items in board["columns"].items()}
-                    counts["total"] = sum(counts.values())
-                    recent = [item for items in board["columns"].values() for item in items][:5]
-                    summary = {"success": True, "counts": counts, "by_status": counts,
-                               "total_items": counts["total"], "source": "repo_plan",
-                               "root": str(ws.repo_root)}
-                    result["board_summary"] = counts
-                    result["board"] = {"summary": summary, "recent_items": recent}
-                    result["plan_board"] = board["columns"]
-            task_store = getattr(self, "task_store", None)
-            if "active_tasks" in selected and task_store is not None:
-                active_items = []
-                for task in task_store.list_tasks(status=None, limit=100):
-                    if _task_scope_root(task) != str(ws.repo_root):
-                        continue
-                    if task.status.value not in {"planned", "active", "waiting", "verifying"}:
-                        continue
-                    active_items.append({"task_id": task.task_id,
-                                         "goal": task.contract.goal,
-                                         "status": task.status.value,
-                                         "phase": task.checkpoint.phase})
-                    if len(active_items) >= 5:
-                        break
-                result["active_tasks"] = active_items
-            return result
-        return self._ensure_board().session_briefing(include=include, root=root)
+                if task.status.value not in {"planned", "active", "waiting", "verifying"}:
+                    continue
+                active_items.append({"task_id": task.task_id,
+                                     "goal": task.contract.goal,
+                                     "status": task.status.value,
+                                     "phase": task.checkpoint.phase})
+                if len(active_items) >= 5:
+                    break
+            result["active_tasks"] = active_items
+        return result
 
     def _plan_workspace(self, root: str, action: str, arguments: dict[str, Any]) -> Any:
         if (
@@ -297,27 +197,9 @@ class ServiceCoordinationMixin:
     def plan_task_edit(self, root: str = "", plan_id: str = "", task_id: str = "",
                        task_data: dict[str, Any] | None = None, expected_revision: str = "",
                        idempotency_key: str = "", owner: str = "agent") -> dict[str, Any]:
-        if task_data and "status" in task_data and "work_status" not in task_data:
-            task_data = dict(task_data)
-            task_data["work_status"] = task_data.pop("status")
-        if task_data and "verification" in task_data and "results" not in task_data:
-            task_data = dict(task_data)
-            ver = task_data.pop("verification")
-            if isinstance(ver, str) and ver.strip():
-                task_data["results"] = [{"kind": "evidence_reference", "evidence_id": "inline", "summary": ver.strip()[:2048]}]
-            elif isinstance(ver, list):
-                task_data["results"] = ver
         arguments = dict(plan_id=plan_id, task_id=task_id, task_data=task_data,
                          expected_revision=expected_revision, idempotency_key=idempotency_key, owner=owner)
         ws = self._plan_workspace(root, "plan_task_edit", arguments)
-        if task_id and not task_id.startswith("task_"):
-            try:
-                plan_info = ws.get_plan(plan_id)
-                plan_tasks = plan_info.get("plan", {}).get("tasks", {})
-                if task_id not in plan_tasks and f"task_{task_id}" in plan_tasks:
-                    task_id = f"task_{task_id}"
-            except Exception:
-                pass
         allowed = {"title", "description", "kind", "work_status", "depends_on", "clarifications",
                    "acceptance_criteria", "next_action", "blocker", "order", "accountable_role",
                    "work_phase", "spec_refs", "scope", "results", "deliveries"}
@@ -351,13 +233,18 @@ class ServiceCoordinationMixin:
                                owner: str = "agent", idempotency_key: str = "") -> dict[str, Any]:
         arguments = dict(plan_id=plan_id, title=title, owner=owner, idempotency_key=idempotency_key)
         ws = self._plan_workspace(root, "plan_adopt_legacy_board", arguments)
-        snapshot = self._ensure_board().items_for_adoption()
-        if snapshot.get("success") is not True:
-            from .repo_plan.schema_validation import (
-                RepoPlanConflictError,
-            )
-            raise RepoPlanConflictError(str(snapshot.get("error") or "legacy board snapshot failed"))
-        items = snapshot["items"]
+        from .legacy_board_archive import ARCHIVE_NAME, read_legacy_board_archive
+        from .repo_plan.schema_validation import RepoPlanConflictError
+
+        state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
+        if not (state_dir / ARCHIVE_NAME).is_file():
+            raise RepoPlanConflictError("no update-migrated global board archive is available")
+        try:
+            items = read_legacy_board_archive(state_dir)
+        except (OSError, ValueError) as exc:
+            raise RepoPlanConflictError(f"global board archive cannot be imported: {exc}") from exc
+        if len(items) > 1000:
+            raise RepoPlanConflictError("legacy board exceeds the 1000-item plan capacity")
         return ws.adopt_legacy_board_items(board_items=items, **arguments)
 
     def plan_bind_task(self, root: str = "", task_id: str = "", plan_id: str = "",

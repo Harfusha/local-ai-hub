@@ -2168,24 +2168,6 @@ def _run_hidden_with_deadline(*args: Any, deadline_monotonic: float | None = Non
     return run_hidden(*args, **kwargs)
 
 
-# Re-exported from git_worktrees for backward compatibility with external callers and tests.
-from .git_worktrees import (
-    PreparedGitWorktree as PreparedGitWorktree,
-    _git_value as _git_value,
-    _git_worktree_admin_dir as _git_worktree_admin_dir,
-    _worktree_ownership_path as _worktree_ownership_path,
-    create_git_worktree as create_git_worktree,
-    get_git_worktree_ownership as get_git_worktree_ownership,
-    list_git_worktrees as list_git_worktrees,
-    prepare_git_worktree as prepare_git_worktree,
-    prune_git_worktrees as prune_git_worktrees,
-    remove_git_worktree as remove_git_worktree,
-    simulate_git_merge as simulate_git_merge,
-    switch_git_worktree_branch as switch_git_worktree_branch,
-    verify_git_worktree_cleanup_complete as verify_git_worktree_cleanup_complete,
-)
-
-
 def atomic_write_file(
     target_path: Path | str,
     content: str | bytes,
@@ -2437,17 +2419,4 @@ __all__ = [
     'assign_process_to_job',
     'close_job_object',
     'terminate_job_object',
-    'PreparedGitWorktree',
-    '_git_value',
-    '_git_worktree_admin_dir',
-    '_worktree_ownership_path',
-    'create_git_worktree',
-    'get_git_worktree_ownership',
-    'list_git_worktrees',
-    'prepare_git_worktree',
-    'prune_git_worktrees',
-    'remove_git_worktree',
-    'simulate_git_merge',
-    'switch_git_worktree_branch',
-    'verify_git_worktree_cleanup_complete',
 ]

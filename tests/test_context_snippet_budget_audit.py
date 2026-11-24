@@ -14,6 +14,7 @@ def test_context_pack_keeps_ranked_snippets_whole_and_aligned_with_evidence(tmp_
     (root / "src" / "b.py").write_text("needle " + "B" * 1800 + "\n", encoding="utf-8")
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile = "cpu"\n',
         encoding="utf-8",
     )

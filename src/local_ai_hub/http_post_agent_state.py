@@ -22,6 +22,13 @@ def handle_agent_state_incidents(self: Any, payload: dict[str, Any]) -> None:
     if action == "record":
         root_cause = payload.get("root_cause", "")
         verified_fix = payload.get("verified_fix", "")
+        if str(verified_fix).strip().casefold() == "resolved":
+            self._send(400, {
+                "success": False,
+                "error": "verified_fix must describe a verified fix",
+                "terminal": True,
+                "retryable": False,
+            }); return
         msg = payload.get("message", "")
         op = payload.get("operation_class", "agent")
         rev = payload.get("state_revision", "")
@@ -222,22 +229,6 @@ def handle_agent_state_context(self: Any, payload: dict[str, Any]) -> None:
                     mode=repository_mode,
                     since_hash=str(payload.get("repo_since_hash", "")),
                 )
-                if isinstance(repository, dict) and repository.get("success") is True:
-                    try:
-                        capture = services_module.APP.capture_laya_context_source_from_context(
-                            repository_request,
-                            repository,
-                        )
-                        if capture.get("status") not in {"queued", "disabled"}:
-                            services_module.APP.logger.debug(
-                                "Laya shadow capture skipped: %s",
-                                capture.get("reason", capture.get("status", "unknown")),
-                            )
-                    except Exception as exc:
-                        services_module.APP.logger.warning(
-                            "Laya shadow capture scheduling failed: %s",
-                            type(exc).__name__,
-                        )
             except Exception as exc:
                 repository = {
                     "success": False,

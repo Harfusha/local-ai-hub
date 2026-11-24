@@ -16,7 +16,7 @@ import pytest
 
 from local_ai_hub.cache import SQLiteCache
 from local_ai_hub.client import HubClient
-from local_ai_hub.generator import generate_skill_markdown, write_all_generated
+from local_ai_hub.generator import generate_global_policy, generate_skill_markdown, write_all_generated
 from local_ai_hub.http_server import Handler, LocalAIHTTPServer
 from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.resilience import RecoveryJournal
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _config_path(tmp_path: Path, extra: str = "") -> Path:
     path = tmp_path / "config.toml"
     path.write_text(
-        f'''[server]\nbind="127.0.0.1"\nport=11435\nstate_dir="{(tmp_path / 'state').as_posix()}"\nauto_start_ollama=false\n\n[hardware]\nprofile="cpu"\nauto_tune=false\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\n\n{extra}\n''',
+        f'''[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nbind="127.0.0.1"\nport=11435\nstate_dir="{(tmp_path / 'state').as_posix()}"\nauto_start_ollama=false\n\n[hardware]\nprofile="cpu"\nauto_tune=false\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\n\n{extra}\n''',
         encoding="utf-8",
     )
     return path
@@ -747,7 +747,7 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol(tmp_path: Path):
     for text in (agents, policy):
         assert "local-ai-orchestrator" in text
         assert "Single-owner and repository scope contract" in text
-    for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
+    for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded terminal failure"):
         assert phrase in skill
 
 
@@ -761,7 +761,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         "hardware": {"profile": "balanced"},
         "features": {"local_semantic_analysis": True},
     }
-    policy = setup.build_global_policy(cfg)
+    policy = generate_global_policy(cfg)
     expected = (
         "Trigger map:",
         "every non-trivial repository task: start with indexed `local_ai_repo` evidence",
@@ -774,7 +774,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         "Recipe — Change:",
         "Recipe — Validate:",
     )
-    assert "indexed evidence first" in policy
+    assert "indexed `local_ai_repo` evidence" in policy
     assert "Single-owner and repository scope contract" in policy
 
     skill = generate_skill_markdown(cfg)
@@ -828,7 +828,7 @@ def test_agent_policy_has_default_delegation_triggers():
         "Use native Codex subagents only for independent bounded implementation or an explicit user request.",
         "Do not duplicate tasks or chats.",
     )
-    policy = setup.build_global_policy(cfg)
+    policy = generate_global_policy(cfg)
     skill = generate_skill_markdown(cfg)
     assert "Load the always-loaded `local-ai-orchestrator` skill" in policy
     assert "Single-owner and repository scope contract" in policy
@@ -846,13 +846,3 @@ def test_hub_policy_excludes_removed_external_agent_route():
     assert "AGY" not in policy
     assert "mcp__agy" not in policy
     assert "allow_write=false" not in policy
-
-
-def test_mcp_surface_preserves_seven_tools_with_agent_state_actions():
-    source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
-    tool_defs = [line for line in source.splitlines() if line.startswith("def local_ai_")]
-    assert len(tool_defs) == 7
-    assert "task_create" in source
-    assert "context_compile" in source
-    assert "candidate_create" in source
-    assert "agent_state" in source

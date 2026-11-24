@@ -123,7 +123,7 @@ def test_search_dedup_and_page_limits_hold_across_engines(
     assert result["success"] is True
     assert result["engine"] == ("ripgrep" if accelerated else "python")
     assert len(result["results"]) == 1
-    assert result["matches_count"] == 2
+    assert result["total_matches"] == 2
     assert result["has_more"] is True
     assert result["truncated"] is True
     assert "result_limit" in result["truncation_reasons"]

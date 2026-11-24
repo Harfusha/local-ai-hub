@@ -1,6 +1,14 @@
 # Local Model Fine-Tuning
 
-Opt-in training tools live in `tools/model_training/`. They do not alter Hub routing or start training by themselves. Current configured preprocessing model depends on hardware profile: this PC's `high` profile selects `qwen2.5-coder:3b`; the matrix example covers the 0.5B, 1.5B, and 3B variants. The same runner accepts a separate decision-model dataset and base model.
+Opt-in training tools live in `tools/model_training/`. They do not start training by themselves. The default file-card preprocessing model is the Qwen2.5-Coder-3B QLoRA merge, published as `Harfusha/local-ai-hub-preprocess-qwen25-coder-3b` and provisioned on first use. The 0.5B and 1.5B QLoRA models remain available as smaller alternatives. The same runner accepts a separate decision-model dataset and base model.
+
+## Fine-tuning default and selection rule
+
+New training runs default to LoRA; use QLoRA NF4 when the selected backend supports it and paired evaluation confirms comparable quality. Preprocessing embeddings and rerankers use LoRA by default. Do not start a new full fine-tune merely to compare methods. Reuse independent paired evidence when available; choose full only when it already shows a material quality gain that justifies its extra training time and storage. If the quality gap is small, choose LoRA. Keep existing full checkpoints and reports as comparison artifacts; never overwrite or delete them when creating LoRA runs. The direct embedding/reranker runners still accept explicit `--method full` for a documented quality exception.
+
+Current exception: for the pinned Laya decision model and this dataset, the independent 388-case evaluation measured the best existing full checkpoint at 97.16% choice accuracy and LoRA at 57.22%. Keep that full checkpoint selected for this task and reuse this evidence; do not repeat a full run just to reconfirm the same comparison. The LoRA default applies to new tasks without an established full-quality advantage.
+
+Every comparison uses the same base revision, train/evaluation split, and evaluation metric. Do not compare runs whose held-out groups or source hashes overlap the training set. Prefer independent evaluation over training-time metrics.
 
 ## Pipeline
 
@@ -35,7 +43,7 @@ python -m venv .venv-model-training
 & .\.venv-model-training\Scripts\python.exe -m pip install -r tools/model_training/requirements.txt
 ```
 
-Preprocessing and causal-model training always use 4-bit QLoRA NF4 and CUDA. Inference uses native NVFP4 model artifacts where the selected backend provides them. Install `tools/model_training/requirements-qlora.txt` in the same environment. Missing 4-bit support fails explicitly. Laya's native trainer does not expose quantized training in the installed API and remains a separate unsupported path until that backend changes.
+The matrix-based preprocessing and causal-model paths use 4-bit QLoRA NF4 and CUDA. The direct embedding/reranker comparison runners use BF16 LoRA and default to LoRA; QLoRA support there is not implemented. Inference uses native NVFP4 model artifacts where the selected backend provides them. Install `tools/model_training/requirements-qlora.txt` in the same environment. Missing 4-bit support fails explicitly. Laya's native trainer supports the LoRA adapter path but not quantized training in the installed API.
 
 ## Existing Preprocessing Cards
 
@@ -145,11 +153,11 @@ The runnable, not-yet-executed three-model matrix is `server.state_dir/experimen
 
 The latest existing-card embedding export contains 20,774 rows from the same 19 projects: 20,602 file cards, 153 module cards, and 19 project cards. Dataset SHA-256: `39a98be3380d7af856fb307abc32b39f647f23790cd460d3c3b0668676f6c104`. Existing fixture `agent-search-manual-2026-11-05-v2` has 22 positive manually judged retrieval cases; 18 fully resolve to cards from this repository and are written to `preprocess-existing-embedding-corpus-retrieval-cases.json`. The benchmark tool accepts the prepared subset with `--cases`; source anchors validate before any run. Two expected paths have no card: `docs/INSTALL_PROMPT.md` is absent from the index; `src/local_ai_hub/preprocess.py` is indexed as source but has no card for this repository root (same-path cards belong to other roots). The manifest records fixture hash, subset hash, and excluded cases. These are retrieval evaluation inputs only; the corpus still has no supervised embedding fine-tuning labels. Both exports and manifests stay under `server.state_dir/experiments/model-training/data/`; export makes no model calls and starts no preprocessing.
 
-Eligible ordinary context requests queue `LayaRuntimeAdapter` through the existing bounded executor when the pinned runtime is configured, an evidence gap remains, and two authorized sources have verified evidence IDs. Automatic model-route and repository context-budget observations also use that queue after the ordinary model response, and only when a real task plus current evidence IDs are available. The callback stores only actual scoped runtime outcomes; no consent or receipt is required. The last verified candidate count was zero, so no reviewed labels were available to export at that check. Do not fabricate examples or use model predictions as labels. Route and budget observations remain shadow-only until their own natural examples and paired evaluation support later approval.
+Laya training examples may be recorded from actual outcomes of active typed advisory/runtime decisions when capture is enabled. Ordinary context retrieval does not run Laya in the background. Candidate content stays scoped and out of general telemetry, with labels and export governed by the existing evidence/provenance checks.
 
 ## Laya Decision Model Run
 
-Laya is a typed-decision classifier, not a causal language model. Its backend calls the pinned `laya==0.4.30` training API, including Laya's calibration, and writes a native checkpoint that `laya.load()` can open. It does not use the generic LoRA trainer. The dedicated training environment pins `laya==0.4.30` in `tools/model_training/requirements-laya.txt`; Hub inference uses the separate `laya-runtime` extra, pinned to `laya==0.4.31`. These pins do not prove either package is installed. The example pins `convaiinnovations/laya-multilingual` to revision `1720e3e3357cfe1e281542e223f8273b0890ca34`.
+Laya is a typed-decision classifier, not a causal language model. Its backend calls the pinned `laya==0.4.30` training API, including Laya's calibration, and writes a native checkpoint that `laya.load()` can open. It defaults to a PEFT LoRA adapter merged into that native checkpoint; set the manifest's `lora` field to `null` only when existing independent paired evaluation shows a material full fine-tuning quality gain. It does not use the generic LoRA trainer. The dedicated training environment pins `laya==0.4.30` in `tools/model_training/requirements-laya.txt`; Hub inference uses the separate `laya-runtime` extra, pinned to `laya==0.4.31`. These pins do not prove either package is installed. The example pins `convaiinnovations/laya-multilingual` to revision `1720e3e3357cfe1e281542e223f8273b0890ca34`.
 
 Laya capture requires authorized task/session and verified evidence provenance; candidate state remains minimal. One local operator may confirm a human label under the versioned rubric; no second annotator, adjudication, SSH reviewer key, or per-example consent receipt is required. A local model review, when available, is stored separately and never counts as a human label. Train export writes only rows with a verified human label into configured `state_dir` and includes stable `id`, opaque `group_id`, `source_sha256`, and local scope provenance. The Laya splitter keeps groups, shared hashes, and exact state/question duplicates on one side. It refuses overlap before loading a checkpoint.
 
@@ -184,7 +192,7 @@ The saved `checkpoint/` is Laya's native full fine-tuned checkpoint and loads wi
 
 - CUDA is required by default. A CUDA request never falls back silently to CPU; set `training.device` to `cpu` only when CPU training is intentional.
 - CUDA precision selects BF16 when supported, otherwise FP16. Built-in SDPA and fused AdamW are used when available and recorded in the run receipt.
-- Gradient checkpointing and configurable micro-batches/accumulation limit VRAM use. `training.quantization` must be `4bit` NF4 for QLoRA. Laya uses its own full-fine-tuning recipe and currently does not satisfy this quantization requirement.
+- Gradient checkpointing and configurable micro-batches/accumulation limit VRAM use. `training.quantization` must be `4bit` NF4 for QLoRA. Laya uses adapter-based LoRA without quantization; use full fine-tuning only for a documented quality exception.
 - Models run sequentially to avoid competing for the same GPU. The scaffold does not manage or terminate other GPU processes.
 
 ## Hugging Face Distribution

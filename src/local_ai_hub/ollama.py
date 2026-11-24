@@ -67,6 +67,22 @@ def _oom_context_request(payload: dict[str, Any], default_context: int) -> tuple
     return adjusted, recovery
 
 
+def _ensure_trained_preprocessing_model(runtime: Any, model: str) -> None:
+    if model not in {
+        "qwen2.5-coder-prep-v4:3b",
+        "qwen2.5-coder-prep-v3:1.5b",
+        "qwen2.5-coder-prep-v3:0.5b",
+    }:
+        return
+    from .model_distribution import ensure_distribution_model
+    state_dir = Path(runtime.config.get("server", {}).get("state_dir") or (Path.cwd() / "state"))
+    ready = ensure_distribution_model(model, allow_download=True, models_dir=state_dir / "models")
+    if ready.get("status") not in {"ready", "registered"}:
+        raise RuntimeError(
+            f"trained preprocessing model provisioning failed: {ready.get('error', ready.get('status'))}"
+        )
+
+
 def _read_http_error_body(error: HTTPError, deadline: float | None = None, should_stop: Any | None = None) -> str:
     try:
         with _cancel_response_on_stop(error, should_stop, deadline):
@@ -1538,6 +1554,7 @@ class OllamaRuntime(OllamaModelsMixin, OllamaBenchmarkMixin):
         model, payload = self.model_policy.apply_project_settings(
             model, payload, settings=project_settings, role=role,
         )
+        _ensure_trained_preprocessing_model(self, model)
         return self.request("/api/generate", payload)
 
     def chat(
@@ -1557,6 +1574,7 @@ class OllamaRuntime(OllamaModelsMixin, OllamaBenchmarkMixin):
         model, payload = self.model_policy.apply_project_settings(
             model, payload, settings=project_settings, role=role,
         )
+        _ensure_trained_preprocessing_model(self, model)
         return self.request("/api/chat", payload)
 
     def embeddings(self, model: str, prompt: str) -> dict[str, Any]:

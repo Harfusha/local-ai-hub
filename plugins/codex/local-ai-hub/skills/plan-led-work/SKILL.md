@@ -1,6 +1,6 @@
 ---
 name: plan-led-work
-description: Substantial multi-step work: track tasks, progress, blockers in Local AI Hub plans. Superpowers specs aligned.
+description: "Substantial multi-step work: track tasks, progress, blockers in Local AI Hub plans. Superpowers specs aligned."
 ---
 
 # Plan-led work

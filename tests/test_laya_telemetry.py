@@ -11,12 +11,13 @@ def _metadata(**changes):
     value = {
         "decision_id": "decision-1",
         "success": True,
-        "mode": "shadow",
+        "mode": "advisory",
         "status": "success",
         "category": "context_source",
         "repository_id": "repo-1",
         "task_id": "task-1",
         "session_id": "session-1",
+        "provider_label": "generic_mcp",
         "suggestion": "indexed",
         "reason_codes": ["EVIDENCE_SUFFICIENT"],
         "evidence_ids": ["evidence-1"],
@@ -52,6 +53,7 @@ def test_laya_decision_metadata_uses_existing_snapshot_table_without_raw_payload
         assert saved["repository_id"] == "repo-1"
         assert saved["task_id"] == "task-1"
         assert saved["session_id"] == "session-1"
+        assert saved["provider_label"] == "generic_mcp"
         assert saved["suggestion"] == "indexed"
         assert "raw_output" not in saved
     finally:
@@ -112,6 +114,11 @@ def test_laya_decision_metadata_requires_canonical_repository_and_session(tmp_pa
         with pytest.raises(ValueError):
             store.record_laya_decision(
                 _metadata(session_id="other-session"), repository_id="repo-1", task_id="task-1", session_id="session-1"
+            )
+        with pytest.raises(ValueError, match="identity"):
+            store.record_laya_decision(
+                _metadata(provider_label="codex"), repository_id="repo-1", task_id="task-1",
+                session_id="session-1", provider_label="claude",
             )
     finally:
         store.close()
@@ -175,8 +182,8 @@ def test_report_summarizes_laya_decisions_by_mode_category_and_status(tmp_path):
             session_id="session-1",
         )
         for decision_id, mode in (
-            ("decision-1", "shadow"), ("decision-2", "advisory"),
-            ("decision-3", "shadow"), ("decision-4", "advisory"),
+            ("decision-1", "advisory"), ("decision-2", "advisory"),
+            ("decision-3", "advisory"), ("decision-4", "advisory"),
         ):
             store.record_laya_eligibility(
                 decision_id=decision_id, mode=mode, category="context_source"
@@ -186,42 +193,36 @@ def test_report_summarizes_laya_decisions_by_mode_category_and_status(tmp_path):
 
         summary = report["laya_decisions"]
         assert summary["records"] == 4
-        assert summary["counts_by_mode"] == {"shadow": 2, "advisory": 2}
+        assert summary["counts_by_mode"] == {"advisory": 4}
         assert summary["counts_by_status"] == {"abstain": 1, "error": 1, "skipped": 1, "success": 1}
-        assert summary["by_mode"]["shadow"]["abstentions"] == 0
-        assert summary["by_mode"]["shadow"]["errors"] == 1
-        assert summary["by_mode"]["shadow"]["skips"] == 0
-        assert summary["by_mode"]["shadow"]["counts_by_reason_code"] == {
-            "EVIDENCE_SUFFICIENT": 1,
-            "TIMEOUT": 1,
-        }
         assert summary["by_mode"]["advisory"]["abstentions"] == 1
-        assert summary["by_mode"]["advisory"]["errors"] == 0
+        assert summary["by_mode"]["advisory"]["errors"] == 1
         assert summary["by_mode"]["advisory"]["skips"] == 1
         assert summary["by_mode"]["advisory"]["counts_by_reason_code"] == {
             "DISABLED": 1,
+            "EVIDENCE_SUFFICIENT": 1,
             "INSUFFICIENT_EVIDENCE": 1,
+            "TIMEOUT": 1,
         }
-        for mode in ("shadow", "advisory"):
-            mode_report = summary["by_mode"][mode]
-            assert mode_report["coverage"] == {
-                "available": True,
-                "eligible_decisions": 2,
-                "recorded_decisions": 2,
-                "rate": 1.0,
-            }
-            assert mode_report["latency_ms"] == {
-                "available": False,
-                "reason": "runtime_latency_not_recorded",
-            }
-            assert mode_report["backend"] == {
-                "available": False,
-                "reason": "runtime_backend_not_recorded",
-            }
-            assert mode_report["fallbacks"] == {
-                "available": False,
-                "reason": "fallback_outcome_not_recorded",
-            }
+        mode_report = summary["by_mode"]["advisory"]
+        assert mode_report["coverage"] == {
+            "available": True,
+            "eligible_decisions": 4,
+            "recorded_decisions": 4,
+            "rate": 1.0,
+        }
+        assert mode_report["latency_ms"] == {
+            "available": False,
+            "reason": "runtime_latency_not_recorded",
+        }
+        assert mode_report["backend"] == {
+            "available": False,
+            "reason": "runtime_backend_not_recorded",
+        }
+        assert mode_report["fallbacks"] == {
+            "available": False,
+            "reason": "fallback_outcome_not_recorded",
+        }
     finally:
         store.close()
 
@@ -257,10 +258,10 @@ def test_laya_report_measures_eligibility_runtime_latency_backend_and_fallback(t
     store = TelemetryStore(tmp_path)
     try:
         store.record_laya_eligibility(
-            decision_id="decision-1", mode="shadow", category="context_source"
+            decision_id="decision-1", mode="advisory", category="context_source", provider_label="codex"
         )
         store.record_laya_eligibility(
-            decision_id="decision-2", mode="shadow", category="context_source"
+            decision_id="decision-2", mode="advisory", category="context_source", provider_label="claude"
         )
         store.record_laya_decision(
             _metadata(
@@ -274,7 +275,7 @@ def test_laya_report_measures_eligibility_runtime_latency_backend_and_fallback(t
             repository_id="repo-1", task_id="task-1", session_id="session-1",
         )
 
-        summary = store.report(days=1)["laya_decisions"]["by_mode"]["shadow"]
+        summary = store.report(days=1)["laya_decisions"]["by_mode"]["advisory"]
 
         assert summary["coverage"] == {
             "available": True, "eligible_decisions": 2,
@@ -299,10 +300,12 @@ def test_laya_report_measures_eligibility_runtime_latency_backend_and_fallback(t
 def test_laya_report_deduplicates_retried_eligibility_and_matches_decision_ids():
     decision = json.dumps(_metadata())
     eligible = json.dumps({
-        "decision_id": "decision-1", "mode": "shadow", "category": "context_source",
+        "decision_id": "decision-1", "mode": "advisory", "category": "context_source",
+        "provider_label": "generic_mcp",
     })
     missing = json.dumps({
-        "decision_id": "decision-missing", "mode": "shadow", "category": "context_source",
+        "decision_id": "decision-missing", "mode": "advisory", "category": "context_source",
+        "provider_label": "generic_mcp",
     })
 
     report = _laya_decision_report(
@@ -312,7 +315,28 @@ def test_laya_report_deduplicates_retried_eligibility_and_matches_decision_ids()
     )
 
     assert report["records"] == 1
-    assert report["by_mode"]["shadow"]["coverage"] == {
+    assert report["by_mode"]["advisory"]["coverage"] == {
         "available": True, "eligible_decisions": 2,
         "recorded_decisions": 1, "rate": 0.5,
     }
+
+
+def test_laya_report_rejects_pre_runtime_persisted_shape():
+    old = _metadata()
+    for field in ("runtime_latency_ms", "inference_latency_ms", "queue_wait_ms", "backend", "fallback_used", "fallback_reason"):
+        old.pop(field)
+
+    report = _laya_decision_report([(json.dumps(old),)], [], scope="window")
+
+    assert report["records"] == 0
+    assert report["invalid_records"] == 1
+
+
+def test_laya_report_rejects_duplicate_json_keys():
+    canonical = json.dumps(_metadata())
+    ambiguous = canonical.replace('"decision_id": "decision-1"', '"decision_id": "shadowed", "decision_id": "decision-1"')
+
+    report = _laya_decision_report([(ambiguous,)], [], scope="window")
+
+    assert report["records"] == 0
+    assert report["invalid_records"] == 1

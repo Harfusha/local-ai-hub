@@ -20,10 +20,35 @@ file-mode changes. The deadline requests cooperative model cancellation; late
 results are rejected before mutation. It is not a guarantee that an
 uncooperative backend stops immediately.
 
-Hugging Face embedding and reranker weights use existing local caches by default.
-Missing cache files do not authorize downloads. `models.allow_hf_downloads=true`
-explicitly enables network loading; both shipped defaults set it to `false`.
+Hugging Face embedding and reranker weights use existing local caches first.
+`models.allow_hf_downloads=true` enables network loading for a missing configured
+model and is the shipped default. Set it to `false` to require local cache files.
 Cached fallback models remain eligible while downloads are disabled.
+
+## FP4 model selection
+
+FP4 support is checked ahead of time and saved in the shipped static catalog
+`src/local_ai_hub/data/fp4_model_support.json`. The catalog covers every model
+family and size used by all hardware-tier routes, including the conditional
+32B `max` route. The installer only reads and reports this catalog; it does not
+probe models, query a registry or write an FP4 audit cache. Runtime routing uses
+the same saved facts. GPU `has_fp4` alone never changes a model tag: route also
+requires a catalog-approved provider, platform and architecture.
+
+The official Ollama tags checked on 2026-11-23 show exact
+`qwen3.5:9b-nvfp4` and `qwen3.5:4b-nvfp4` tags marked MLX. The 9B model also
+has a measured Windows CUDA `llama.cpp` comparison on an NVIDIA RTX 5070 Ti:
+NVFP4 was 7.6% faster in auto mode and tied Q4 on eight quality checks. Upstream
+revisions were not exposed, so this remains a provisional artifact-level speed
+preference, not portable backend or quality qualification. The catalog therefore
+selects only `qwen3.5:9b-nvfp4`, only on Windows AMD64 with detected native FP4
+and the default `auto` provider. Setup resolves that selected model tag before
+building its Ollama pull list; download still requires the existing
+`features.pull_models_during_setup` opt-in. Other tags and unsupported hosts
+keep configured Q4. Qwen2.5-Coder,
+Qwen3-VL and MiniCPM-V tier models have no NVFP4 tag on their checked official
+Ollama tag pages. The catalog records check date, exact tag, backend, route
+eligibility and sources.
 
 | Model | Good for | Must not be used as |
 | --- | --- | --- |
@@ -31,7 +56,8 @@ Cached fallback models remain eligible while downloads are disabled.
 | `qwen2.5-coder:1.5b` | preprocessing only | inference, code generation, reviews, reasoning, or edits |
 | `qwen2.5-coder:3b` | bounded review, test plans, simple patch plans, comparisons | architecture decisions, high-risk migrations, security decisions, edits |
 | `qwen2.5-coder:7b` | root-cause analysis, cross-file reasoning, diff review, patch/test plans | security decisions, final verification, edits |
-| `qwen2.5-coder:32b` | configured `max`-profile `heavy_code` target | security decisions, final verification, edits; quality and host availability remain unqualified |
+| `qwen2.5-coder:14b-instruct-q4_K_M` | configured `high` heavy-code and `max` code-reasoning target | security decisions, final verification, edits; quality and host availability remain unqualified |
+| `qwen2.5-coder:32b-instruct-q4_K_M` | conditional `max`-profile `heavy_code` target on a single GPU with at least 32 GiB VRAM | security decisions, final verification, edits; quality and host availability remain unqualified |
 | `qwen3.5:4b-nvfp4` | unqualified advisory candidate for bounded review, test plans, simple patch plans and comparisons | architecture or security decisions, high-risk migrations, edits, final verification, tool-use qualification |
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
 | `minicpm-v:8b` | configured `balanced`, `high` and `max` vision target | source-only reasoning, security decisions, edits, final verification; image capability remains unqualified |
@@ -60,16 +86,20 @@ names do not establish cached-weight availability, transcription quality or WER.
 | `low` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
 | `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `minicpm-v:8b` |
 | `medium` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
-| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:14b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
-| `max` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen2.5-coder:32b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
+| `high` | `qwen2.5-coder:3b-instruct-q4_K_M` | `qwen2.5-coder:7b-instruct-q4_K_M` | `qwen2.5-coder:14b-instruct-q4_K_M` | `qwen3.5:9b-q4_K_M` | `qwen3.5:9b-q4_K_M` | `minicpm-v:8b` |
+| `max` | `qwen2.5-coder:7b-instruct-q4_K_M` | `qwen2.5-coder:7b-instruct-q4_K_M` | `qwen2.5-coder:14b-instruct-q4_K_M` | `qwen2.5-coder:14b-instruct-q4_K_M` | `qwen3.5:9b-q4_K_M` | `minicpm-v:8b` |
 
 These are profile routing targets from `hardware.py`. They do not prove a model
 is installed on a host, and profile selection does not pull models. Runtime
 availability must be checked separately.
 
-Preprocessing routes: cpu=`qwen2.5-coder:0.5b`; integrated=`qwen2.5-coder:1.5b`;
-low=`qwen2.5-coder:1.5b`; balanced=`qwen2.5-coder:1.5b`;
-medium=`qwen2.5-coder:3b`; high=`qwen2.5-coder:3b`; max=`qwen2.5-coder:7b`.
+Preprocessing routes: `cpu=qwen2.5-coder-prep-v4:3b`; `integrated=qwen2.5-coder-prep-v4:3b`; `low=qwen2.5-coder-prep-v4:3b`; `balanced=qwen2.5-coder-prep-v4:3b`; `medium=qwen2.5-coder-prep-v4:3b`; `high=qwen2.5-coder-prep-v4:3b`; `max=qwen2.5-coder-prep-v4:3b`.
+`high` and `max` use Q4_K_M weights for their pinned Qwen roles and Q4 KV cache,
+except eligible Qwen3.5 9B reasoning/general routes described above. Other FP4
+candidates remain on configured Q4. The `max`
+32B heavy-code target is selected only from one GPU reporting at least 32 GiB;
+missing VRAM metadata keeps the 14B baseline. These targets do not prove models
+are installed or quality-qualified.
 CPU, integrated and low profiles disable search summaries; vision is supported
 across all profiles; balanced, medium, high and max enable search summaries. Integrated inherits configured feature defaults. These flags do not
 qualify model quality, availability, or image support.

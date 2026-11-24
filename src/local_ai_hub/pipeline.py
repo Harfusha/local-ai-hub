@@ -3,13 +3,16 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import logging
 import math
-from typing import Any, Sequence
+from typing import Any
 
 from . import __version__
 from .cache import SQLiteCache, SingleFlightCache, TieredCache, stable_hash
 from .planner import AdaptivePlanner
 from .state_paths import configured_state_dir
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
@@ -29,7 +32,7 @@ def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int |
 
 
 def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
-    if val is None or isinstance(val, bool):
+    if isinstance(val, bool) or val is None:
         return default
     try:
         res = float(val)
@@ -42,378 +45,6 @@ def _safe_float(val: Any, default: float, min_val: float | None = None, max_val:
     if max_val is not None and res > max_val:
         return max_val
     return res
-
-
-def _bounded_capture_text(value: Any, max_bytes: int) -> str:
-    if not isinstance(value, str) or max_bytes <= 0:
-        return ""
-    return value.encode("utf-8", errors="replace")[:max_bytes].decode("utf-8", errors="ignore").strip()
-
-
-def _queue_laya_context_budget_shadow(
-    services: Any,
-    args: Any,
-    *,
-    root: str,
-    task: str,
-    route: Any,
-    risk_score: float,
-    budget: int,
-    packed: Any,
-    deterministic: Any,
-    preliminary: Any,
-    response: Any,
-) -> bool:
-    """Queue a completed delegated response for an automatically selected context budget."""
-    if (
-        type(args) is not dict
-        or not isinstance(args.get("task_id"), str)
-        or not args["task_id"].strip()
-        or args.get("context_tokens") not in (None, 0, "")
-        or not isinstance(root, str)
-        or not root.strip()
-        or not isinstance(task, str)
-        or not task.strip()
-        or type(budget) is not int
-        or budget <= 0
-        or not isinstance(packed, dict)
-        or packed.get("success") is not True
-        or not isinstance(response, dict)
-        or response.get("success") is not True
-    ):
-        return False
-    queue = getattr(services, "_queue_laya_shadow_observation", None)
-    if not callable(queue):
-        return False
-
-    evidence_ids: list[str] = []
-    for result in (packed, deterministic if isinstance(deterministic, dict) else {}):
-        evidence = result.get("evidence")
-        if not isinstance(evidence, (list, tuple)):
-            continue
-        for item in evidence:
-            evidence_id = item.get("evidence_id") if isinstance(item, dict) else None
-            if isinstance(evidence_id, str) and evidence_id.strip() and evidence_id not in evidence_ids:
-                evidence_ids.append(evidence_id)
-                if len(evidence_ids) == 64:
-                    break
-        if len(evidence_ids) == 64:
-            break
-    if not evidence_ids:
-        return False
-
-    if budget <= 1200:
-        suggestion = "compact"
-    elif budget <= 2500:
-        suggestion = "standard"
-    else:
-        suggestion = "expanded"
-
-    complexity = route.get("complexity") if isinstance(route, dict) else None
-    if not isinstance(complexity, str) or complexity not in {"fast", "heavy", "moderate"}:
-        complexity = "unknown"
-    confidence = preliminary.get("confidence") if isinstance(preliminary, dict) else 0.0
-    confidence_value = _safe_float(confidence, 0.0, min_val=0.0, max_val=1.0)
-    confidence_bucket = "high" if confidence_value >= 0.9 else "medium" if confidence_value >= 0.65 else "low"
-    context_source = packed.get("context_source")
-    if not isinstance(context_source, str) or context_source not in {"deterministic", "hybrid"}:
-        context_source = "unknown"
-
-    packed_evidence = packed.get("evidence")
-    context_parts: list[str] = []
-    context_bytes = 0
-    if isinstance(packed_evidence, (list, tuple)):
-        allowed_evidence_ids = set(evidence_ids)
-        for item in packed_evidence:
-            if not isinstance(item, dict):
-                continue
-            evidence_id = item.get("evidence_id")
-            if not isinstance(evidence_id, str) or evidence_id not in allowed_evidence_ids:
-                continue
-            text = item.get("text")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            separator = "\n\n" if context_parts else ""
-            separator_bytes = len(separator.encode("utf-8"))
-            remaining = (6 * 1024) - context_bytes - separator_bytes
-            if remaining <= 0:
-                break
-            excerpt = _bounded_capture_text(text, remaining)
-            if not excerpt:
-                continue
-            context_parts.append(excerpt)
-            context_bytes += separator_bytes + len(excerpt.encode("utf-8"))
-            if context_bytes >= 6 * 1024:
-                break
-    context_excerpt = "\n\n".join(context_parts)
-
-    content_budget = (16 * 1024) - 1024 - context_bytes
-    per_field_budget = min(8 * 1024, max(0, content_budget // 2))
-    task_input = _bounded_capture_text(task, per_field_budget)
-    response_text = response.get("text")
-    model_response = (
-        _bounded_capture_text(response_text, per_field_budget)
-        if isinstance(response_text, str)
-        else ""
-    )
-    observed_args = dict(args)
-    observed_args["evidence_ids"] = evidence_ids
-    deterministic_evidence = deterministic.get("evidence") if isinstance(deterministic, dict) else None
-    state = {
-        "route_complexity": complexity,
-        "risk_score": str(round(_safe_float(risk_score, 0.0, min_val=0.0, max_val=100.0), 3)),
-        "confidence_bucket": confidence_bucket,
-        "budget_tokens": str(budget),
-        "packed_evidence_count": str(len(packed_evidence)) if isinstance(packed_evidence, (list, tuple)) else "0",
-        "deterministic_evidence_count": str(len(deterministic_evidence)) if isinstance(deterministic_evidence, (list, tuple)) else "0",
-        "context_source": context_source,
-    }
-    try:
-        return bool(queue(
-            observed_args,
-            root=root,
-            category="context_budget",
-            options=["compact", "standard", "expanded"],
-            state=state,
-            training_content={
-                key: value
-                for key, value in (
-                    ("task_input", task_input),
-                    ("model_response", model_response),
-                    ("context_excerpt", context_excerpt),
-                )
-                if value
-            },
-            baseline={
-                "method": "repo_context_token_budget",
-                "suggestion": suggestion,
-                "evidence_id": evidence_ids[0],
-            },
-        ))
-    except Exception:
-        return False
-
-
-def _queue_laya_delegation_shadow(
-    services: Any,
-    args: Any,
-    *,
-    root: str,
-    task: str,
-    mode: str,
-    route: Any,
-    risk_score: float,
-    plan: Any,
-    need_worker: bool,
-    explorer: Any,
-    packed: Any,
-    response: Any,
-) -> bool:
-    """Queue the deterministic adaptive worker-escalation decision for shadow review."""
-    if (
-        type(args) is not dict
-        or not isinstance(args.get("task_id"), str)
-        or not args["task_id"].strip()
-        or not isinstance(root, str)
-        or not root.strip()
-        or not isinstance(task, str)
-        or not task.strip()
-        or mode != "adaptive"
-        or not isinstance(route, dict)
-        or route.get("task_type") == "review"
-        or not isinstance(plan, dict)
-        or type(plan.get("worker")) is not bool
-        or plan["worker"] is not need_worker
-        or not isinstance(explorer, dict)
-        or explorer.get("success") is not True
-        or not isinstance(packed, dict)
-        or packed.get("success") is not True
-        or not isinstance(response, dict)
-        or response.get("success") is not True
-    ):
-        return False
-    queue = getattr(services, "_queue_laya_shadow_observation", None)
-    if not callable(queue):
-        return False
-
-    evidence_ids: list[str] = []
-    for result in (packed, explorer.get("structured"),):
-        if not isinstance(result, dict):
-            continue
-        evidence = result.get("evidence")
-        if isinstance(evidence, (list, tuple)):
-            values = [item.get("evidence_id") for item in evidence if isinstance(item, dict)]
-        else:
-            values = result.get("evidence_ids", [])
-        if not isinstance(values, (list, tuple)):
-            continue
-        for evidence_id in values:
-            if isinstance(evidence_id, str) and evidence_id.strip() and evidence_id not in evidence_ids:
-                evidence_ids.append(evidence_id)
-                if len(evidence_ids) >= 64:
-                    break
-        if len(evidence_ids) >= 64:
-            break
-    if not evidence_ids:
-        return False
-
-    structured = explorer.get("structured")
-    structured = structured if isinstance(structured, dict) else {}
-    confidence = _safe_float(structured.get("confidence"), 0.0, min_val=0.0, max_val=1.0)
-    confidence_bucket = "high" if confidence >= 0.9 else "medium" if confidence >= 0.65 else "low"
-    missing_evidence = structured.get("missing_evidence")
-    missing_evidence_count = len(missing_evidence) if isinstance(missing_evidence, (list, tuple)) else 0
-    risk = round(_safe_float(risk_score, 0.0, min_val=0.0, max_val=100.0), 3)
-
-    context_excerpt = structured.get("summary")
-    if not isinstance(context_excerpt, str):
-        context_excerpt = explorer.get("text") if isinstance(explorer.get("text"), str) else ""
-    response_text = response.get("text")
-    model_response = response_text if isinstance(response_text, str) else ""
-    content_budget = 16 * 1024 - 1024
-    task_input = _bounded_capture_text(task, min(8 * 1024, content_budget // 3))
-    context_excerpt = _bounded_capture_text(context_excerpt, min(4 * 1024, content_budget // 3))
-    model_response = _bounded_capture_text(
-        model_response,
-        min(4 * 1024, max(0, content_budget - len(task_input.encode("utf-8")) - len(context_excerpt.encode("utf-8")))),
-    )
-    observed_args = dict(args)
-    observed_args["evidence_ids"] = evidence_ids
-    suggestion = "delegate_bounded" if need_worker else "no_delegation"
-    state = {
-        "pipeline_mode": mode,
-        "review_task": "false",
-        "route_complexity": str(route.get("complexity"))
-        if route.get("complexity") in {"fast", "moderate", "heavy"}
-        else "unknown",
-        "risk_score": str(risk),
-        "explorer_confidence": confidence_bucket,
-        "missing_evidence_count": str(min(missing_evidence_count, 999)),
-        "grounded_evidence": "true" if evidence_ids else "false",
-        "planned_worker": "true" if plan.get("worker") else "false",
-        "worker_used": "true" if need_worker else "false",
-        "gate_reason": "confidence_sufficient"
-        if plan.get("reason") == "7b-confidence-sufficient"
-        else "planner_decision",
-    }
-    try:
-        return bool(queue(
-            observed_args,
-            root=root,
-            category="delegation",
-            options=["delegate_bounded", "no_delegation"],
-            state=state,
-            training_content={
-                key: value
-                for key, value in (
-                    ("task_input", task_input),
-                    ("context_excerpt", context_excerpt),
-                    ("model_response", model_response),
-                )
-                if value
-            },
-            baseline={
-                "method": "pipeline_worker_escalation",
-                "suggestion": suggestion,
-                "evidence_id": evidence_ids[0],
-            },
-        ))
-    except Exception:
-        return False
-
-
-def _queue_laya_redundant_step_shadow(
-    services: Any,
-    args: Any,
-    *,
-    root: str,
-    task: str,
-    step_name: str,
-    is_duplicate: bool,
-    evidence_ids: Sequence[str],
-) -> bool:
-    """Queue redundant_step decision for shadow review."""
-    if (
-        type(args) is not dict
-        or not isinstance(root, str)
-        or not root.strip()
-        or not isinstance(step_name, str)
-        or not step_name.strip()
-        or not evidence_ids
-    ):
-        return False
-    queue = getattr(services, "_queue_laya_shadow_observation", None)
-    if not callable(queue):
-        return False
-    suggestion = "possible_duplicate" if is_duplicate else "validation_still_required"
-    observed_args = dict(args)
-    observed_args["evidence_ids"] = list(evidence_ids)
-    task_input = _bounded_capture_text(task, 4 * 1024)
-    return bool(
-        queue(
-            observed_args,
-            root=root,
-            category="redundant_step",
-            options=["possible_duplicate", "validation_still_required"],
-            state={
-                "step_name": step_name[:64],
-                "duplicate_signal": "cache_hit" if is_duplicate else "fresh_execution",
-            },
-            training_content={"task_input": task_input or step_name},
-            baseline={
-                "method": "command_broker_dedup",
-                "suggestion": suggestion,
-                "evidence_id": evidence_ids[0],
-            },
-        )
-    )
-
-
-def _queue_laya_next_step_shadow(
-    services: Any,
-    args: Any,
-    *,
-    root: str,
-    task: str,
-    current_stage: str,
-    suggestion: str,
-    evidence_ids: Sequence[str],
-) -> bool:
-    """Queue next_step decision for shadow review."""
-    if (
-        type(args) is not dict
-        or not isinstance(root, str)
-        or not root.strip()
-        or not isinstance(current_stage, str)
-        or not current_stage.strip()
-        or not evidence_ids
-        or suggestion not in {"inspect_source", "run_test", "retrieve_evidence", "ask_human"}
-    ):
-        return False
-    queue = getattr(services, "_queue_laya_shadow_observation", None)
-    if not callable(queue):
-        return False
-    observed_args = dict(args)
-    observed_args["evidence_ids"] = list(evidence_ids)
-    task_input = _bounded_capture_text(task, 4 * 1024)
-    return bool(
-        queue(
-            observed_args,
-            root=root,
-            category="next_step",
-            options=["inspect_source", "run_test", "retrieve_evidence", "ask_human"],
-            state={
-                "current_stage": current_stage[:64],
-                "next_step_heuristic": suggestion,
-            },
-            training_content={"task_input": task_input or current_stage},
-            baseline={
-                "method": "pipeline_step_progress",
-                "suggestion": suggestion,
-                "evidence_id": evidence_ids[0],
-            },
-        )
-    )
 
 
 def _is_repetition_loop(response: Any) -> bool:
@@ -538,9 +169,17 @@ class LocalAgentPipeline:
     def _select_worker_model(
         route: dict[str, Any] | None, mode: str, risk_score: int,
         direct_smart_risk_score: int, fast_model: str, heavy_model: str,
+        reasoning_model: str | None = None,
     ) -> str:
         """Keep ordinary repository workers on Qwen 2.5; escalate intentionally."""
         route_dict = route if isinstance(route, dict) else {}
+        laya_model_route = route_dict.get("laya_model_route")
+        if laya_model_route == "fast":
+            return fast_model
+        if laya_model_route == "smart":
+            if route_dict.get("task_type") == "reasoning" and isinstance(reasoning_model, str) and reasoning_model:
+                return reasoning_model
+            return heavy_model
         complexity_score = _safe_int(route_dict.get("complexity_score"), 0)
         smart_required = (
             mode == "quality"
@@ -622,6 +261,63 @@ class LocalAgentPipeline:
             "success": True, "changed_files": [], "suggested_tests": [], "risk": {"score": 0, "level": "low", "reasons": ["impact scan skipped for non-change task"]}
         }
         risk_score = self._risk_score(impact)
+        task_id = args.get("task_id")
+        deterministic_evidence = deterministic.get("evidence") if isinstance(deterministic, dict) else None
+        evidence_ids = [
+            item.get("evidence_id") for item in (deterministic_evidence if isinstance(deterministic_evidence, (list, tuple)) else ())
+            if isinstance(item, dict) and isinstance(item.get("evidence_id"), str) and item.get("evidence_id")
+        ][:64]
+        available_routes = getattr(self.services, "_available_laya_model_route_options", None)
+        evaluate_laya = getattr(self.services, "evaluate_laya_advisory", None)
+        if (
+            isinstance(task_id, str) and task_id.strip() and evidence_ids
+            and callable(available_routes) and callable(evaluate_laya)
+        ):
+            try:
+                verified_routes = available_routes(str(route.get("task_type", "")))
+                options = [option for option in ("fast", "smart") if option in verified_routes]
+                baseline_suggestion = {
+                    "fast_code": "fast", "heavy_code": "smart", "reasoning": "smart",
+                }.get(str(route.get("task_type", "")))
+                if len(options) >= 2 and baseline_suggestion in options:
+                    baseline = {
+                        "method": "model_router_classify",
+                        "suggestion": baseline_suggestion,
+                        "evidence_id": evidence_ids[0],
+                    }
+                    operation = {
+                        "action": "evaluate_decision",
+                        "task_id": task_id.strip(),
+                        "decision": {
+                            "category": "model_route",
+                            "evidence_ids": evidence_ids,
+                            "options": options,
+                            "state": {
+                                "task_type": str(route.get("task_type", "general")),
+                                "complexity": str(route.get("complexity", "fast")),
+                                "semantic_required": "true" if route.get("semantic_required") is True else "false",
+                                "context_present": "true",
+                            },
+                            "training_content": {"task_input": task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore")},
+                        },
+                    }
+                    route = dict(route)
+                    route["laya_advisory_evaluated"] = True
+                    laya_model_route = evaluate_laya(operation, root=root, baseline=baseline)
+                    low_risk_fast_route = (
+                        laya_model_route == "fast"
+                        and baseline_suggestion == "fast"
+                        and mode != "quality"
+                        and risk_score < self.direct_smart_risk_score
+                        and int(route.get("complexity_score", 0) or 0) < self.direct_smart_complexity_score
+                        and route.get("complexity") != "heavy"
+                    )
+                    if laya_model_route == "smart" or low_risk_fast_route:
+                        route["laya_model_route"] = laya_model_route
+                        if laya_model_route == "smart":
+                            route["complexity"] = "heavy"
+            except Exception as exc:
+                logger.debug("Laya model route fallback: %s", type(exc).__name__)
         graph = self.services.code_query(root, task, 24) if getattr(self.services, "code_index", None) is not None else {"success": False, "confidence": 0.0}
         graph_for_plan = dict(graph) if isinstance(graph, dict) else {}
         graph_for_plan["confidence"] = max(float(graph_for_plan.get("confidence", 0.0) or 0.0), float(deterministic.get("confidence", 0.0) or 0.0) * 0.92)
@@ -631,6 +327,7 @@ class LocalAgentPipeline:
         workflow = self.config.get("workflow", {})
         high_conf_threshold = float(workflow.get("high_confidence_threshold", 0.90))
         budget = int(args.get("context_tokens", 0) or 0)
+        context_budget_explicit = budget > 0
         if not budget:
             # Minimum-sufficient-context: deterministic graph confidence shrinks retrieval before any LLM call.
             if float(preliminary.get("confidence", 0)) >= high_conf_threshold:
@@ -647,6 +344,49 @@ class LocalAgentPipeline:
             and float(deterministic.get("confidence", 0.0) or 0.0) >= det_context_threshold
             and (deterministic.get("evidence") or deterministic.get("dependencies") or deterministic.get("scripts") or deterministic.get("facts") or deterministic.get("code_index"))
         )
+        # Laya may trim only an automatically chosen hybrid-context budget for
+        # low-risk, non-heavy work. User limits, deterministic context packs,
+        # and larger context requests remain under deterministic control.
+        if (
+            not context_budget_explicit and not use_det_context
+            and route.get("complexity") != "heavy"
+            and risk_score < self.direct_smart_risk_score
+            and isinstance(task_id, str) and task_id.strip() and evidence_ids
+            and callable(evaluate_laya)
+        ):
+            try:
+                operation = {
+                    "action": "evaluate_decision",
+                    "task_id": task_id.strip(),
+                    "decision": {
+                        "category": "context_budget",
+                        "evidence_ids": evidence_ids,
+                        "options": ["compact", "standard"],
+                        "state": {
+                            "task_type": str(route.get("task_type", "general")),
+                            "complexity": str(route.get("complexity", "fast")),
+                            "context_source": "hybrid",
+                        },
+                        "training_content": {
+                            "task_input": task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore"),
+                        },
+                    },
+                }
+                suggestion = evaluate_laya(
+                    operation, root=root,
+                    baseline={
+                        "method": "repo_context_token_budget",
+                        "suggestion": "standard",
+                        "evidence_id": evidence_ids[0],
+                    },
+                )
+                compact_budget = max(512, int(budget * 0.75))
+                if suggestion == "compact" and compact_budget < budget:
+                    budget = compact_budget
+                    route = dict(route)
+                    route["laya_context_budget"] = "compact"
+            except Exception as exc:
+                logger.debug("Laya context budget fallback: %s", type(exc).__name__)
         if use_det_context:
             packed = self.services.deterministic.context_pack(
                 root, task,
@@ -655,15 +395,179 @@ class LocalAgentPipeline:
             )
             packed["context_source"] = "deterministic"
         else:
+            laya_retrieval_strategy = None
+            laya_cfg = self.config.get("laya", {})
+            laya_coordinator = getattr(self.services, "laya_coordinator", None)
+            if (
+                isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
+                and laya_coordinator is not None
+            ):
+                try:
+                    laya_plan = laya_coordinator.analyze_task(
+                        task,
+                        query=task,
+                        affected_paths=tuple(impact.get("changed_files", ())) if isinstance(impact, dict) else (),
+                        incoming_context_tokens=budget,
+                        max_budget=budget,
+                    )
+                    coordinator_confidence = float(getattr(laya_plan, "overall_confidence", 0.0) or 0.0)
+                    low_risk_auto_budget = (
+                        not context_budget_explicit
+                        and not use_det_context
+                        and route.get("complexity") != "heavy"
+                        and mode != "quality"
+                        and risk_score < min(self.direct_smart_risk_score, self.critic_risk_score)
+                        and int(route.get("complexity_score", 0) or 0) < self.direct_smart_complexity_score
+                    )
+                    if low_risk_auto_budget and coordinator_confidence >= 0.80:
+                        budget_plan = getattr(laya_plan, "budget_plan", None)
+                        retrieval_budget = int(getattr(budget_plan, "retrieval_tokens", 0) or 0)
+                        if retrieval_budget > 0 and budget > 0:
+                            # Keep a 75% floor; the heuristic allocator cannot erase needed context.
+                            budget = min(budget, max(int(budget * 0.75), retrieval_budget))
+                            route = dict(route)
+                            route["laya_context_budget"] = "adaptive"
+
+                    model_recommendation = getattr(laya_plan, "model_recommendation", None)
+                    model_tier = getattr(getattr(model_recommendation, "tier", None), "value", "")
+                    model_confidence = float(getattr(model_recommendation, "confidence", 0.0) or 0.0)
+                    low_risk_fast_route = (
+                        low_risk_auto_budget
+                        and model_tier == "fast"
+                        and model_confidence >= 0.90
+                        and route.get("task_type") != "reasoning"
+                        and route.get("laya_model_route") != "smart"
+                    )
+                    if low_risk_fast_route:
+                        route = dict(route)
+                        route["laya_model_route"] = "fast"
+
+                except Exception as exc:
+                    logger.debug("Laya retrieval routing fallback: %s", type(exc).__name__)
+            # Retrieval is an active typed decision with a closed option set.
+            # The coordinator's legacy heuristic recommendation is not authoritative.
+            laya_cfg = self.config.get("laya", {})
+            if (
+                isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
+                and isinstance(task_id, str) and task_id.strip() and evidence_ids
+                and callable(evaluate_laya)
+            ):
+                try:
+                    features = self.config.get("features", {})
+                    rag_available = (
+                        getattr(self.services, "rag", None) is not None
+                        and (not isinstance(features, dict) or features.get("rag", True) is True)
+                    )
+                    code_available = getattr(self.services, "code_index", None) is not None
+                    options = ["ast_graph"] if code_available else []
+                    options.append("lexical_bm25")
+                    if rag_available:
+                        options.append("dense_rag")
+                    options.append("hybrid")
+                    baseline = {
+                        "method": "hybrid_context_default",
+                        "suggestion": "hybrid",
+                        "evidence_id": evidence_ids[0],
+                    }
+                    operation = {
+                        "action": "evaluate_decision",
+                        "task_id": task_id.strip(),
+                        "decision": {
+                            "category": "retrieval_strategy",
+                            "evidence_ids": evidence_ids,
+                            "options": options,
+                            "state": {
+                                "context_source": "hybrid",
+                                "rag_available": "true" if rag_available else "false",
+                                "code_index_available": "true" if code_available else "false",
+                            },
+                            "training_content": {
+                                "task_input": task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore"),
+                            },
+                        },
+                    }
+                    suggestion = evaluate_laya(operation, root=root, baseline=baseline)
+                    internal_strategy = {
+                        "ast_graph": "ast_symbol",
+                        "lexical_bm25": "lexical_bm25",
+                        "dense_rag": "semantic_hnsw",
+                        "hybrid": "hybrid",
+                    }.get(suggestion)
+                    if internal_strategy is not None and suggestion in options:
+                        laya_retrieval_strategy = internal_strategy
+                        route = dict(route)
+                        route["laya_retrieval_strategy"] = suggestion
+                except Exception as exc:
+                    logger.debug("Laya typed retrieval advisory fallback: %s", type(exc).__name__)
             packed = self.services._hybrid_context(
                 root, task, workspace=args.get("workspace"), max_tokens=budget,
-                quality_first=True,
+                quality_first=True, laya_retrieval_strategy=laya_retrieval_strategy,
             )
             if isinstance(packed, dict): packed["context_source"] = "hybrid"
         if not packed.get("success"):
             return packed
         packed_ev = packed.get("evidence") if isinstance(packed, dict) else None
         packed_ev_count = len(packed_ev) if isinstance(packed_ev, (list, tuple)) else 0
+        laya_cfg = self.config.get("laya", {})
+        if (
+            isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
+            and isinstance(task_id, str) and task_id.strip() and evidence_ids
+            and callable(evaluate_laya)
+        ):
+            try:
+                guidance_options = ["inspect_source", "retrieve_evidence"]
+                suggested_tests = impact.get("suggested_tests", ()) if isinstance(impact, dict) else ()
+                if isinstance(suggested_tests, (list, tuple)) and suggested_tests:
+                    guidance_options.append("run_test")
+                risk_level = str(impact.get("risk", {}).get("level", "unknown")) if isinstance(impact, dict) and isinstance(impact.get("risk"), dict) else "unknown"
+                if risk_level in {"high", "critical"}:
+                    guidance_options.append("ask_human")
+                guidance_evidence_ids = list(dict.fromkeys(
+                    [
+                        item.get("evidence_id") for item in (packed_ev if isinstance(packed_ev, (list, tuple)) else ())
+                        if isinstance(item, dict) and isinstance(item.get("evidence_id"), str) and item["evidence_id"]
+                    ] + evidence_ids
+                ))[:64]
+                if len(guidance_options) >= 2 and guidance_evidence_ids:
+                    if risk_level in {"high", "critical"}:
+                        guidance_baseline = "ask_human"
+                    elif "run_test" in guidance_options:
+                        guidance_baseline = "run_test"
+                    elif packed_ev_count:
+                        guidance_baseline = "inspect_source"
+                    else:
+                        guidance_baseline = "retrieve_evidence"
+                    task_input = task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore")
+                    suggestion = evaluate_laya(
+                        {
+                            "action": "evaluate_decision",
+                            "task_id": task_id.strip(),
+                            "decision": {
+                                "category": "next_step",
+                                "evidence_ids": guidance_evidence_ids,
+                                "options": guidance_options,
+                                "state": {
+                                    "task_type": str(route.get("task_type", "general")),
+                                    "complexity": str(route.get("complexity", "fast")),
+                                    "risk_level": risk_level,
+                                    "evidence_count": str(len(guidance_evidence_ids)),
+                                    "suggested_test_count": str(len(suggested_tests)) if isinstance(suggested_tests, (list, tuple)) else "0",
+                                },
+                                "training_content": {"task_input": task_input},
+                            },
+                        },
+                        root=root,
+                        baseline={
+                            "method": "pipeline_step_progress",
+                            "suggestion": guidance_baseline,
+                            "evidence_id": guidance_evidence_ids[0],
+                        },
+                    )
+                    if suggestion in guidance_options:
+                        route = dict(route)
+                        route["laya_next_step"] = suggestion
+            except Exception as exc:
+                logger.debug("Laya next-step advisory fallback: %s", type(exc).__name__)
         callback = args.get("_laya_tool_output_callback")
         has_retrieved_evidence_id = isinstance(packed_ev, (list, tuple)) and any(
             isinstance(item, dict) and isinstance(item.get("evidence_id"), str) and item["evidence_id"].strip()
@@ -795,7 +699,8 @@ class LocalAgentPipeline:
         if need_worker:
             self.worker_runs += 1
             worker_model = self._select_worker_model(
-                route, mode, risk_score, self.direct_smart_risk_score, fast_model, heavy_model
+                route, mode, risk_score, self.direct_smart_risk_score, fast_model, heavy_model,
+                reasoning_model=reasoning_model,
             )
 
             def compute_worker() -> dict[str, Any]:
@@ -994,87 +899,6 @@ class LocalAgentPipeline:
                 "stages": pipeline_stages,
             },
         }
-        worker_text = worker.get("text")
-        if not isinstance(worker_text, str) or not worker_text.strip():
-            worker_text = worker_structured.get("summary", "") if worker_structured else ""
-        _queue_laya_delegation_shadow(
-            self.services,
-            args,
-            root=root,
-            task=task,
-            mode=mode,
-            route=route,
-            risk_score=risk_score,
-            plan=plan,
-            need_worker=need_worker,
-            explorer=explorer,
-            packed=packed,
-            response={"success": result.get("success") is True, "text": canonical_text},
-        )
-        _queue_laya_context_budget_shadow(
-            self.services,
-            args,
-            root=root,
-            task=task,
-            route=route,
-            risk_score=risk_score,
-            budget=budget,
-            packed=packed,
-            deterministic=deterministic,
-            preliminary=preliminary,
-            response={"success": worker.get("success") is True, "text": worker_text},
-        )
-        pipeline_evidence_ids: list[str] = []
-        for stage_res in (
-            packed,
-            explorer.get("structured") if isinstance(explorer, dict) else {},
-            worker.get("structured") if isinstance(worker, dict) else {},
-        ):
-            if not isinstance(stage_res, dict):
-                continue
-            ev = stage_res.get("evidence")
-            if isinstance(ev, (list, tuple)):
-                for item in ev:
-                    eid = item.get("evidence_id") if isinstance(item, dict) else None
-                    if isinstance(eid, str) and eid.strip() and eid not in pipeline_evidence_ids:
-                        pipeline_evidence_ids.append(eid)
-                        if len(pipeline_evidence_ids) >= 64:
-                            break
-            if len(pipeline_evidence_ids) >= 64:
-                break
-
-        if pipeline_evidence_ids:
-            next_step_suggestion = (
-                "ask_human"
-                if (critic and not critic_success) or risk_score >= 80
-                else "run_test"
-                if (isinstance(impact, dict) and impact.get("suggested_tests"))
-                else "retrieve_evidence"
-                if isinstance(packed, dict) and packed.get("gap")
-                else "inspect_source"
-            )
-            _queue_laya_next_step_shadow(
-                self.services,
-                args,
-                root=root,
-                task=task,
-                current_stage="pipeline_completion",
-                suggestion=next_step_suggestion,
-                evidence_ids=pipeline_evidence_ids,
-            )
-            stage_hit = bool(
-                (isinstance(worker, dict) and worker.get("stage_cache_hit"))
-                or (isinstance(explorer, dict) and explorer.get("stage_cache_hit"))
-            )
-            _queue_laya_redundant_step_shadow(
-                self.services,
-                args,
-                root=root,
-                task=task,
-                step_name="worker_stage",
-                is_duplicate=stage_hit,
-                evidence_ids=pipeline_evidence_ids,
-            )
         return result
 
     def stats(self) -> dict[str, Any]:

@@ -27,6 +27,7 @@ from .http_route_registry import (
     POST_ROUTE_REGISTRY,
     TELEMETRY_SAFE_GET_ROUTE_LABELS,
 )
+from .telemetry_contracts import _LAYA_DECISION_FIELDS, _LAYA_ELIGIBILITY_FIELDS, load_telemetry_json
 
 logger = logging.getLogger(__name__)
 
@@ -268,10 +269,9 @@ def _bound_telemetry_report(report: dict[str, Any]) -> dict[str, Any]:
             if field == "error_fingerprints":
                 page = report.get("error_fingerprints_page")
                 if isinstance(page, dict):
-                    next_offset = int(page.get("offset", 0)) + len(values)
-                    page["next_offset"] = (
-                        next_offset if "cursor" not in page and next_offset < int(page.get("total", 0)) else None
-                    )
+                    if "cursor" not in page:
+                        next_offset = int(page.get("offset", 0)) + len(values)
+                        page["next_offset"] = next_offset if next_offset < int(page.get("total", 0)) else None
                     if "next_cursor" in page:
                         if values:
                             last = values[-1]
@@ -667,19 +667,6 @@ _LAYA_REASON_CODES = {
     "DUPLICATE", "CACHE_HIT", "STALE_EVIDENCE",
 }
 _LAYA_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
-_LAYA_DECISION_FIELDS = frozenset({
-    "decision_id", "success", "mode", "status", "category", "repository_id", "task_id",
-    "session_id", "suggestion", "reason_codes", "evidence_ids", "model_estimate",
-    "uncertainty", "execution_verification", "runtime_latency_ms", "inference_latency_ms",
-    "queue_wait_ms", "backend", "fallback_used", "fallback_reason",
-})
-_LAYA_DECISION_BASE_FIELDS = _LAYA_DECISION_FIELDS - {
-    "runtime_latency_ms", "inference_latency_ms", "queue_wait_ms", "backend",
-    "fallback_used", "fallback_reason",
-}
-_LAYA_ELIGIBILITY_FIELDS = frozenset({"decision_id", "mode", "category"})
-
-
 def _laya_decision_report(
     rows: list[tuple[Any, ...]],
     eligible_rows: list[tuple[Any, ...]] | None = None,
@@ -712,7 +699,7 @@ def _laya_decision_report(
             "backend": {"available": False, "reason": "runtime_backend_not_recorded"},
             "fallbacks": {"available": False, "reason": "fallback_outcome_not_recorded"},
         }
-        for mode in ("shadow", "advisory")
+        for mode in ("advisory",)
     }
     invalid_records = 0
     truncated = len(rows) > 1000 or len(eligible_rows or []) > 1000
@@ -720,12 +707,12 @@ def _laya_decision_report(
     eligible_ids: dict[str, tuple[str, str]] = {}
     for (metrics_json,) in (eligible_rows or [])[:1000]:
         try:
-            eligible = json.loads(metrics_json)
+            eligible = load_telemetry_json(metrics_json)
             if not isinstance(eligible, dict) or set(eligible) != _LAYA_ELIGIBILITY_FIELDS:
                 raise ValueError("invalid stored Laya eligibility")
             mode = eligible["mode"]
             category = eligible["category"]
-            if mode not in {"shadow", "advisory"} or category not in _LAYA_DECISION_OPTIONS:
+            if mode != "advisory" or category not in _LAYA_DECISION_OPTIONS:
                 raise ValueError("invalid stored Laya eligibility")
             decision_id = eligible["decision_id"]
             if not isinstance(decision_id, str) or not _LAYA_IDENTIFIER.fullmatch(decision_id):
@@ -743,22 +730,9 @@ def _laya_decision_report(
     decision_ids: dict[str, tuple[str, str]] = {}
     for (metrics_json,) in rows[:1000]:
         try:
-            metadata = json.loads(metrics_json)
-            if not isinstance(metadata, dict) or frozenset(metadata) not in {
-                _LAYA_DECISION_FIELDS, _LAYA_DECISION_BASE_FIELDS,
-            }:
+            metadata = load_telemetry_json(metrics_json)
+            if not isinstance(metadata, dict) or frozenset(metadata) != _LAYA_DECISION_FIELDS:
                 raise ValueError("invalid stored Laya metadata")
-            legacy_runtime_fields = set(metadata) == _LAYA_DECISION_BASE_FIELDS
-            if legacy_runtime_fields:
-                metadata = {
-                    **metadata,
-                    "runtime_latency_ms": None,
-                    "inference_latency_ms": None,
-                    "queue_wait_ms": None,
-                    "backend": None,
-                    "fallback_used": None,
-                    "fallback_reason": None,
-                }
             mode = metadata["mode"]
             category = metadata["category"]
             decision_id = metadata["decision_id"]
@@ -766,7 +740,7 @@ def _laya_decision_report(
             reason_codes = metadata["reason_codes"]
             if isinstance(reason_codes, str):
                 reason_codes = json.loads(reason_codes)
-            if mode not in {"shadow", "advisory"}:
+            if mode != "advisory":
                 raise ValueError("invalid stored Laya mode")
             if not isinstance(decision_id, str) or not _LAYA_IDENTIFIER.fullmatch(decision_id):
                 raise ValueError("invalid stored Laya decision id")
@@ -1026,10 +1000,11 @@ class TelemetryStore(TelemetryAggregateMixin, TelemetryQueryMixin, TelemetryEven
         self._summary_cache: dict[Any, dict[str, Any]] = {}
         self._thread: threading.Thread | None = None
         state_dir.mkdir(parents=True, exist_ok=True)
-        if self.enabled and self.mode != "minimal":
+        if self.enabled:
             self._init_db_with_recovery()
-            self._thread = threading.Thread(target=self._writer_loop, name="local-ai-telemetry", daemon=True)
-            self._thread.start()
+            if self.mode != "minimal":
+                self._thread = threading.Thread(target=self._writer_loop, name="local-ai-telemetry", daemon=True)
+                self._thread.start()
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=5.0)

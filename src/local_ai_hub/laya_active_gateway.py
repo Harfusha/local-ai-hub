@@ -76,11 +76,9 @@ class LayaActiveGateway:
 
     def __init__(
         self,
-        mode: str = "advisory",
         laya_runtime_adapter: Any = None,
         rl_feedback_recorder: Any = None,
     ) -> None:
-        self.mode = mode
         self._adapter = laya_runtime_adapter
         self._rl_recorder = rl_feedback_recorder
         self._decision_counter = 0

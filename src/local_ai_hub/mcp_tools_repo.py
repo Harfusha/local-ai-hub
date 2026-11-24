@@ -78,15 +78,11 @@ def _local_ai_repo_impl(
     days: int | None = None,
     depth: int = 1,
     pattern: str | None = None,
-    target: str | None = None,
-    replacement: str | None = None,
     head: str | None = None,
     start_line: int = 1,
     end_line: int = 0,
     line_start: int = 1,
     line_end: int = 0,
-    symbol: str | None = None,
-    file: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -111,30 +107,6 @@ def _local_ai_repo_impl(
     secret_scan_path_supplied = path is not None
     if not services_module.FEATURES.repo:
         return {**services_module.contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
-    if action == "diff":
-        action = "git_diff"
-    elif action == "status":
-        action = "git_status"
-    elif action in {"file_info", "stat"}:
-        action = "file_info"
-    elif action in {"read_file", "source"}:
-        action = "source"
-    elif action in {"definition", "declaration"}:
-        action = "declaration"
-    elif action in {"references", "find_references"}:
-        action = "callers"
-    elif action in {"find_symbol", "symbol"}:
-        action = "code_index"
-    if symbol and not query:
-        query = symbol
-    if pattern and not query:
-        query = pattern
-    if file and not path:
-        path = file
-    if not path and changed_paths and len(changed_paths) > 0 and action == "generate_tests_for_diff":
-        path = changed_paths[0]
-    if not edits and path and ((target and replacement) or (old_code and new_code)):
-        edits = [{"path": path, "target": target or old_code, "replacement": replacement or new_code}]
     if not isinstance(phase, str) or phase not in services_module.REPO_PHASES:
         return services_module.contract_error(f"phase must be one of: {', '.join(services_module.REPO_PHASES[1:])}")
     scoped_error = services_module.validate_operation_arguments(
@@ -154,7 +126,10 @@ def _local_ai_repo_impl(
             "migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes",
         )},
         "mutation_test": ("query", "task", "workspace"),
-        "generate_tests_for_diff": ("query", "task"),
+        "generate_tests_for_diff": ("query", "task", "changed_paths"),
+        "patch": ("query", "task"),
+        "find_files": ("query",),
+        "pipeline": ("edits",),
         "dependency_slice": ("relation",),
         "cross_repo_contract": ("query", "workspace", "task", "diff"),
         "circular_dependencies": ("query", "task", "workspace", "diff", "path"),
@@ -180,6 +155,8 @@ def _local_ai_repo_impl(
     input_values = {
         "query": query, "diff": diff, "task": task, "workspace": workspace,
         "path": path, "task_id": task_id, "max_tokens": max_tokens, "relation": relation,
+        "changed_paths": changed_paths,
+        "edits": edits,
     }
     for field in retired_input_fields.get(action, ()):
         if input_values[field] is not None:
@@ -390,6 +367,12 @@ def _local_ai_repo_impl(
         projected["ai_summary_root_fingerprint"] = services_module.hashlib.sha256(
             services_module._client_root(root).encode("utf-8", errors="replace")
         ).hexdigest()
+        if not summary_sources:
+            projected["ai_summary"] = {"success": False, "error": "summary unavailable: no source excerpts"}
+            projected["ai_summary_citation_validation"] = {"status": "not_checked", "reason": "no_source_excerpts"}
+            projected["ai_summary_sources"] = []
+            projected["ai_summary_advisory"] = True
+            return projected
         try:
             summary_result = services_module.CLIENT.post("/api/compress", {
                 "text": summary_input,
@@ -688,7 +671,7 @@ def _local_ai_repo_impl(
     if action == "verify":
         return services_module._compact(services_module.CLIENT.post("/api/evidence/verify", {"root": root, "evidence": evidence or []}), "verify")
     if action == "pipeline":
-        pipeline_steps = steps or edits or []
+        pipeline_steps = steps or []
         if not isinstance(pipeline_steps, list) or not pipeline_steps:
             return services_module.contract_error("pipeline action requires a non-empty 'steps' list of actions")
 
@@ -893,20 +876,20 @@ def _local_ai_repo_impl(
             return services_module.contract_error("revert requires path")
         return services_module._compact(services_module.CLIENT.post("/api/repo/revert", {"root": root, "path": path}, timeout=services_module._timeout("quick")), "status")
     if action == "patch":
-        target_code = old_code if old_code is not None else (target if target is not None else (query or ""))
-        replacement_code = new_code if new_code is not None else (replacement if replacement is not None else (task if task is not None else ""))
-        if not path or target_code is None or target_code == "":
-            return services_module.contract_error("patch requires path and old_code/target")
+        target_code = old_code or ""
+        replacement_code = new_code or ""
+        if not path or not target_code:
+            return services_module.contract_error("patch requires path and non-empty old_code")
         return services_module._compact(services_module.CLIENT.post("/api/repo/patch", {
             "root": root, "path": path, "old_code": target_code, "new_code": replacement_code,
         }, timeout=services_module._timeout("quick")), "repository result")
-    if action in {"find_files", "glob"}:
-        file_pat = pattern or query or "*"
+    if action == "find_files":
+        file_pat = pattern or "*"
         return services_module._compact(services_module.CLIENT.post("/api/repo/find_files", {
             "root": root, "pattern": file_pat, "limit": limit or 100, "offset": offset or 0,
         }, timeout=services_module._timeout("quick")), "repository result")
     if action == "call_graph":
-        target_sym = query or task or ""
+        target_sym = query or ""
         if not target_sym:
             return services_module.contract_error("call_graph requires query (symbol name)")
         return services_module._compact(services_module.CLIENT.post("/api/repo/call_graph", {
@@ -1020,7 +1003,7 @@ def _local_ai_repo_impl(
         ])
     if action in {"file_info", "stat"}:
         return services_module._compact(services_module.CLIENT.post("/api/repo/file_info", {"root": root, "path": path or ""}), "repository")
-    if action in {"read_file", "source"}:
+    if action == "source":
         from .source_slice import read_source_slice
         from .context_virtualizer import virtualize_file_read
         eff_start = start_line if start_line > 1 else line_start
@@ -1193,46 +1176,16 @@ def local_ai_repo(
     days: int | None = None,
     depth: int = 1,
     pattern: str | None = None,
-    target: str | None = None,
-    replacement: str | None = None,
     head: str | None = None,
     start_line: int = 1,
     end_line: int = 0,
     line_start: int = 1,
     line_end: int = 0,
-    file: str | None = None,
     owner: str | None = None,
     lease_id: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. For simple fact/location questions, use one concise `context` query for natural language, `search` for a known filename/term, or `code_index` for a known symbol. These lookup actions default to compact output; an explicit `response_profile` overrides that default. Stop when source-backed evidence answers the question; inspect only the exact candidate path if needed. Avoid generic one-word searches, repeated retrieval layers, unrelated call sites, and language-specific actions unsupported by the project."""
     from . import mcp_server as services_module
-    if pattern and not query:
-        query = pattern
-    if file and not path:
-        path = file
-    if not path and changed_paths and len(changed_paths) > 0 and action == "generate_tests_for_diff":
-        path = changed_paths[0]
-    if not edits and path and ((target and replacement) or (old_code and new_code)):
-        edits = [{"path": path, "target": target or old_code, "replacement": replacement or new_code}]
-    if action == "context" and not query and task:
-        query = task
-    elif action in {"solve", "delegate"} and not task and query:
-        task = query
-    elif action == "diff":
-        action = "git_diff"
-    elif action == "status":
-        action = "git_status"
-    elif action in {"file_info", "stat"}:
-        action = "file_info"
-    elif action in {"read_file", "source"}:
-        action = "source"
-    elif action == "glob":
-        action = "find_files"
-    elif action == "patch":
-        if target is not None and old_code is None:
-            old_code = target
-        if replacement is not None and new_code is None:
-            new_code = replacement
     forward: dict[str, services_module.Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -1341,5 +1294,5 @@ def local_ai_repo(
         summarize_results=summarize_results, offset=offset, match_offset=match_offset,
         file_offset=file_offset, expected_revision=expected_revision, search_mode=search_mode,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, file=file, owner=owner, lease_id=lease_id, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, owner=owner, lease_id=lease_id, **forward,
     )

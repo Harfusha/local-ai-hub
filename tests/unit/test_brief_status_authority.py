@@ -19,6 +19,7 @@ def isolated_mcp_server(tmp_path_factory):
     state_dir = root / "state"
     config_path = root / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         "port = 49173\n"
@@ -53,6 +54,7 @@ def _write_test_config(root):
     state_dir = root / "state"
     config_path = root / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         "port = 49173\n"

@@ -13,6 +13,7 @@ _OPENCODE_TOOLS = frozenset({
     "local_ai_coord",
     "local_ai_artifact",
     "local_ai_rag",
+    "local_ai_work",
 })
 
 
@@ -22,6 +23,7 @@ class OpenCodeAdapter(BaseClientAdapter):
         client_id="opencode",
         display_name="OpenCode",
         hook_support=HookSupport.JS_PLUGIN,
+        hook_events=("context", "execute.after", "permission.evaluate"),
         instruction_targets=(InstructionTarget.SYSTEM_PROMPT,),
         has_token_tracking=False,
         has_reasoning_tokens=False,
@@ -39,6 +41,8 @@ class OpenCodeAdapter(BaseClientAdapter):
         env: dict[str, str] = {
             "OPENCODE_SESSION": "1",
             "LOCAL_AI_HUB_DIR": str(hub_install_dir),
+            "LOCAL_AI_AGENT": "opencode",
+            "LOCAL_AI_AGENT_PROFILE": "opencode",
         }
         if hub_port:
             env["LOCAL_AI_HUB_PORT"] = str(hub_port)
@@ -55,10 +59,11 @@ class OpenCodeAdapter(BaseClientAdapter):
         from local_ai_hub.repo_plan.host_adapters import get_managed_planner_instructions
         return (
             "## Local AI Hub Integration\n\n"
-            "You have access to the `local-ai` MCP server with 6 core tools: "
+            "You have access to the `local-ai` MCP server with core tools: "
             "`local_ai_status`, `local_ai_repo`, `local_ai_task`, `local_ai_coord`, "
-            "`local_ai_artifact`, `local_ai_rag`.\n\n"
-            "Note: `local_ai_work` is disabled for this session to prevent recursive delegation.\n\n"
+            "`local_ai_artifact`, and `local_ai_rag`. `local_ai_work` appears only when the live MCP schema "
+            "advertises it and the Hub's feature gates allow it. Use it only for explicitly requested, "
+            "bounded delegation; never delegate the current task recursively.\n\n"
             + get_managed_planner_instructions()
         )
 

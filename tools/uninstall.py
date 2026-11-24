@@ -493,6 +493,11 @@ def main() -> int:
 
     home = Path.home()
     codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex")))
+    devin_home = (
+        Path(os.environ["APPDATA"]) / "devin"
+        if sys.platform == "win32" and os.environ.get("APPDATA")
+        else home / ".config" / "devin"
+    )
     clean_external_configurations(plan.get("external_ownership", []), install)
 
     skills_roots = [
@@ -500,6 +505,7 @@ def main() -> int:
         home / ".claude" / "skills",
         home / ".cursor" / "skills",
         home / ".codeium" / "windsurf" / "skills",
+        devin_home / "skills",
         home / ".copilot" / "skills",
     ]
     for user_home in get_user_homes():

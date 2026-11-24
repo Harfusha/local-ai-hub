@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from local_ai_hub import process_utils
+from local_ai_hub import process_utils, git_worktrees
 from local_ai_hub.repo_tools import RepositoryTools
 
 
@@ -36,5 +36,5 @@ def test_git_worktree_pointer_is_supported_by_repository_tools(tmp_path):
     assert (worktree / "tracked.txt").resolve() in inventory
 
     expected_git_dir = Path(_git(worktree, "rev-parse", "--absolute-git-dir"))
-    ownership_path = process_utils._worktree_ownership_path(worktree)
+    ownership_path = git_worktrees._worktree_ownership_path(worktree)
     assert ownership_path == expected_git_dir / process_utils._WORKTREE_OWNERSHIP_FILE

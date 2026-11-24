@@ -223,11 +223,12 @@ class CodeIndexQueryMixin:
             return {
                 "success": False, "root": resolved_root, "error": "root directory does not exist",
                 "stale_root": True, "confidence": 0.0,
-                "total_matches": 0, "has_more": False, "limit": limit, "offset": offset,
+                "total_matches": 0, "returned_count": 0, "has_more": False,
+                "limit": limit, "offset": offset,
                 "coverage": {"query_term_count": 0, "matched_term_count": 0, "query_term_coverage": 0.0, "complete": False, "scope": "no_candidates"},
                 "freshness": {"status": "stale_root", "scope": "repository", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False},
                 "truncated": False,
-                "truncation": {"returned_count": 0, "observed_match_count": 0, "candidate_cap_reached": False},
+                "truncation": {"candidate_cap_reached": False},
                 "parse_outcomes": {"scope": "no_candidates", "files_examined": 0, "syntax_error_files": 0, "fallback_files": 0, "unavailable_files": 0, "failed_files": 0, "unknown_files": 0, "complete": False},
             }
         exact_identifier = query if query.isidentifier() and query.isascii() else None
@@ -237,7 +238,7 @@ class CodeIndexQueryMixin:
         if not terms:
             return {
                 "success": True, "root": resolved_root, "query": query, "terms": [],
-                "matches_count": 0, "total_matches": 0, "has_more": False,
+                "total_matches": 0, "has_more": False,
                 "returned_count": 0, "symbols": [], "confidence": 0.0,
                 "limit": limit, "offset": offset,
                 "coverage": {"query_term_count": 0, "matched_term_count": 0, "query_term_coverage": 0.0, "complete": False, "scope": "indexed_symbol_candidates"},
@@ -425,12 +426,10 @@ class CodeIndexQueryMixin:
             "root": resolved_root,
             "query": query,
             "terms": terms,
-            "matches_count": len(symbols),
             "total_matches": total_matches,
             "has_more": has_more,
             "limit": limit,
             "offset": offset,
-            "observed_match_count": total_matches,
             "returned_count": len(symbols),
             "symbols": symbols,
             "confidence": 0.0,
@@ -440,8 +439,6 @@ class CodeIndexQueryMixin:
                 "matched_term_count": len(matched_terms),
                 "matched_terms": matched_terms,
                 "query_term_coverage": term_coverage,
-                "candidate_match_count": total_matches,
-                "returned_symbol_count": len(symbols),
                 "complete": False,
                 "scope": "indexed_symbol_candidates",
                 **({"indexed_files_present": indexed_files_present} if indexed_files_present is not None else {}),
@@ -449,9 +446,6 @@ class CodeIndexQueryMixin:
             "freshness": freshness,
             "truncated": truncated,
             "truncation": {
-                "result_limit": limit,
-                "returned_count": len(symbols),
-                "observed_match_count": total_matches,
                 "candidate_cap": candidate_limit,
                 "candidate_cap_reached": candidate_truncated,
             },

@@ -30,7 +30,6 @@ def _exact_search_page(
         "root": str(root),
         "results": page,
         "total_matches": len(ordered),
-        "matches_count": len(ordered),
         "count_exact": True,
         "limit": limit,
         "offset": offset,

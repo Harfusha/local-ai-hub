@@ -172,7 +172,7 @@ def test_config_rejects_retired_tenant_auth_settings(tmp_path):
 
     config = tmp_path / "hub.toml"
     config.write_text(
-        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         '[security]\n'
         'api_token_tenant = "tenant-alice"\n'
         'tenant_derivation_key = "stable-test-derivation-secret-0123456789"\n'
@@ -375,7 +375,7 @@ def test_supervisor_lock_records_and_releases_exact_process_owner(tmp_path, monk
 
     config = tmp_path / "hub.toml"
     config.write_text(
-        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nport = 11435\n',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nport = 11435\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(supervisor_module, "OllamaRuntime", lambda _config: object())
@@ -401,7 +401,7 @@ def test_supervisor_shutdown_does_not_kill_reused_child_pid(tmp_path, monkeypatc
     state_dir = tmp_path / "state"
     config = tmp_path / "hub.toml"
     config.write_text(
-        f'[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\n',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(supervisor_module, "OllamaRuntime", lambda _config: object())
@@ -518,7 +518,7 @@ def _supervisor_for_lifecycle(tmp_path, monkeypatch, *, headless=""):
     state_dir = tmp_path / "state"
     config = tmp_path / "hub.toml"
     config.write_text(
-        f'[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\nbind = "127.0.0.1"\n{headless}',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\nbind = "127.0.0.1"\n{headless}',
         encoding="utf-8",
     )
     monkeypatch.setattr(supervisor_module, "OllamaRuntime", lambda _config: object())
@@ -611,7 +611,7 @@ def test_concurrent_stale_lock_reclaim_has_exactly_one_supervisor(tmp_path):
     state_dir.mkdir()
     config = tmp_path / "hub.toml"
     config.write_text(
-        f'[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\n',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\n',
         encoding="utf-8",
     )
     stale = _owner_record(2**31 - 2, state_dir)
@@ -685,7 +685,7 @@ def test_crashed_supervisor_releases_os_guard_and_next_process_reclaims_owner(tm
     state_dir = tmp_path / "state"
     config = tmp_path / "hub.toml"
     config.write_text(
-        f'[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\n',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{state_dir.as_posix()}"\nport = 11435\n',
         encoding="utf-8",
     )
     script = "import os, sys; from local_ai_hub.supervisor import Supervisor; s=Supervisor(sys.argv[1]); assert s.acquire(); print('LOCKED', flush=True); os._exit(0)"
@@ -2577,7 +2577,7 @@ def test_config_rejects_nonliteral_loopback_bind_and_remote_opt_in(tmp_path):
     config = tmp_path / "config.toml"
     for bind in ("0.0.0.0", "localhost", "::1", " 127.0.0.1 "):
         config.write_text(
-            f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "{bind}"\n'
+            f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "{bind}"\n'
             '[security]\n',
             encoding="utf-8",
         )
@@ -2585,7 +2585,7 @@ def test_config_rejects_nonliteral_loopback_bind_and_remote_opt_in(tmp_path):
             load_config(str(config))
 
     config.write_text(
-        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "127.0.0.1"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "127.0.0.1"\n'
         '[security]\nallow_remote = false\n',
         encoding="utf-8",
     )
@@ -2593,7 +2593,7 @@ def test_config_rejects_nonliteral_loopback_bind_and_remote_opt_in(tmp_path):
         load_config(str(config))
 
     config.write_text(
-        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "127.0.0.1"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "127.0.0.1"\n'
         'client_host = "remote.example"\n',
         encoding="utf-8",
     )
@@ -2812,7 +2812,7 @@ def test_async_job_trace_persists_complete_input_and_output_when_enabled(tmp_pat
     config = {
         "server": {"state_dir": str(tmp_path / "state")},
         "async_jobs": {"wait_max_seconds": 3},
-        "debug_traces": {"enabled": True},
+        "telemetry": {"mode": "full"},
     }
     traces = DebugTraceStore(config)
 

@@ -490,11 +490,11 @@ def create_diagnostics_archive(
             "category_counts": {},
             "language_counts": {},
             "runtime": (laya_telemetry or {}).get("runtime", {"status": "unavailable"}),
-            "shadow_telemetry": laya_telemetry or {"status": "unavailable"},
+            "decision_telemetry": laya_telemetry or {"status": "unavailable"},
             "evaluation_status": "INSUFFICIENT DATA",
             "missing_data": {
                 "candidate_database": 1,
-                "shadow_telemetry": 1 if not (laya_telemetry or {}).get("decisions", {}).get("available", False) else 0,
+                "decision_telemetry": 1 if not (laya_telemetry or {}).get("decisions", {}).get("available", False) else 0,
                 "evaluation_report": 1,
                 "backend_provenance": 1,
             },

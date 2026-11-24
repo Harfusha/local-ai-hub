@@ -10,10 +10,16 @@ if TYPE_CHECKING:
 
 
 class HookSupport(str, Enum):
-    """Level of hook interception provided by the client."""
-    NONE = "none"              # Pure MCP stdio without hooks (Claude, Cursor, VS Code)
+    """Level of Local AI Hub hook coverage implemented for the client."""
+    NONE = "none"              # No Hub hook adapter configured
+    SESSION_START = "session_start"  # Session-start warmup only (Cursor)
+    SESSION_PRE_TOOL = "session_pre_tool"  # Session warmup plus bounded pre-action checks
+    SESSION_PRE_POST_TOOL = "session_pre_post_tool"  # Session warmup, bounded pre-action checks, and post-edit checks
+    SESSION_TOOL = "session_tool"  # Session warmup plus bounded before/after-tool hooks (Gemini CLI)
     PRE_TOOL = "pre_tool"      # PreToolUse validation only (Antigravity)
-    FULL = "full"              # UserPromptSubmit, PreToolUse, and PostToolUse (Codex, Gemini CLI)
+    PRE_POST_TOOL = "pre_post_tool"  # Bounded pre-action checks and post-edit checks (Copilot, Windsurf, Devin)
+    INVOCATION_TOOL = "invocation_tool"  # Invocation context plus before/after-tool hooks (Antigravity)
+    FULL = "full"              # Session, prompt, subagent, pre/permission, and post-tool hooks (Codex)
     JS_PLUGIN = "js_plugin"    # Node.js / JavaScript plugin engine (OpenCode)
 
 
@@ -45,6 +51,7 @@ class ClientCapabilities:
     tool_filter:           frozenset[str] = field(default_factory=frozenset)
     mcp_surface:           str = "stdio"
     extra:                 dict[str, Any] = field(default_factory=dict)
+    hook_events:           tuple[str, ...] = ()  # Native events wired by the Hub integration
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,7 @@ class BaseClientAdapter:
             "client_id": self.client_id,
             "display_name": self.capabilities.display_name,
             "hook_support": self.capabilities.hook_support.value,
+            "hook_events": list(self.capabilities.hook_events),
             "instruction_targets": [t.value for t in self.capabilities.instruction_targets],
             "has_token_tracking": self.capabilities.has_token_tracking,
             "has_reasoning_tokens": self.capabilities.has_reasoning_tokens,

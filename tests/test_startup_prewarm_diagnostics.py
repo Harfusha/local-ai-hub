@@ -7,7 +7,7 @@ from local_ai_hub.debug_traces import DebugTraceStore
 def _store(tmp_path, *, enabled: bool) -> DebugTraceStore:
     return DebugTraceStore({
         "server": {"state_dir": str(tmp_path)},
-        "debug_traces": {"enabled": enabled},
+        "telemetry": {"mode": "full" if enabled else "minimal"},
     })
 
 

@@ -60,7 +60,7 @@ def _store(tmp_path) -> TaskStore:
 
 
 def _mock_auto_worktree(monkeypatch, tmp_path):
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     def prepare(root, *, branch_name, task_id, owner, created_at, ttl_seconds, expires_at, **kwargs):
         metadata = {
@@ -86,9 +86,9 @@ def _mock_auto_worktree(monkeypatch, tmp_path):
             response_metadata=lambda: metadata,
         )
 
-    monkeypatch.setattr(process_utils, "prepare_git_worktree", prepare)
+    monkeypatch.setattr(git_worktrees, "prepare_git_worktree", prepare)
     monkeypatch.setattr(
-        process_utils, "create_git_worktree", lambda *args, prepared_plan, **kwargs: prepared_plan.response_metadata(),
+        git_worktrees, "create_git_worktree", lambda *args, prepared_plan, **kwargs: prepared_plan.response_metadata(),
     )
 
 
@@ -315,7 +315,7 @@ def test_malformed_memory_audit_still_rejects_checkpoint_before_persistence(tmp_
 
 
 def test_auto_worktree_create_preflights_before_git_mutation(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     store = _store(tmp_path)
     monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **kwargs: _memory(task_id=task_id, root=str(kwargs.get("root_override") or "")))
@@ -325,9 +325,9 @@ def test_auto_worktree_create_preflights_before_git_mutation(tmp_path, monkeypat
         expires_at=9999999999.0,
         response_metadata=lambda: {"success": True, "worktree_id": "worktree_000000000000"},
     )
-    monkeypatch.setattr(process_utils, "prepare_git_worktree", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(git_worktrees, "prepare_git_worktree", lambda *args, **kwargs: plan)
     create_calls = []
-    monkeypatch.setattr(process_utils, "create_git_worktree", lambda *args, **kwargs: create_calls.append(args))
+    monkeypatch.setattr(git_worktrees, "create_git_worktree", lambda *args, **kwargs: create_calls.append(args))
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 129)
     commits = []
     monkeypatch.setattr(store, "_commit_create", lambda *args, **kwargs: commits.append(args))
@@ -343,7 +343,7 @@ def test_auto_worktree_create_preflights_before_git_mutation(tmp_path, monkeypat
 
 
 def test_auto_worktree_create_consumes_preflighted_plan_after_budget_fits(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     store = _store(tmp_path)
     monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **_k: _memory(task_id=task_id, root=str(tmp_path.resolve())))
@@ -351,14 +351,14 @@ def test_auto_worktree_create_consumes_preflighted_plan_after_budget_fits(tmp_pa
         repo_root=str(tmp_path.resolve()), ttl_seconds=3600.0, expires_at=9999999999.0,
         response_metadata=lambda: {"success": True, "worktree_id": "worktree_000000000000"},
     )
-    monkeypatch.setattr(process_utils, "prepare_git_worktree", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(git_worktrees, "prepare_git_worktree", lambda *args, **kwargs: plan)
     create_calls = []
 
     def create(*args, **kwargs):
         create_calls.append((args, kwargs))
         return plan.response_metadata()
 
-    monkeypatch.setattr(process_utils, "create_git_worktree", create)
+    monkeypatch.setattr(git_worktrees, "create_git_worktree", create)
     monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", lambda projected, requested: 64)
 
     task = store.create(
@@ -372,11 +372,11 @@ def test_auto_worktree_create_consumes_preflighted_plan_after_budget_fits(tmp_pa
 
 
 def test_auto_worktree_preparation_failure_fails_closed_before_task_write(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     store = _store(tmp_path)
     monkeypatch.setattr(
-        process_utils,
+        git_worktrees,
         "prepare_git_worktree",
         lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("invalid repository")),
     )
@@ -396,15 +396,15 @@ def test_auto_worktree_preparation_failure_fails_closed_before_task_write(tmp_pa
 
 
 def test_auto_worktree_git_failure_keeps_started_operation_unknown(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     store = _store(tmp_path)
     plan = SimpleNamespace(
         repo_root=str(tmp_path.resolve()), ttl_seconds=3600.0, expires_at=9999999999.0,
         response_metadata=lambda: {"success": True, "worktree_id": "worktree_000000000000"},
     )
-    monkeypatch.setattr(process_utils, "prepare_git_worktree", lambda *args, **kwargs: plan)
-    monkeypatch.setattr(process_utils, "create_git_worktree", lambda *args, **kwargs: {
+    monkeypatch.setattr(git_worktrees, "prepare_git_worktree", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(git_worktrees, "create_git_worktree", lambda *args, **kwargs: {
         "success": False, "error": "git invocation timed out", "mutation_applied": None,
         "operation_not_started": False, "outcome_unknown": True,
     })
@@ -472,7 +472,7 @@ def test_direct_completed_transition_schedules_existing_worktree_cleanup(tmp_pat
 
 
 def test_idle_reaper_accepts_scheduled_worktree_before_expiry(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils, worktrees
+    from local_ai_hub import git_worktrees, process_utils, worktrees
 
     store = _store(tmp_path)
     _mock_auto_worktree(monkeypatch, tmp_path)
@@ -526,7 +526,7 @@ def test_task_projection_rejects_contract_without_canonical_goal(tmp_path, contr
         1.0,
     )
 
-    with pytest.raises(ValueError, match="task contract requires goal"):
+    with pytest.raises(ValueError, match="contract must be an object"):
         store._row_to_state(row)
 
     assert "goal" not in contract_data
@@ -538,15 +538,13 @@ def test_goal_contract_rejects_non_string_goal(goal):
         GoalContract.from_dict({"goal": goal})
 
 
-@pytest.mark.parametrize("alias", ["title", "description", "summary", "intent", "prompt", "query"])
-def test_http_task_create_uses_only_canonical_goal_or_task_shortcut(alias):
+@pytest.mark.parametrize("alias", ["title", "description", "summary", "intent", "prompt", "query", "goal", "task", "criteria", "acceptance_criteria"])
+def test_http_task_create_requires_canonical_contract(alias):
     from local_ai_hub.http_server import _task_create_contract
 
-    with pytest.raises(ValueError, match="task contract requires goal"):
+    with pytest.raises(ValueError, match="contract must be an object"):
         _task_create_contract({alias: "legacy task text"})
 
-    task_contract = _task_create_contract({"task": "canonical task shorthand"})
-    assert task_contract.goal == "canonical task shorthand"
     object_contract = _task_create_contract({"contract": {"goal": "canonical goal"}})
     assert object_contract.goal == "canonical goal"
 
@@ -624,7 +622,7 @@ def test_completion_evaluator_receives_full_current_contract_without_project_rul
 def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_path, monkeypatch):
     from subprocess import CompletedProcess
 
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
@@ -641,14 +639,14 @@ def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_pat
         "executable": "C:/test/python.exe",
     }
     monkeypatch.setattr(process_utils, "process_identity", lambda pid: dict(creator))
-    plan = process_utils.prepare_git_worktree(
+    plan = git_worktrees.prepare_git_worktree(
         repo, branch_name="hub/task-prepared", task_id="prepared", owner="agent",
         created_at=1000.0, ttl_seconds=3600.0, expires_at=4600.0,
     )
 
     assert len(git_reads) == 1
     assert "worktree" not in git_reads[0][0]
-    rejected = process_utils.create_git_worktree(
+    rejected = git_worktrees.create_git_worktree(
         repo, branch_name="hub/task-prepared", task_id="prepared", owner="other-agent",
         created_at=1000.0, ttl_seconds=3600.0, expires_at=4600.0, prepared_plan=plan,
     )
@@ -658,7 +656,7 @@ def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_pat
 
     changed_creator = {**creator, "creation_identity": 789}
     monkeypatch.setattr(process_utils, "process_identity", lambda pid: dict(changed_creator))
-    identity_rejected = process_utils.create_git_worktree(
+    identity_rejected = git_worktrees.create_git_worktree(
         repo, branch_name="hub/task-prepared", task_id="prepared", owner="agent",
         created_at=1000.0, ttl_seconds=3600.0, expires_at=4600.0, prepared_plan=plan,
     )
@@ -1097,7 +1095,7 @@ def test_question_mutations_reject_noncanonical_budgets(tmp_path, action, budget
 
 
 def test_cleanup_worktree_preflights_response_budget_before_git_mutation(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
+    from local_ai_hub import git_worktrees, process_utils
 
     store = _store(tmp_path)
     _mock_auto_worktree(monkeypatch, tmp_path)
@@ -1107,11 +1105,11 @@ def test_cleanup_worktree_preflights_response_budget_before_git_mutation(tmp_pat
     )
     git_calls = []
     monkeypatch.setattr(
-        process_utils, "get_git_worktree_ownership",
+        git_worktrees, "get_git_worktree_ownership",
         lambda *args, **kwargs: pytest.fail("budget rejection must happen before ownership access"),
     )
     monkeypatch.setattr(
-        process_utils, "remove_git_worktree",
+        git_worktrees, "remove_git_worktree",
         lambda *args, **kwargs: git_calls.append(args) or {"success": True},
     )
     monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", lambda payload, **kwargs: 129)

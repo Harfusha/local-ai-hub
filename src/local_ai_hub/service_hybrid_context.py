@@ -41,8 +41,9 @@ def _get_wait() -> Any:
 # or RAG, and timed-out work cannot cause a new thread per incoming request.
 _CONTEXT_BACKEND_POOLS = {
     name: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"context-{name}")
-    for name in ("serena", "rag")
+    for name in ("serena", "rag", "preprocessor")
 }
+_PREPROCESSOR_CONTEXT_ADMISSION = threading.BoundedSemaphore(1)
 
 
 def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
@@ -473,6 +474,7 @@ def _hybrid_context(
     focus: tuple[str, ...] = (),
     changed_paths: tuple[str, ...] = (),
     retrieval_weights: dict[str, float] | None = None,
+    laya_retrieval_strategy: str | None = None,
 ) -> dict[str, Any]:
     resolved_root = Path(root).expanduser().resolve(strict=False)
     if not resolved_root.is_dir():
@@ -547,6 +549,28 @@ def _hybrid_context(
                 "error": f"context project hints invalid: {type(exc).__name__}",
                 "context": "", "evidence": [],
             }
+    strategy_scales = {
+        "ast_symbol": {"lexical": 0.55, "rag": 0.35, "serena": 0.6, "preprocessor": 0.7},
+        "lexical_bm25": {"lexical": 1.0, "rag": 0.45, "serena": 0.7, "preprocessor": 0.75},
+        "semantic_hnsw": {"lexical": 0.45, "rag": 1.0, "serena": 0.65, "preprocessor": 0.7},
+        "graphrag": {"lexical": 0.5, "rag": 0.9, "serena": 0.8, "preprocessor": 0.8},
+    }
+    scales = strategy_scales.get(laya_retrieval_strategy or "")
+    if scales:
+        retrieval_weights = dict(retrieval_weights or {})
+        for source, scale in scales.items():
+            configured_scale = retrieval_weights.get(source, 1.0)
+            if (
+                isinstance(configured_scale, (int, float))
+                and not isinstance(configured_scale, bool)
+                and math.isfinite(float(configured_scale))
+            ):
+                retrieval_weights[source] = max(0.0, min(1.0, float(configured_scale) * scale))
+        context_identity = {
+            **(context_identity or {}),
+            "laya_retrieval_strategy": laya_retrieval_strategy,
+            "retrieval_weights": retrieval_weights,
+        }
     # Deterministic fallback remains internal to adaptive retrieval. The adaptive
     # path bypasses this early return so independent backends can cross-check the pack.
     if self.deterministic is not None and not quality_first:
@@ -617,6 +641,7 @@ def _hybrid_context(
                 "exclude_paths": exclude_paths,
                 "force_include_paths": force_include_paths,
                 "retrieval_weights": retrieval_weights or {},
+                "laya_retrieval_strategy": laya_retrieval_strategy,
             },
             compute,
         )
@@ -846,6 +871,7 @@ def _hybrid_context_uncached(
         retrieval_warnings.append("rag revision unavailable; cache bypassed")
     rag_pool = None
     rag_future = None
+    preprocessor_future = None
     semantic_fraction = max(0.0, min(float(search_cfg.get("semantic_fraction", 0.35)), 0.7))
     lexical_tokens = max_tokens if not target_workspace else max(512, int(max_tokens * (1.0 - semantic_fraction)))
     # Local AI: deterministic/semantic paths are ranking hints only. Keep lexical
@@ -896,26 +922,33 @@ def _hybrid_context_uncached(
         backend_states["deterministic"] = "skipped"
     if self.code_index is not None:
         try:
-            path_groups["code_index"] = list(self.code_index.related_paths(root, query, limit=24))
+            code_index_kwargs: dict[str, Any] = {"limit": 24}
+            indexed_result = (
+                deterministic_result.get("code_index")
+                if isinstance(deterministic_result, dict)
+                else None
+            )
+            if isinstance(indexed_result, dict):
+                try:
+                    import inspect
+
+                    parameters = inspect.signature(self.code_index.related_paths).parameters
+                    if "result" in parameters or any(
+                        parameter.kind == parameter.VAR_KEYWORD for parameter in parameters.values()
+                    ):
+                        code_index_kwargs["result"] = indexed_result
+                except Exception:
+                    pass
+            path_groups["code_index"] = list(
+                self.code_index.related_paths(root, query, **code_index_kwargs)
+            )
             backend_states["code_index"] = "used"
         except Exception as exc:
             backend_states["code_index"] = "degraded"
             retrieval_warnings.append(f"code_index degraded: {type(exc).__name__}")
     else:
         backend_states["code_index"] = "skipped"
-    if self.preprocessor is not None:
-        try:
-            path_groups["preprocessor"] = list(self.preprocessor.candidate_paths(
-                root, query, limit=max(12, int(self.config.get("preprocessing", {}).get("lookup_file_cards", 5)) * 4)
-            ))
-            backend_states["preprocessor"] = "used"
-        except Exception:
-            # Keep already-resolved deterministic/code-index candidates. One
-            # optional preprocessing failure must not force a full repository scan.
-            backend_states["preprocessor"] = "degraded"
-            retrieval_warnings.append("preprocessor degraded")
-    else:
-        backend_states["preprocessor"] = "skipped"
+    backend_states["preprocessor"] = "skipped"
     confidence = self._adaptive_builtin_confidence(deterministic_result, path_groups) if quality_first else 0.0
     try:
         confidence_threshold = max(
@@ -937,6 +970,33 @@ def _hybrid_context_uncached(
     requested_backends: list[str] = []
     external_tools = getattr(self, "external_tools", None)
     serena_enabled = external_tools is not None and getattr(external_tools, "serena_enabled", True) is not False
+    if self.preprocessor is not None:
+        if remaining_budget <= 0.0:
+            backend_states["preprocessor"] = "skipped"
+        elif not _PREPROCESSOR_CONTEXT_ADMISSION.acquire(blocking=False):
+            backend_states["preprocessor"] = "degraded"
+            retrieval_warnings.append("preprocessor busy")
+        else:
+            try:
+                preprocessor_limit = max(
+                    12,
+                    int(self.config.get("preprocessing", {}).get("lookup_file_cards", 5)) * 4,
+                )
+                preprocessor_future = _CONTEXT_BACKEND_POOLS["preprocessor"].submit(
+                    self.preprocessor.candidate_paths,
+                    root,
+                    query,
+                    limit=preprocessor_limit,
+                )
+                preprocessor_future.add_done_callback(
+                    lambda _future: _PREPROCESSOR_CONTEXT_ADMISSION.release()
+                )
+                backend_states["preprocessor"] = "pending"
+                requested_backends.append("preprocessor")
+            except Exception as exc:
+                _PREPROCESSOR_CONTEXT_ADMISSION.release()
+                backend_states["preprocessor"] = "degraded"
+                retrieval_warnings.append(f"preprocessor degraded: {type(exc).__name__}")
     if quality_first and request_optional and serena_enabled:
         requested_backends.append("serena")
     if rag_ready and request_optional:
@@ -1160,6 +1220,29 @@ def _hybrid_context_uncached(
         *(path for raw_path in force_include_paths
           if (path := safe_relative_candidate(raw_path, base_path))),
     )))
+    preprocessor_wait_started = time.perf_counter()
+    if preprocessor_future is not None:
+        preprocessor_timeout = max(0.0, backend_deadline - time.perf_counter())
+        _preprocessor_done, preprocessor_pending = _get_wait()(
+            (preprocessor_future,), timeout=preprocessor_timeout,
+        )
+        if preprocessor_pending:
+            preprocessor_future.cancel()
+            backend_states["preprocessor"] = "degraded"
+            retrieval_warnings.append("preprocessor timeout")
+        else:
+            try:
+                candidate_paths = preprocessor_future.result()
+                if not isinstance(candidate_paths, (list, tuple)):
+                    raise TypeError("preprocessor candidate paths are malformed")
+                path_groups["preprocessor"] = list(candidate_paths)
+                backend_states["preprocessor"] = "used"
+            except Exception as exc:
+                backend_states["preprocessor"] = "degraded"
+                retrieval_warnings.append(f"preprocessor degraded: {type(exc).__name__}")
+    backend_selection["preprocessor_wait_ms"] = round(
+        (time.perf_counter() - preprocessor_wait_started) * 1000.0, 3,
+    )
     # Every backend and request hint is normalized against the same repository root.
     path_groups = {
         backend: list(dict.fromkeys(

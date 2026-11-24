@@ -26,12 +26,13 @@ def _config(tmp_path, **overrides):
         "max_list_limit": 100,
     }
     values.update(overrides)
-    return {"server": {"state_dir": str(tmp_path)}, "debug_traces": values}
+    values["mode"] = "full" if values.pop("enabled") else "minimal"
+    return {"server": {"state_dir": str(tmp_path)}, "telemetry": values}
 
 
 def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path):
     default_config = _config(tmp_path / "default")
-    del default_config["debug_traces"]["max_list_limit"]
+    del default_config["telemetry"]["max_list_limit"]
     assert DebugTraceStore(default_config).max_list_limit == 200
 
 
@@ -129,7 +130,7 @@ def test_debug_trace_export_http_is_bounded_and_redacted(tmp_path, monkeypatch):
     trace_id = store.start(kind="api_request", action="/api/reason")
     store.event(trace_id, "request", {"api_token": "secret-value", "path": r"C:\private\prompt.txt"})
     app = SimpleNamespace(
-        config={"debug_traces": {"enabled": True}},
+        config={"telemetry": {"mode": "full"}},
         debug_traces=store,
         async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
     )
@@ -164,7 +165,7 @@ def test_debug_trace_export_http_is_bounded_and_redacted(tmp_path, monkeypatch):
 def test_debug_trace_export_rejects_path_traversal(tmp_path, monkeypatch):
     store = DebugTraceStore(_config(tmp_path))
     app = SimpleNamespace(
-        config={"debug_traces": {"enabled": True}},
+        config={"telemetry": {"mode": "full"}},
         debug_traces=store,
         async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
     )
@@ -198,7 +199,7 @@ def test_debug_trace_export_maps_detail_failures_to_http_status(
     monkeypatch, tmp_path, detail_result, expected_status
 ):
     app = SimpleNamespace(
-        config={"debug_traces": {"enabled": True}},
+        config={"telemetry": {"mode": "full"}},
         debug_traces=SimpleNamespace(enabled=True, detail=lambda *_args, **_kwargs: dict(detail_result)),
         async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
     )
@@ -373,8 +374,8 @@ def test_http_trace_start_uses_one_transaction_for_initial_event(tmp_path, monke
 
 def test_trace_defaults_allow_large_retained_payloads(tmp_path):
     config = _config(tmp_path)
-    del config["debug_traces"]["max_event_bytes"]
-    del config["debug_traces"]["max_session_text_bytes"]
+    del config["telemetry"]["max_event_bytes"]
+    del config["telemetry"]["max_session_text_bytes"]
 
     store = DebugTraceStore(config)
 

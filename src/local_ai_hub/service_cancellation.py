@@ -39,10 +39,6 @@ class _LinkedCancelEvent:
         return True
 
 
-# Public alias for external and typed consumption
-LinkedCancelEvent = _LinkedCancelEvent
-
-
 def create_linked_cancel_event(
     event: threading.Event | None = None,
     parent_stop: Callable[[], bool] | Any | None = None,
@@ -82,7 +78,6 @@ def is_cancel_requested(cancel_event: Any | None) -> bool:
 
 __all__ = [
     "_LinkedCancelEvent",
-    "LinkedCancelEvent",
     "create_linked_cancel_event",
     "resolve_cancel_event",
     "is_cancel_requested",

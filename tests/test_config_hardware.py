@@ -22,6 +22,7 @@ def test_hardware_inventory_is_deferred_for_all_transport_configs(
     monkeypatch.setattr(hardware, "profile_overrides", lambda *_args: {"models": {"fast_code": "tuned:test"}})
     path = tmp_path / "manual.toml"
     path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         f'[hardware]\nprofile = "cpu"\nauto_tune = {str(auto_tune).lower()}\n',
         encoding="utf-8",
@@ -55,6 +56,7 @@ def test_transport_config_applies_only_explicit_profile_feature_gates(tmp_path: 
     monkeypatch.setattr(hardware, "profile_overrides", overrides)
     path = tmp_path / "manual.toml"
     path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         '[hardware]\nprofile = "high"\nauto_tune = true\n',
         encoding="utf-8",
@@ -84,6 +86,7 @@ def test_transport_config_does_not_guess_profile_features_for_auto(tmp_path: Pat
     )
     path = tmp_path / "auto.toml"
     path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         '[hardware]\nprofile = "auto"\nauto_tune = true\n',
         encoding="utf-8",
@@ -99,7 +102,7 @@ def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
     path = tmp_path / "config.toml"
     bind_line = f'bind = "{server_bind}"\n' if server_bind else ""
     path.write_text(
-        f'''[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n{bind_line}[hardware]\nprofile = "cpu"\nauto_tune = true\n{extra}\n''',
+        f'''[local_ai_hub]\nconfig_schema_version = 1\n[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n{bind_line}[hardware]\nprofile = "cpu"\nauto_tune = true\n{extra}\n''',
         encoding="utf-8",
     )
     return load_config(str(path))
@@ -170,9 +173,9 @@ def test_16gb_nvidia_profiles_bound_parallelism_and_keep_auto_retrieval(profile:
 
     assert overrides["scheduler"]["max_parallel"] == 2
     assert overrides["ollama"]["num_parallel"] == 2
-    assert overrides["ollama"]["kv_cache_type"] == ("q4_0" if profile == "high" else "q8_0")
-    assert overrides["llama_cpp"]["cache_type_k"] == ("q4_0" if profile == "high" else "q8_0")
-    assert overrides["llama_cpp"]["cache_type_v"] == ("q4_0" if profile == "high" else "q8_0")
+    assert overrides["ollama"]["kv_cache_type"] == "q4_0"
+    assert overrides["llama_cpp"]["cache_type_k"] == "q4_0"
+    assert overrides["llama_cpp"]["cache_type_v"] == "q4_0"
     assert overrides["models"].get("embedding_device", "auto") == "auto"
     assert overrides["models"].get("reranker_device", "auto") == "auto"
     assert overrides["model_execution"]["smart"]["context_tokens"] == 65_536
@@ -212,6 +215,7 @@ def test_security_validation_rejects_removed_remote_access_option(tmp_path: Path
 def test_security_validation_rejects_removed_client_host_option(tmp_path: Path):
     path = tmp_path / "config.toml"
     path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nclient_host = "remote.example"\n',
         encoding="utf-8",
     )
@@ -236,6 +240,7 @@ def test_security_validation_rejects_alternate_loopback_bind(tmp_path: Path):
 def test_high_profile_background_ollama_avoids_mcp_http_port(tmp_path: Path):
     path = tmp_path / "config.toml"
     path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         '[hardware]\nprofile = "high"\nauto_tune = false\n'
         '[mcp_http]\nenabled = true\nport = 11436\n',
@@ -265,13 +270,14 @@ def test_model_routes_match_install_update_prompts_and_capability_matrix():
         ) + " |"
         assert row in capability_doc
         preprocess_model = PROFILE_OVERRIDES[profile].get("preprocessing", {}).get("model", "<default>")
-        assert f"{profile}=`{preprocess_model}`" in capability_doc
+        assert f"`{profile}={preprocess_model}`" in capability_doc
 
 
 def test_fp4_detection_and_model_overrides():
-    overrides = profile_overrides(
-        "high",
-        {"gpus": [{"vendor": "nvidia", "vram_mb": 16_303, "compute_cap": 12.0, "has_fp4": True}], "ram": {"total_gb": 32}},
+    from local_ai_hub.fp4_capabilities import static_fp4_routes
+
+    routes = static_fp4_routes(
+        {"os": "windows", "arch": "amd64", "has_fp4": True}, "auto"
     )
-    assert overrides["models"]["general"] == "qwen3.5:9b-nvfp4"
-    assert overrides["models"]["heavy_code"] == "qwen2.5-coder:14b"
+    assert routes["qwen3.5:9b-q4_K_M"] == "qwen3.5:9b-nvfp4"
+    assert "qwen2.5-coder:14b" not in routes

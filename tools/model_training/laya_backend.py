@@ -486,15 +486,70 @@ def train_laya_from_config(config: dict[str, Any], *, allow_model_download: bool
     output_dir.mkdir(parents=True, exist_ok=True)
     training["eval_data"] = str(config["evaluation_file"])
     try:
+        import laya.train as laya_train
         from laya.train import TrainConfig, finetune
     except ImportError as exc:
         raise RuntimeError("installed Laya package lacks its fine-tuning API") from exc
     train_config = TrainConfig(**training)
     train_config.validate()
-    report = finetune(
-        data=str(config["train_file"]), model_dir=str(base_checkpoint),
-        output_dir=str(output_dir), config=train_config, device=device,
-    )
+    # LoRA is the default for new Laya runs. Set `lora: null` only when a paired,
+    # independent evaluation has already shown that full fine-tuning is needed.
+    lora = config.get("lora", {"r": 8, "alpha": 16, "dropout": 0.05, "target_modules": ["Wqkv", "Wo"]})
+    if lora is not None:
+        if not isinstance(lora, dict):
+            raise ValueError("lora must be an object")
+        from peft import LoraConfig, TaskType, get_peft_model
+
+        rank = int(lora.get("r", 8))
+        alpha = int(lora.get("alpha", 16))
+        dropout = float(lora.get("dropout", 0.05))
+        target_modules = lora.get("target_modules", ["Wqkv", "Wo"])
+        if rank < 1 or alpha < 1 or not 0 <= dropout < 1 or not isinstance(target_modules, list) or not target_modules:
+            raise ValueError("invalid Laya LoRA settings")
+
+        original_load_checkpoint = laya_train.load_checkpoint
+        original_train_model = laya_train.train_model
+
+        def load_lora_checkpoint(model_dir: str) -> tuple[Any, Any, dict[str, Any]]:
+            model, tokenizer, model_config = original_load_checkpoint(model_dir)
+            model.encoder = get_peft_model(
+                model.encoder,
+                LoraConfig(
+                    r=rank,
+                    lora_alpha=alpha,
+                    lora_dropout=dropout,
+                    bias="none",
+                    task_type=TaskType.FEATURE_EXTRACTION,
+                    target_modules=target_modules,
+                ),
+            )
+            model.encoder.print_trainable_parameters()
+            return model, tokenizer, model_config
+
+        def train_lora_model(model: Any, *args: Any, **kwargs: Any) -> Any:
+            # Intermediate full-checkpoint saves cannot serialize a PEFT wrapper
+            # as a standard Laya model. Save the merged, loadable checkpoint once
+            # training and adapter merge have completed.
+            kwargs["on_epoch_end"] = None
+            history = original_train_model(model, *args, **kwargs)
+            model.encoder = model.encoder.merge_and_unload()
+            return history
+
+        laya_train.load_checkpoint = load_lora_checkpoint
+        laya_train.train_model = train_lora_model
+        try:
+            report = finetune(
+                data=str(config["train_file"]), model_dir=str(base_checkpoint),
+                output_dir=str(output_dir), config=train_config, device=device,
+            )
+        finally:
+            laya_train.load_checkpoint = original_load_checkpoint
+            laya_train.train_model = original_train_model
+    else:
+        report = finetune(
+            data=str(config["train_file"]), model_dir=str(base_checkpoint),
+            output_dir=str(output_dir), config=train_config, device=device,
+        )
     if not (output_dir / "rl_agent_config.json").is_file() or not (output_dir / "model.safetensors").is_file():
         raise RuntimeError("Laya trainer returned without a loadable checkpoint")
     result = {
@@ -505,6 +560,7 @@ def train_laya_from_config(config: dict[str, Any], *, allow_model_download: bool
         "checkpoint_dir": str(output_dir.resolve()),
         "runtime": _runtime_record(device),
         "training_settings": training,
+        "adaptation": {"method": "lora", **lora} if lora is not None else {"method": "full"},
         "train_sha256": _file_sha256(Path(config["train_file"])),
         "evaluation_sha256": _file_sha256(Path(config["evaluation_file"])),
         "dataset": dataset_summary,

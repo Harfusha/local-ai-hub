@@ -3,6 +3,8 @@ import json
 import subprocess
 from types import SimpleNamespace
 
+from command_module_patch import patch_split_command_module
+
 from local_ai_hub.command_broker import (
     CommandBroker,
     CommandInvocation,
@@ -371,8 +373,7 @@ def test_public_run_failed_repair_keeps_execution_and_receipt_binding(
             "duration_ms": 250,
         },
     )
-    monkeypatch.setattr(
-        commands_module,
+    patch_split_command_module(monkeypatch,
         "_snapshot_rollback_scope",
         lambda *_args, **_kwargs: (None, None),
     )

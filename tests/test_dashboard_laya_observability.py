@@ -35,14 +35,14 @@ def test_realtime_status_exposes_laya_runtime_and_features():
     from tests.test_status_snapshot_quality import make_realtime_app
 
     app = make_realtime_app()
-    app.config.update({"laya": {"enabled": True, "mode": "shadow"}})
+    app.config.update({"laya": {"enabled": True}})
     status = app.realtime_status(light=True)
 
     assert "laya_runtime" in status
     assert status["laya_runtime"]["available"] is False
     assert status["laya_runtime"]["model_configuration"] == "unconfigured"
     assert status["features"]["laya"] is True
-    assert status["laya"]["mode"] == "shadow"
+    assert "mode" not in status["laya"]
     assert status["laya"]["enabled"] is True
 
 
@@ -53,13 +53,13 @@ def test_telemetry_realtime_summary_forwards_laya_reports(tmp_path):
     try:
         store.session_start(1234, "1.0")
         store.record_laya_eligibility(
-            decision_id="decision-1", mode="shadow", category="context_source"
+            decision_id="decision-1", mode="advisory", category="context_source"
         )
         store.record_laya_decision(
             {
                 "decision_id": "decision-1",
                 "success": True,
-                "mode": "shadow",
+                "mode": "advisory",
                 "status": "success",
                 "category": "context_source",
                 "repository_id": "repo-1",
@@ -86,7 +86,7 @@ def test_telemetry_realtime_summary_forwards_laya_reports(tmp_path):
         assert "laya_capture_stages" in summary
         assert "laya_capture_reasons" in summary
         assert summary["laya_decisions"]["records"] == 1
-        assert summary["laya_decisions"]["by_mode"]["shadow"]["records"] == 1
+        assert summary["laya_decisions"]["by_mode"]["advisory"]["records"] == 1
     finally:
         store.close()
 

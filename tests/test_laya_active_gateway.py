@@ -8,7 +8,7 @@ from src.local_ai_hub.laya_active_gateway import (
 
 
 def test_laya_retrieval_routing():
-    gateway = LayaActiveGateway(mode="advisory")
+    gateway = LayaActiveGateway()
 
     # 1. Exact symbol query
     rec_symbol = gateway.route_retrieval("def calculate_fibonacci")
@@ -32,7 +32,7 @@ def test_laya_retrieval_routing():
 
 
 def test_laya_model_routing_and_pruning():
-    gateway = LayaActiveGateway(mode="advisory")
+    gateway = LayaActiveGateway()
 
     # Fast tier
     fast_rec = gateway.route_model("add type annotation to helper function", context_token_count=1200)
@@ -53,7 +53,7 @@ def test_laya_model_routing_and_pruning():
 
 
 def test_laya_pre_verification():
-    gateway = LayaActiveGateway(mode="advisory")
+    gateway = LayaActiveGateway()
 
     # Valid diff
     valid_res = gateway.pre_verify_output("def foo(x: int) -> int:\n    return x + 1\n")

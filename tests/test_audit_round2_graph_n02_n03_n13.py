@@ -3,25 +3,26 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
-from threading import Barrier, RLock
 
 import pytest
 
-from local_ai_hub import agent_memory as memory_module
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
+from local_ai_hub.state_lifecycle import write_state_version
+from tools.state_migrations import run_state_migrations
 
 
-@pytest.mark.parametrize("openers", [1, 2])
-def test_n13_old_relation_projection_migrates_without_claiming_repository_id(tmp_path: Path, monkeypatch, openers: int):
-    db_path = tmp_path / "legacy_relations.sqlite3"
+def test_n13_old_relation_projection_is_migrated_before_runtime_open(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    db_path = state_dir / "agent_state.sqlite"
     root = str(tmp_path / "GraphRepo")
     state_store = AgentStateStore(db_path=db_path)
     MemoryStore(state_store)
+    write_state_version(state_dir, version=6)
     with closing(sqlite3.connect(db_path)) as con, con:
         con.execute("DROP TABLE agent_entity_relations")
         con.execute(
@@ -44,30 +45,11 @@ def test_n13_old_relation_projection_migrates_without_claiming_repository_id(tmp
             (json.dumps({"root": Path(os.path.normcase(root)).as_posix(), "provenance": {"repository_id": "repo-a"}}),),
         )
 
-    callers = [AgentStateStore(db_path) for _ in range(openers)]
-    for caller in callers:
-        caller._ensure_schema()
-        # Other processes share SQLite's lock and each has its own Python lock.
-        caller._schema_init_lock = RLock()
-    first_probe = Barrier(openers, timeout=5)
+    migration = run_state_migrations(state_dir)
+    assert migration["status"] == "migrated"
 
-    class GatedConnection(sqlite3.Connection):
-        checked = False
-
-        def execute(self, sql, parameters=()):
-            cursor = super().execute(sql, parameters)
-            if not self.checked and sql == "PRAGMA table_info(agent_entity_relations)":
-                self.checked = True
-                rows = cursor.fetchall()
-                first_probe.wait()
-                return rows
-            return cursor
-
-    with monkeypatch.context() as patch, ThreadPoolExecutor(max_workers=openers) as workers:
-        patch.setattr(memory_module, "connect_sqlite", lambda path: sqlite3.connect(path, factory=GatedConnection))
-        stores = list(workers.map(MemoryStore, callers, timeout=12))
-
-    assert all(store.find_relations(source_entity="source", root=root, repository_id="repo-a") == [] for store in stores)
+    store = MemoryStore(AgentStateStore(db_path))
+    assert store.find_relations(source_entity="source", root=root, repository_id="repo-a") == []
     with closing(sqlite3.connect(db_path)) as con:
         assert con.execute(
             "SELECT repository_id FROM agent_entity_relations WHERE relation_id = 'legacy'"

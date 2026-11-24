@@ -1,6 +1,7 @@
 from pathlib import Path
 import importlib.util
 import pytest
+from local_ai_hub.config import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,98 @@ def test_antigravity_policy_preserves_unmanaged_text_and_is_idempotent(tmp_path)
     assert "local-ai-orchestrator/SKILL.md" in first
     assert "ultra" in first.lower()
     assert "normal mode" in first and "stop caveman" in first
+
+
+def test_antigravity_setup_can_be_selected_without_gemini_cli_mcp_or_hooks(tmp_path, monkeypatch):
+    gemini = tmp_path / ".gemini"
+    install = tmp_path / "install"
+    calls = []
+    monkeypatch.setattr(setup, "gemini_cli_extension_active", lambda *_args: False)
+    monkeypatch.setattr(setup, "antigravity_plugin_installed", lambda *_args: False)
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "merge_global_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "merge_token_economy_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "sync_antigravity_mcp_config", lambda path, *_args: calls.append(("mcp", path)))
+    monkeypatch.setattr(setup, "sync_antigravity_config_json", lambda path, *_args: calls.append(("config", path)))
+    monkeypatch.setattr(setup, "sync_antigravity_hooks_json", lambda path, *_args: calls.append(("hooks", path)))
+
+    setup.configure_gemini_instance(
+        gemini, install, Path("python"), None, {}, False, False,
+        agent_components={
+            "agent_gemini_mcp": False,
+            "agent_gemini_hooks": False,
+            "agent_gemini_skills": False,
+            "agent_gemini_instructions": False,
+            "agent_antigravity_mcp": True,
+            "agent_antigravity_hooks": True,
+            "agent_antigravity_skills": False,
+            "agent_antigravity_instructions": False,
+        },
+    )
+
+    assert [(kind, path.relative_to(gemini).as_posix()) for kind, path in calls] == [
+        ("mcp", "config/mcp_config.json"),
+        ("config", "config/config.json"),
+        ("hooks", "config/hooks.json"),
+    ]
+    assert not (gemini / "settings.json").exists()
+
+
+def test_setup_wizard_defaults_and_applies_antigravity_separately_from_gemini():
+    wizard = setup._setup_wizard_module
+    cfg = load_config(probe_hardware=False)
+    choices = wizard.defaults_from_config(cfg)
+
+    assert choices["agent_antigravity"] is True
+    assert choices["agent_antigravity_mcp"] is True
+    assert choices["agent_antigravity_hooks"] is True
+
+    from types import SimpleNamespace
+    args = SimpleNamespace(
+        profile=None, skip_model_pull=None, skip_tools=None, skip_token_economy=None,
+        skip_agent_config=None, skip_service=None, skip_companion_skills=None,
+        skip_laya_runtime=None, skip_ast_index=None, skip_performance=None, skip_profiling=None,
+    )
+    cfg["agents"].update({"gemini": True, "antigravity": False})
+    choices.update({"agent_gemini": False, "agent_antigravity": True})
+    wizard.apply_choices(args, cfg, choices)
+
+    assert cfg["agents"]["gemini"] is False
+    assert cfg["agents"]["antigravity"] is True
+
+
+def test_antigravity_only_selection_reaches_provider_setup(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(setup, "get_user_homes", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        setup, "configure_gemini_instance",
+        lambda gemini_dir, *_args, **_kwargs: calls.append(gemini_dir),
+    )
+    cfg = {
+        "agents": {
+            "codex": False, "claude": False, "gemini": False, "antigravity": True,
+            "cursor": False, "windsurf": False, "copilot": False, "opencode": False, "devin": False,
+        },
+        "setup": {"backup_existing_configs": False},
+    }
+
+    setup._configure_agents_impl(tmp_path / "install", Path("python"), None, cfg)
+
+    assert calls == [tmp_path / ".gemini"]
+
+
+def test_antigravity_setup_never_changes_permissions_or_creates_config(tmp_path):
+    config = tmp_path / "config" / "config.json"
+    setup.sync_antigravity_config_json(config, False)
+    assert not config.exists()
+
+    config.parent.mkdir(parents=True)
+    original = b'{"userSettings":{"permissionPreset":"USER","enableTerminalSandbox":true},"custom":7}\n'
+    config.write_bytes(original)
+    setup.sync_antigravity_config_json(config, False)
+    assert config.read_bytes() == original
 
 
 def test_antigravity_policy_is_prepended_and_targets_discoverable_skills(tmp_path):
@@ -202,6 +295,35 @@ def test_gemini_setup_enables_global_policy_and_preserves_existing_rules(tmp_pat
     assert (tmp_path / "project" / "AGENTS.md").read_text(encoding="utf-8").startswith(setup.ANTIGRAVITY_POLICY_BEGIN)
 
 
+def test_gemini_unowned_instruction_conflict_is_reported_to_setup(tmp_path, monkeypatch):
+    gemini = tmp_path / ".gemini"
+    install = tmp_path / "install"
+    install.mkdir()
+    actions = []
+
+    def refuse_unowned_block(*_args, **_kwargs):
+        raise ValueError("external block has no ownership record")
+
+    monkeypatch.setattr(setup, "merge_global_policy", refuse_unowned_block)
+    monkeypatch.setattr(setup, "merge_token_economy_policy", lambda *_args, **_kwargs: None)
+    setup._configure_gemini_instance_impl(
+        gemini, install, Path("python"), None, {}, False, False,
+        agent_components={
+            "agent_gemini_instructions": True,
+            "agent_gemini_skills": False,
+            "agent_gemini_mcp": False,
+            "agent_gemini_hooks": False,
+            "agent_antigravity_instructions": False,
+            "agent_antigravity_skills": False,
+            "agent_antigravity_mcp": False,
+            "agent_antigravity_hooks": False,
+        },
+        manual_actions=actions,
+    )
+
+    assert any("Gemini instructions preserved" in action for action in actions)
+
+
 def test_project_and_global_rules_are_idempotent_and_preserve_unmanaged_skills(tmp_path, monkeypatch):
     gemini = tmp_path / ".gemini"
     project = tmp_path / "project"
@@ -317,6 +439,9 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     hub_hook = data["local-ai-hub"]
     assert hub_hook["enabled"] is True
     assert "PreInvocation" not in hub_hook
+    assert len(hub_hook["SessionStart"]) == 1
+    assert hub_hook["SessionStart"][0]["command"].endswith("SessionStart")
+    assert hub_hook["SessionStart"][0]["timeout"] == 10
     assert len(hub_hook["PreToolUse"]) == 1
     assert hub_hook["PreToolUse"][0]["matcher"] == "read_file|run_command"
     assert "local-ai-hook" in hub_hook["PreToolUse"][0]["hooks"][0]["command"]
@@ -327,15 +452,99 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     assert hooks_file.read_text(encoding="utf-8") == first_text
 
 
-def test_antigravity_hook_pre_invocation_is_noop(monkeypatch):
+def test_antigravity_plugin_is_native_portable_bundle(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    plugin = setup.SOURCE_ROOT / "plugins" / "antigravity" / "local-ai-hub"
+    manifest = json.loads((plugin / "plugin.json").read_text(encoding="utf-8"))
+    mcp = json.loads((plugin / "mcp_config.json").read_text(encoding="utf-8"))
+    hooks = json.loads((plugin / "hooks.json").read_text(encoding="utf-8"))
+
+    assert manifest["$schema"] == "https://antigravity.google/schemas/v1/plugin.json"
+    assert manifest["name"] == "local-ai-hub"
+    assert mcp["mcpServers"]["local-ai"]["args"][0] == "${PLUGIN_ROOT}/scripts/run_hub.py"
+    assert "cwd" not in mcp["mcpServers"]["local-ai"]
+    assert set(hooks) == {"local-ai-hub"}
+    hook_group = hooks["local-ai-hub"]
+    assert hook_group["enabled"] is True
+    assert set(hook_group) >= {"SessionStart", "PreToolUse", "PostToolUse"}
+    assert hook_group["SessionStart"][0]["command"] == (
+        "python ./scripts/run_hub.py antigravity_hook SessionStart"
+    )
+    assert hook_group["SessionStart"][0]["timeout"] == 10
+    for event in ("PreToolUse", "PostToolUse"):
+        group = hook_group[event][0]
+        assert isinstance(group.get("matcher"), str)
+        command = group["hooks"][0]["command"]
+        assert command.startswith("python ./scripts/run_hub.py antigravity_hook ")
+        assert "${PLUGIN_ROOT}" not in command
+    assert (plugin / "README.md").is_file()
+    assert (plugin / "skills" / "local-ai-orchestrator" / "SKILL.md").is_file()
+    for skill in ("local-ai-orchestrator", "plan-led-work", "token-economizer"):
+        source_files = setup.SOURCE_ROOT.joinpath("skills", skill).rglob("*")
+        for source_file in source_files:
+            if source_file.is_file():
+                packaged_file = plugin / "skills" / skill / source_file.relative_to(
+                    setup.SOURCE_ROOT / "skills" / skill
+                )
+                assert packaged_file.read_bytes() == source_file.read_bytes(), packaged_file
+
+    runner_path = plugin / "scripts" / "run_hub.py"
+    spec = importlib.util.spec_from_file_location("antigravity_plugin_runner", runner_path)
+    assert spec and spec.loader
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    install = tmp_path / "custom-hub"
+    (install / "src" / "local_ai_hub").mkdir(parents=True)
+    (install / "src" / "local_ai_hub" / "mcp_server.py").write_text("", encoding="utf-8")
+    (install / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("LOCAL_AI_HUB_DIR", str(install))
+    assert runner.resolve_hub_install() == install.resolve()
+    monkeypatch.setenv("LOCAL_AI_HUB_DIR", str(tmp_path / "missing-hub"))
+    assert runner.resolve_hub_install() is None
+
+
+def test_claude_plugin_bundles_shared_mcp_skills_and_native_hooks():
+    import json
+    plugin = setup.SOURCE_ROOT / "plugins" / "claude" / "local-ai-hub"
+    manifest = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    mcp = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))
+    hooks = json.loads((plugin / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+
+    assert manifest["name"] == "local-ai-hub"
+    assert mcp["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "claude"
+    assert "${CLAUDE_PLUGIN_ROOT}" in mcp["mcpServers"]["local-ai"]["args"][0]
+    pre_tool_command = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert "host_hooks --host claude" in pre_tool_command
+    assert "Bash|PowerShell|Read" == hooks["hooks"]["PreToolUse"][0]["matcher"]
+    post_tool = hooks["hooks"]["PostToolUse"][0]
+    assert post_tool["matcher"] == "Edit|Write"
+    assert "host_hooks --host claude" in post_tool["hooks"][0]["command"]
+    assert (plugin / "skills" / "local-ai-orchestrator" / "SKILL.md").is_file()
+    assert (plugin / "scripts" / "run_hub.py").read_bytes() == (
+        setup.SOURCE_ROOT / "plugins" / "antigravity" / "local-ai-hub" / "scripts" / "run_hub.py"
+    ).read_bytes()
+
+
+def test_antigravity_hook_session_start_injects_bounded_static_hub_guidance(monkeypatch):
     from local_ai_hub import antigravity_hook
     monkeypatch.setattr(
         antigravity_hook,
         "_check_and_autostart_hub",
-        lambda: pytest.fail("PreInvocation must not start the Hub"),
+        lambda: pytest.fail("SessionStart must not start the Hub"),
     )
-    res = antigravity_hook.handle_pre_invocation({})
-    assert res == {}
+    assert antigravity_hook.handle_session_start({}) == {}
+    res = antigravity_hook.handle_session_start({
+        "workspacePaths": ["C:/workspace"],
+        "lastUserInput": "private prompt that must not be reflected",
+        "conversationId": "conversation-1",
+    })
+    assert len(res["injectSteps"]) == 1
+    assert res["injectSteps"][0]["systemMessage"]["metadata"]["source"] == "local-ai-hub"
+    message = res["injectSteps"][0]["systemMessage"]["systemMessage"]
+    assert "Laya is active advisory" in message
+    assert "permissions" in message and "approvals" in message
+    assert "private prompt" not in message
 
 
 def test_antigravity_hook_pre_tool_use_read_file(tmp_path):

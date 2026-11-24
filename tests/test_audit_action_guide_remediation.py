@@ -67,14 +67,14 @@ def test_solve_accepts_real_task_session_identity_for_shadow_capture():
 def test_symbol_lookup_guides_match_action_specific_arguments():
     from local_ai_hub.operation_contracts import operation_argument_hint, validate_operation_arguments
 
-    find_symbol = operation_argument_hint("local_ai_repo", "find_symbol")
-    assert "query" in find_symbol["allowed_arguments"]
-    assert "limit" in find_symbol["allowed_arguments"]
-    assert "offset" in find_symbol["allowed_arguments"]
-    assert validate_operation_arguments("local_ai_repo", "find_symbol", {"query": "ProjectPreprocessor"}) is None
-    assert validate_operation_arguments("local_ai_repo", "find_symbol", {"query": "ProjectPreprocessor", "limit": 10}) is None
+    code_index = operation_argument_hint("local_ai_repo", "code_index")
+    assert "query" in code_index["allowed_arguments"]
+    assert "limit" in code_index["allowed_arguments"]
+    assert "offset" in code_index["allowed_arguments"]
+    assert validate_operation_arguments("local_ai_repo", "code_index", {"query": "ProjectPreprocessor"}) is None
+    assert validate_operation_arguments("local_ai_repo", "code_index", {"query": "ProjectPreprocessor", "limit": 10}) is None
 
-    definition = operation_argument_hint("local_ai_repo", "definition")
-    assert "query" in definition["required_arguments"]
-    assert "path" in definition["allowed_arguments"]
-    assert "limit" not in definition["allowed_arguments"]
+    declaration = operation_argument_hint("local_ai_repo", "declaration")
+    assert "query" in declaration["required_arguments"]
+    assert "path" in declaration["allowed_arguments"]
+    assert "limit" not in declaration["allowed_arguments"]

@@ -33,6 +33,7 @@ def test_save_runtime_overrides_preserves_quoted_filename_keys(tmp_path):
     config_path.write_text("", encoding="utf-8")
     runtime_path = tmp_path / "config.runtime.toml"
     original = {
+        "local_ai_hub": {"config_schema_version": 1},
         "laya": {
             "runtime": {
                 "expected_sha256": {
@@ -48,22 +49,33 @@ def test_save_runtime_overrides_preserves_quoted_filename_keys(tmp_path):
     }
     runtime_path.write_text(_dump_toml_tables(original), encoding="utf-8")
 
-    save_runtime_overrides(config_path, {"debug_traces": {"enabled": True}})
+    save_runtime_overrides(config_path, {"telemetry": {"mode": "full"}})
 
     updated = tomllib.loads(runtime_path.read_text(encoding="utf-8"))
     assert updated["laya"] == original["laya"]
-    assert updated["debug_traces"] == {"enabled": True}
+    assert updated["telemetry"] == {"mode": "full"}
 
 
 def test_save_runtime_overrides_rejects_invalid_serialization_without_overwriting(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text("", encoding="utf-8")
     runtime_path = tmp_path / "config.runtime.toml"
-    original = '[debug_traces]\nenabled = false\n'
+    original = '[local_ai_hub]\nconfig_schema_version = 1\n[telemetry]\nmode = "minimal"\n'
     runtime_path.write_text(original, encoding="utf-8")
-    monkeypatch.setattr(config, "_dump_toml_tables", lambda _: '[debug_traces]\nenabled = false\ninvalid key = true\n')
+    monkeypatch.setattr(config, "_dump_toml_tables", lambda _: '[telemetry]\nmode = "minimal"\ninvalid key = true\n')
 
     with pytest.raises(ConfigError, match="serialized runtime overrides are invalid TOML"):
-        save_runtime_overrides(config_path, {"debug_traces": {"enabled": True}})
+        save_runtime_overrides(config_path, {"telemetry": {"mode": "full"}})
 
     assert runtime_path.read_text(encoding="utf-8") == original
+
+
+def test_new_runtime_override_is_written_in_current_schema(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[local_ai_hub]\nconfig_schema_version = 1\n', encoding="utf-8")
+
+    runtime_path = save_runtime_overrides(config_path, {"telemetry": {"mode": "full"}})
+
+    assert tomllib.loads(runtime_path.read_text(encoding="utf-8"))["local_ai_hub"] == {
+        "config_schema_version": 1,
+    }

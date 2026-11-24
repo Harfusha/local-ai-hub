@@ -39,7 +39,7 @@ _CANONICAL_ROUTES_WITH_ALIASES = (
     ("post_callers_1", "/api/repo/callers", ("/api/callers",)),
     ("post_callees_1", "/api/code/callees", ("/api/repo/callees", "/api/callees")),
     ("post_implementations_1", "/api/code/implementations", ("/api/repo/implementations", "/api/implementations")),
-    ("post_declaration_1", "/api/code/declaration", ("/api/repo/declaration", "/api/declaration")),
+    ("post_declaration_1", "/api/code/declaration", ("/api/code/find_declaration", "/api/repo/declaration", "/api/declaration")),
     ("post_repo_secret_scan_1", "/api/repo/secret_scan", ("/api/secret_scan",)),
     ("post_repo_schema_inspect_1", "/api/repo/schema_inspect", ("/api/schema_inspect",)),
     ("post_explain_query_1", "/api/repo/explain_query", ("/api/explain_query",)),
@@ -116,6 +116,16 @@ def test_retired_post_alias_returns_404_before_auth_or_service(
 
     assert select_http_routes("POST", path) == ()
     assert events == ["response:404"]
+
+
+@pytest.mark.parametrize("path", [
+    "/api/coord/board_item_create", "/api/coord/board_item_update",
+    "/api/coord/board_item_delete", "/api/coord/board_item_get",
+    "/api/coord/board_item_list", "/api/coord/board_summary",
+    "/api/coord/milestone_create", "/api/coord/milestone_status",
+])
+def test_retired_board_mutation_routes_are_unregistered(path: str) -> None:
+    assert select_http_routes("POST", path) == ()
 
 
 def test_remaining_multi_path_rules_are_distinct_operations() -> None:

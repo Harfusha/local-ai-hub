@@ -11,7 +11,7 @@ from local_ai_hub.client import HubClient
 def fake_http_transport(tmp_path):
     config_path = tmp_path / "missing-hub.toml"
     config_path.write_text(
-        "[security]\n"
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[security]\n"
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -41,11 +41,10 @@ def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fak
     fake_http_transport["state"]["response"] = reply
 
     result = client.create_task(
-        "Verify target mapping",
-        acceptance_criteria=["route and payload match"],
+        {"goal": "Verify target mapping", "acceptance_criteria": ["route and payload match"]},
         task_id="task-17",
-        scope="task",
-        root=str(tmp_path), )
+        root=str(tmp_path),
+    )
 
     assert result == reply
     assert fake_http_transport["captured"] == [
@@ -54,10 +53,8 @@ def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fak
             "path": "/api/agent-state/tasks",
             "payload": {
                 "action": "create",
-                "goal": "Verify target mapping",
-                "acceptance_criteria": ["route and payload match"],
+                "contract": {"goal": "Verify target mapping", "acceptance_criteria": ["route and payload match"]},
                 "task_id": "task-17",
-                "scope": "task",
                 "root": str(tmp_path),
             },
         }

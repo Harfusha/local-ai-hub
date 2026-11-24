@@ -22,6 +22,7 @@ def explicit_catalog_environment(
     """Give the stdio child and parent schema expectations one fixed feature config."""
     config = tmp_path / "stdio-catalog.toml"
     config.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n"
         "[server]\n"
         "state_dir = " + json.dumps((tmp_path / "stdio-catalog-state").as_posix()) + "\n"
         "auto_start_ollama = true\n"

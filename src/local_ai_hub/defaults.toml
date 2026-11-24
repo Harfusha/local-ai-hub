@@ -1,3 +1,6 @@
+[local_ai_hub]
+config_schema_version = 1
+
 [server]
 bind = "127.0.0.1"
 port = 11435
@@ -30,16 +33,18 @@ max_list_limit = 200
 enabled = false # Default: false (zero overhead, no training data disk I/O)
 
 [laya]
-enabled = true # Set false to disable shadow inference and automatic Laya capture.
-mode = "advisory" # "shadow" for passive background logging, "advisory" for active routing and suggestions.
+enabled = true # Set false to disable active Laya decisions and automatic capture.
 # Laya loads on request and unloads 600 seconds after the latest completed request.
 idle_unload_seconds = 600
 
 [laya.runtime]
-# The service/API are always available; shadow inference requires a pinned checkpoint.
+# Network fallback is enabled by default; set models.allow_hf_downloads = false for cache-only use.
 checkpoint_path = ""
 revision = ""
 expected_sha256 = {}
+hf_sha256 = {"model.safetensors" = "3f503b3c02b1a60f4d52d732ce191f0d9d0cd8e466095e8cad11c9b510f4a8a7", "rl_agent_config.json" = "451e1ddde6c981d045036fb30b3c240eba1c61f61bf606f834c39af518674a48", "encoder/config.json" = "0a8e5819bc96ee8002ede16e9937be5a3305f4afa9012f8de3e9729009596eba", "tokenizer/tokenizer.json" = "dbba919c6e5e492bc22beb80abb64e6fcc7e8744dc696e8388b8c977767afa4b", "tokenizer/tokenizer_config.json" = "107236c56e3060e9a309f560e3956070de12d01c615904f0d625d71ab8e44571"}
+hf_repo_id = "Harfusha/local-ai-hub-laya-run-expanded"
+hf_revision = "e39264852ac9ba7c243ce33a0faa08eb647e54d4"
 allow_cpu = false
 
 [automation]
@@ -80,7 +85,7 @@ profile = "auto"
 auto_tune = true
 
 [models]
-allow_hf_downloads = false
+allow_hf_downloads = true
 # These are baseline model IDs, not the effective routing for every machine.
 # [hardware].profile="auto" overlays the detected profile; explicit profile
 # and model overrides take precedence. See hardware.py for the role maps.
@@ -91,10 +96,14 @@ reasoning = "qwen3.5:9b"
 general = "qwen2.5-coder:7b"
 vision = "qwen3-vl:4b"
 context_relevance_model = "qwen2.5-coder:3b"
-embedding = "BAAI/bge-small-en-v1.5"
+embedding = "Harfusha/local-ai-hub-bge-small-en-v1-5-code"
+embedding_revision = "7bdcdf89c776fadc557b189c42b754d89d7832d1"
+embedding_sha256 = "1498c33b81574971cbbd14fb29a6a4936db2a87729fb417744055ea33ea79851"
 embedding_backend = "auto"
 embedding_device = "auto"
-reranker = "BAAI/bge-reranker-v2-m3"
+reranker = "Harfusha/local-ai-hub-bge-reranker-v2-m3-code"
+reranker_revision = "a1596861f10fcc4efb8a5fa9df687d37860ba1a6"
+reranker_sha256 = "653ad0545ec469ea813453838c5b43befc52a7c63e8e85888ac190da3f76702b"
 reranker_backend = "auto"
 reranker_device = "auto"
 
@@ -246,7 +255,7 @@ module_batch_size = 4
 # Balanced baseline; the hardware profile overlays this before explicit user values.
 # Optional conservative per-model VRAM upper bounds for cold-start admission.
 # shortcut: measured Q4_K_M runner at 8192 context; 3B max observed at 32768; refresh on digest, quantization, or context change.
-model_vram_estimates_bytes = {"qwen2.5-coder:1.5b" = 1266606406, "qwen2.5-coder:3b" = 3075452435, "qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944}
+model_vram_estimates_bytes = {"qwen2.5-coder:1.5b" = 1266606406, "qwen2.5-coder:3b" = 3075452435, "qwen2.5-coder:3b-instruct-q4_K_M" = 3075452435, "qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-q4_K_M" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:7b-instruct-q4_K_M" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:14b-instruct-q4_K_M" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "qwen2.5-coder:32b-instruct-q4_K_M" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
@@ -686,11 +695,17 @@ agent_skills_standard = true
 codex = true
 claude = true
 gemini = true
+antigravity = true
 # Major MCP-native desktop/IDE agents. Setup preserves unrelated user configuration.
 cursor = true
 windsurf = true
 copilot = true
 opencode = true
+# Use the bundled native OpenCode plugin; false selects standalone MCP.
+opencode_plugin_route = true
+devin = true
+# Opt into the bundled Devin MCP/skills plugin route; setup-managed MCP is otherwise used.
+devin_plugin_route = false
 # Additional MCP hosts can be wired explicitly without changing setup.py.
 # mcpServers-style JSON (Claude/Cursor/Gemini container):
 extra_mcp_json_paths = []
@@ -772,6 +787,14 @@ risks = "critical"
 relationships = false
 commands = true
 
+[agent_output.antigravity]
+max_text = 3500
+max_evidence = 8
+raw_evidence = 2
+risks = "important"
+relationships = true
+commands = true
+
 [agent_output.claude]
 max_text = 4500
 max_evidence = 10
@@ -804,12 +827,28 @@ risks = "important"
 relationships = true
 commands = true
 
+[agent_output.devin]
+max_text = 3500
+max_evidence = 8
+raw_evidence = 2
+risks = "important"
+relationships = true
+commands = true
+
 [agent_output.copilot]
 max_text = 3000
 max_evidence = 7
 raw_evidence = 2
 risks = "important"
 relationships = false
+commands = true
+
+[agent_output.opencode]
+max_text = 3800
+max_evidence = 8
+raw_evidence = 2
+risks = "important"
+relationships = true
 commands = true
 
 [agent_output.generic]
@@ -830,6 +869,7 @@ max_bytes = 268435456
 
 # ---------------- Idle project preprocessing ----------------
 [preprocessing]
+model = "qwen2.5-coder-prep-v4:3b"
 # Optional bounded task-goal prediction; normal cache/freshness gates still apply.
 task_context_warmup = true
 # Opportunistic whole-project warmup. Every expensive unit is a low-priority,

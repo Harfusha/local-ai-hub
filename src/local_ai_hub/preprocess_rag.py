@@ -84,15 +84,12 @@ class PreprocessRAGMixin:
             limit = min(configured_limit, batch_limits.get(root, configured_limit))
         priority_paths = self._learned_priority_paths(root) if limit > 1 else ()
         with self._db_lock, services_module.closing(self._connect()) as con:
-            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
-            last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
-            centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
             selection = """SELECT path,content_hash FROM file_refs
                    WHERE root=? AND needs_hash=0 AND content_hash<>''
                      AND COALESCE(rag_hash,'')<>content_hash"""
-            order = f""" ORDER BY
-                     {last_accessed_clause}
-                     {centrality_clause}
+            order = """ ORDER BY
+                     (COALESCE(last_accessed_at, 0) > 0) DESC,
+                     COALESCE(centrality_score, 0.0) DESC,
                      -- Entry-points and key architectural files
                      CASE
                        WHEN path LIKE '%/Controllers/%' THEN 0

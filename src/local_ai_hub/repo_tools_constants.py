@@ -17,6 +17,7 @@ _GENERIC_SEARCH_WORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it",
     "of", "on", "or", "the", "to", "with", "implement", "implementation", "implementing", "missing",
     "change", "changes", "fix", "fixing", "add", "added", "update", "updated", "make", "ensure", "support",
+    "jak", "najdu", "přes",
 })
 _MAX_DIRECTORY_HINT_FILES = 64
 _MAX_PATH_CONTROLS = 64

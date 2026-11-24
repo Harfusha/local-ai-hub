@@ -341,8 +341,8 @@ def test_t2_09_cache_shard_capacity_bounded():
 
 def test_t2_10_scheduler_enqueue_passes_model_admission():
     """T2-10 (N07): Scheduler.enqueue passes model to _admission."""
-    from local_ai_hub.scheduler import Scheduler
-    sched = Scheduler(max_concurrent=1, max_queue=10)
+    from local_ai_hub.scheduler import AffinityScheduler
+    sched = AffinityScheduler(runtime=None, config={"scheduler": {"max_parallel": 1, "max_queue": 10}})
     admitted_models = []
     def mock_adm(*, background=False, model=""):
         admitted_models.append(model)
@@ -354,9 +354,9 @@ def test_t2_10_scheduler_enqueue_passes_model_admission():
 
 def test_t2_10_scheduler_enqueue_refreshes_external_reservation():
     """N07: queued and waiting scheduler admissions both refresh the GPU fence."""
-    from local_ai_hub.scheduler import Scheduler
+    from local_ai_hub.scheduler import AffinityScheduler
 
-    sched = Scheduler(max_concurrent=1, max_queue=10)
+    sched = AffinityScheduler(runtime=None, config={"scheduler": {"max_parallel": 1, "max_queue": 10}})
     checks = []
     sched._external_gpu_reserved = lambda: checks.append(True) or False
     try:

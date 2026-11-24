@@ -34,33 +34,6 @@ def test_default_reservation_ttl_is_bounded_and_idle_state(tmp_path):
     assert lease["expires_at"] == 160.0
 
 
-def test_reserve_reaps_expired_legacy_fence_before_new_owner_claims(tmp_path):
-    now = [100.0]
-    path = tmp_path / "external-gpu-reservation"
-    path.write_text(_digest("legacy-owner"), encoding="ascii")
-    os.utime(path, (80.0, 80.0))
-    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    now[0] = 111.0
-
-    replacement = store.reserve(_digest("new-owner"), owner_vram_budget_bytes=16 * 1024**3, owner="new-owner")
-
-    assert replacement is not None
-    assert replacement["owner"] == "new-owner"
-    assert store.read() == replacement
-
-
-def test_internal_claim_reaps_expired_legacy_fence(tmp_path):
-    now = [111.0]
-    path = tmp_path / "external-gpu-reservation"
-    path.write_text(_digest("legacy-owner"), encoding="ascii")
-    os.utime(path, (80.0, 80.0))
-    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    current_digest = _digest("internal-owner")
-
-    assert store.claim_internal(current_digest) is True
-    assert path.read_text(encoding="ascii") == current_digest
-
-
 @pytest.mark.parametrize(
     ("telemetry_updates", "reason"),
     [
@@ -218,7 +191,7 @@ def test_active_lease_heartbeat_prevents_expiry_until_owner_finishes(tmp_path, m
     assert store.read() is None
 
 
-def test_expired_legacy_digest_fence_reaps_by_mtime_and_audits(tmp_path):
+def test_expired_ownerless_digest_fence_stays_fail_closed(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     path.write_text(_digest("legacy-owner"), encoding="ascii")
@@ -229,14 +202,16 @@ def test_expired_legacy_digest_fence_reaps_by_mtime_and_audits(tmp_path):
     assert path.exists()
 
     now[0] = 111.0
-    assert store.reap_expired() is True
-    assert not path.exists()
-    events = [
-        json.loads(line)
-        for line in store.audit_path.read_text(encoding="utf-8").splitlines()
-    ]
-    assert events[-1]["action"] == "legacy_fence_expired"
-    assert events[-1]["owner"] == "unknown"
+    assert store.reap_expired() is False
+    assert store.claim_internal(_digest("new-owner")) is False
+    assert store.reserve(
+        _digest("new-external-owner"), owner="new-owner", owner_vram_budget_bytes=1024
+    ) is None
+    reaped, record, _ = store.scheduler_snapshot()
+    assert reaped is False
+    assert record is None
+    assert path.read_text(encoding="ascii") == _digest("legacy-owner")
+    assert not store.audit_path.exists()
 
 
 def test_consented_release_current_removes_active_reservation_without_owner_probe(tmp_path, monkeypatch):

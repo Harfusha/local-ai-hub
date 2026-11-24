@@ -30,6 +30,7 @@ from local_ai_hub.telemetry import TelemetryStore
 def _cfg(tmp_path: Path):
     path = tmp_path / "config.toml"
     path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         '[hardware]\nprofile="cpu"\n',
         encoding="utf-8",

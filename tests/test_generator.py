@@ -19,6 +19,7 @@ if str(TOOLS) not in sys.path:
 
 from local_ai_hub.generator import (
     SINGLE_OWNER_CONTRACT,
+    _categorized_operational_triggers,
     generate_token_economy_policy,
     generate_skill_markdown,
     generate_skill_references,
@@ -30,6 +31,27 @@ from local_ai_hub.features import FeatureSet
 
 
 class TestSkillGeneration:
+    def test_repo_guidance_uses_canonical_actions_and_fields(self):
+        from types import SimpleNamespace
+
+        guidance = "\n".join(_categorized_operational_triggers(SimpleNamespace(
+            repo=True,
+            coord=False,
+            tasks=False,
+            artifacts=False,
+            supported_repo_actions=lambda: [
+                "callers", "callees", "declaration", "implementations",
+                "affected_tests", "refactor_impact",
+            ],
+        )))
+        assert 'action="callers", query=' in guidance
+        assert 'action="callees", query=' in guidance
+        assert 'action="declaration"|"implementations", query=' in guidance
+        assert 'action="affected_tests", path=' in guidance
+        assert 'action="refactor_impact", query=' in guidance
+        assert "symbol=" not in guidance
+        assert 'action="definition"' not in guidance
+
     def test_full_single_owner_contract_lives_in_skill_and_policy_points_to_it(self):
         config = {"ollama": {"enabled": True}, "hardware": {"profile": "high"}}
         skill = generate_skill_markdown(config)
@@ -202,6 +224,7 @@ class TestGlobalPolicyGeneration:
     def test_global_policy_references_single_owner_contract_in_installed_skill(self):
         assert "Single-owner and repository scope contract" in generate_global_policy({})
         assert SINGLE_OWNER_CONTRACT in generate_skill_markdown({})
+        assert generate_skill_markdown({}).count("## Single-owner and repository scope contract") == 1
 
     def test_policy_markers_and_content(self):
         policy = generate_global_policy({"ollama": {"enabled": True}})
@@ -517,7 +540,10 @@ class TestCliEntrypoints:
     def test_generator_module_main(self, tmp_path: Path):
         from local_ai_hub.generator import main as gen_main
         cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text("[features]\nrag = false\n", encoding="utf-8")
+        cfg_file.write_text(
+            "[local_ai_hub]\nconfig_schema_version = 1\n\n[features]\nrag = false\n",
+            encoding="utf-8",
+        )
         out_dir = tmp_path / "out"
 
         code = gen_main(["--config", str(cfg_file), "--output-dir", str(out_dir)])
@@ -528,7 +554,10 @@ class TestCliEntrypoints:
     def test_package_main_generate(self, tmp_path: Path):
         from local_ai_hub.__main__ import main as pkg_main
         cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text("[features]\ncommands = false\n", encoding="utf-8")
+        cfg_file.write_text(
+            "[local_ai_hub]\nconfig_schema_version = 1\n\n[features]\ncommands = false\n",
+            encoding="utf-8",
+        )
         out_dir = tmp_path / "out2"
 
         code = pkg_main(["--config", str(cfg_file), "--generate", "--output-dir", str(out_dir)])

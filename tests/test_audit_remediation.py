@@ -27,7 +27,7 @@ from local_ai_hub.deterministic import DeterministicEngine
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path, monkeypatch):
     config = tmp_path / "isolated.toml"
-    config.write_text('[server]\nstate_dir = ' + json.dumps(str(tmp_path / "state")) + '\n', encoding="utf-8")
+    config.write_text('[local_ai_hub]\nconfig_schema_version = 1\n[server]\nstate_dir = ' + json.dumps(str(tmp_path / "state")) + '\n', encoding="utf-8")
     monkeypatch.setenv("LOCAL_AI_CONFIG", str(config))
 
 def test_budget_consumption_retains_both_concurrent_increments(monkeypatch):
@@ -51,9 +51,9 @@ def test_budget_consumption_retains_both_concurrent_increments(monkeypatch):
 
 def test_runtime_updates_preserve_both_changes(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
-    config_path.write_text("", encoding="utf-8")
+    config_path.write_text('[local_ai_hub]\nconfig_schema_version = 1\n', encoding="utf-8")
     target = config_module.runtime_override_path(config_path)
-    target.write_text("", encoding="utf-8")
+    target.write_text('[local_ai_hub]\nconfig_schema_version = 1\n', encoding="utf-8")
     replace = os.replace
     start = threading.Barrier(2)
     def slow_replace(source, destination):
@@ -67,7 +67,9 @@ def test_runtime_updates_preserve_both_changes(tmp_path, monkeypatch):
         futures = [executor.submit(update, patch) for patch in ({"first": True}, {"second": True})]
         for future in futures:
             future.result(timeout=5)
-    assert tomllib.loads(target.read_text(encoding="utf-8")) == {"first": True, "second": True}
+    assert tomllib.loads(target.read_text(encoding="utf-8")) == {
+        "local_ai_hub": {"config_schema_version": 1}, "first": True, "second": True,
+    }
 
 
 def test_reference_fallback_returns_references_not_definitions():

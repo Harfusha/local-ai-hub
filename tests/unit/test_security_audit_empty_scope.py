@@ -33,7 +33,7 @@ def test_empty_security_audit_on_loopback_mcp(tmp_path, monkeypatch):
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     config = tmp_path / "hub-test.toml"
     config.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{(tmp_path / "state").as_posix()}"\n'
         f'[security]\nallowed_roots = ["{project.as_posix()}"]\n',
         encoding="utf-8",

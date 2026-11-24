@@ -19,7 +19,7 @@ def test_registered_mcp_http_bounded_patch_and_real_broker(tmp_path, monkeypatch
     )
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\nauto_start_ollama = false\n[ollama]\nenabled = true\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -177,7 +177,7 @@ def test_mcp_claim_budget_preserves_real_lease_identity(tmp_path, monkeypatch):
 
     root = init_repo(tmp_path)
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\nauto_start_ollama = false\n[ollama]\nenabled = true\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -236,7 +236,7 @@ def test_mcp_reports_active_bounded_deadline_without_terminal_handoff(tmp_path, 
     monkeypatch.setattr(work_module, "time", clock)
     root = init_repo(tmp_path)
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -317,7 +317,7 @@ def test_documented_i1_fixture_runs_approved_pytest_through_broker(tmp_path, mon
     prepare_fixture(root, "I1")
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -466,7 +466,7 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
             pytest.skip("The installed headless browser did not return DOM output")
         assert 'data-result="fail"' in baseline
         config = tmp_path / "isolated.toml"
-        config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
             + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
             + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
             + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -520,7 +520,7 @@ def test_isolated_bounded_work_can_edit_small_ui_and_validate(tmp_path, monkeypa
                     "commit", "-qm", "add ui"], check=True)
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -568,7 +568,7 @@ def test_isolated_app_bounded_work_uses_real_service_and_broker(tmp_path, monkey
     root = init_repo(tmp_path)
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -680,7 +680,7 @@ def test_isolated_app_rejects_patch_outside_allowed_files(tmp_path, monkeypatch)
     foreign.write_text("protected\n", encoding="utf-8")
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -730,7 +730,7 @@ def test_task_bound_rollback_conflict_preserves_foreign_change_and_barrier(tmp_p
     from local_ai_hub.agent_tasks import GoalContract, TaskStatus
     root = init_repo(tmp_path)
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[work_orchestrator]\nmax_replans = 0"
@@ -777,7 +777,7 @@ def test_isolated_app_rolls_back_when_broker_command_fails(tmp_path, monkeypatch
     root = init_repo(tmp_path)
     config = tmp_path / "isolated.toml"
     config.write_text(
-        "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[work_orchestrator]\nmax_replans = 0"

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import closing
 from types import SimpleNamespace
+
+import pytest
 
 from local_ai_hub import http_server
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
+from local_ai_hub.sqlite_support import connect_sqlite
 
 
 def _post_incident(monkeypatch, tmp_path, record):
@@ -60,7 +64,7 @@ def test_recording_explicit_verified_fix_resolves_incident(monkeypatch, tmp_path
     assert store.get(incident["incident_id"]).resolved is True
 
 
-def test_legacy_placeholder_is_not_a_verified_retry(tmp_path):
+def test_resolve_rejects_reserved_placeholder(tmp_path):
     store = IncidentStore(AgentStateStore(tmp_path / "legacy.sqlite3"))
     root = str(tmp_path.resolve())
     incident = store.capture(ToolOutcome(
@@ -68,16 +72,45 @@ def test_legacy_placeholder_is_not_a_verified_retry(tmp_path):
         state_revision="rev-1", repository_root=root,
     ))
     assert incident is not None
-    store.resolve(incident.incident_id, verified_fix="resolved", root_cause="worker returned no patch")
+    with pytest.raises(ValueError, match="verified_fix must describe a verified fix"):
+        store.resolve(incident.incident_id, verified_fix=" ReSoLvEd ", root_cause="worker returned no patch")
+    with pytest.raises(ValueError, match="verified_fix must describe a verified fix"):
+        store.resolve_all(verified_fix="resolved")
     record = store.get(incident.incident_id)
-    assert record is not None
-    assert record.resolved is False
-    assert record.to_dict()["verified_fix"] is None
-    assert record.to_dict()["resolved"] is False
-    assert store.find_negative_knowledge("worker", root=root)[0]["verified_fix"] == ""
-    assert [row.incident_id for row in store.list_incidents(root=root, status="unresolved")] == [incident.incident_id]
-    assert store.list_incidents(root=root, status="resolved") == []
-    assert store.incident_count(resolved=False) == 1
-    assert store.incident_count(resolved=True) == 0
-    decision = store.retry_decision(incident.fingerprint, "rev-1", root=root)
-    assert decision.action == "stop"
+    assert record is not None and record.resolved is False and record.verified_fix is None
+
+
+def test_capture_rejects_reserved_verified_fix_placeholder(tmp_path):
+    store = IncidentStore(AgentStateStore(tmp_path / "incidents.sqlite3"))
+    with pytest.raises(ValueError, match="verified_fix must describe a verified fix"):
+        store.capture(ToolOutcome(
+            tool_name="command", error="failure", exit_code=1, state_revision="rev-1",
+            repository_root=str(tmp_path.resolve()), metadata={"verified_fix": "resolved"},
+        ))
+
+
+def test_http_record_rejects_reserved_verified_fix_placeholder(monkeypatch, tmp_path):
+    (status, payload), store = _post_incident(monkeypatch, tmp_path, {
+        "message": "fixture operation failed",
+        "operation_class": "command",
+        "verified_fix": "resolved",
+    })
+    assert status == 400
+    assert payload["terminal"] is True and payload["retryable"] is False
+    assert store.list_incidents(root=str(tmp_path.resolve())) == []
+
+
+def test_incident_store_rejects_noncanonical_persisted_placeholder(tmp_path):
+    database = tmp_path / "incidents.sqlite3"
+    initial = IncidentStore(AgentStateStore(database))
+    incident = initial.capture(ToolOutcome(
+        tool_name="command", error="fixture worker failure", exit_code=1,
+        state_revision="rev-1", repository_root=str(tmp_path.resolve()),
+    ))
+    assert incident is not None
+    with closing(connect_sqlite(database)) as con:
+        con.execute("UPDATE agent_incidents SET verified_fix=' resolved ', resolved=1 WHERE incident_id=?", (incident.incident_id,))
+        con.commit()
+
+    with pytest.raises(RuntimeError, match="retired verified_fix placeholder"):
+        IncidentStore(AgentStateStore(database)).get(incident.incident_id)

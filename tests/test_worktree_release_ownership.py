@@ -4,7 +4,7 @@ import ast
 import subprocess
 from pathlib import Path
 
-from local_ai_hub import process_utils
+from local_ai_hub import process_utils, git_worktrees
 from local_ai_hub.client import HubClient
 
 
@@ -18,16 +18,16 @@ def test_worktree_release_fails_closed_without_owner_identifier(tmp_path: Path) 
     subprocess.run(["git", "add", "README.md"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "fixture"], cwd=repo, capture_output=True, check=True)
 
-    created = process_utils.create_git_worktree(repo, branch_name="owned-fixture")
+    created = git_worktrees.create_git_worktree(repo, branch_name="owned-fixture")
     assert created["success"] is True
     target = Path(created["worktree_path"])
     try:
-        denied = process_utils.remove_git_worktree(repo, target, branch_name="owned-fixture")
+        denied = git_worktrees.remove_git_worktree(repo, target, branch_name="owned-fixture")
         assert denied["success"] is False
         assert "identifier is required" in denied["error"]
         assert target.is_dir()
 
-        removed = process_utils.remove_git_worktree(
+        removed = git_worktrees.remove_git_worktree(
             repo, target, branch_name="owned-fixture", worktree_id=created["worktree_id"]
         )
         assert removed["success"] is True

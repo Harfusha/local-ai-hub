@@ -279,10 +279,19 @@ class HTTPPostRoutesMixin:
                 # Debug persistence is optional and must not strand a claimed request.
                 pass
         try:
+            if isinstance(payload, dict):
+                async_response = self._async_delivery(path, payload)
+                if async_response is not None:
+                    status, response = async_response
+                    self._send(status, response)
+                    return
             post_handler_name = services_module.select_post_handler(post_route_ids)
             if post_handler_name is not None:
                 post_handler = getattr(self, post_handler_name)
-                if post_handler_name == "_handle_post_repository_analysis":
+                if post_handler_name in {
+                    "_handle_post_repository_analysis",
+                    "_handle_post_cancellable_task_service",
+                }:
                     post_handler(payload, route_ids=post_route_ids)
                 else:
                     post_handler(payload)
@@ -352,82 +361,6 @@ class HTTPPostRoutesMixin:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
                 result = services_module._invoke_cancellable_request(services_module._ACTIVE_CONVERSATIONS, services_module.APP.services.continue_conversation, payload, connection=connection)
                 self._send(200, result); return
-            if 'post_agent_state_tasks_1' in post_route_ids:
-                from .http_post_tasks import handle_agent_state_tasks
-                handle_agent_state_tasks(self, payload)
-                return
-
-            if 'post_agent_state_memory_1' in post_route_ids:
-                from .http_post_memory import handle_agent_state_memory
-                handle_agent_state_memory(self, payload)
-                return
-
-
-            if 'post_agent_state_incidents_1' in post_route_ids:
-                from .http_post_agent_state import handle_agent_state_incidents
-                handle_agent_state_incidents(self, payload)
-                return
-
-            if 'post_agent_state_verification_1' in post_route_ids:
-                from .http_post_agent_state import handle_agent_state_verification
-                handle_agent_state_verification(self, payload)
-                return
-
-            if 'post_agent_state_context_1' in post_route_ids:
-                from .http_post_agent_state import handle_agent_state_context
-                handle_agent_state_context(self, payload)
-                return
-
-            if 'post_agent_state_learning_1' in post_route_ids:
-                from .http_post_agent_state import handle_agent_state_learning
-                handle_agent_state_learning(self, payload)
-                return
-
-            if 'post_agent_state_cleanup_1' in post_route_ids:
-                if not getattr(services_module.APP, "agent_state", None) or not services_module.APP.agent_state.enabled:
-                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                retention = int(payload.get("retention_days") or services_module.APP.config.get("agent_state", {}).get("retention_days", 30))
-                res = services_module.APP.agent_state.cleanup(retention_days=retention)
-                self._send(200, res); return
-            if 'post_agent_state_blackboard_1' in post_route_ids:
-                from .http_post_agent_state import handle_agent_state_blackboard
-                handle_agent_state_blackboard(self, payload)
-                return
-
-            if 'post_agent_state_swarm_dispatch_1' in post_route_ids:
-                if not getattr(services_module.APP, "swarm", None):
-                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
-                goal = str(payload.get("goal", payload.get("task", "")))
-                target_paths = payload.get("target_paths", payload.get("paths", []))
-                if not isinstance(target_paths, list):
-                    target_paths = [str(target_paths)] if target_paths else []
-                test_command = str(payload.get("test_command", payload.get("command", "")))
-                author = str(payload.get("author", "agent"))
-                root = str(payload.get("root", "."))
-                res = services_module.APP.swarm.dispatch(goal=goal, target_paths=target_paths, test_command=test_command, author=author, root=root)
-                self._send(200, res); return
-            if 'post_agent_state_swarm_step_1' in post_route_ids:
-                if not getattr(services_module.APP, "swarm", None):
-                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
-                swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
-                role = str(payload.get("role", "Coder"))
-                action = str(payload.get("action", "submit_patch"))
-                step_payload = payload.get("payload", payload.get("content", {}))
-                res = services_module.APP.swarm.step(
-                    swarm_id=swarm_id, role=role, action=action, payload=step_payload,
-                    root=str(payload.get("root", "")),
-                )
-                self._send(200, res); return
-            if 'post_agent_state_swarm_cancel_1' in post_route_ids:
-                if not getattr(services_module.APP, "swarm", None):
-                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
-                swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
-                reason = str(payload.get("reason", ""))
-                res = services_module.APP.swarm.cancel(
-                    swarm_id=swarm_id, reason=reason,
-                    root=str(payload.get("root", "")),
-                )
-                self._send(200, res); return
             if 'post_benchmark_run_1' in post_route_ids:
                 if not getattr(services_module.APP, "benchmark_runner", None):
                     self._send(503, {"success": False, "error": "benchmark runner unavailable"}); return
@@ -457,67 +390,6 @@ class HTTPPostRoutesMixin:
                     if operation == "release_scheduler_capacity_lease" else None,
                 )
                 self._send(200, res); return
-            if 'post_delegate_repo_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.delegate_repo, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.delegate_repo(payload)); return
-            if 'post_solve_repo_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.solve_repo, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.solve_repo(payload)); return
-            if 'post_route_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.route_context, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.route_context(payload)); return
-            if 'post_delegate_batch_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.batch_delegate, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.batch_delegate(payload)); return
-            if 'post_review_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.review, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.review(payload)); return
-            if 'post_review_diff_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.review_diff, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.review_diff(payload)); return
-            if 'post_reason_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.reason, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.reason(payload)); return
-            if 'post_second_opinion_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.second_opinion, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.second_opinion(payload)); return
-            if 'post_compress_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.compress, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.compress(payload)); return
-            if 'post_generate_tests_1' in post_route_ids:
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
-                if connection is not None:
-                    result = services_module._invoke_cancellable_request(services_module._ACTIVE_DELEGATES, services_module.APP.services.generate_tests, payload, connection=connection)
-                    self._send(200, result); return
-                self._send(200, services_module.APP.services.generate_tests(payload))
-                return
             if 'post_patch_validate_1' in post_route_ids:
                 result = services_module.APP.services.validate_patch(payload)
                 self._send(result.get("status_code", 200), result)
@@ -696,12 +568,6 @@ class HTTPPostRoutesMixin:
                 limit = int(payload.get("limit", 30))
                 self._send(200, services_module.APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, include_info=include_info, relative_path=str(rel_path) if rel_path else None, limit=limit))
                 return
-            if 'post_code_find_declaration_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                sym = str(payload.get("symbol") or payload.get("name") or "")
-                rel_path = payload.get("path")
-                self._send(200, services_module.APP.services.code_find_declaration(root, sym, path=str(rel_path) if rel_path else None))
-                return
             if 'post_code_find_implementations_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
@@ -851,41 +717,6 @@ class HTTPPostRoutesMixin:
                 self._send(200, services_module.APP.services.benchmark()); return
             if 'post_evaluation_1' in post_route_ids:
                 self._send(200, services_module.APP.services.evaluation(payload)); return
-            if 'post_repo_profile_1' in post_route_ids:
-                self._send(200, services_module.APP.services.repo_profile(str(payload.get("root", ".")))); return
-            if 'post_repo_map_1' in post_route_ids:
-                self._send(200, services_module.APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
-            if 'post_repo_code_index_1' in post_route_ids:
-                result = services_module.APP.services.code_query(
-                    payload.get("root", "."), payload.get("query", ""),
-                    payload.get("limit", 24), payload.get("include_code", False),
-                    payload.get("offset", 0),
-                )
-                status = int(result.pop("status_code", 200))
-                self._send(status, result); return
-            if 'post_repo_investigate_1' in post_route_ids:
-                self._send(200, services_module.APP.services.repo_investigate(
-                    str(payload.get("root", ".")),
-                    str(payload.get("query", "")),
-                    str(payload.get("path", "")),
-                    bool(payload.get("include_code", True)),
-                    int(payload.get("limit", 10)),
-                )); return
-            if 'post_repo_diagnose_1' in post_route_ids:
-                self._send(200, services_module.APP.services.repo_diagnose(
-                    str(payload.get("root", ".")),
-                    str(payload.get("text", payload.get("query", ""))),
-                )); return
-            if 'post_repo_briefing_1' in post_route_ids:
-                self._send(200, services_module.APP.services.repo_briefing(str(payload.get("root", ".")))); return
-            if 'post_repo_deterministic_1' in post_route_ids:
-                self._send(200, services_module.APP.services.deterministic_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 24)))); return
-            if 'post_repo_impact_1' in post_route_ids:
-                self._send(200, services_module.APP.services.repo_impact(
-                    str(payload.get("root", ".")), str(payload.get("base", "HEAD")), bool(payload.get("staged", False)),
-                    int(payload.get("max_symbols", services_module.APP.config.get("workflow", {}).get("impact_max_symbols", 48))),
-                    int(payload.get("max_dependents", services_module.APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
-                )); return
             if 'post_search_1' in post_route_ids:
                 if "exact_count" in payload and type(payload["exact_count"]) is not bool:
                     self._send(400, {
@@ -1252,53 +1083,6 @@ class HTTPPostRoutesMixin:
                 self._send(200, services_module.APP.services.semaphore_status(
                     name=payload.get("name"),
                 )); return
-            if path == "/api/coord/board_item_create":
-                self._send(200, services_module.APP.services.board_item_create(
-                    title=str(payload.get("title", "")),
-                    status=str(payload.get("status", "planned")),
-                    priority=str(payload.get("priority", "medium")),
-                    labels=payload.get("labels"),
-                    assignee=str(payload.get("assignee", "")),
-                    milestone=str(payload.get("milestone", "")),
-                    linked_task_id=str(payload.get("linked_task_id", "")),
-                    details=payload.get("details"),
-                )); return
-            if path == "/api/coord/board_item_update":
-                self._send(200, services_module.APP.services.board_item_update(
-                    item_id=str(payload.get("item_id", "")),
-                    status=payload.get("status"),
-                    priority=payload.get("priority"),
-                    labels=payload.get("labels"),
-                    assignee=payload.get("assignee"),
-                    milestone=payload.get("milestone"),
-                    linked_task_id=payload.get("linked_task_id"),
-                    details=payload.get("details"),
-                )); return
-            if path == "/api/coord/board_item_get":
-                self._send(200, services_module.APP.services.board_item_get(str(payload.get("item_id", "")))); return
-            if path == "/api/coord/board_item_delete":
-                self._send(200, services_module.APP.services.board_item_delete(str(payload.get("item_id", "")))); return
-            if path == "/api/coord/board_item_list":
-                self._send(200, services_module.APP.services.board_item_list(
-                    status=payload.get("status"),
-                    priority=payload.get("priority"),
-                    milestone=payload.get("milestone"),
-                    assignee=payload.get("assignee"),
-                    limit=int(payload.get("limit", 50)),
-                    root=str(payload.get("root", "")),
-                )); return
-            if path == "/api/coord/board_summary":
-                self._send(200, services_module.APP.services.board_summary(
-                    root=str(payload.get("root", "")),
-                )); return
-            if path == "/api/coord/milestone_create":
-                self._send(200, services_module.APP.services.milestone_create(
-                    name=str(payload.get("name", "")),
-                    target_date=str(payload.get("target_date", "")),
-                    description=str(payload.get("description", "")),
-                )); return
-            if path == "/api/coord/milestone_status":
-                self._send(200, services_module.APP.services.milestone_status(str(payload.get("name", "")))); return
             if path == "/api/coord/session_briefing":
                 self._send(200, services_module.APP.services.session_briefing(
                     include=payload.get("include"),

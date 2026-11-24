@@ -58,7 +58,7 @@ def test_async_job_receipt_requires_committed_success(tmp_path: Path, monkeypatc
     scheduler = _Scheduler()
     artifacts = _Artifacts()
     executor_succeeded = durable_state in {"done", "cancelled"}
-    config = {"server": {"state_dir": str(tmp_path / "state")}, "debug_traces": {"enabled": True}}
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "telemetry": {"mode": "full"}}
     traces = DebugTraceStore(config)
     with AsyncJobManager(
         config,

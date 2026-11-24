@@ -7,7 +7,6 @@ from .services import (
     ContextCompiler as ContextCompiler,
     ContextRequest as ContextRequest,
     GuardWarning as GuardWarning,
-    Mapping as Mapping,
     Path as Path,
     configured_state_dir as configured_state_dir,
     hashlib as hashlib,
@@ -437,49 +436,6 @@ class ServiceContextMixin:
             "local_context_tokens": packed.get("estimated_tokens", 0), "semantic_used": bool(packed.get("semantic_used", False)),
             "scanned_files": packed.get("scanned_files", 0),
         }
-        if requested_context_tokens <= 0 and packed_evidence_ids:
-            budget_profile = (
-                "compact" if max_context_tokens <= 2200
-                else "expanded" if max_context_tokens >= 4200
-                else "standard"
-            )
-            # Leave room for useful, provenance-verified source context while
-            # keeping all raw training fields below the 16 KiB aggregate cap.
-            task_input = task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip()
-            training_content = {"task_input": task_input} if task_input else {}
-            model_response = self._laya_model_response_excerpt(result)
-            if model_response:
-                training_content["model_response"] = model_response.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip()
-            context_excerpt = self._laya_verified_context_excerpt(
-                getattr(self, "evidence_store", None),
-                packed_evidence_ids[:64],
-                root=str(packed.get("root") or root),
-                max_bytes=6 * 1024,
-            )
-            if context_excerpt:
-                training_content["context_excerpt"] = context_excerpt
-            decision_state = {
-                "task_type": str(initial_route.get("task_type", "general")),
-                "complexity": str(initial_route.get("complexity", "fast")),
-                "context_budget": budget_profile,
-                "context_tokens": str(max_context_tokens),
-            }
-            generator_model = self._laya_generator_model_code(result)
-            if generator_model:
-                decision_state["generator_model"] = generator_model
-            self._queue_laya_shadow_observation(
-                {"task_id": args.get("task_id"), "session_id": args.get("session_id"), "evidence_ids": packed_evidence_ids},
-                root=root,
-                category="context_budget",
-                options=["compact", "standard", "expanded"],
-                state=decision_state,
-                training_content=training_content,
-                baseline={
-                    "method": "repo_context_token_budget",
-                    "suggestion": budget_profile,
-                    "evidence_id": packed_evidence_ids[0],
-                },
-            )
         return result
 
     def solve_repo(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
@@ -488,59 +444,12 @@ class ServiceContextMixin:
             return {"success": False, "cancelled": True, "reason": "cancelled"}
         if self.pipeline is None:
             return self.delegate_repo(args, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
-        captured_tool_outputs: list[str] = []
-        captured_tool_output_bytes = 0
-        pipeline_args = args
-        task_id = args.get("task_id")
-        root = args.get("root")
-        if (
-            getattr(self.pipeline, "enabled", False) is True
-            and isinstance(task_id, str) and bool(task_id.strip())
-            and isinstance(root, str) and bool(root.strip())
-        ):
-            def capture_tool_output(name: str, result: dict[str, Any]) -> None:
-                nonlocal captured_tool_output_bytes
-                if (
-                    not isinstance(name, str) or not name.strip()
-                    or not isinstance(result, Mapping) or result.get("success") is not True
-                    or captured_tool_output_bytes >= 4096
-                ):
-                    return
-                try:
-                    payload = json.dumps(
-                        {"tool": name, "output": result}, ensure_ascii=False,
-                        sort_keys=True, separators=(",", ":"),
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    return
-                remaining = 4096 - captured_tool_output_bytes
-                bounded = payload.encode("utf-8", errors="replace")[:remaining].decode("utf-8", errors="ignore")
-                if not bounded:
-                    return
-                captured_tool_outputs.append(bounded)
-                captured_tool_output_bytes += len(bounded.encode("utf-8"))
-
-            pipeline_args = dict(args)
-            pipeline_args["_laya_tool_output_callback"] = capture_tool_output
-
-        def queue_observation(result: Mapping[str, Any]) -> None:
-            output_excerpt = "\n".join(captured_tool_outputs)
-            self._queue_laya_solve_repo_observation(
-                args, result, tool_output_excerpt=output_excerpt,
-            )
-
         if cancel_event is None:
-            result = self.pipeline.solve_repo(pipeline_args)
-            if isinstance(result, Mapping):
-                queue_observation(result)
-            return result
+            return self.pipeline.solve_repo(args)
         from .client import CURRENT_REQUEST_CANCEL_EVENT
         token = CURRENT_REQUEST_CANCEL_EVENT.set(cancel_event)
         try:
-            result = self.pipeline.solve_repo(pipeline_args)
-            if isinstance(result, Mapping):
-                queue_observation(result)
-            return result
+            return self.pipeline.solve_repo(args)
         finally:
             CURRENT_REQUEST_CANCEL_EVENT.reset(token)
 
@@ -606,100 +515,6 @@ class ServiceContextMixin:
             models_by_role, installed_digests, current_role,
         )
         return verified
-
-    def _queue_laya_solve_repo_observation(
-        self, args: Mapping[str, Any], result: Any, *, tool_output_excerpt: str = "",
-    ) -> None:
-        """Capture task-scoped final outcomes from the primary repository pipeline."""
-        if (
-            not isinstance(result, Mapping)
-            or result.get("success") is not True
-            or str(args.get("task_type", "auto")).strip() != "auto"
-            or str(args.get("complexity", "auto")).strip() != "auto"
-            or str(args.get("model", "")).strip()
-        ):
-            return
-        canonical = result.get("canonical")
-        repo_context = result.get("repo_context")
-        pipeline = result.get("pipeline")
-        if not isinstance(canonical, Mapping) or not isinstance(repo_context, Mapping) or not isinstance(pipeline, Mapping):
-            return
-        active_stages = pipeline.get("stages")
-        if not isinstance(active_stages, (list, tuple)):
-            return
-        route = canonical.get("route")
-        if not isinstance(route, Mapping):
-            return
-        route_option = {
-            "fast_code": "fast",
-            "heavy_code": "smart",
-            "reasoning": "smart",
-            "general": "generic",
-        }.get(str(route.get("task_type", "")))
-        if route_option is None:
-            return
-        project_context, _, _, _ = self._resolve_local_task_project(
-            args.get("root") or args.get("cwd", "")
-        )
-        project_settings = project_context.settings if project_context is not None else None
-        route_options = self._available_laya_model_route_options(
-            str(route.get("task_type", "")), project_settings=project_settings,
-        )
-        if route_option not in route_options:
-            return
-        evidence = repo_context.get("evidence")
-        if not isinstance(evidence, (list, tuple)):
-            return
-        evidence_ids = [
-            item.get("evidence_id") for item in evidence
-            if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str)
-        ][:64]
-        if not evidence_ids:
-            return
-        worker = canonical.get("worker")
-        explorer = canonical.get("explorer")
-        critic = canonical.get("critic")
-        generator_model = ""
-        for stage_name, stage in (("worker", worker), ("explorer", explorer), ("critic", critic)):
-            if stage_name not in active_stages or not isinstance(stage, Mapping):
-                continue
-            if stage_name in {"worker", "critic"} and stage.get("used") is not True:
-                continue
-            generator_model = self._laya_generator_model_code({"route": {"model": stage.get("model")}})
-            if generator_model and generator_model.casefold() != "deterministic":
-                break
-            generator_model = ""
-        if not generator_model:
-            return
-        task = args.get("task")
-        task_input = task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip() if isinstance(task, str) else ""
-        training_content = {"task_input": task_input} if task_input else {}
-        model_response = self._laya_model_response_excerpt(result)
-        if model_response:
-            training_content["model_response"] = model_response
-        if isinstance(tool_output_excerpt, str) and tool_output_excerpt.strip():
-            training_content["tool_output_excerpt"] = tool_output_excerpt
-        state = {
-            "task_type": str(route.get("task_type", "general")),
-            "complexity": str(route.get("complexity", "fast")),
-            "semantic_required": "true" if route.get("semantic_required") is True else "false",
-            "context_present": "true" if evidence_ids else "false",
-        }
-        if generator_model:
-            state["generator_model"] = generator_model
-        self._queue_laya_shadow_observation(
-            {"task_id": args.get("task_id"), "session_id": args.get("session_id"), "evidence_ids": evidence_ids},
-            root=str(args.get("root") or ""),
-            category="model_route",
-            options=[option for option in ("fast", "smart", "generic") if option in route_options],
-            state=state,
-            training_content=training_content,
-            baseline={
-                "method": "model_router_classify",
-                "suggestion": route_option,
-                "evidence_id": evidence_ids[0],
-            },
-        )
 
     def route_context(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)

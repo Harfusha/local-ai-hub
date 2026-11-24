@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,109 @@ def test_pinned_project_hint_survives_fusion_cap_but_remains_policy_checked(tmp_
     assert "docs/pinned.md" in captured["paths"]
     assert "private/blocked.md" not in captured["paths"]
     assert "docs/pinned.md" not in captured["kwargs"]["force_include_paths"]
+
+
+def test_quality_first_passes_deterministic_code_index_result_to_path_ranking(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    indexed_result = {"symbols": [], "references": [], "edges": [], "confidence": 0.0}
+    deterministic_result = {"success": True, "confidence": 0.7, "code_index": indexed_result}
+
+    class FakeRepoTools:
+        @staticmethod
+        def iter_files(_root):
+            return []
+
+        @staticmethod
+        def context_pack_paths(root, query, paths, **_kwargs):
+            return {
+                "success": True, "root": root, "query": query,
+                "context": "route evidence", "evidence": [], "scanned_files": 0,
+            }
+
+    def related_paths(_root, _query, *, limit, result=None):
+        captured["limit"] = limit
+        captured["result"] = result
+        return []
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"search": {"context_backend_timeout_seconds": 0.05}, "features": {"rag": False}, "preprocessing": {}}
+    services.learner = None
+    services.repo_tools = FakeRepoTools()
+    services.deterministic = type("Deterministic", (), {
+        "related_paths": lambda *_args, **_kwargs: [],
+    })()
+    services.deterministic_query = lambda *_args, **_kwargs: deterministic_result
+    services.code_index = type("CodeIndex", (), {"related_paths": staticmethod(related_paths)})()
+    services.preprocessor = None
+    services.external_tools = None
+    services.evidence_store = None
+    services.rag = None
+    services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
+
+    services._hybrid_context_uncached(
+        str(tmp_path), "route", workspace=None, max_tokens=200, quality_first=True,
+    )
+
+    assert captured == {"limit": 24, "result": indexed_result}
+
+
+def test_slow_preprocessor_candidate_lookup_cannot_hold_adaptive_request(tmp_path: Path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class FakeRepoTools:
+        @staticmethod
+        def iter_files(_root):
+            return []
+
+        @staticmethod
+        def context_pack(root, *_args, **_kwargs):
+            return {"success": True, "root": str(root), "context": "", "evidence": [], "scanned_files": 0}
+
+        @staticmethod
+        def context_pack_paths(*_args, **_kwargs):
+            return {"success": True, "context": "", "evidence": [], "scanned_files": 0}
+
+    class SlowPreprocessor:
+        @staticmethod
+        def candidate_paths(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=2)
+            finished.set()
+            return []
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {
+        "search": {"context_backend_timeout_seconds": 0.05, "context_rag_timeout_seconds": 0.05},
+        "features": {"rag": False}, "preprocessing": {},
+    }
+    services.learner = None
+    services.repo_tools = FakeRepoTools()
+    services.deterministic = None
+    services.code_index = None
+    services.preprocessor = SlowPreprocessor()
+    services.external_tools = None
+    services.evidence_store = None
+    services.rag = None
+    services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            request = caller.submit(
+                services._hybrid_context_uncached,
+                str(tmp_path), "bounded context", workspace=None,
+                max_tokens=200, quality_first=True,
+            )
+            assert started.wait(timeout=1)
+            try:
+                result = request.result(timeout=0.5)
+            except FutureTimeout:
+                pytest.fail("preprocessor candidate search blocked the adaptive request")
+            assert result["retrieval"]["backend_states"]["preprocessor"] == "degraded"
+    finally:
+        release.set()
+    assert finished.wait(timeout=1)
 
 
 @pytest.mark.parametrize("query", ["Fix runtime implementation", "Kde je definice načítání konfigurace?"])

@@ -145,8 +145,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     calls.clear()
     criterion = "focused pytest check passes"
     created = client.create_task(
-        "Verify sample change",
-        acceptance_criteria=[criterion],
+        {"goal": "Verify sample change", "acceptance_criteria": [criterion]},
         task_id="t19-change-check",
         root=str(workspace),
     )
@@ -195,10 +194,8 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert calls[0]["path"] == "/api/agent-state/tasks"
     assert calls[0]["payload"] == {
         "action": "create",
-        "goal": "Verify sample change",
-        "acceptance_criteria": [criterion],
+        "contract": {"goal": "Verify sample change", "acceptance_criteria": [criterion]},
         "task_id": "t19-change-check",
-        "scope": "task",
         "root": str(workspace),
     }
     assert calls[1]["path"] == "/api/agent-state/verification"
@@ -287,7 +284,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
 
     calls.clear()
     resumable = client.create_task(
-        "Resume task", task_id="t19-resume", root=str(workspace)
+        {"goal": "Resume task"}, task_id="t19-resume", root=str(workspace)
     )
     resumed = client.coord(
         "task_resume", task_id="t19-resume", root=str(workspace)
@@ -302,10 +299,8 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert len(calls) == 2
     assert calls[0]["payload"] == {
         "action": "create",
-        "goal": "Resume task",
-        "acceptance_criteria": [],
+        "contract": {"goal": "Resume task"},
         "task_id": "t19-resume",
-        "scope": "task",
         "root": str(workspace),
     }
     assert calls[1]["payload"] == {

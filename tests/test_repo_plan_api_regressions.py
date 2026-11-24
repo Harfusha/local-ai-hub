@@ -1,8 +1,7 @@
 """Public planner regressions against real file-backed workspace operations."""
 
 from pathlib import Path
-import sqlite3
-from contextlib import closing
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -26,22 +25,23 @@ def public_planner(tmp_path):
     return services, str(root)
 
 
-def test_adoption_rejects_over_capacity_before_any_plan_write(public_planner, tmp_path, monkeypatch):
-    from local_ai_hub.agent_board import BoardStore
+def test_adoption_rejects_over_capacity_before_any_plan_write(public_planner, tmp_path):
+    from local_ai_hub.legacy_board_archive import ARCHIVE_NAME
     services, root = public_planner
-    board = BoardStore(tmp_path / "legacy.db")
-    board._ensure_schema()
-    with closing(sqlite3.connect(board.db_path)) as connection, connection:
-        connection.executemany(
-            "INSERT INTO agent_board_items (item_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            [(f"legacy_{index}", f"Legacy {index}", "planned", 1.0, float(index)) for index in range(1001)],
-        )
-    monkeypatch.setattr(services, "_ensure_board", lambda: board)
+    state_dir = Path(services.config["server"]["state_dir"])
+    state_dir.mkdir(parents=True)
+    items = [{
+        "item_id": f"legacy_{index}", "title": f"Legacy {index}", "status": "planned",
+        "priority": "medium", "assignee": "", "milestone": "", "linked_task_id": "",
+        "created_at": 1.0, "updated_at": float(index), "labels": [], "details": {},
+    } for index in range(1001)]
+    (state_dir / ARCHIVE_NAME).write_text(
+        json.dumps({"schema_version": 1, "items": items, "milestones": []}), encoding="utf-8",
+    )
     with pytest.raises(RepoPlanConflictError, match="1000"):
         services.plan_adopt_legacy_board(root=root, plan_id="plan_adopted", title="Adopted")
     assert not (Path(root) / ".local-ai-hub/plans/plan_adopted.plan.json").exists()
-    with closing(sqlite3.connect(board.db_path)) as connection:
-        assert connection.execute("SELECT count(*) FROM agent_board_items").fetchone()[0] == 1001
+    assert len(json.loads((state_dir / ARCHIVE_NAME).read_text(encoding="utf-8"))["items"]) == 1001
 
 
 def test_real_public_plan_lifecycle(public_planner):
@@ -102,14 +102,17 @@ def test_public_root_authorization_applies_before_workspace_creation(public_plan
 
 def test_explicit_root_never_uses_legacy_global_board(public_planner):
     services, root = public_planner
-    services._ensure_board = lambda: pytest.fail("global legacy board accessed")
-    summary = services.board_summary(root=root)
-    assert summary["success"] and summary["source"] == "repo_plan"
-    assert summary["total_items"] == 0
-    assert services.board_item_list(root=root)["items"] == []
+    board = services.plan_board_view(root=root)
+    assert all(not items for items in board["columns"].values())
     briefing = services.session_briefing(root=root, include=["board", "plans"])
     assert briefing["board"]["recent_items"] == []
     assert briefing["plans"] == []
+
+
+def test_session_briefing_rejects_missing_repository_root(public_planner):
+    services, _ = public_planner
+    with pytest.raises(TypeError, match="root"):
+        services.session_briefing(include=["board"])
 
 
 def test_session_briefing_keeps_plan_inventory_when_board_has_invalid_plan(public_planner):
@@ -133,9 +136,9 @@ def test_source_ready_is_not_delivered_done(public_planner):
     services, root = public_planner
     RepoPlanWorkspace(root).create_plan("plan_release", "Release", tasks={
         "task_parser": {"title": "Parser", "work_status": "source_ready"}})
-    summary = services.board_summary(root=root)
-    assert summary["counts"]["source_ready"] == 1
-    assert summary["counts"]["done"] == 0
+    board = services.plan_board_view(root=root)
+    assert len(board["columns"]["source_ready"]) == 1
+    assert len(board["columns"]["done"]) == 0
 
 
 @pytest.mark.parametrize("action,field", [

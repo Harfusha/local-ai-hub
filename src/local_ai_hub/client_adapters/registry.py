@@ -12,6 +12,8 @@ _REGISTRY: dict[str, type["BaseClientAdapter"]] = {}
 _DEFAULT_ADAPTERS_LOADED = False
 
 _ENV_DETECTION_ORDER: list[tuple[str, str]] = [
+    ("DEVIN_PROJECT_DIR",        "devin"),
+    ("DEVIN_SESSION_ID",         "devin"),
     ("ANTIGRAVITY_ENV",         "antigravity"),
     ("CODEX_HOME",              "codex"),
     ("CODEX_ENV",               "codex"),
@@ -29,6 +31,7 @@ _ENV_DETECTION_ORDER: list[tuple[str, str]] = [
 ]
 
 _HEADER_PREFIX_MAP: dict[str, str] = {
+    "devin":       "devin",
     "antigravity": "antigravity",
     "codex":       "codex",
     "claude":      "claude",
@@ -38,6 +41,7 @@ _HEADER_PREFIX_MAP: dict[str, str] = {
     "vscode":      "vscode",
     "copilot":     "vscode",
     "gemini":      "gemini_cli",
+    "gemini_cli":  "gemini_cli",
 }
 
 
@@ -57,6 +61,7 @@ def _ensure_default_adapters() -> None:
             claude,
             codex,
             cursor,
+            devin,
             gemini_cli,
             generic_mcp,
             opencode,
@@ -67,6 +72,7 @@ def _ensure_default_adapters() -> None:
             claude,
             codex,
             cursor,
+            devin,
             gemini_cli,
             generic_mcp,
             opencode,

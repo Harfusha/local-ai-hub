@@ -154,7 +154,7 @@ def test_support_archive_includes_installed_package_without_checkout(tmp_path, m
         create_diagnostics_archive(state_dir, source_root=unrelated_root, temp_dir=tmp_path)
 
 
-def test_support_archive_exports_laya_shadow_metadata_and_manifest(tmp_path):
+def test_support_archive_exports_laya_decision_metadata_and_manifest(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     laya_telemetry = {
@@ -162,7 +162,7 @@ def test_support_archive_exports_laya_shadow_metadata_and_manifest(tmp_path):
         "window_days": 7,
         "decisions": {
             "available": True,
-            "mode_counts": {"shadow": 3},
+            "mode_counts": {"advisory": 3},
             "category_counts": {"context_source": 3},
             "status_counts": {"success": 2, "abstain": 1},
         },
@@ -189,9 +189,9 @@ def test_support_archive_exports_laya_shadow_metadata_and_manifest(tmp_path):
         "generated_at": laya_telemetry["generated_at"],
         "window_days": 7,
     }
-    assert report["shadow_telemetry"] == laya_telemetry
+    assert report["decision_telemetry"] == laya_telemetry
     assert report["runtime"] == {"status": "NOT_VERIFIED"}
-    assert report["missing_data"]["shadow_telemetry"] == 0
+    assert report["missing_data"]["decision_telemetry"] == 0
     assert report["missing_data"]["evaluation_report"] == 1
     assert report["candidate_text_export"]["status"] == "omitted"
     assert report["candidate_text_export"]["included_rows"] == 0
@@ -318,7 +318,7 @@ def test_support_archive_writes_laya_metadata_and_only_explicit_candidate_member
     state_dir.mkdir()
     laya_metadata = {
         "schema_version": "laya-support-v1",
-        "telemetry": {"available": True, "records": 4, "counts_by_mode": {"shadow": 3, "advisory": 1}},
+        "telemetry": {"available": True, "records": 4, "counts_by_mode": {"advisory": 4}},
         "candidates": {"status_counts": {"verified": 2, "pending": 1}},
         "candidate_text_export": {"status": "included", "reason": None, "included_rows": 99},
     }
@@ -377,7 +377,7 @@ def test_support_archive_reports_missing_laya_state_without_candidate_text(tmp_p
             manifest = json.loads(archive.read("manifest.json"))
             assert manifest["laya"]["candidate_text"]["status"] == "omitted"
             assert manifest["laya"]["missing_data"]["candidate_database"] == 1
-            assert manifest["laya"]["missing_data"]["shadow_telemetry"] == 1
+            assert manifest["laya"]["missing_data"]["decision_telemetry"] == 1
             assert manifest["laya"]["missing_data"]["evaluation_report"] == 1
             assert manifest["laya"]["missing_data"]["backend_provenance"] == 1
 
@@ -387,9 +387,9 @@ def test_support_archive_reports_laya_runtime_metadata_without_hardware_claim(tm
     state_dir.mkdir()
     decisions = {
         "available": True,
-        "counts_by_mode": {"shadow": 2, "advisory": 1},
+        "counts_by_mode": {"advisory": 3},
         "by_mode": {
-            "shadow": {
+            "advisory": {
                 "records": 2,
                 "counts_by_category": {"context_strategy": 2},
                 "counts_by_status": {"abstain": 1, "suggestion": 1},
@@ -419,7 +419,7 @@ def test_support_archive_reports_laya_runtime_metadata_without_hardware_claim(tm
             report = json.loads(archive.read("laya/report.json"))
 
     assert report["runtime"] == runtime
-    assert report["shadow_telemetry"]["decisions"] == decisions
+    assert report["decision_telemetry"]["decisions"] == decisions
 
 
 def test_support_archive_rejects_empty_laya_candidate_payload_and_cleans_up(tmp_path):

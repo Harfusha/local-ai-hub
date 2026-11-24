@@ -695,7 +695,7 @@ def remove_git_worktree(
         if removed.returncode != 0:
             return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
 
-        pruned = process_utils.prune_git_worktrees(repo, expire="now", timeout_seconds=timeout, deadline_monotonic=deadline_monotonic)
+        pruned = prune_git_worktrees(repo, expire="now", timeout_seconds=timeout, deadline_monotonic=deadline_monotonic)
         if not pruned.get("success"):
             return {
                 "success": False,

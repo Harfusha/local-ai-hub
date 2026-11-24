@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterator
 from .cache import stable_hash
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, write_transaction
 from .process_utils import terminate_tree
+from .scheduler import QueueFullError
 
 
 _JOB_PROGRESS: ContextVar[Callable[[float, str], bool] | None] = ContextVar("async_job_progress", default=None)
@@ -138,7 +139,10 @@ class AsyncJobManager:
 
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=0.75)
+        # `_init_db` validates an existing schema before enabling WAL. Changing
+        # journal mode on connect would mutate an unsupported database before
+        # the fail-closed compatibility check can preserve it.
+        return connect_sqlite(self.path, timeout_seconds=0.75, wal=False)
 
     def _connect_for_progress(self) -> sqlite3.Connection:
         # Progress is best-effort; it must not stall RAG work behind a busy writer.
@@ -1017,6 +1021,20 @@ class AsyncJobManager:
 
             worker.add_done_callback(dispatch_done)
 
+    def _schedule_dispatch_retry(self, job_id: str, delay_seconds: float) -> None:
+        """Schedule a durable retry without spinning the async worker pool."""
+        delay = max(0.0, float(delay_seconds))
+        timer = threading.Timer(delay, self._dispatch, args=(str(job_id),))
+        timer.daemon = True
+        with self._lock:
+            if self._shutdown.is_set():
+                return
+            previous = self._delayed_dispatch.pop(str(job_id), None)
+            if previous is not None:
+                previous.cancel()
+            self._delayed_dispatch[str(job_id)] = timer
+        timer.start()
+
     @staticmethod
     def _expired_job_response(
         job_id: str,
@@ -1450,6 +1468,18 @@ class AsyncJobManager:
                     "error": "async executor returned a non-object result",
                     "retryable": False,
                 }
+        except QueueFullError as exc:
+            if action in {"review", "review_diff"} and exc.retryable:
+                result = {
+                    "success": False,
+                    "error": str(exc),
+                    "error_code": "scheduler_queue_full",
+                    "safe_to_retry": True,
+                    "retryable": True,
+                    "retry_after_seconds": 5,
+                }
+            else:
+                result = {"success": False, "error": str(exc), "retryable": exc.retryable}
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
@@ -1458,6 +1488,7 @@ class AsyncJobManager:
             _JOB_ATTEMPT.reset(attempt_token)
             cleanup_confirmed = self._cleanup_processes(job_id, attempt=int(row["attempts"]) + 1)
         deferred_for_resource_release = False
+        deferred_for_queue_retry_seconds: int | None = None
         artifact_id = ""
         pre_artifact_available = False
         final = {}
@@ -1581,6 +1612,51 @@ class AsyncJobManager:
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), str(final.get("error", "resource release in progress"))[:500], time.time(), job_id),
                 )
                 deferred_for_resource_release = True
+            elif (
+                action in {"review", "review_diff"}
+                and result.get("error_code") == "scheduler_queue_full"
+                and result.get("safe_to_retry") is True
+                and result.get("retryable") is True
+            ):
+                attempts = int(row["attempts"]) + 1
+                if attempts < self.max_attempts:
+                    delay_seconds = min(60, 5 * (2 ** max(0, attempts - 1)))
+                    final = {
+                        **result,
+                        "state": "queued",
+                        "terminal": False,
+                        "retryable": True,
+                        "retry_after_seconds": delay_seconds,
+                    }
+                    con.execute(
+                        "UPDATE async_jobs SET state='queued',result_json=?,error=?,lease_until=0,dispatch_not_before=?,updated_at=? WHERE job_id=?",
+                        (
+                            json_dumps(final, ensure_ascii=False, separators=(",", ":")),
+                            str(final.get("error", "scheduler queue is full"))[:500],
+                            time.time() + delay_seconds,
+                            time.time(),
+                            job_id,
+                        ),
+                    )
+                    deferred_for_queue_retry_seconds = delay_seconds
+                else:
+                    final = {
+                        **result,
+                        "state": "failed",
+                        "terminal": True,
+                        "retryable": False,
+                        "error": f"scheduler queue remained full after {attempts} safe admission attempts",
+                    }
+                    con.execute(
+                        "UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
+                        (
+                            json_dumps(final, ensure_ascii=False, separators=(",", ":")),
+                            final["error"][:500],
+                            time.time(),
+                            job_id,
+                        ),
+                    )
+                    stats_counter = "failed"
             elif action == "rag_index" and result.get("error_code") == "gpu_reserved":
                 # RAG publishes file and chunk changes only after every embedding
                 # succeeds. A denied GPU admission therefore has a known no-write
@@ -1704,6 +1780,8 @@ class AsyncJobManager:
         self._event(job_id).set()
         if deferred_for_resource_release:
             self._defer_until_resource_release_finishes(job_id)
+        if deferred_for_queue_retry_seconds is not None:
+            self._schedule_dispatch_retry(job_id, deferred_for_queue_retry_seconds)
         return final
 
     def _expire_owned_attempt(

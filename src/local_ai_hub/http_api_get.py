@@ -537,23 +537,23 @@ class HttpGetMixin:
                 scope = str((query.get("scope") or ["window"])[0])
                 try:
                     recent_errors = int((query.get("recent_errors") or query.get("error_limit") or [25])[0])
-                    error_offset = int((query.get("error_offset") or [0])[0])
-                    error_cursor_values = services_module.parse_qs(parsed.query, keep_blank_values=True).get("error_cursor")
-                    error_cursor = error_cursor_values[0] if error_cursor_values else None
-                    if error_cursor_values is not None and "error_offset" in services_module.parse_qs(parsed.query, keep_blank_values=True):
-                        raise ValueError("error_offset cannot be combined with error_cursor")
+                    query_values = services_module.parse_qs(parsed.query, keep_blank_values=True)
+                    if "error_offset" in query_values:
+                        raise ValueError("error_offset is retired; use error_cursor")
+                    error_cursor_values = query_values.get("error_cursor")
+                    error_cursor = error_cursor_values[0] if error_cursor_values else ""
                 except (TypeError, ValueError):
                     self._send(400, {
                         "success": False,
-                        "error": "recent_errors and error_offset must be integers",
+                        "error": "recent_errors must be an integer; use error_cursor for paging",
                         "terminal": True,
                         "retryable": False,
                     }); return
                 flush_requested = str((query.get("flush") or ["0"])[0]).lower() in {"1", "true", "yes"}
                 try:
                     report = services_module.APP.telemetry.report(
-                        days, recent_errors=recent_errors, error_offset=error_offset,
-                        error_cursor=error_cursor, scope=scope, _flush=flush_requested,
+                        days, recent_errors=recent_errors, error_cursor=error_cursor,
+                        scope=scope, _flush=flush_requested,
                     )
                 except ValueError as exc:
                     self._send(400, {
@@ -848,13 +848,6 @@ class HttpGetMixin:
                     return
                 rel_path = (query.get("path") or query.get("relative_path") or [None])[0]
                 self._send(200, services_module.APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, relative_path=rel_path))
-                return
-            if path == "/api/code/find_declaration":
-                root = (query.get("root") or ["."])[0]
-                sym = (query.get("symbol") or query.get("name") or [""])[0]
-                rel_path = (query.get("path") or [None])[0]
-                result = services_module.APP.services.code_find_declaration(root, sym, path=rel_path)
-                self._send(result.get("status_code", 200), result)
                 return
             if path == "/api/code/find_implementations":
                 root = (query.get("root") or ["."])[0]

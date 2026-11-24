@@ -1,0 +1,88 @@
+{
+  "accountable_role": "primary",
+  "default_target_ref": "refs/heads/master",
+  "description": "Upload the selected Laya, embedding, reranker, and preprocessing models to Hugging Face; add pinned lazy first-use downloads for clean default installations.",
+  "id": "plan_hf_model_provision_20261123",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/plans/2026-11-23-hf-model-auto-provisioning.md",
+      "revision": {
+        "content_sha256": "411ddb0e64566cbccbe90d3c533a683f57e2fd50393db51e5498d566ea21640d",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-23-huggingface-model-auto-provisioning-design.md",
+      "revision": {
+        "content_sha256": "1238275d925c44ad94d36aba9c2213903e1e9579c4e0eb8b71871ba6d124e403",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_lazy": {
+      "acceptance_criteria": [
+        "Clean defaults name the selected trained models.",
+        "First use downloads only the requested model; later use reuses cache.",
+        "Wrong hash or missing private authentication fails closed."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_hf_model_provision_20261123",
+          "task_id": "task_stage"
+        }
+      ],
+      "description": "Use exact HF commits and SHA-256, cache verified files, and keep explicit user overrides.",
+      "kind": "code",
+      "next_action": "Validate clean-cache download, hash rejection and cache reuse at runtime for embedding, reranker, Laya and Ollama; static configuration is verified.",
+      "order": 2,
+      "title": "Wire pinned first-use downloads",
+      "work_status": "in_progress"
+    },
+    "task_publish": {
+      "acceptance_criteria": [
+        "Each selected model repo has a recorded commit and artifact hash.",
+        "No source repository, dataset, credential, or raw benchmark row is uploaded.",
+        "Clean-cache first-use download succeeds for each configured family."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_hf_model_provision_20261123",
+          "task_id": "task_stage"
+        },
+        {
+          "plan_id": "plan_hf_model_provision_20261123",
+          "task_id": "task_lazy"
+        }
+      ],
+      "description": "Publish curated artifacts after visibility selection and license/data-rights review; pin final repo commits in defaults.",
+      "kind": "code",
+      "next_action": "Run bounded clean-cache first-use validation for each backend when runtime is available; public repositories, commits and artifact hashes are verified.",
+      "order": 3,
+      "title": "Publish and verify Hugging Face repos",
+      "work_status": "in_progress"
+    },
+    "task_stage": {
+      "acceptance_criteria": [
+        "Only selected model weights/config/tokenizer and aggregate model cards are staged.",
+        "Preprocessing artifacts load through the existing Ollama provider."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Create safe model-only payloads, merge/convert selected preprocessing adapters, exclude training data and raw benchmark cases.",
+      "kind": "code",
+      "next_action": "Verify trained GGUF registration and inference through existing Ollama provider; curated payloads and public uploads are complete.",
+      "order": 1,
+      "title": "Stage selected inference artifacts",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Publish selected models and auto-provision on demand"
+}

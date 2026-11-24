@@ -56,7 +56,7 @@ def test_live_http_search_literal_and_freshness(tmp_path):
         '[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n'
         '[features]\npreprocessing=false\n[resilience]\nwatchdog_enabled=false\n'
         '[code_intelligence]\nenabled=false\n[observability]\nenabled=false\n'
-        '[debug_traces]\nenabled=true\n', encoding="utf-8")
+        '[telemetry]\nmode="full"\n', encoding="utf-8")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     env["LOCAL_AI_CONFIG"] = str(config)

@@ -29,10 +29,6 @@ def local_ai_work(
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
     reuse_key: str = "",
-    id: str = "",
-    goal: str = "",
-    prompt: str = "",
-    workspace: str = "",
 ) -> dict[str, Any]:
     """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
     from . import mcp_server as services_module
@@ -48,12 +44,6 @@ def local_ai_work(
             "required_feature": "bounded_local_work",
             "error": "local_ai_work submit requires features.bounded_local_work=true after task-specific evaluation",
         }
-    if id and not work_id:
-        work_id = id
-    if (goal or prompt) and not task:
-        task = goal or prompt
-    if workspace and (not root or root == "."):
-        root = workspace
     valid_actions = tuple(services_module.WorkAction.__args__)
     if not isinstance(action, str) or action not in valid_actions:
         action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"

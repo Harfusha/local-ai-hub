@@ -128,10 +128,10 @@ def test_large_plan_recovery_detects_revision_change_between_source_slices(monke
     response = json.loads(content.text)
     assert response["success"] is False
     assert response["file_revision"] == created["file_revision"]
-    first = mcp_server.local_ai_artifact(action="source", path=response["rel_path"], line_start=1, line_end=2)
+    first = mcp_server.local_ai_artifact(action="source", root=str(tmp_path), path=response["rel_path"], line_start=1, line_end=2)
     assert first["file_sha256"] == response["file_revision"]
     workspace.update_plan("plan_large", title="Updated", expected_revision=created["file_revision"])
-    second = mcp_server.local_ai_artifact(action="source", path=response["rel_path"], line_start=3, line_end=4)
+    second = mcp_server.local_ai_artifact(action="source", root=str(tmp_path), path=response["rel_path"], line_start=3, line_end=4)
     assert second["file_sha256"] != response["file_revision"]
 
 
@@ -239,17 +239,16 @@ def test_local_ai_coord_task_checkpoint_requires_canonical_nested_payload(monkey
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
 
-    flat = mcp_server.local_ai_coord(
-        action="task_checkpoint", task_id="t-check-2", root=root,
-        phase="verify", next_action="run focused checks", paths=[],
-        evidence_ids=[], blockers=[], state_data={},
-    )
+    with pytest.raises(TypeError, match="unexpected keyword argument 'state_data'"):
+        mcp_server.local_ai_coord(
+            action="task_checkpoint", task_id="t-check-2", root=root,
+            phase="verify", next_action="run focused checks", paths=[],
+            evidence_ids=[], blockers=[], state_data={},
+        )
     empty = mcp_server.local_ai_coord(
         action="task_checkpoint", task_id="t-check-2", root=root, checkpoint={},
     )
 
-    assert flat["success"] is False
-    assert flat["status_code"] == 400
     assert empty["success"] is False
     assert empty["status_code"] == 400
     assert backend.calls == []
@@ -1255,11 +1254,11 @@ def test_local_ai_coord_simulate_merge_forwards_branch_pair(monkeypatch, tmp_pat
 
 def test_local_ai_coord_task_create_forwards_goal_and_contract(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    contract = {"objective": "verify scoped dispatch", "success_criteria": ["receipt"]}
+    contract = {"goal": "verify scoped dispatch", "acceptance_criteria": ["receipt"]}
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "task_create", "root": root,
-         "task": "dispatch acceptance", "task_id": "task-66", "contract": contract,
+         "task_id": "task-66", "contract": contract,
          "max_response_tokens": 768}
     ))
     result = _mcp_coord_json(tool_result)
@@ -1267,65 +1266,20 @@ def test_local_ai_coord_task_create_forwards_goal_and_contract(monkeypatch, tmp_
     assert backend.calls == [{
         "action": "task_create", "task_id": "task-66", "contract": contract,
         "checkpoint": None, "status": "", "reason": "", "root": root,
-        "include_stale": False, "task": "dispatch acceptance", "response_budget_tokens": 768,
+        "include_stale": False, "response_budget_tokens": 768,
     }]
 
 
 @pytest.mark.parametrize("session_id", ["session-build-42", " session-build-42", "session\x00id"])
-def test_local_ai_coord_task_create_forwards_canonical_session(monkeypatch, tmp_path, session_id):
+def test_local_ai_coord_task_create_rejects_session_id_alias(monkeypatch, tmp_path, session_id):
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "task_create", "root": str(tmp_path.resolve()),
-                           "goal": "Bind an execution", "session_id": session_id},
+                           "contract": {"goal": "Bind an execution"}, "session_id": session_id},
     ))
     result = _mcp_coord_json(tool_result)
-    if session_id == "session-build-42":
-        assert result["success"] is True, result
-        assert backend.calls[0]["context"] == {"session_id": session_id}
-    else:
-        assert result["success"] is False
-        assert "session_id must be a canonical string" in result["error"]
-        assert backend.calls == []
-
-
-def test_local_ai_coord_task_create_persists_session_for_plan_binding(monkeypatch, tmp_path):
-    from local_ai_hub.repo_plan.agent_bridge import bind_plan_execution
-    from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
-
-    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
-    tasks = TaskStore(state_store)
-    app = SimpleNamespace(agent_state=state_store, agent_tasks=tasks, config={"security": {}})
-    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
-    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
-
-    def post_without_socket(path, payload, **_kwargs):
-        status, response = _direct_post(app, path, payload)
-        assert status == 200, response
-        return response
-
-    monkeypatch.setattr(mcp_server.CLIENT, "post", post_without_socket)
-    result = _mcp_coord_json(asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
-        "action": "task_create",
-        "root": str(tmp_path.resolve()),
-        "goal": "Persist the current session",
-        "session_id": "session-build-42",
-    })))
-
-    assert result["success"] is True, result
-    task_id = result["task"]["task_id"]
-    assert tasks.get(task_id).context.session_id == "session-build-42"
-
-    workspace = RepoPlanWorkspace(tmp_path)
-    plan = workspace.create_plan("plan_session", "Session binding", tasks={
-        "task_bind": {"title": "Bind execution", "acceptance_criteria": []},
-    })
-    binding = bind_plan_execution(
-        tasks, root=str(tmp_path.resolve()), task_id=task_id,
-        plan_id="plan_session", plan_task_id="task_bind", session_id="session-build-42",
-        expected_revision=plan["file_revision"],
-    )
-    assert binding["success"] is True, binding
+    assert result["success"] is False, result
+    assert backend.calls == []
 
 
 @pytest.mark.parametrize("field", ["acceptance_criteria", "non_goals", "constraints"])
@@ -1346,8 +1300,8 @@ def test_task_create_explicit_empty_criteria_is_not_replaced(monkeypatch, tmp_pa
     backend = _prepare_coord_rpc(monkeypatch)
     asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "task_create", "root": str(tmp_path.resolve()),
-                           "task_id": "empty-criteria", "goal": "test",
-                           "acceptance_criteria": [], "criteria": ["not selected"]}
+                           "task_id": "empty-criteria",
+                           "contract": {"goal": "test", "acceptance_criteria": []}}
     ))
     assert backend.calls[0]["contract"]["acceptance_criteria"] == []
 
@@ -1496,12 +1450,12 @@ def test_local_ai_coord_task_create_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="task_create", root=root, task="canonical task", task_id="canonical-task-71"
+        action="task_create", root=root, contract={"goal": "canonical task"}, task_id="canonical-task-71"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls[0]["action"] == "task_create"
-    assert backend.calls[0]["task"] == "canonical task"
+    assert backend.calls[0]["contract"] == {"goal": "canonical task"}
     assert backend.calls[0]["task_id"] == "canonical-task-71"
 
 
@@ -1600,7 +1554,11 @@ def test_local_ai_coord_renew_forwards_lease_and_ttl(monkeypatch):
     )]
 
 
-@pytest.mark.parametrize("action", ["claim_batch", "lease_renew", "curate_training_dataset"])
+@pytest.mark.parametrize("action", [
+    "claim_batch", "lease_renew", "curate_training_dataset", "board_item_create",
+    "board_item_update", "board_item_delete", "board_item_get", "board_item_list",
+    "board_summary", "milestone_create", "milestone_status",
+])
 def test_retired_coord_action_aliases_reject_without_dispatch(monkeypatch, action):
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(action=action)

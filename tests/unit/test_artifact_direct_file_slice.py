@@ -13,6 +13,7 @@ def test_artifact_direct_file_slice_by_lines(tmp_path: Path, monkeypatch: pytest
 
     res = mcp_server.local_ai_artifact(
         action="source",
+        root=str(workspace),
         path=str(sample_file),
         line_start=5,
         line_end=10,
@@ -31,6 +32,7 @@ def test_artifact_direct_file_slice_nonexistent(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(mcp_server, "_workspace", str(workspace))
     res = mcp_server.local_ai_artifact(
         action="source",
+        root=str(workspace),
         path=str(workspace / "missing.txt"),
     )
     assert res["success"] is False
@@ -46,8 +48,8 @@ def test_artifact_direct_file_slice_rejects_paths_outside_workspace(
     outside_file.write_text("secret\n", encoding="utf-8")
     monkeypatch.setattr(mcp_server, "_workspace", str(workspace))
 
-    absolute_result = mcp_server.local_ai_artifact(action="source", path=str(outside_file))
-    traversal_result = mcp_server.local_ai_artifact(action="source", path="../outside.txt")
+    absolute_result = mcp_server.local_ai_artifact(action="source", root=str(workspace), path=str(outside_file))
+    traversal_result = mcp_server.local_ai_artifact(action="source", root=str(workspace), path="../outside.txt")
 
     assert absolute_result["success"] is False
     assert traversal_result["success"] is False
@@ -69,7 +71,20 @@ def test_artifact_direct_file_slice_rejects_symlink_escape(
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"symlink creation unavailable: {exc}")
 
-    result = mcp_server.local_ai_artifact(action="source", path=str(linked_file))
+    result = mcp_server.local_ai_artifact(action="source", root=str(workspace), path=str(linked_file))
 
     assert result["success"] is False
     assert "workspace" in result["error"].lower()
+
+
+def test_artifact_source_rejects_implicit_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "hello.py").write_text("hello\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_workspace", str(workspace))
+
+    result = mcp_server.local_ai_artifact(action="source", path="hello.py")
+
+    assert result["success"] is False
+    assert result["terminal"] is True and result["retryable"] is False
+    assert "explicit absolute root" in result["error"]

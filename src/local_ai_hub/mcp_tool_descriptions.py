@@ -21,7 +21,7 @@ def describe_rag(
     if lean_schemas:
         return (
             "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
-            " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
+            " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index and docset_search require the exact non-empty docset name in workspace, with no default. docset_index also requires root. Document ingestion requires non-empty content; diagram files stay inside that root."
             " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
             " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
         )
@@ -42,7 +42,7 @@ def describe_rag(
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
         " Skip when: deterministic/indexed evidence is sufficient. Native subagent ownership does not affect direct retrieval endpoint use."
-        " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
+        " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index and docset_search require the exact non-empty docset name in workspace, with no default. docset_index also requires root. Document ingestion requires non-empty content; diagram files stay inside that root."
     )
 
 
@@ -192,13 +192,13 @@ def describe_artifact(
         actions = ", ".join(action_lookup("local_ai_artifact"))
         return (
             f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
-            " Source: action=source, path, line_start/line_end; workspace-confined, file/range/output bounded with SHA-256 provenance."
+            " Source: action=source requires explicit absolute root and path plus optional line_start/line_end; root-confined, file/range/output bounded with SHA-256 provenance."
             " Use when: exact source or evidence text is required after indexed discovery."
             " Skip when: no source slice is needed or the existing compact result is sufficient."
             f"{specialized_note('local_ai_artifact')}"
         )
     return (
-        "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
+        "Fetch one exact source or log slice or bounded binary artifact metadata. Source reads require an explicit absolute root and path. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
         " Skip when: no source slice is needed or the existing compact result is sufficient."
         f"{specialized_note('local_ai_artifact')}"
@@ -216,7 +216,7 @@ def describe_coord(
     argument_note = (
         " Action arguments are strict despite the shared schema: `plan_list` requires `root` and defaults to five results; set `limit` or narrow with `query` for a bounded wider lookup; `plan_get` requires `root` and `plan_id`; for large plans prefer `plan_board_view` with the exact task ID; after a response-budget rejection, narrow the query or page, or raise `max_response_tokens` for the same exact-task read; never replay the unchanged oversized request or repeat the same rejected cap;"
         " `task_checkpoint` requires `root`, `task_id`, and `checkpoint`; use the Agent OS `task_id` returned by `task_create` for the same root, never a plan task ID. When supplied memory has items or warnings, `checkpoint.state_data.memory_audit.used_ids` must list IDs actually used; if none were used, `checkpoint.state_data.memory_audit.not_used_reason` must be nonempty. A reason elsewhere fails validation. Omit `max_response_tokens` unless the complete memory receipt is known to fit. A budget rejection means persistence did not start; do not replay the same capped request."
-        " `task_create` requires a non-empty `goal`; use only canonical scope/status values (`in_progress` is invalid). `plan_task_edit.task_id` must be the exact ID from `plan_board_view`, never a title or slug. `plan_bind_task` requires an execution task with a persisted real `session_id`; do not invent one or bind before persistence."
+        " `task_create` requires a `contract` object with a non-empty `goal`; scope belongs inside the contract, and `in_progress` is not a task status. `plan_task_edit.task_id` must be the exact ID from `plan_board_view`, never a title or slug. `plan_bind_task` requires an execution task with a persisted real `session_id`; do not invent one or bind before persistence."
         " `plan_task_edit` requires `root`, `plan_id`, `task_id`, `task_data`, and `expected_revision`;"
         " `task_data` accepts only title, description, kind, work_status, depends_on, clarifications, acceptance_criteria, next_action, blocker, order, accountable_role, work_phase, spec_refs, scope, results, and deliveries; it has no free-form `notes` field."
         " On a revision conflict, reload with `plan_get`, reapply the intended changes, and use its current revision; never resend the stale payload. If a `plan_task_edit` response has `mutation_applied=true` with `projection_incomplete` or a response-budget error, the edit already happened: do not retry it; read the current plan and verify its `file_revision` matches before another edit. Omit `blocker` when there is no blocker, and `clarifications` entries must be objects, not strings."
@@ -226,7 +226,9 @@ def describe_coord(
         " If no exposed coordination action covers the requested operation, skip Hub and use the authorized native tool directly; do not call a nearby Hub action to check support."
     )
     laya_note = (
-        " Typed Laya proposals use curate_dataset with laya_operation={action:'evaluate_decision', task_id, decision:{category,evidence_ids,options,state,training_content}}. The authorized Agent OS task must carry a real session_id; Hub verifies evidence and returns decision.suggestion plus the deterministic baseline. Proposal stays shadow-only."
+        " Typed Laya advisories use curate_dataset with laya_operation={action:'evaluate_decision', task_id, decision:{category,evidence_ids,options,state,training_content}}. The authorized Agent OS task must carry a real session_id; Hub verifies evidence and returns decision.suggestion plus the deterministic baseline. Active routing accepts only validated low-risk advisory suggestions."
+        " For explicit decomposition advice, category 'subagent_budget' may return single_agent, parallel_split, or swarm; its deterministic baseline is single_agent. The result is advisory metadata only and never launches agents or bypasses explicit delegation/profile gates."
+        " For an unresolved context gap, evaluate_context_source uses laya_operation={action:'evaluate_context_source',task_id,session_id,evidence:{gap_code:'unresolved_evidence_gap',source_codes,freshness_codes,coverage_codes,evidence_ids,source_record_ids?,training_content?}}. Source/status/evidence arrays must align; memory choices require matching task-scoped source_record_ids. Hub verifies repository, task, session, and evidence provenance. This result is advisory only: retrieve the selected source through its authorized path and keep host permission checks. Laya does not fetch sources or grant access."
         if "curate_dataset" in supported else ""
     )
     if lean_schemas:
@@ -299,9 +301,9 @@ def describe_repo(
     argument_note = (
         " Action arguments are strict despite the shared schema: `solve` takes `task`, `context` takes `query`,"
         " `find_symbol` takes `query` with optional `limit`/`offset` like `code_index`; `definition` requires `query` and accepts optional `path` like `declaration`; `git_diff` takes `path` or revision fields;"
-        " `solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`, plus real root-bound `task_id`/`session_id` for shadow capture. Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`; put the complete semantic request in `task`."
+        " `solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`. Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`; put the complete semantic request in `task`."
         " do not pass `focus` or `changed_paths` unless that action allows them."
-        " When an Agent OS task is already bound, pass its real `task_id` and `session_id` when available to context/solve for eligible Laya shadow capture; never invent identity."
+        " When Laya advisory evaluation is requested, use an existing Agent OS task with verified evidence and real server-bound identity; never invent identity."
         " Each `path_hints` item requires non-empty `path`, `purpose`, and `scope`; provide only verified values, otherwise omit hints."
     )
     if not local_enabled:

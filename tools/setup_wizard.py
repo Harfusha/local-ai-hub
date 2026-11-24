@@ -28,17 +28,24 @@ BOOLEAN_CHOICES = (
     "agent_codex",
     "agent_claude",
     "agent_gemini",
+    "agent_antigravity",
+    "agent_opencode",
     "agent_cursor",
     "agent_windsurf",
     "agent_copilot",
+    "agent_devin",
+    "agent_devin_plugin_route",
 )
 AGENT_CHOICE_KEYS = {
     "agent_codex": "codex",
     "agent_claude": "claude",
     "agent_gemini": "gemini",
+    "agent_antigravity": "antigravity",
+    "agent_opencode": "opencode",
     "agent_cursor": "cursor",
     "agent_windsurf": "windsurf",
     "agent_copilot": "copilot",
+    "agent_devin": "devin",
 }
 AGENT_COMPONENTS = ("mcp", "skills", "instructions")
 AGENT_COMPONENT_CHOICE_KEYS = {
@@ -46,7 +53,10 @@ AGENT_COMPONENT_CHOICE_KEYS = {
     for agent in AGENT_CHOICE_KEYS.values()
     for component in AGENT_COMPONENTS
 }
-BOOLEAN_CHOICES = (*BOOLEAN_CHOICES, *AGENT_COMPONENT_CHOICE_KEYS)
+BOOLEAN_CHOICES = (*BOOLEAN_CHOICES, *AGENT_COMPONENT_CHOICE_KEYS, "agent_opencode_plugin")
+AGENT_HOOKS = ("claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin")
+AGENT_HOOK_CHOICE_KEYS = {f"agent_{agent}_hooks": agent for agent in AGENT_HOOKS}
+BOOLEAN_CHOICES = (*BOOLEAN_CHOICES, *AGENT_HOOK_CHOICE_KEYS)
 
 
 def preferences_path(environ: dict[str, str] | None = None, home: Path | None = None) -> Path:
@@ -138,7 +148,14 @@ def defaults_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "local_nlp": bool(features.get("install_local_nlp_dependencies", True)),
         "openvino": bool(features.get("install_openvino_dependencies", True)),
         "laya_runtime": bool(
-            isinstance(laya_runtime, dict) and str(laya_runtime.get("checkpoint_path", "")).strip()
+            isinstance(laya_runtime, dict)
+            and (
+                str(laya_runtime.get("checkpoint_path", "")).strip()
+                or (str(laya_runtime.get("hf_repo_id", "")).strip()
+                    and str(laya_runtime.get("hf_revision", "")).strip()
+                    and isinstance(laya_runtime.get("hf_sha256"), dict)
+                    and bool(laya_runtime.get("hf_sha256")))
+            )
         ),
         "ast_index": True,
         "performance": True,
@@ -149,6 +166,8 @@ def defaults_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "service": bool(setup.get("install_service", True) and cfg.get("headless", {}).get("enabled", True)),
         "companion_skills": bool(setup.get("install_companion_skills", True)),
         "antigravity_style_policy": bool(setup.get("install_antigravity_style_policy", False)),
+        "agent_devin_plugin_route": bool(agents.get("devin_plugin_route", False)),
+        "agent_opencode_plugin": bool(agents.get("opencode_plugin_route", True)),
         **{
             choice: bool(agents.get(agent, True))
             for choice, agent in AGENT_CHOICE_KEYS.items()
@@ -161,6 +180,7 @@ def defaults_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
             for agent in AGENT_CHOICE_KEYS.values()
             for component in AGENT_COMPONENTS
         },
+        **{choice: bool(agents.get(agent, True)) for choice, agent in AGENT_HOOK_CHOICE_KEYS.items()},
     }
 
 
@@ -218,24 +238,41 @@ def collect_choices(cfg: dict[str, Any], saved: dict[str, Any]) -> dict[str, Any
         "agent_codex": "Nastavit Codex",
         "agent_claude": "Nastavit Claude Code",
         "agent_gemini": "Nastavit Gemini CLI",
+        "agent_antigravity": "Nastavit Antigravity",
+        "agent_opencode": "Nastavit OpenCode",
+        "agent_opencode_plugin": "OpenCode: použít nativní Hub plugin místo samostatné MCP konfigurace",
         "agent_cursor": "Nastavit Cursor",
         "agent_windsurf": "Nastavit Windsurf",
         "agent_copilot": "Nastavit VS Code / Copilot",
+        "agent_devin": "Nastavit Devin Local",
+        "agent_devin_plugin_route": "Devin: používat lokální plugin MCP místo globální MCP konfigurace",
     }
     prompts.update({
         key: f"{agent}: nastavit {component}"
         for key, (agent, component) in AGENT_COMPONENT_CHOICE_KEYS.items()
     })
+    prompts.update({key: f"{agent}: nastavit hooks" for key, agent in AGENT_HOOK_CHOICE_KEYS.items()})
     for key in BOOLEAN_CHOICES:
         if key.startswith("agent_") and not choices.get("agent_config", True):
+            continue
+        if key == "agent_devin_plugin_route" and not choices.get("agent_devin", False):
+            continue
+        if key == "agent_opencode_plugin" and (
+            not choices.get("agent_opencode", False)
+            or not choices.get("agent_opencode_mcp", False)
+        ):
             continue
         if key in AGENT_COMPONENT_CHOICE_KEYS:
             agent, _component = AGENT_COMPONENT_CHOICE_KEYS[key]
             if not choices.get(f"agent_{agent}", False):
                 continue
+            if agent == "devin" and choices.get("agent_devin_plugin_route", False) and _component in {"mcp", "skills"}:
+                continue
+        if key in AGENT_HOOK_CHOICE_KEYS and not choices.get(f"agent_{AGENT_HOOK_CHOICE_KEYS[key]}", False):
+            continue
         choices[key] = _ask_yes_no(prompts[key], bool(configured_defaults[key]))
     if not choices.get("agent_config", True):
-        for key in (*AGENT_CHOICE_KEYS, *AGENT_COMPONENT_CHOICE_KEYS):
+        for key in (*AGENT_CHOICE_KEYS, *AGENT_COMPONENT_CHOICE_KEYS, *AGENT_HOOK_CHOICE_KEYS, "agent_opencode_plugin"):
             if key in saved:
                 choices[key] = saved[key]
     return choices
@@ -289,6 +326,14 @@ def apply_choices(args: Any, cfg: dict[str, Any], choices: dict[str, Any]) -> No
                 for component in AGENT_COMPONENTS
             )
             agents[agent] = selected and has_components
+    if "agent_devin_plugin_route" in choices:
+        agents["devin_plugin_route"] = bool(choices["agent_devin_plugin_route"])
+    if "agent_opencode_plugin" in choices:
+        agents["opencode_plugin_route"] = bool(
+            choices["agent_opencode_plugin"]
+            and choices.get("agent_opencode", True)
+            and choices.get("agent_opencode_mcp", True)
+        )
     if any(f"agent_{agent}_instructions" in choices for agent in AGENT_CHOICE_KEYS.values()):
         tool_policy["install_global_instructions"] = any(
             bool(choices.get(f"agent_{agent}_instructions", False))

@@ -3,9 +3,112 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .http_server_proxy import services_module
+from .http_route_registry import POST_ROUTE_SERVICE_METHODS
 
 
 class HttpPostHelpersMixin:
+    def _handle_post_agent_state_tasks(self, payload: dict[str, Any]) -> None:
+        from .http_post_tasks import handle_agent_state_tasks
+
+        handle_agent_state_tasks(self, payload)
+
+    def _handle_post_agent_state_memory(self, payload: dict[str, Any]) -> None:
+        from .http_post_memory import handle_agent_state_memory
+
+        handle_agent_state_memory(self, payload)
+
+    def _handle_post_agent_state_incidents(self, payload: dict[str, Any]) -> None:
+        from .http_post_agent_state import handle_agent_state_incidents
+
+        handle_agent_state_incidents(self, payload)
+
+    def _handle_post_agent_state_verification(self, payload: dict[str, Any]) -> None:
+        from .http_post_agent_state import handle_agent_state_verification
+
+        handle_agent_state_verification(self, payload)
+
+    def _handle_post_agent_state_context(self, payload: dict[str, Any]) -> None:
+        from .http_post_agent_state import handle_agent_state_context
+
+        handle_agent_state_context(self, payload)
+
+    def _handle_post_agent_state_learning(self, payload: dict[str, Any]) -> None:
+        from .http_post_agent_state import handle_agent_state_learning
+
+        handle_agent_state_learning(self, payload)
+
+    def _handle_post_agent_state_blackboard(self, payload: dict[str, Any]) -> None:
+        from .http_post_agent_state import handle_agent_state_blackboard
+
+        handle_agent_state_blackboard(self, payload)
+
+    def _handle_post_agent_state_cleanup(self, payload: dict[str, Any]) -> None:
+        if not getattr(services_module.APP, "agent_state", None) or not services_module.APP.agent_state.enabled:
+            self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+        retention = int(payload.get("retention_days") or services_module.APP.config.get("agent_state", {}).get("retention_days", 30))
+        self._send(200, services_module.APP.agent_state.cleanup(retention_days=retention)); return
+
+    def _handle_post_agent_state_swarm_dispatch(self, payload: dict[str, Any]) -> None:
+        if not getattr(services_module.APP, "swarm", None):
+            self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+        goal = str(payload.get("goal", payload.get("task", "")))
+        target_paths = payload.get("target_paths", payload.get("paths", []))
+        if not isinstance(target_paths, list):
+            target_paths = [str(target_paths)] if target_paths else []
+        test_command = str(payload.get("test_command", payload.get("command", "")))
+        author = str(payload.get("author", "agent"))
+        root = str(payload.get("root", "."))
+        result = services_module.APP.swarm.dispatch(
+            goal=goal, target_paths=target_paths, test_command=test_command, author=author, root=root,
+        )
+        self._send(200, result); return
+
+    def _handle_post_agent_state_swarm_step(self, payload: dict[str, Any]) -> None:
+        if not getattr(services_module.APP, "swarm", None):
+            self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+        swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
+        role = str(payload.get("role", "Coder"))
+        action = str(payload.get("action", "submit_patch"))
+        step_payload = payload.get("payload", payload.get("content", {}))
+        result = services_module.APP.swarm.step(
+            swarm_id=swarm_id, role=role, action=action, payload=step_payload,
+            root=str(payload.get("root", "")),
+        )
+        self._send(200, result); return
+
+    def _handle_post_agent_state_swarm_cancel(self, payload: dict[str, Any]) -> None:
+        if not getattr(services_module.APP, "swarm", None):
+            self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+        swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
+        reason = str(payload.get("reason", ""))
+        result = services_module.APP.swarm.cancel(
+            swarm_id=swarm_id, reason=reason, root=str(payload.get("root", "")),
+        )
+        self._send(200, result); return
+
+    def _handle_post_cancellable_task_service(
+        self,
+        payload: dict[str, Any],
+        *,
+        route_ids: tuple[str, ...],
+    ) -> None:
+        route_id = next((route_id for route_id in route_ids if route_id in POST_ROUTE_SERVICE_METHODS), None)
+        if route_id is None:
+            raise RuntimeError("cancellable task handler requires a registered route ID")
+        service_method = getattr(services_module.APP.services, POST_ROUTE_SERVICE_METHODS[route_id])
+        connection = (
+            getattr(self, "connection", None)
+            if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1"
+            else None
+        )
+        if connection is not None:
+            result = services_module._invoke_cancellable_request(
+                services_module._ACTIVE_DELEGATES, service_method, payload, connection=connection,
+            )
+        else:
+            result = service_method(payload)
+        self._send(200, result); return
+
     def _handle_post_work_orders(self, payload: Any) -> None:
         if not getattr(services_module.APP, "work_orchestrator", None) or not services_module.APP.work_orchestrator.enabled:
             self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
@@ -170,9 +273,9 @@ class HttpPostHelpersMixin:
             return None
         try:
             estimate = services_module.APP.telemetry.http_latency_estimate(path)
-            default_delivery = "auto" if job_action == "rag_index" else "sync"
+            default_delivery = "auto" if job_action in {"review", "rag_index"} else "sync"
             delivery = str(payload.get("delivery", default_delivery))
-            default_budget_ms = 30_000 if job_action == "rag_index" else 0
+            default_budget_ms = 20_000 if job_action == "review" else 30_000 if job_action == "rag_index" else 0
             budget_ms = float(payload.get("latency_budget_ms", default_budget_ms) or 0)
             samples = int(estimate.get("samples", 0) or 0)
             queue_age_ms = float(payload.get("queue_age_ms", estimate.get("queue_age_ms", 0)) or 0)
@@ -192,20 +295,22 @@ class HttpPostHelpersMixin:
                     delivery,
                     latency_budget_ms=budget_ms,
                     observed_p95_ms=estimate.get("p95_duration_ms", 0),
+                    observed_p99_ms=estimate.get("p99_duration_ms", 0),
                     samples=samples,
                     queue_age_ms=queue_age_ms,
                     max_queue_age_ms=max_queue_age_ms,
                 )
             elif job_action == "rag_index" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 10:
                 decision = {"mode": "async", "reason": "cold_start_rag_index"}
-            elif job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
+            elif job_action in {"review", "review_diff"} and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
                 # Cold-start long work has no trustworthy p95 yet. Keep RAG
-                # indexing and large-diff review off the synchronous request.
-                decision = {"mode": "async", "reason": "cold_start_review_diff"}
+                # indexing and code review off the synchronous request.
+                decision = {"mode": "async", "reason": "cold_start_review" if job_action == "review" else "cold_start_review_diff"}
             else:
                 decision = services_module.decide_delivery(
                     delivery, latency_budget_ms=budget_ms,
                     observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
+                    observed_p99_ms=estimate.get("p99_duration_ms", 0),
                     queue_age_ms=queue_age_ms,
                     max_queue_age_ms=max_queue_age_ms,
                 )

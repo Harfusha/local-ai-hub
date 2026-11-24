@@ -66,7 +66,6 @@ __all__ = [
     "_same_rollback_postimage_after_owned_rename",
     "_patch_write_paths",
     "simulate_patch",
-    "patch_dry_run",
     "_stable_rollback_status",
 ]
 
@@ -1284,22 +1283,6 @@ def simulate_patch(
         "error": err_msg or "patch check failed",
         "whitespace_fallback_used": False,
     }
-
-
-def patch_dry_run(
-    cwd: str | Path,
-    patch: str,
-    *,
-    timeout: float = 15.0,
-    allow_whitespace_fallback: bool = True,
-) -> dict[str, Any]:
-    """Alias for simulate_patch."""
-    return simulate_patch(
-        cwd,
-        patch,
-        timeout=timeout,
-        allow_whitespace_fallback=allow_whitespace_fallback,
-    )
 
 
 def _stable_rollback_status(method: Any) -> Any:

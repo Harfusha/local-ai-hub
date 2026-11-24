@@ -25,6 +25,7 @@ def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Pa
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.delenv("USERNAME", raising=False)
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setenv("MULTIGRAVITY_PROFILES", str(profiles))
     monkeypatch.setenv("CODEX_HOME", str(codex_override))
     monkeypatch.setattr(uninstall, "configured_install_dir", lambda: install)
@@ -36,6 +37,7 @@ def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Pa
         (home / ".codex" / "skills", "plan-led-work"),
         (home / ".cursor" / "skills", "ponytail-audit"),
         (home / ".codeium" / "windsurf" / "skills", "ponytail-review"),
+        (home / "AppData" / "Roaming" / "devin" / "skills", "local-ai-orchestrator"),
         (home / ".copilot" / "skills", "token-economizer"),
         (profile_home / ".gemini" / "config" / "skills", "using-superpowers"),
         (home / ".gemini" / "skills", "former-managed-skill"),
@@ -72,6 +74,7 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     home.mkdir()
     install.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setattr(setup, "get_user_homes", lambda: [home])
     codex_home = home / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
@@ -82,7 +85,8 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
-        ".copilot/mcp-config.json": "servers",
+        "AppData/Roaming/devin/mcp_config.json": "mcpServers",
+        ".copilot/mcp-config.json": "mcpServers",
         ".local-ai/generic-mcp.json": "mcpServers",
         ".local-ai/vscode-mcp.json": "servers",
     }
@@ -110,20 +114,28 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         "tool_policy": {"install_global_instructions": False},
         "code_intelligence": {"direct_agent_mcp": False, "serena_enabled": False},
         "agents": {
-            **{name: True for name in ("codex", "claude", "gemini", "cursor", "windsurf", "copilot")},
+            **{name: True for name in ("codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin")},
             "extra_mcp_json_paths": [str(home / ".local-ai" / "generic-mcp.json")],
             "extra_vscode_mcp_paths": [str(home / ".local-ai" / "vscode-mcp.json")],
         },
     }
     components = {
         f"agent_{agent}_{component}": component == "mcp"
-        for agent in ("codex", "claude", "gemini", "cursor", "windsurf", "copilot")
+        for agent in ("codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin")
         for component in ("mcp", "skills", "instructions")
     }
+    components["agent_antigravity_hooks"] = True
 
     setup.configure_agents(install, Path(sys.executable), None, cfg, include_companion=False, agent_components=components)
     manifest = uninstall.read_install_manifest(install)
-    assert len(manifest["external_ownership"]) >= len(config_roots) + 1
+    owned_paths = {
+        Path(record["path"]).resolve()
+        for record in manifest["external_ownership"]
+        if isinstance(record.get("path"), str)
+    }
+    expected_paths = {((home / relative).resolve()) for relative in config_roots}
+    expected_paths.add(codex_path.resolve())
+    assert expected_paths <= owned_paths, f"untracked provider configs: {expected_paths - owned_paths}"
 
     # A user edit to a managed key is a conflict; an edit elsewhere in the same file is retained.
     claude_path = home / ".claude.json"
@@ -131,7 +143,7 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     claude_data["user_settings"]["after_install"] = "keep"
     claude_data["mcpServers"]["local-ai"]["user_added"] = True
     claude_path.write_text(json.dumps(claude_data), encoding="utf-8")
-    codex_text = codex_path.read_text(encoding="utf-8").replace('default_tools_approval_mode = "auto"', 'default_tools_approval_mode = "user"')
+    codex_text = codex_path.read_text(encoding="utf-8").replace('default_tools_approval_mode = "prompt"', 'default_tools_approval_mode = "user"')
     codex_path.write_text(codex_text, encoding="utf-8")
 
     monkeypatch.setattr(uninstall, "configured_install_dir", lambda: install)

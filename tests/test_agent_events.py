@@ -208,7 +208,7 @@ def test_pubsub_roundtrip_over_isolated_loopback_http(tmp_path, monkeypatch, mes
     monkeypatch.setattr(http_server.Handler, "_finish_debug_trace", lambda self, *_args, **_kwargs: None)
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
     server = ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)

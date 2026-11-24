@@ -147,6 +147,11 @@ class PreprocessStorageMixin:
     def _init_db(self) -> None:
         from . import preprocess as services_module
         with self._db_lock, services_module.closing(self._connect()) as con:
+            if con.execute("SELECT 1 FROM sqlite_master WHERE name='source_fts'").fetchone() is not None:
+                if not services_module.has_canonical_shared_fts(con):
+                    raise services_module.sqlite3.DatabaseError(
+                        "preprocess state requires the update-time lexical-index migration"
+                    )
             # Set WAL once. The mode is persisted in the database header.
             try:
                 services_module.initialize_wal(con)
@@ -186,8 +191,8 @@ class PreprocessStorageMixin:
                     last_accessed_at REAL NOT NULL DEFAULT 0,
                     generation INTEGER NOT NULL,
                     card_key TEXT,
-                    centrality_score REAL NOT NULL DEFAULT 0.0,
                     updated_at REAL NOT NULL,
+                    centrality_score REAL NOT NULL DEFAULT 0.0,
                     PRIMARY KEY(root,path)
                 );
                 CREATE INDEX IF NOT EXISTS idx_file_refs_root_card ON file_refs(root,card_key);
@@ -282,44 +287,8 @@ class PreprocessStorageMixin:
                 );
                 """
             )
-            self._fts_migration_complete = services_module.initialize_fts_rows(con) == services_module.SHARED_FTS_ROWS and not services_module.has_retired_fts(con)
-            if not any(row[1] == "text_origin" for row in con.execute("PRAGMA table_info(source_index)")):
-                with services_module.write_transaction(con, max_duration_seconds=5.0, rollback_label="lexical text origin"):
-                    if not any(row[1] == "text_origin" for row in con.execute("PRAGMA table_info(source_index)")):
-                        # Legacy rows may contain root-specific projections.
-                        con.execute("ALTER TABLE source_index ADD COLUMN text_origin TEXT NOT NULL DEFAULT 'unknown'")
-            if not any(row[1] == "claim_id" for row in con.execute("PRAGMA table_info(file_card_enrichment)")):
-                with services_module.write_transaction(con, rollback_label="file card claim identity"):
-                    if not any(row[1] == "claim_id" for row in con.execute("PRAGMA table_info(file_card_enrichment)")):
-                        con.execute("ALTER TABLE file_card_enrichment ADD COLUMN claim_id TEXT")
+            services_module.initialize_fts_rows(con)
             services_module._ensure_file_refs_revision_tracking(con)
-            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
-            if "centrality_score" not in f_cols:
-                try:
-                    con.execute("ALTER TABLE file_refs ADD COLUMN centrality_score REAL NOT NULL DEFAULT 0.0")
-                except services_module.sqlite3.OperationalError:
-                    pass
-            columns = {
-                str(row[1])
-                for row in con.execute("PRAGMA table_info(external_index_state)").fetchall()
-            }
-            if "retry_count" not in columns:
-                # This is disposable derived state. Rebuild the small table
-                # instead of adding a migration shim to the initial-release
-                # schema; project/file indexes remain authoritative.
-                con.execute("DROP TABLE IF EXISTS external_index_state")
-                con.execute(
-                    """CREATE TABLE external_index_state (
-                        root TEXT NOT NULL,
-                        backend TEXT NOT NULL,
-                        revision_hash TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        updated_at REAL NOT NULL,
-                        error TEXT,
-                        retry_count INTEGER NOT NULL DEFAULT 0,
-                        PRIMARY KEY(root,backend)
-                    )"""
-                )
             con.commit()
 
     def _invalidate_rag_sync_state(self) -> None:
@@ -475,17 +444,6 @@ class PreprocessStorageMixin:
     def _run_idle_database_maintenance(self) -> bool:
         """Run coarse derived-index maintenance from an existing idle worker turn."""
         from . import preprocess as services_module
-        if not getattr(self, "_fts_migration_complete", True) and not self._yield():
-            with self._db_lock:
-                now_mono = services_module.time.monotonic()
-                if now_mono >= getattr(self, "_next_fts_migration", 0.0):
-                    self._next_fts_migration = now_mono + 1.0
-                    try:
-                        with services_module.closing(self._connect()) as con:
-                            self._fts_migration_complete = not services_module.advance_fts_migration(con)
-                    except (services_module.sqlite3.DatabaseError, TimeoutError) as migration_exc:
-                        self._next_fts_migration = now_mono + 30.0
-                        services_module.logger.warning("Lexical index migration deferred (%s)", migration_exc)
         now = services_module.time.time()
         configured_maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
         retry_interval = getattr(self, "_db_maintenance_retry_interval", None)

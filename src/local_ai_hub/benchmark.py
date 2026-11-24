@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
-from .file_locks import exclusive_file_update
+from .file_locks import exclusive_file_update, replace_with_windows_retry
 
 import json
 import math
@@ -1314,7 +1314,7 @@ class HardwareBenchmarkRunner:
             content = json_dumps(history, indent=2)
             tmp_file = self.benchmarks_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
             tmp_file.write_text(content, encoding="utf-8")
-            os.replace(tmp_file, self.benchmarks_path)
+            replace_with_windows_retry(tmp_file, self.benchmarks_path)
 
     def get_latest_summary(self) -> dict[str, Any]:
         if not self.benchmarks_path.exists():

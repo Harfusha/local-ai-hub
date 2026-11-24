@@ -1,7 +1,14 @@
 {
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "local-ai-hub",
   "displayName": "Local AI Hub",
-  "description": "Local-first AI coordination, AST indexing, Token Economy enforcer, and multi-agent orchestration.",
+  "description": "Local-first repository context, Laya routing, and bounded AI coordination.",
   "version": "6.1.0",
-  "author": "Local AI Hub Contributor"
+  "author": {
+    "name": "Local AI Hub Contributor"
+  },
+  "suggestedPrompts": [
+    "Use Local AI Hub to inspect this repository",
+    "Route this coding task through the Hub and Laya"
+  ]
 }

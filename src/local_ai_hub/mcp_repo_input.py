@@ -173,6 +173,12 @@ def _bounded_search_summary_input(
             if isinstance(match.get(key), (str, int)) and not isinstance(match.get(key), bool)
         }
         entry_text = str(match.get("text", match.get("snippet", "")))[:1200]
+        excerpt_content = "\n".join(
+            services_module.re.sub(r"^\s*\d+:\s?", "", line)
+            for line in entry_text.splitlines()
+        ).strip()
+        if not excerpt_content:
+            continue
         if query_tokens:
             text_lines = entry_text.splitlines()
             for line_index, line in enumerate(text_lines):

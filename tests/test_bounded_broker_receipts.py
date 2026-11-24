@@ -13,7 +13,7 @@ def test_bounded_work_returns_real_receipt_without_accepting_task(tmp_path, monk
     root = init_repo(tmp_path)
     (root / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -106,7 +106,7 @@ def test_review_rollback_marks_real_broker_receipt_stale(tmp_path, monkeypatch, 
     root = init_repo(tmp_path)
     (root / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
@@ -415,7 +415,7 @@ def test_task_bound_validation_without_patch_does_not_require_barrier(tmp_path, 
     root = init_repo(tmp_path)
     (root / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
         + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["

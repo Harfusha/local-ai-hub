@@ -30,6 +30,7 @@ def isolated_hub(tmp_path, monkeypatch):
 
     def write_config(port):
         config.write_text(
+            '[local_ai_hub]\nconfig_schema_version = 1\n'
             f'[server]\nbind = "127.0.0.1"\nport = {port}\n'
             f'state_dir = "{(tmp_path / "state").as_posix()}"\n'
             '[agent_state]\nenabled = true\n'

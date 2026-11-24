@@ -354,12 +354,18 @@ def _compact(
                 extra_fields=extra_fields,
             )
             if fitted is None or (raw_items and not fitted.get(page_key)):
+                requested_limit = raw_value.get("limit", 24)
+                recovery = (
+                    "reduce limit or omit max_response_tokens/use a larger cap"
+                    if isinstance(requested_limit, int) and not isinstance(requested_limit, bool) and requested_limit > 1
+                    else "omit max_response_tokens or use a larger cap"
+                )
                 compacted = {
                     "success": False,
                     "status_code": 413,
                     "terminal": True,
                     "retryable": False,
-                    "error": f"The requested {task_kind} page exceeds the configured MCP response budget; reduce limit.",
+                    "error": f"The requested {task_kind} page exceeds the configured MCP response budget; {recovery}.",
                     "root": raw_value.get("root"),
                     "offset": raw_value.get("offset", 0),
                     "limit": raw_value.get("limit", 24),

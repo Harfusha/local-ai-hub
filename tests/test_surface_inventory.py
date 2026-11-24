@@ -160,6 +160,9 @@ def inspect_command():
     pass
 ''',
     )
+    for relative in MODULE.SOURCE_FILES.values():
+        if not (root / relative).exists():
+            write(root, relative, "")
     write(root, "docs/INSTALL_PROMPT.md", "local_ai_repo local_ai_status")
     write(root, "docs/UPDATE_PROMPT.md", "local_ai_repo local_ai_status")
     write(

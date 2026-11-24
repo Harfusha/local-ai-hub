@@ -89,7 +89,7 @@ def test_debug_traces_purge_clears_records(tmp_path: Path):
     """DoD: Debug trace purge removes all traces atomically."""
     config = {
         "server": {"state_dir": str(tmp_path)},
-        "debug_traces": {"enabled": True, "max_bytes": 10 * 1024 * 1024},
+        "telemetry": {"mode": "full", "max_bytes": 10 * 1024 * 1024},
     }
     store = DebugTraceStore(config)
     trace_id = "tr_1234567890abcdef"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -248,7 +249,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
     parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
-    parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, vscode, gemini_cli)")
+    parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
@@ -283,6 +284,10 @@ def main() -> int:
     elif args.action == "client":
         if args.sub_arg is not None and args.sub_arg not in {"status", "detect", "inject", "remove", "config"}:
             parser.error("CLIENT_SUBCOMMAND must be one of: status, detect, inject, remove, config")
+        if args.apply and (args.sub_arg != "config" or args.client_name != "vscode"):
+            parser.error("--apply for client config currently requires 'config --client vscode'")
+        if args.apply and args.root is None:
+            parser.error("client config --apply requires an explicit --root workspace path")
         requested_mode = None
     elif args.sub_arg is not None:
         parser.error(f"Unrecognized argument '{args.sub_arg}' for action '{args.action}'")
@@ -427,10 +432,50 @@ def main() -> int:
                     hub_install_dir=str(ROOT),
                     python_exe=sys.executable,
                 )
+            if args.apply:
+                from tools import setup as setup_mod
+                from tools.install_ownership import MANIFEST_NAME, read_install_manifest
+
+                config_path = target_root / ".vscode" / "mcp.json"
+                install_root = ROOT.resolve()
+                ownership_path = install_root / MANIFEST_NAME
+                rollback_tracking = "backup_only"
+                previous_install_root = setup_mod._ACTIVE_INSTALL_ROOT
+                try:
+                    if ownership_path.exists() or ownership_path.is_symlink():
+                        # Validate the owner marker before making it responsible
+                        # for rollback of an external workspace config.
+                        read_install_manifest(install_root)
+                        setup_mod._ACTIVE_INSTALL_ROOT = install_root
+                        rollback_tracking = "install_manifest"
+                    with contextlib.redirect_stdout(sys.stderr if args.raw_json else sys.stdout):
+                        setup_mod.vscode_mcp_merge(
+                            config_path,
+                            configs[".vscode/mcp.json"]["servers"],
+                            backup_enabled=True,
+                        )
+                    written = json.loads(config_path.read_text(encoding="utf-8"))
+                    if written.get("servers", {}).get("local-ai") != configs[".vscode/mcp.json"]["servers"]["local-ai"]:
+                        raise RuntimeError("VS Code MCP route was not applied because the existing entry is not Hub-owned")
+                except (OSError, ValueError, RuntimeError) as exc:
+                    failure = {
+                        "success": False,
+                        "client_id": client_id,
+                        "applied": False,
+                        "error": str(exc),
+                    }
+                    if args.raw_json:
+                        print(json.dumps(failure, indent=2, ensure_ascii=False))
+                    else:
+                        print(f"Could not apply VS Code MCP configuration: {exc}", file=sys.stderr)
+                    return 1
+                finally:
+                    setup_mod._ACTIVE_INSTALL_ROOT = previous_install_root
             result = {
                 "success": True,
                 "client_id": client_id,
                 "configs": configs,
+                **({"applied": True, "workspace_config": str(config_path), "rollback_tracking": rollback_tracking} if args.apply else {}),
             }
             if args.raw_json:
                 print(json.dumps(result, indent=2, ensure_ascii=False))

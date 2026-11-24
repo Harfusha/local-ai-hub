@@ -146,7 +146,7 @@ def test_n09_unidentified_or_incompatible_embedding_is_not_compared(tmp_path: Pa
     assert rec.record_id not in {item.record_id for item in found}
 
 
-def test_n09_legacy_embedding_table_upgrades_without_assigning_an_identity(tmp_path: Path):
+def test_n09_runtime_rejects_legacy_embedding_table_without_rewriting_it(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"
     original_store = MemoryStore(AgentStateStore(db_path))
     record = original_store.record(MemoryRecord.create(
@@ -160,21 +160,15 @@ def test_n09_legacy_embedding_table_upgrades_without_assigning_an_identity(tmp_p
         )""")
         con.execute("INSERT INTO agent_memory_embeddings VALUES (?, ?, 42)", (record.record_id, legacy_embedding))
 
-    store = MemoryStore(AgentStateStore(db_path))
-    services = MagicMock()
-    services.embed = lambda texts: {
-        "success": True, "embeddings": [[1.0, 0.0, 0.0, 0.0]], "model": "model-a", "embedding_space_id": "space-a",
-    }
-    assert [item.record_id for item in store.find(query="sqlite", services=services, include_all_scopes=True)] == [record.record_id]
-    assert store.find(query="quantum orchard", services=services, include_all_scopes=True) == []
+    with pytest.raises(RuntimeError, match="agent_memory_embeddings"):
+        MemoryStore(AgentStateStore(db_path))
     with closing(sqlite3.connect(db_path)) as con:
+        assert [row[1] for row in con.execute("PRAGMA table_info(agent_memory_embeddings)")] == [
+            "record_id", "embedding", "created_at",
+        ]
         assert con.execute(
-            "SELECT record_id, embedding, created_at, embedding_space_id, model_name, dimension FROM agent_memory_embeddings"
-        ).fetchall() == [(record.record_id, legacy_embedding, 42, "", "", 0)]
-
-    assert store.set_embedding(record.record_id, [1.0, 0.0, 0.0, 0.0], model_name="model-a", embedding_space_id="space-a")
-    reopened = MemoryStore(AgentStateStore(db_path))
-    assert [item.record_id for item in reopened.find(query="quantum orchard", services=services, include_all_scopes=True)] == [record.record_id]
+            "SELECT record_id, embedding, created_at FROM agent_memory_embeddings"
+        ).fetchall() == [(record.record_id, legacy_embedding, 42)]
 
 
 @pytest.mark.parametrize("mode", ["scalar", "numpy", "numpy-fallback"])

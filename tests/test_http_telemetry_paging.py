@@ -39,32 +39,27 @@ def test_telemetry_report_route_returns_first_next_and_last_error_pages(
                 responses.append((status, payload))
 
         pages = []
-        for offset in (0, 2, 4):
+        cursor = ""
+        for _ in range(3):
             handler = object.__new__(Handler)
             handler.path = (
-                f"/api/telemetry/report?days=30&recent_errors=2&error_offset={offset}"
+                f"/api/telemetry/report?days=30&recent_errors=2&error_cursor={cursor}"
             )
             http_server.Handler.do_GET(handler)
             pages.append(responses[-1])
+            cursor = responses[-1][1]["report"]["error_fingerprints_page"]["next_cursor"] or ""
     finally:
         store.close()
 
     assert [status for status, _payload in pages] == [200, 200, 200]
     reports = [payload["report"] for _status, payload in pages]
-    assert [report["error_fingerprints_page"]["offset"] for report in reports] == [
-        0,
-        2,
-        4,
-    ]
     assert [len(report["error_fingerprints"]) for report in reports] == [2, 2, 1]
-    assert [report["error_fingerprints_page"]["next_offset"] for report in reports] == [
-        2,
-        4,
-        None,
-    ]
+    assert [report["error_fingerprints_page"]["has_more"] for report in reports] == [True, True, False]
+    keys = [row["fingerprint"] for report in reports for row in report["error_fingerprints"]]
+    assert len(keys) == len(set(keys)) == 5
 
 
-def test_telemetry_report_route_rejects_non_integer_page_values(
+def test_telemetry_report_route_rejects_retired_offset_paging(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -79,7 +74,7 @@ def test_telemetry_report_route_rejects_non_integer_page_values(
 
     class Handler(http_server.Handler):
         headers = {"X-LocalAI-Client": "dashboard"}
-        path = "/api/telemetry/report?error_offset=invalid"
+        path = "/api/telemetry/report?error_offset=0"
 
         def _require_authorized(self):
             return True
@@ -94,4 +89,4 @@ def test_telemetry_report_route_rejects_non_integer_page_values(
     http_server.Handler.do_GET(handler)
 
     assert responses[0][0] == 400
-    assert "error_offset" in responses[0][1]["error"]
+    assert "error_cursor" in responses[0][1]["error"]

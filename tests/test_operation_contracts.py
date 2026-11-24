@@ -30,6 +30,19 @@ from local_ai_hub.operation_contracts import (
 TOOL = "local_ai_artifact"
 
 
+def test_session_briefing_requires_canonical_repository_scope():
+    schema = operation_input_schema("local_ai_coord", "session_briefing")
+    assert "root" in schema["required"]
+    assert validate_operation_arguments(
+        "local_ai_coord", "session_briefing",
+        {"action": "session_briefing", "include": ["board"]},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_coord", "session_briefing",
+        {"action": "session_briefing", "root": "C:/fixture", "include": ["board"]},
+    ) is None
+
+
 def test_reachability_dead_code_exposes_bounded_result_limit():
     schema = operation_input_schema("local_ai_repo", "reachability_dead_code")
     assert "limit" in schema["properties"]
@@ -55,7 +68,7 @@ def test_reachability_dead_code_exposes_bounded_result_limit():
             "reachability_dead_code",
             {"action": "reachability_dead_code", "root": "C:/fixture", "limit": invalid_limit},
         ) is not None
-    assert "limit" not in operation_input_schema("local_ai_repo", "read_file")["properties"]
+    assert "limit" not in operation_input_schema("local_ai_repo", "source")["properties"]
 
 
 def test_coord_task_list_exposes_and_scopes_pagination():
@@ -75,6 +88,45 @@ def test_coord_task_list_exposes_and_scopes_pagination():
     assert validate_operation_arguments(
         "local_ai_coord", "task_get",
         {"action": "task_get", "root": "C:/fixture", "limit": 25},
+    ) is not None
+
+
+def test_coord_task_create_accepts_only_one_contract_object():
+    action = OPERATION_CONTRACTS["local_ai_coord"]["actions"]["task_create"]
+    assert set(action["allowed"]) == {"root", "task_id", "contract"}
+    assert set(action["required"]) == {"root", "contract"}
+    assert validate_operation_arguments(
+        "local_ai_coord", "task_create", {"root": "C:/fixture", "contract": {"goal": "g"}},
+    ) is None
+    for field, value in {
+        "goal": "g", "task": "g", "title": "g", "description": "g",
+        "acceptance_criteria": ["a"], "criteria": ["a"], "scope": "task",
+        "paths": ["src/a.py"], "path": "src/a.py", "file": "src/a.py",
+    }.items():
+        assert validate_operation_arguments(
+            "local_ai_coord", "task_create", {"root": "C:/fixture", "contract": {"goal": "g"}, field: value},
+        ) is not None
+
+
+def test_rag_docsets_require_explicit_canonical_workspace_and_query():
+    index_schema = operation_input_schema("local_ai_rag", "docset_index")
+    search_schema = operation_input_schema("local_ai_rag", "docset_search")
+    assert "workspace" in index_schema["required"]
+    assert set(search_schema["required"]) >= {"workspace", "query"}
+    assert validate_operation_arguments(
+        "local_ai_rag", "docset_index",
+        {"action": "docset_index", "root": "C:/fixture", "workspace": "guides"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_rag", "docset_index",
+        {"action": "docset_index", "root": "C:/fixture", "query": "guides"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_rag", "docset_search",
+        {"action": "docset_search", "workspace": "guides", "query": "setup"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_rag", "docset_search", {"action": "docset_search", "query": "setup"},
     ) is not None
 
 
@@ -127,7 +179,7 @@ def test_artifact_registry_drives_feature_actions_and_generated_schema():
     }
     assert requirements["get"]["required"] == ["artifact_id"]
     assert requirements["slice"]["required"] == ["artifact_id"]
-    assert requirements["source"]["required"] == ["path"]
+    assert requirements["source"]["required"] == ["root", "path"]
     assert requirements["get"]["properties"]["artifact_id"]["minLength"] == 1
     assert schema["properties"]["binary"] == {"type": "boolean", "default": False}
 
@@ -639,15 +691,12 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
     assert captured["payload"]["search_mode"] == "lexical"
     assert "exact_count" not in captured["payload"]
 
-    local_ai_mcp.local_ai_repo(action="search", root="C:/repo", query="needle", exact_count=True)
-    assert captured["payload"]["search_mode"] == "lexical"
-    assert captured["payload"]["exact_count"] is True
-
-    local_ai_mcp.local_ai_repo(
-        action="search", root="C:/repo", query="needle", search_mode="hybrid", exact_count=False,
-    )
-    assert captured["payload"]["search_mode"] == "hybrid"
-    assert captured["payload"]["exact_count"] is False
+    with pytest.raises(TypeError, match="unexpected keyword argument 'exact_count'"):
+        local_ai_mcp.local_ai_repo(action="search", root="C:/repo", query="needle", exact_count=True)
+    with pytest.raises(TypeError, match="unexpected keyword argument 'exact_count'"):
+        local_ai_mcp.local_ai_repo(
+            action="search", root="C:/repo", query="needle", search_mode="hybrid", exact_count=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1099,6 +1148,102 @@ def test_mcp_tools_list_publishes_rag_search_output_contract():
     }
 
 
+def test_rag_tool_schema_exposes_only_canonical_input_names():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    properties = operation_tool_input_schema("local_ai_rag")["properties"]
+    assert {"query", "top_k", "workspace", "content", "image_path"} <= set(properties)
+    assert {"limit", "task", "name", "text", "path", "file"}.isdisjoint(properties)
+
+
+def test_work_tool_schema_exposes_only_canonical_input_names():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    properties = operation_tool_input_schema("local_ai_work")["properties"]
+    assert {"root", "task", "work_id"} <= set(properties)
+    assert {"id", "goal", "prompt", "workspace"}.isdisjoint(properties)
+
+
+def test_coord_schema_rejects_retired_alias_inputs():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    properties = operation_tool_input_schema("local_ai_coord")["properties"]
+    assert {"path", "file", "id", "timeout_seconds", "resource", "notes", "state_data", "error"}.isdisjoint(properties)
+    for action, field in (
+        ("task_complete", "summary"), ("task_complete", "result"),
+        ("task_fail", "message"), ("task_fail", "error"),
+        ("task_list", "state"), ("context_compile", "changed_paths"),
+        ("wait_for_event", "timeout_seconds"), ("semaphore_acquire", "resource"),
+        ("claim", "path"),
+    ):
+        assert validate_operation_arguments(
+            "local_ai_coord", action, {"action": action, field: "legacy-value"},
+        ) is not None
+
+
+def test_task_schema_rejects_retired_batch_and_media_aliases():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    properties = operation_tool_input_schema("local_ai_task")["properties"]
+    assert "tasks" in properties
+    assert {"items", "path", "image_path", "audio_path", "file"}.isdisjoint(properties)
+
+
+def test_semantic_task_actions_use_canonical_inputs():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    properties = operation_tool_input_schema("local_ai_task")["properties"]
+    assert {"query", "diff"}.isdisjoint(properties)
+    assert validate_operation_arguments(
+        "local_ai_task", "reason", {"action": "reason", "problem": "why?"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_task", "reason", {"action": "reason", "task": "why?"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "second_opinion", {"action": "second_opinion", "question": "safe?"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_task", "second_opinion", {"action": "second_opinion", "task": "safe?"},
+    ) is not None
+
+
+def test_repo_schema_rejects_file_and_symbol_aliases():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    properties = operation_tool_input_schema("local_ai_repo")["properties"]
+    assert "file" not in properties
+    assert "symbol" not in properties
+    assert {"id", "goal", "prompt"}.isdisjoint(properties)
+    actions = set(properties["action"]["enum"])
+    assert {"diff", "stat", "read_file", "definition", "references", "find_references", "find_symbol", "glob"}.isdisjoint(actions)
+    assert {"target", "replacement"}.isdisjoint(properties)
+    assert validate_operation_arguments(
+        "local_ai_repo", "callers", {"action": "callers", "query": "Widget.run"},
+    ) is None
+    for action in ("diff", "stat", "read_file", "definition", "references", "find_references", "find_symbol", "glob"):
+        assert validate_operation_arguments(
+            "local_ai_repo", action, {"action": action},
+        ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "generate_tests_for_diff", {
+            "action": "generate_tests_for_diff", "diff": "diff", "changed_paths": ["src/a.py"],
+        },
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "find_files", {"action": "find_files", "pattern": "*.py"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "find_files", {"action": "find_files", "query": "*.py"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "patch", {"action": "patch", "path": "a.py", "old_code": "a", "new_code": "b"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "patch", {"action": "patch", "path": "a.py", "target": "a", "replacement": "b"},
+    ) is not None
+
+
 def test_mcp_tools_list_scopes_artifact_list_arguments():
     import asyncio
 
@@ -1260,7 +1405,7 @@ def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.Monke
         ("local_ai_rag", {"action": "ingest_diagram", "image_path": "diagram.svg", "caption": "diagram"}),
         ("local_ai_task", {"action": "cancel", "job_id": "job-1"}),
         ("local_ai_task", {
-            "action": "reason", "task": "review", "phase": "review", "focus": ["src"],
+            "action": "reason", "problem": "review", "phase": "review", "focus": ["src"],
             "preload_profile": "balanced", "repository_revision": "abc123", "changed_paths": ["src/a.py"],
         }),
         ("local_ai_coord", {
@@ -1271,7 +1416,7 @@ def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.Monke
         ("local_ai_repo", {"action": "pipeline", "steps": [{"action": "profile"}]}),
         ("local_ai_repo", {"action": "preprocess", "is_worktree": True, "parent_root": "."}),
         ("local_ai_status", {"detail": "brief"}),
-        ("local_ai_task", {"action": "compress", "context": "Evaluate Python cases"}),
+        ("local_ai_task", {"action": "compress", "text": "Evaluate Python cases"}),
         ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
     ],
 )

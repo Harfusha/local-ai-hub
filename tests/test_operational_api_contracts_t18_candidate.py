@@ -930,8 +930,8 @@ def test_agent_event_sse_live_filter_advances_cursor_without_emitting_other_kind
 def test_trace_detail_is_paginated_and_response_bytes_are_capped(tmp_path):
     store = DebugTraceStore({
         "server": {"state_dir": str(tmp_path)},
-        "debug_traces": {
-            "enabled": True,
+        "telemetry": {
+            "mode": "full",
             "max_event_bytes": 8192,
             "max_detail_response_bytes": 16384,
         },

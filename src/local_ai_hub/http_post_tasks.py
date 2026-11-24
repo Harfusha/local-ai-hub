@@ -278,7 +278,6 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
         except (KeyError, ValueError) as exc:
             self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
     if action == "complete":
-        completion_started_at = services_module.time.monotonic()
         current_revision = ""
         root = ""
         try:
@@ -337,42 +336,6 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 self._send(409, revision_stop); return
             from .verification_rules import complete_task_with_project_rules
 
-            def queue_completion_observation(completed_task: Any, status: str) -> None:
-                task_context = getattr(completed_task, "context", None)
-                session_id = str(getattr(task_context, "session_id", "") or "").strip()
-                checkpoint = getattr(completed_task, "checkpoint", None)
-                state_data = getattr(checkpoint, "state_data", {})
-                generation = state_data.get("mutation_generation", 0) if isinstance(state_data, dict) else None
-                if (
-                    not session_id
-                    or type(generation) is not int
-                    or generation < 0
-                    or not current_revision
-                    or not root
-                ):
-                    return
-                reason_code = {
-                    "passed": "completion_gate_passed",
-                    "rejected": "completion_gate_rejected",
-                    "waived": "operator_waiver",
-                }[status]
-                try:
-                    services_module.APP.queue_laya_completion_observation({
-                        "task_id": task_id,
-                        "session_id": session_id,
-                        "outcome": {
-                            "status": status,
-                            "reason_code": reason_code,
-                            "duration_ms": max(0.0, (services_module.time.monotonic() - completion_started_at) * 1000.0),
-                            "repository_revision": current_revision,
-                            "mutation_generation": generation,
-                        },
-                    }, root=root)
-                except Exception as exc:
-                    logger = getattr(services_module.APP, "logger", None)
-                    if logger is not None:
-                        logger.warning("Laya completion shadow capture failed: %s", type(exc).__name__)
-
             task = complete_task_with_project_rules(
                 services_module.APP.agent_tasks,
                 verification_store,
@@ -388,9 +351,6 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 **({"expected_criteria": payload["expected_criteria"]} if "expected_criteria" in payload else {}),
                 **({"expected_binding": payload["expected_binding"]} if "expected_binding" in payload else {}),
             )
-            queue_completion_observation(
-                task, "waived" if "operator_waiver" in payload else "passed"
-            )
             self._send(200, {"success": True, "task": task.to_dict()}); return
         except services_module.CheckpointResponseBudgetError as exc:
             self._send(413, {
@@ -401,8 +361,6 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                                     "unit": "estimated_tokens"},
             }); return
         except services_module.CompletionGateError as exc:
-            if type(exc) is services_module.CompletionGateError and current_revision and root:
-                queue_completion_observation(task_state, "rejected")
             self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         except (KeyError, ValueError) as exc:
             self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return

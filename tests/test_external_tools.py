@@ -665,7 +665,7 @@ def test_query_serena_search_timeout_includes_backend_lock_wait(tmp_path: Path, 
         result = ext.query_serena(str(root), "search", query="needle")
         assert result["success"] is True
         assert len(captured) == 1
-        assert captured[0] == 1.875
+        assert captured[0] == 0.875
     finally:
         ext.close()
 

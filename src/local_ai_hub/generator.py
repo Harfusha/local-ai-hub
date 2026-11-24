@@ -26,6 +26,15 @@ T21_HANDOFF_CONTRACT = """Project configuration and PathHint core: `resolve_proj
 
 T19_RUNTIME_PARITY_CONTRACT = """Installed schema is authoritative. Hub modes: `active`, `gaming`, `maintenance`. For durable work, create and checkpoint an Agent OS task before edits. If live schema lacks an action, use authorized native tool directly. Native fallback after Hub action requires `terminal=true` and `retryable=false`."""
 
+AUTOSETUP_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMIZER AUTOSETUP -->"
+AUTOSETUP_POLICY_END = "<!-- END TOKEN ECONOMIZER AUTOSETUP -->"
+GLOBAL_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
+GLOBAL_POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
+TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
+TOKEN_ECONOMY_POLICY_END = "<!-- END TOKEN ECONOMY POLICY -->"
+ANTIGRAVITY_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB ANTIGRAVITY SKILLS -->"
+ANTIGRAVITY_POLICY_END = "<!-- END LOCAL AI HUB ANTIGRAVITY SKILLS -->"
+
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.operation_contracts import (
     operation_contract,
@@ -165,13 +174,13 @@ def _categorized_operational_triggers(fs: FeatureSet) -> list[str]:
     # 1. Code Navigation & Structural Search
     nav_items: list[str] = []
     if "callers" in repo_actions:
-        nav_items.append('- **Callers & Inbound References**: Trace callers across codebase -> `local_ai_repo(action="callers", symbol="<name>", root=ABS_ROOT)`')
+        nav_items.append('- **Callers & Inbound References**: Trace callers across codebase -> `local_ai_repo(action="callers", query="<name>", root=ABS_ROOT)`')
     if "callees" in repo_actions:
-        nav_items.append('- **Callees & Outbound Calls**: Trace function dependencies -> `local_ai_repo(action="callees", symbol="<name>", root=ABS_ROOT)`')
+        nav_items.append('- **Callees & Outbound Calls**: Trace function dependencies -> `local_ai_repo(action="callees", query="<name>", root=ABS_ROOT)`')
     if "ast_outline" in repo_actions:
         nav_items.append('- **AST Outline**: Class/function signature summary without dumping source -> `local_ai_repo(action="ast_outline", path="<relpath>", root=ABS_ROOT)`')
-    if "definition" in repo_actions or "implementations" in repo_actions:
-        nav_items.append('- **Definitions & Implementations**: Find declarations/subclasses -> `local_ai_repo(action="definition"|"implementations", symbol="<name>", root=ABS_ROOT)`')
+    if "declaration" in repo_actions or "implementations" in repo_actions:
+        nav_items.append('- **Declarations & Implementations**: Find declarations/subclasses -> `local_ai_repo(action="declaration"|"implementations", query="<name>", root=ABS_ROOT)`')
     if "structural_search" in repo_actions:
         nav_items.append('- **Structural AST Search**: Query code patterns by syntax -> `local_ai_repo(action="structural_search", query="<pattern>", root=ABS_ROOT)`')
     if "code_index" in repo_actions or "search" in repo_actions:
@@ -183,9 +192,9 @@ def _categorized_operational_triggers(fs: FeatureSet) -> list[str]:
     # 2. Impact Analysis & Testing
     impact_items: list[str] = []
     if "affected_tests" in repo_actions:
-        impact_items.append('- **Affected Tests**: Pinpoint tests impacted by changed files -> `local_ai_repo(action="affected_tests", paths=["path/to/file.py"], root=ABS_ROOT)`')
+        impact_items.append('- **Affected Tests**: Pinpoint tests impacted by a changed file -> `local_ai_repo(action="affected_tests", path="path/to/file.py", root=ABS_ROOT)`')
     if "refactor_impact" in repo_actions or "impact" in repo_actions:
-        impact_items.append('- **Refactoring Blast Radius**: Evaluate symbol usage before edits -> `local_ai_repo(action="refactor_impact", symbol="<name>", root=ABS_ROOT)`')
+        impact_items.append('- **Refactoring Blast Radius**: Evaluate symbol usage before edits -> `local_ai_repo(action="refactor_impact", query="<name>", root=ABS_ROOT)`')
     if "generate_tests_for_diff" in repo_actions or "generate_tests" in repo_actions:
         impact_items.append('- **Test Generation**: Scaffold test cases for diff or file -> `local_ai_repo(action="generate_tests_for_diff", root=ABS_ROOT)`')
 
@@ -247,6 +256,7 @@ def _categorized_operational_triggers(fs: FeatureSet) -> list[str]:
         lines.extend([
             "### 7. Exact Slices & Artifacts (`local_ai_artifact`)",
             '- **Bounded File Slice**: Read line ranges without full-file dumping -> `local_ai_artifact(action="slice", path="<relpath>", start_line=N, end_line=M, root=ABS_ROOT)`',
+            '- **Exact Source**: Use `action="source"` with explicit absolute `root=ABS_ROOT` and `path="<relpath>"`; source roots are never inferred.',
             "",
         ])
 
@@ -470,7 +480,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         public_contract_lines.append(
             '- For `local_ai_rag` project search/index and document/diagram ingestion, an explicit absolute authorized `root` is required; the workspace must bind to that root. '
             'For `action="ingest_document"`, non-empty `content` is required; `title` and `metadata` are optional. '
-            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Search that document with `action="search"` in the same root-bound workspace; `docset_index` and `docset_search` use a separate owner-global namespace. '
+            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Search that document with `action="search"` in the same root-bound workspace; `docset_index` and `docset_search` require the exact docset name in `workspace`, and `docset_index` requires an explicit root. '
             'Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing '
             '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file within that root, without symlink/junction escapes; `caption` and `metadata` are optional. '
             'Success also returns `diagram_indexed` and the resolved image path.'
@@ -512,7 +522,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     subagents_section = ""
     if fs.subagents and fs.has_any_model() and "delegate" in fs.supported_task_actions():
         profiles_list = "\n".join(f"- `{p}` — configured advisory profile" for p in fs.subagent_profiles)
-        example_profile = fs.subagent_profiles[0] if fs.subagent_profiles else "explorer"
+        example_profile = fs.subagent_profiles[0] if fs.subagent_profiles else "qwen-explorer"
         subagents_section = f"""
 ## Local advisory subagents
 
@@ -629,6 +639,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 ## Single-owner and repository scope contract
 
 {SINGLE_OWNER_CONTRACT}
+{batch_replacement_contract}
 
 ## Ownership and tiering
 
@@ -637,11 +648,6 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 {tiering_section}
 
 {ollama_ownership_section}
-
-## Single-owner and repository scope contract
-
-{SINGLE_OWNER_CONTRACT}
-{batch_replacement_contract}
 
 ## READ-ONLY AUDIT CONTRACT
 
@@ -918,9 +924,8 @@ For an opted-in validation failure with `local_handoff`, inspect the referenced 
 Cross-Agent Coordination Primitives:
 - **Resource Semaphores (`semaphore_acquire`, `semaphore_release`, `semaphore_status`)**: Serialize access to exclusive single-instance tools, processes, or engines (e.g. Unity Editor, specialized hardware/ports, single-writer state) across agents and sessions. Never busy-loop; use capacity and ttl_seconds.
 - **Event-Driven Waiting (`wait_for_event`)**: Long-poll topic signals (e.g. `semaphore.<name>.released` or custom task events) instead of polling in a loop.
-- **Project Board (`board_item_create`, `board_item_update`, `board_item_list`, `board_summary`)**: Track multi-agent deliverables, update task progress across columns (`planned`, `in_progress`, `done`, `blocked`, `cancelled`), and log blockers.
-- **Milestones (`milestone_create`, `milestone_status`)**: Measure completion percentages across board deliverables.
-- **Session Briefing (`session_briefing`)**: Call at agent initialization to compile an instant overview of active tasks, held semaphores, and board deliverables.
+- **Project Board (`plan_board_view`)**: Read plan tasks by status using the explicit absolute repository root. Update tasks through the `plan_task_*` operations.
+- **Session Briefing (`session_briefing`)**: Call with the explicit absolute repository root for plans, board, and active-task context.
 """
     refs["multi-agent.md"] = f"""# Multi-agent coordination
 
@@ -1081,6 +1086,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
         f"{prioritization_directive}\n\n"
         "Load `local-ai-orchestrator` for full ownership, scope, retrieval, lifecycle, mutation, model, GPU and receipt rules.\n\n"
+        "The Hub may apply eligible low-risk Laya advisories internally. Treat the resulting Hub route as advisory; Laya cannot grant host permissions, execute tools, change task state, or approve completion. Do not call or provision Laya outside the Hub workflow.\n\n"
         "Diagnostics require dashboard toggle, not caller control, including nested, async, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.\n\n"
         'Only on the user\'s explicit task instruction, `task_complete` accepts `operator_waiver={"consent":true,"reason":"..."}`. It records unverified completion, not passing receipts; ownership, repository scope, mutation fences and safety checks remain. Retain the instruction; never invent consent.\n\n'
         "Keep Agent OS tasks/counters. Explicit approval: `task_budget_increase` uses write-authorized broker, absolute root, audit reason; canonical loopback needs no token or special owner/admin token. Failed-task increases preserve status/owner; resume separate. Never edit task storage. `curate_dataset` needs absolute root.\n\n"
@@ -1121,7 +1127,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         + f"{fs.selection_guide(include_task_actions=False)}\n"
         f"{model_default}\n"
         f"{context_economy_contract(cfg)}\n"
-        "<!-- END LOCAL AI HUB TOOL POLICY -->"
+        + GLOBAL_POLICY_END
     )
 
 
@@ -1197,8 +1203,36 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Preserve status, errors, evidence identity, and response budgets. Never invent results, receipts, or savings.\n"
         "- Use only live Hub actions. If none exists, use the authorized native tool; after an advertised action fails, fallback requires `terminal=true` and `retryable=false`.\n"
         "- On `in_progress` or `outcome_unknown`, do independent work; never replay the operation.\n"
-        + "<!-- END TOKEN ECONOMY POLICY -->"
+        + TOKEN_ECONOMY_POLICY_END
     )
+
+
+def generate_autosetup_policy(skills_dir: Path) -> str:
+    """Generate the owned setup block from the canonical managed skill paths."""
+    orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
+    tok_skill = (skills_dir / "token-economizer" / "SKILL.md").as_posix()
+    plan_skill = (skills_dir / "plan-led-work" / "SKILL.md").as_posix()
+    return (
+        f"{AUTOSETUP_POLICY_BEGIN}\n"
+        "## Local AI Hub, plan-led work, and Token-economizer automatic setup\n\n"
+        f"- For every coding or repository task, load and follow `{orch_skill}` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.\n"
+        f"- Load and follow `{tok_skill}` before repository discovery for bounded output limits.\n"
+        f"- For substantial multi-step work, load and follow `{plan_skill}`: use Superpowers for specifications; use Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing(root=<absolute repository path>)` for resumption, and authentic receipts for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. Report `Done / Next / Blocked` updates at milestones.\n"
+        "- Use tools already available in the environment; missing optional setup helpers do not block repository discovery or validation.\n"
+        f"{AUTOSETUP_POLICY_END}"
+    )
+
+
+def generate_antigravity_skill_policy() -> str:
+    """Generate the managed Antigravity activation block from one source."""
+    return "\n".join((
+        ANTIGRAVITY_POLICY_BEGIN,
+        "## Antigravity automatic skill activation",
+        "",
+        "At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Call applicable endpoints directly from the main agent; managing native subagents does not replace Hub retrieval, artifact, or coordination calls. For every non-trivial repository task, start with indexed `local_ai_repo` evidence; use `local_ai_artifact` for exact source after locating it; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer; use exposed `local_ai_task` semantic actions for matching bounded review, reasoning, exploration or compression tasks after evidence. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.",
+        "If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.",
+        ANTIGRAVITY_POLICY_END,
+    ))
 
 
 def generate_mcp_configs(
@@ -1280,7 +1314,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         rag_actions = fs.supported_rag_actions()
         schemas["local_ai_rag"] = {
             "name": "local_ai_rag",
-            "description": "Fallback semantic retrieval after indexed evidence is insufficient; project search/index and ingestion require an explicit absolute authorized root with a root-bound workspace. Diagram paths stay inside that root. Managed docsets have a separate owner-global namespace." + _actions_note(rag_actions),
+            "description": "Fallback semantic retrieval after indexed evidence is insufficient; project search/index and ingestion require an explicit absolute authorized root with a root-bound workspace. Diagram paths stay inside that root. Managed docsets use a separate owner-global namespace and require an explicit workspace name for indexing and search; docset_index also requires root." + _actions_note(rag_actions),
             "parameters": operation_parameters_schema("local_ai_rag", fs),
         }
 

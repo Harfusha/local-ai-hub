@@ -21,6 +21,32 @@ LATENCY_BUCKET_LIMITS: tuple[float, ...] = (
 )
 NUM_BUCKETS: int = len(LATENCY_BUCKET_LIMITS) + 1  # 14 buckets: b0..b13
 
+ENDPOINT_STATS_TABLE_SIGNATURE = (
+    ("scope_root", "TEXT", 1, "''", 1),
+    ("item_type", "TEXT", 1, None, 2),
+    ("item_name", "TEXT", 1, None, 3),
+    ("calls", "INTEGER", 1, "0", 0),
+    ("success_calls", "INTEGER", 1, "0", 0),
+    ("fail_calls", "INTEGER", 1, "0", 0),
+    *((f"b{i}", "INTEGER", 1, "0", 0) for i in range(NUM_BUCKETS)),
+    ("last_used", "REAL", 1, "0", 0),
+)
+ENDPOINT_CALL_IDS_TABLE_SIGNATURE = (
+    ("seq", "INTEGER", 0, None, 1),
+    ("event_id", "TEXT", 1, None, 0),
+    ("created_at", "REAL", 1, None, 0),
+)
+
+
+def _table_signature(con: sqlite3.Connection, table: str) -> tuple[tuple[str, str, int, str | None, int], ...] | None:
+    rows = con.execute(f'PRAGMA table_info("{table}")').fetchall()
+    if not rows:
+        return None
+    return tuple(
+        (str(row[1]), str(row[2]).upper(), int(row[3]), None if row[4] is None else str(row[4]), int(row[5]))
+        for row in rows
+    )
+
 BUCKET_INTERVALS: tuple[tuple[float, float], ...] = (
     (0.0, 5.0),
     (5.0, 10.0),
@@ -210,12 +236,13 @@ class EndpointStatsStore:
             self._init_db()
 
     def _connect(
-        self, timeout_seconds: float = 5.0, *, check_same_thread: bool = True,
+        self, timeout_seconds: float = 5.0, *, check_same_thread: bool = True, wal: bool = True,
     ) -> sqlite3.Connection:
         return connect_sqlite(
             self.path,
             timeout_seconds=timeout_seconds,
             check_same_thread=check_same_thread,
+            wal=wal,
         )
 
     def close(self) -> None:
@@ -232,7 +259,22 @@ class EndpointStatsStore:
             pass
 
     def _init_db(self) -> None:
-        with self._lock, closing(self._connect()) as con:
+        with self._lock, closing(self._connect(wal=False)) as con:
+            tables = {
+                str(row[0]) for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            if "endpoint_stats" in tables:
+                raise RuntimeError("basename endpoint statistics require the offline updater migration")
+            if tables - {"endpoint_stats_basename_archive", "endpoint_stats_exact", "endpoint_call_ids"}:
+                raise RuntimeError("endpoint statistics database contains unsupported tables")
+            if ("endpoint_stats_exact" in tables
+                    and _table_signature(con, "endpoint_stats_exact") != ENDPOINT_STATS_TABLE_SIGNATURE):
+                raise RuntimeError("unsupported exact endpoint statistics schema")
+            if ("endpoint_call_ids" in tables
+                    and _table_signature(con, "endpoint_call_ids") != ENDPOINT_CALL_IDS_TABLE_SIGNATURE):
+                raise RuntimeError("unsupported endpoint call-id schema")
             con.execute("PRAGMA journal_mode=WAL")
             con.execute("PRAGMA synchronous=NORMAL")
             columns = [
@@ -248,13 +290,13 @@ class EndpointStatsStore:
             columns.append("last_used REAL NOT NULL DEFAULT 0")
             columns.append("PRIMARY KEY(scope_root, item_type, item_name)")
 
-            sql = f"CREATE TABLE IF NOT EXISTS endpoint_stats ({', '.join(columns)})"
-            con.execute(sql)
             con.execute(f"CREATE TABLE IF NOT EXISTS endpoint_stats_exact ({', '.join(columns)})")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_ep_stats_root ON endpoint_stats(scope_root)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_ep_stats_item ON endpoint_stats(item_type, item_name)")
             con.execute("CREATE TABLE IF NOT EXISTS endpoint_call_ids (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, created_at REAL NOT NULL)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_endpoint_call_ids_created ON endpoint_call_ids(created_at)")
+            if _table_signature(con, "endpoint_stats_exact") != ENDPOINT_STATS_TABLE_SIGNATURE:
+                raise RuntimeError("unsupported exact endpoint statistics schema")
+            if _table_signature(con, "endpoint_call_ids") != ENDPOINT_CALL_IDS_TABLE_SIGNATURE:
+                raise RuntimeError("unsupported endpoint call-id schema")
             con.commit()
 
     def record_call(
@@ -493,11 +535,9 @@ class EndpointStatsStore:
         try:
             with self._lock, closing(self._connect()) as con:
                 if is_global:
-                    con.execute("DELETE FROM endpoint_stats")
                     con.execute("DELETE FROM endpoint_stats_exact")
                 else:
-                    table = "endpoint_stats" if scope_kind == "legacy" else "endpoint_stats_exact"
-                    con.execute(f"DELETE FROM {table} WHERE scope_root = ?", (target_root,))
+                    con.execute("DELETE FROM endpoint_stats_exact WHERE scope_root = ?", (target_root,))
                 con.commit()
             return True
         except sqlite3.Error:

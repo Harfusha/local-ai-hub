@@ -10,6 +10,7 @@ from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub import resilience
 from local_ai_hub import services as services_module
+from local_ai_hub.http_server import _api_result_http_response
 
 
 def _service(tmp_path, response):
@@ -133,6 +134,8 @@ def test_length_truncation_never_falls_back_or_populates_caches(tmp_path):
     result = service._generate("requested", "prompt", "system", 64, 0.0, source="delegate:test", priority=5,
                                use_cache=True, semantic_query="query")
     assert result["success"] is False and result["output_truncated"] is True
+    assert result["status_code"] == 422
+    assert _api_result_http_response(result)[0] == 422
     assert runtime.calls == ["requested"]
     cache.set.assert_not_called()
     service.semantic_cache.set.assert_not_called()

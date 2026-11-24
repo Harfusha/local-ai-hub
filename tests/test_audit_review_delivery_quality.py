@@ -73,8 +73,14 @@ def test_structurally_valid_review_cannot_upgrade_prior_quality_rejection():
 @pytest.mark.parametrize("profile", ["compact", "minimal"])
 def test_actual_mcp_review_wire_preserves_rejected_quality(monkeypatch, budget, profile):
     from local_ai_hub import mcp_server
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
     from local_ai_hub.token_accounting import json_tokens
 
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 0, None),
+    )
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
     response = deliver(CONTRADICTORY)
@@ -88,10 +94,10 @@ def test_actual_mcp_review_wire_preserves_rejected_quality(monkeypatch, budget, 
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda event: None)
     monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **kwargs: None)
     result = asyncio.run(mcp_server.mcp.call_tool("local_ai_task", {
-        "action": "review", "task": "Review src/example.py", "context": "src/example.py:1 pass",
+        "action": "review", "task": "Review src/example.py", "code": "src/example.py:1 pass",
         "changed_paths": [PATH], "response_profile": profile, "max_response_tokens": budget,
     }))
-    assert requests == ["/api/review"]
+    assert requests == ["/api/review"], result
     if isinstance(result, tuple):
         content, structured = result
     else:

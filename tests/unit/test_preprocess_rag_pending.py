@@ -298,9 +298,9 @@ def test_rag_idle_detects_lost_chunk_inventory_inside_audit_cadence(tmp_path):
     root.mkdir()
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL)")
         con.execute("CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0, 0)", (str(root),))
         con.execute("INSERT INTO file_refs_revision VALUES(?, 1)", (str(root),))
         con.commit()
 

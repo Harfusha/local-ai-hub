@@ -15,29 +15,54 @@
     {
       "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
       "revision": {
-        "kind": "working",
-        "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
+        "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e",
+        "kind": "working"
       }
     },
     {
       "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
       "revision": {
-        "kind": "working",
-        "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+        "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a",
+        "kind": "working"
       }
     }
   ],
   "tasks": {
     "task_laya_advisory": {
       "acceptance_criteria": [
-        "Category meets the approved quality gate with no necessary-fact loss and a measured benefit in reliability, quality, speed, or useful behavior.",
-        "Reference labels have local operator confirmation or separately attributed capable local-model review provenance; reviewer capability and evidence are recorded.",
-        "No insufficient-data result or unresolved provenance blocker.",
-        "Advisory remains opt-in and cannot trigger tools, task transitions, permissions, routing, or global automation.",
-        "Promotion to advisory requires separate explicit user approval."
+        "Laya is an active default decision path for applicable low-risk Hub categories; shadow comparison remains optional evaluation, not a blanket prerequisite for use.",
+        "Valid typed Laya recommendations affect central retrieval, context, model-tier, or task-guidance decisions without requiring manual copy-back.",
+        "Every category has explicit inputs, options, confidence/abstention behavior, scope and deterministic fallback; unavailable or malformed output preserves usable Hub behavior.",
+        "Runtime/provider availability and current category quality are measured and reported; configuration presence alone never proves an active runtime.",
+        "Laya cannot grant host permissions, approve tools/completion, mutate task or receipt state, execute tools, or perform destructive operations.",
+        "Natural capture remains local, scoped, bounded, redacted and attributable; human labels and local-model reviews remain distinct.",
+        "The user's explicit request authorizes active integration; model training, benchmarks, model downloads/publication and broad rollout remain separately authorized."
       ],
-      "blocker": "No practical candidate category has passed paired quality evaluation.",
-      "clarifications": [],
+      "blocker": "Laya decision service is available, but this read-only runtime check reports model_resident=false. Existing plan evidence also says category quality is NOT_EVALUATED; active routing and actual inference still need implementation and verification.",
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_2026_11_23_laya_active_integration",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
+                "kind": "working"
+              }
+            },
+            {
+              "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User clarified Laya must be fully integrated, not left shadow-only; active Laya use is part of ordinary Hub operation.",
+          "supersedes": []
+        }
+      ],
       "depends_on": [
         {
           "plan_id": "plan_5edb272644b5",
@@ -48,34 +73,28 @@
           "task_id": "task_laya_foundation"
         }
       ],
-      "description": "Expose typed advisory through an existing API/tool only after a registered decision category passes paired evaluation against deterministic behavior and receives explicit later approval. Callers cannot set mode, identity, permissions, or global automation. Result remains a proposal; errors and abstention preserve baseline. Reference labels may be operator-confirmed locally or carry separately attributed local-model review provenance; no remote reviewer keys or cloud fallback.",
+      "description": "User explicitly steered away from a shadow-only Laya rollout and requested full active integration. Route eligible low-risk Hub decisions through the local Laya service during normal operation, apply valid typed recommendations centrally, and retain deterministic validation/fallback. Keep permission grants, host approvals, tool execution, task/receipt mutation, completion approval, and destructive actions outside Laya authority. Local review and provenance remain; training, benchmarking, downloads and publication retain separate authorization.",
       "kind": "code",
-      "next_action": "Keep unregistered until genuine local examples are reviewed and the category passes evaluation.",
-      "title": "Expose explicit typed advisory call after validation",
-      "work_status": "blocked",
+      "next_action": "Trace current Laya decision callers and active gateway usage; wire the first eligible central route to active Laya with deterministic fallback and verify runtime status.",
       "spec_refs": [
         {
-          "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
+          "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "content_sha256": "ba6acfe3e0fa8b84f4c4367922f84f0ed5309f2261ce5ca7896b39a6394173a9",
+            "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
             "kind": "working"
           }
         },
         {
-          "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
+          "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
-          }
-        },
-        {
-          "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
-          "revision": {
-            "kind": "working",
-            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+            "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Activate Laya for eligible Hub decisions",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
     },
     "task_laya_evaluation": {
       "acceptance_criteria": [
@@ -102,9 +121,6 @@
       "description": "After authentic examples exist, locally reject unsuitable or duplicate examples and review useful cases under the versioned rubric. The operator may confirm a human training label; a capable local Codex/model may contribute a separately attributed model review. Record reviewer kind/model identity, rubric and evidence provenance locally. Model review cannot silently become a human-confirmed label or training export. No SSH keys, remote reviewer quorum, cloud fallback, synthetic data, training, or benchmark in this task.",
       "kind": "code",
       "next_action": "After natural candidates are collected and operator labels exist, run the authorized local review and group-safe evaluation workflow; keep shadow authority and do not start training, benchmark or card generation.",
-      "title": "Review natural candidates and prepare later paired evaluation",
-      "work_phase": "verification",
-      "work_status": "in_progress",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
@@ -116,18 +132,21 @@
         {
           "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
+            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e",
+            "kind": "working"
           }
         },
         {
           "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Review natural candidates and prepare later paired evaluation",
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_laya_evidence": {
       "acceptance_criteria": [
@@ -146,9 +165,6 @@
       "description": "Capture useful task- and evidence-scoped examples from all existing eligible shadow decision paths: context-source retrieval; automatic model route and context budget; adaptive pipeline delegation, next-step and redundant-stage decisions; task completion outcomes; and watchdog lifecycle. Add a next-step shadow decision after verified Agent OS completion validation, using bounded task acceptance context and typed passed/rejected result. Preserve the existing completion outcome event with task/session scope. Keep deterministic behavior authoritative, inference local and shadow-only, examples redacted, and source evidence verifiable. Exclude unrelated unscoped conversations, raw command output and fabricated identities.",
       "kind": "code",
       "next_action": "Source implementation is present: agent_tasks.py emits typed passed/rejected/waived validation outcomes; app.py queues a shadow next_step after passed/rejected, bounds acceptance context to 4 KiB, and routes it through DecisionInput redaction. Fresh focused source tests passed 7 cases on dirty HEAD cc741b54dc04830900df81b5034e7f993140b3c5, including passed/rejected suggestions and waiver skip. Next verify only from a natural root-scoped task/session event; do not synthesize identity/inference, train, benchmark, export or roll out.",
-      "title": "Capture natural examples across Laya decision points",
-      "work_phase": "verification",
-      "work_status": "in_progress",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
@@ -160,18 +176,21 @@
         {
           "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
+            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e",
+            "kind": "working"
           }
         },
         {
           "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Capture natural examples across Laya decision points",
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_laya_export": {
       "acceptance_criteria": [
@@ -192,9 +211,6 @@
       "description": "Maintain scoped candidate review and export from naturally collected Laya runtime outcomes. The list remains metadata-only; get exposes one candidate under the authorized repository root while hiding Laya output and existing human labels. Per-example consent receipts are not required. Training export accepts current verified local-operator labels with group-safe provenance; any model review remains separately attributed and cannot become a human-confirmed label. Keep ordinary ZIP and diagnostics metadata-only.",
       "kind": "code",
       "next_action": "Fresh metadata-only inventory through the root-authorized candidate list confirmed 5 pending candidates and no additional pages. Candidate payloads, labels, runtime outputs, and training export were not read or changed. Continue only with authorized local review and provenance/label verification; export remains unrun.",
-      "title": "Extend existing reports and authorized ZIP",
-      "work_phase": "verification",
-      "work_status": "in_progress",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
@@ -206,18 +222,21 @@
         {
           "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
+            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e",
+            "kind": "working"
           }
         },
         {
           "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Extend existing reports and authorized ZIP",
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_laya_foundation": {
       "acceptance_criteria": [
@@ -237,9 +256,6 @@
       "description": "Hub Laya API/service remains available for the lifetime of the Hub process, independent of whether a Laya model is resident. Do not preload at Hub startup. On the first Laya request, lazily load the explicitly pinned local checkpoint; retain the provider session while work is in flight and until 600 seconds after the most recently completed Laya request, resetting the idle deadline after every completion. Another model identity or external GPU reservation alone must not reject Laya, prevent its load, or prevent idle close. Stability source audit confirms dGPU admission uses an atomic capacity lease against fresh measured free VRAM; a valid external reservation alone is not a rejection, while unknown telemetry, invalid/foreign fence, stale reservation generation, and insufficient capacity fail closed. Stability reports 34 focused capacity/co-admission tests passed, including legacy reservation, owned scheduler digest, and fail-closed cases. Never evict, preempt, unload, or reconfigure another model; preserve reservation owner identity, limits, hardware profile, and CPU fallback.",
       "kind": "code",
       "next_action": "Keep lazy load; verify one subsequent real decision after the Hub restart only when justified by a natural task event, then verify runtime idle lifecycle without synthetic inference. Do not pull models or change GPU policy.",
-      "title": "Udržet Laya službu trvale dostupnou s lazy load",
-      "work_phase": "verification",
-      "work_status": "in_progress",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
@@ -251,92 +267,81 @@
         {
           "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
+            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e",
+            "kind": "working"
           }
         },
         {
           "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Udržet Laya službu trvale dostupnou s lazy load",
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_laya_shadow": {
       "acceptance_criteria": [
-        "The approved Laya plan and spec reflect the complete operator scope, including local-only review without four SSH reviewer keys.",
         "One typed Laya decision service is callable through MCP and root-authorized HTTP with server-bound identity, mode and evidence validation.",
-        "Useful natural examples capture the minimum useful raw content, deterministic baseline, Laya output, outcomes, provenance, runtime metrics and failures; no per-example consent gate exists.",
-        "Operator-confirmed labels and local-model review retain distinct provenance; no cloud fallback and no model review silently becomes a human gold label.",
-        "Capture stays local, scoped, redacted, revalidatable and deletable; group-safe export keeps train, validation and test separate.",
-        "Laya stays shadow-only until category-specific measured benefit and explicit approval; deterministic behavior remains authoritative.",
-        "Lazy load occurs on first request and remains resident for 600 seconds after the latest completed request without evicting other models; runtime evidence stays separate from source validation."
+        "Valid Laya output affects applicable low-risk retrieval, context, model-tier and task-guidance Hub decisions during ordinary use; it is not limited to passive logging.",
+        "Each active category has deterministic baseline, strict option/scope validation, confidence/abstention handling and fallback; unsupported results do not change Hub behavior.",
+        "The service can be used by every connected enabled provider through the shared Hub surface; host identity and permissions remain provider/session scoped.",
+        "Useful natural examples capture minimum necessary request/context, baseline, Laya result, outcomes, provenance, runtime metrics and failures; storage remains local, bounded, redacted, scoped, revalidatable and deletable.",
+        "Operator-confirmed labels and local-model reviews retain distinct provenance; no cloud fallback and no model review silently becomes a human gold label.",
+        "Human-label export and group-safe train/validation/test splits remain gated; user request for active integration does not authorize model training, benchmark generation, model download or publication.",
+        "Lazy load and idle-unload behavior preserves other models and reservations; runtime evidence distinguishes configured, available, loaded and successfully inferred states."
       ],
-      "blocker": "One real completion_gap decision now ran through the pinned local Torch checkpoint on RTX 5070 Ti: suggestion=resolve_blocker, baseline=not_ready, shadow mode, candidate captured, runtime_output_recorded=true, status=pending. Runtime reports execution_verification=NOT_VERIFIED and quality_status=NOT_EVALUATED. No dedicated Laya HTTP decision route was verified; direct /api/agent-state/learning is denied for missing root-scoped access contract.",
+      "blocker": "Latest recorded live evidence is one shadow decision with execution_verification=NOT_VERIFIED and quality_status=NOT_EVALUATED; runtime_status now says service_available=true and model_resident=false. No provider-wide active route or real handshakes are yet verified.",
       "clarifications": [
         {
           "adoption": "adopted",
-          "id": "change_0c5445e1754ea32aba21_e7454cf78ad5b59d5be79ee979b9d157_r2",
+          "id": "change_2026_11_23_laya_active_integration",
           "spec_refs": [
             {
-              "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
+              "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
               "revision": {
-                "content_sha256": "267c9e69571583bd6d88616017a84ba53ef62bd23a17ce766664284d32b0ebb2",
+                "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
+                "kind": "working"
+              }
+            },
+            {
+              "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
                 "kind": "working"
               }
             }
           ],
-          "summary": "Operator clarified prior plan underscoped Laya. Expand beyond context_source metadata shadow: expose typed decisions through MCP and HTTP, integrate decision points where measured gains support reliability/quality/speed/useful behavior, and collect future-training examples including raw content when materially useful. Exclude secrets and unrelated private material; keep capture local, scoped, deletable, provenance-rich, and group-safe. Collect now; fine-tuning remains deferred.",
-          "supersedes": []
-        },
-        {
-          "adoption": "adopted",
-          "id": "change_f3adc9cf5b6a12409cff_2bd0359f1bf66a9ec7f7e76fa1efbf79_r3",
-          "spec_refs": [
-            {
-              "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
-              "revision": {
-                "content_sha256": "deb07822a7c50cf6910600232b6188c219f3200556fc727d92636dce1a4ad52e",
-                "kind": "working"
-              }
-            }
-          ],
-          "summary": "User clarified local review: operator may confirm human labels or capable local Codex/model may review locally with separate provenance; remove four SSH reviewer quorum and cloud fallback. Keep model-review labels distinct from human-confirmed export.",
+          "summary": "User explicitly rejects shadow-only Laya and requests full active integration across Hub/provider workflows.",
           "supersedes": []
         }
       ],
       "depends_on": [],
-      "description": "Single-owner Laya integration. Root-scoped local operator labels use the versioned rubric with separate provenance. Source implements local model-review submission through the root-authorized curate_dataset/laya_operation surface with typed decision/confidence/abstention, server-owned model/provider/revision/device provenance, no caller-supplied identity, and no label/status mutation. Blind candidate get excludes Laya output and earlier labels/reviews; explicit scoped model_review_history and runtime_output_history preserve separation. Read-only runtime_status distinguishes Hub service availability from model residency and keeps NOT_VERIFIED runtime evidence explicit. Model reviews never satisfy human-confirmed training export. No SSH reviewer keys/quorum or cloud fallback. Keep deterministic behavior authoritative until category-specific quality evidence and later approval.",
+      "description": "Complete the local-only Laya decision service and move eligible Hub decisions into ordinary active operation per explicit user steering. Keep typed MCP/root-authorized API contracts, verified task/session scope, local review provenance, bounded/redacted capture, blind candidate review, and group-safe export. Active Laya may influence low-risk central routing; it must not grant permissions, execute tools, approve completion, or mutate task/receipt state.",
       "kind": "code",
-      "next_action": "Retain MCP curate_dataset/laya_operation as the verified local decision interface; add no remote Laya API. Reconcile root-scoped candidate visibility only if the existing HTTP contract supports it, then verify terminal outcome linkage and preserve shadow-only authority.",
-      "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
-      "work_phase": "verification",
-      "work_status": "in_progress",
+      "next_action": "Trace capture and decision call sites, connect one eligible central route to active Laya, then proceed provider by provider with verified identity and status.",
       "spec_refs": [
         {
-          "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
+          "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "content_sha256": "ba6acfe3e0fa8b84f4c4367922f84f0ed5309f2261ce5ca7896b39a6394173a9",
+            "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
             "kind": "working"
           }
         },
         {
-          "path": "docs/superpowers/specs/2026-11-09-laya-decision-service.md",
+          "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "kind": "working",
-            "content_sha256": "494e2fcf68d73efc14975645efc2004ed237179816771ffa2a06c4bd66ecde9e"
-          }
-        },
-        {
-          "path": "docs/superpowers/plans/2026-11-15-laya-extended-integration.md",
-          "revision": {
-            "kind": "working",
-            "content_sha256": "5f6a2c8f0d51df982d91a6f2a21065e405a514d7766f2aa9d741614ae91f6b2a"
+            "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+            "kind": "working"
           }
         }
-      ]
+      ],
+      "title": "Activate Laya across Hub decisions and capture natural outcomes",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
     }
   },
   "title": "Laya decision service: safe staged integration"

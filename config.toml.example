@@ -2,14 +2,28 @@
 # Copy this file to config.toml and adjust for your machine.
 # Full reference with all defaults: defaults.toml
 
+[local_ai_hub]
+config_schema_version = 1
+
+[laya]
+# Active typed advisory decisions run through normal Hub routing; no shadow mode.
+enabled = true
+idle_unload_seconds = 600
+
 [hardware]
 # "auto" detects OS/CPU/RAM/GPU and selects a profile automatically.
 # Profiles: cpu | integrated | low | balanced | high | max
 profile = "auto"
 auto_tune = true
 
+[preprocessing]
+# Trained Qwen 3B file-card model; downloaded and registered from the pinned public artifact on first use.
+model = "qwen2.5-coder-prep-v4:3b"
+
 [models]
-# Use 0.5B for preprocessing, 1.5B for quick/simple requests, 3B for ordinary and more involved work, and 7B for the hardest reasoning.
+# The pinned local Laya checkpoint may be fetched on first eligible inference.
+allow_hf_downloads = true
+# Use the trained Qwen 3B preprocessing model, 1.5B for quick/simple requests, 3B for ordinary and more involved work, and 7B for the hardest reasoning.
 # Check installed aliases with Ollama /api/tags or llama.cpp /models.
 # fast_code = "qwen2.5-coder:1.5b"
 # heavy_code = "qwen2.5-coder:3b"
@@ -68,6 +82,9 @@ port = 11435
 codex = true
 claude = true
 gemini = true
+antigravity = true
+opencode = true
+opencode_plugin_route = true
 # cursor = true
 # windsurf = true
 # vscode = true

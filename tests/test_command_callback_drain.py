@@ -7,7 +7,7 @@ from local_ai_hub.app import LocalAIApp
 
 def _app(tmp_path):
     config = tmp_path / "isolated.toml"
-    config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+    config.write_text("[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
                       + "\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
                       + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
                       + "\n[preprocessing]\nenabled = false\n", encoding="utf-8")

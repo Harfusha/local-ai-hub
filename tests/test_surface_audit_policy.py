@@ -87,7 +87,7 @@ def test_lsp_diagnostics_keep_valid_location_and_zero_values(location):
 def test_mcp_coord_completion_keeps_actionable_proof_with_detail_off(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
     from local_ai_hub.operational_mode import OperationalModeSnapshot
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
@@ -127,7 +127,7 @@ def test_mcp_gate_prevents_diagnostic_work_instead_of_only_hiding_its_output(mon
     from local_ai_hub import mcp_server
     from local_ai_hub.operational_mode import OperationalModeSnapshot
 
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "minimal"}})
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
@@ -251,7 +251,7 @@ def test_status_keeps_operational_health_but_moves_component_internals_to_detail
 
     original = {"success": False, "degraded": True, "hub_online": True,
         "scheduler": {"active_model": "model", "context_pressure": "high"},
-        "debug_traces": {"enabled": False}, "hardware": {"ram": {"used_pct": 70}},
+        "telemetry": {"mode": "minimal"}, "hardware": {"ram": {"used_pct": 70}},
         "repo_cache": {"entries": 50}, "commands": {"executions": 200},
         "http_concurrency": {"waiting": 1}, "runtime_stats": {"switches": 3},
         "dependency_status": {"models": {"degraded": True, "error": "offline", "duration_ms": 42, "deadline_ms": 1000}}}
@@ -288,7 +288,7 @@ def test_status_default_uses_light_producer_without_inspecting_full_runtime(monk
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_redundant_pagination_aliases_are_removed_from_both_output_modes(enabled):
+def test_caller_pagination_fields_are_preserved_in_both_output_modes(enabled):
     from local_ai_hub.agent_diagnostics import project_agent_response
 
     result = project_agent_response({
@@ -296,7 +296,9 @@ def test_redundant_pagination_aliases_are_removed_from_both_output_modes(enabled
         "matches_count": 1, "returned_limit": 1, "total_matches": 5,
         "observed_match_count": 5, "count_exact": True, "has_more": True, "next_offset": 1,
     }, enabled=enabled)
-    assert not {"matches_count", "returned_limit", "observed_match_count"}.intersection(result)
+    assert result["matches_count"] == 1
+    assert result["returned_limit"] == 1
+    assert result["observed_match_count"] == 5
     assert result["returned_count"] == 1
     assert result["total_matches"] == 5
     assert result["next_offset"] == 1

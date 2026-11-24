@@ -32,3 +32,36 @@ def test_agent_header_fallback_does_not_recurse():
     handler.headers = {"X-LocalAI-Agent": "codex"}
 
     assert handler._agent() == "codex"
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["codex", "antigravity", "gemini_cli", "claude", "cursor", "windsurf", "copilot", "opencode", "devin"],
+)
+def test_provider_identity_header_cannot_authorize_remote_admin_request(monkeypatch, provider):
+    monkeypatch.setattr(http_server, "APP", type("App", (), {"config": {"security": {}}})())
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {"X-LocalAI-Agent": provider}
+    handler.path = "/api/admin/config"
+    handler.command = "POST"
+    handler.client_address = ("192.0.2.10", 12345)
+
+    assert handler._agent() == provider
+    assert handler._required_permission() == "admin:write"
+    assert handler._authorized() is False
+    assert handler._authorization_actor == "unrecognized"
+    assert handler._authorization_permissions == frozenset()
+
+
+@pytest.mark.parametrize("provider", ["codex", "antigravity", "gemini_cli", "claude", "cursor", "windsurf", "copilot", "opencode", "devin"])
+def test_provider_identity_does_not_change_single_local_owner(monkeypatch, provider):
+    monkeypatch.setattr(http_server, "APP", type("App", (), {"config": {"security": {}}})())
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {"X-LocalAI-Agent": provider}
+    handler.path = "/api/admin/config"
+    handler.command = "POST"
+    handler.client_address = ("127.0.0.1", 12345)
+
+    assert handler._authorized() is True
+    assert handler._authorization_actor == "local"
+    assert handler._authorization_permissions == frozenset()

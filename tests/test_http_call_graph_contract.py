@@ -36,3 +36,33 @@ def test_post_repo_call_graph_rejects_invalid_depth_before_service_call(monkeypa
     assert calls == []
     assert responses[0][0] == 400
     assert responses[0][1]["error"] == "depth must be an integer from 1 to 2"
+
+
+def test_post_uses_async_delivery_before_synchronous_review_handler(monkeypatch) -> None:
+    calls = []
+    responses = []
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, recovery=None, debug_traces=None))
+    monkeypatch.setattr(http_server, "select_http_routes", lambda *_args: ("post_review_diff_1",))
+    monkeypatch.setattr(http_server, "select_post_handler", lambda _routes: "_handle_post_repository_analysis")
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
+    monkeypatch.setattr(http_server, "_http_hardware_capability_error", lambda *_args: None)
+
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/review/diff"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._require_authorized = lambda: True
+    handler._begin_trace = lambda _path: None
+    handler._read_json = lambda: {"delivery": "auto", "latency_budget_ms": 30_000, "diff": "small diff"}
+    handler._validate_payload = lambda *_args: None
+    handler._claim_recovery = lambda *_args: True
+    handler._handle_telemetry_post = lambda *_args: False
+    handler._async_delivery = lambda path, payload: calls.append((path, payload)) or (202, {"success": True, "job_id": "job-review"})
+    handler._handle_post_repository_analysis = lambda *_args, **_kwargs: calls.append("sync")
+    handler._send = lambda status, body, **_kwargs: responses.append((status, body))
+
+    handler.do_POST()
+
+    assert calls == [
+        ("/api/review/diff", {"delivery": "auto", "latency_budget_ms": 30_000, "diff": "small diff"})
+    ]
+    assert responses == [(202, {"success": True, "job_id": "job-review"})]

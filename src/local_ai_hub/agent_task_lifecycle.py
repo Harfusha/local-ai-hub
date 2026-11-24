@@ -786,12 +786,6 @@ class TaskLifecycleMixin:
         """Record task adoption lineage. Proof artifacts and execution records remain immutable."""
         pass
 
-    def _rebind_verification_receipts_owner(self, task_id: str, new_owner: str) -> None:
-        """Historical alias; delegates to immutable adoption recording."""
-        current = self.get(task_id)
-        prev = current.owner if current else ""
-        self._record_task_adoption(task_id, prev, new_owner)
-
     def preflight_completion_response_budget(
         self,
         task_id: str,

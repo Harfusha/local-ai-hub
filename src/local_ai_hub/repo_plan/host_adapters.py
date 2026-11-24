@@ -29,7 +29,7 @@ MANAGED_PLANNER_INSTRUCTIONS = f"""{PLANNER_BLOCK_START}
 - **Contract & Clarifications**: Create or update the specification through Superpowers. For changed requirements, record the clarification on the task and call `plan_reconcile_steering` with a stable steering ID, current plan revision, current spec revision, spec path/content, summary, and acceptance criteria before dependent edits when exposed by the active MCP schema. If unavailable, use the Hub's supported project-plan interface or report the precise blocker; never edit plan storage directly.
 - **Agent OS Checkpoint Sync**: Checkpoint progress through `local_ai_coord(action="task_checkpoint")`. Bound tasks automatically synchronize progress, phase, next action, and blockers to the plan file.
 - **Checkpoint Recovery**: If a checkpoint persisted but plan sync failed, resolve the error, reread the plan revision, and call `plan_bind_task` again with the same task and session. `checkpoint_sync="reconciled"` confirms the pending projection was applied; `not_pending` does not prove the task and plan agree. Do not overwrite conflicting plan edits or repeat the persisted task mutation.
-- **Kanban & Briefings**: Board views (`board_summary`, `board_item_list`) and `session_briefing` reflect the authoritative plan files.
+- **Kanban & Briefings**: `plan_board_view(root=<absolute repository path>)` and `session_briefing(root=<absolute repository path>)` read the authoritative plan files.
 - **Authentic Verification**: Use `plan_validate` for plan validity; it does not replace authentic per-criterion command receipts. Complete bound tasks through the receipt-gated Agent OS workflow.
 - **Interruption & Resumption**: On interruption, preserve explicit blockers and next actions in the checkpoint rather than restarting with a blank plan.
 {PLANNER_BLOCK_END}"""
@@ -325,6 +325,73 @@ class HostStreamObservation:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def parse_cursor_session_start_event(payload: Any) -> HostStreamObservation:
+    """Extract an unverified, content-free Cursor session-start observation."""
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "sessionStart":
+        raise ValueError("unsupported Cursor hook event")
+    conversation_id = _contract_token(payload.get("conversation_id"), "conversation_id")
+    roots = payload.get("workspace_roots")
+    if not isinstance(roots, list) or len(roots) != 1:
+        raise ValueError("Cursor session start requires one workspace root")
+    root = roots[0]
+    if not isinstance(root, str) or not Path(root).is_absolute():
+        raise ValueError("invalid Cursor workspace root")
+    version = payload.get("cursor_version")
+    if version is not None:
+        _contract_token(version, "cursor_version", limit=80)
+    session_ref = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()
+    event_id = hashlib.sha256(f"cursor\0{conversation_id}\0sessionStart\0{root}".encode("utf-8")).hexdigest()
+    return HostStreamObservation(
+        host_name="cursor",
+        surface="hook",
+        session_type="agent",
+        session_ref=session_ref,
+        event_id=event_id,
+        event_type="session.initialized",
+        sequence=0,
+        verification_status=HostVerificationStatus.NOT_VERIFIED,
+    )
+
+
+def parse_gemini_cli_hook_event(payload: Any) -> HostStreamObservation:
+    """Extract content-free Gemini CLI hook metadata without treating it as proof."""
+    if not isinstance(payload, dict):
+        raise ValueError("invalid Gemini CLI hook event")
+    event = payload.get("hook_event_name")
+    event_types = {
+        "SessionStart": "session.initialized",
+        "BeforeAgent": "agent.started",
+        "BeforeTool": "tool.started",
+        "AfterTool": "tool.completed",
+    }
+    if event not in event_types:
+        raise ValueError("unsupported Gemini CLI hook event")
+    session_id = _contract_token(payload.get("session_id"), "session_id")
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+        raise ValueError("invalid Gemini CLI working directory")
+    tool_name = ""
+    if event in {"BeforeTool", "AfterTool"}:
+        tool_name = _contract_token(payload.get("tool_name"), "tool_name", limit=160)
+    timestamp = payload.get("timestamp", "")
+    if timestamp:
+        timestamp = _contract_token(timestamp, "timestamp", limit=100)
+    session_ref = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    event_id = hashlib.sha256(
+        f"gemini_cli\0{session_id}\0{event}\0{timestamp}\0{tool_name}".encode("utf-8")
+    ).hexdigest()
+    return HostStreamObservation(
+        host_name="gemini_cli",
+        surface="hook",
+        session_type="agent",
+        session_ref=session_ref,
+        event_id=event_id,
+        event_type=event_types[event],
+        sequence=0,
+        verification_status=HostVerificationStatus.NOT_VERIFIED,
+    )
 
 
 def resolve_antigravity_cli() -> Path | None:

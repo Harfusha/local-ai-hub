@@ -40,7 +40,7 @@ def test_maintenance_blocks_all_agent_actions_before_job_dispatch(tmp_path, monk
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 
-    blocked = mcp_server.local_ai_task(action="reason", task="do work")
+    blocked = mcp_server.local_ai_task(action="reason", problem="do work")
     status = mcp_server.local_ai_task(action="status", job_id="existing-job")
 
     assert blocked["success"] is False

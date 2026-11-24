@@ -95,15 +95,7 @@ def local_ai_coord(
     min_receipts: int = 1,
     laya_operation: dict[str, Any] | None = None,
     name: str = "",
-    item_id: str = "",
     title: str = "",
-    priority: str = "",
-    labels: list[str] | None = None,
-    assignee: str = "",
-    milestone: str = "",
-    linked_task_id: str = "",
-    details: dict[str, Any] | None = None,
-    target_date: str = "",
     description: str = "",
     capacity: int = 1,
     timeout: float = 0.0,
@@ -115,21 +107,12 @@ def local_ai_coord(
     operator_waiver: dict[str, Any] | None = None,
     acceptance_criteria: list[str] | None = None,
     criteria: list[str] | None = None,
-    error: str = "",
     kind: str = "",
-    changed_paths: list[str] | None = None,
-    path: str = "",
-    file: str = "",
     next_action: str = "",
     blockers: list[str] | None = None,
     evidence_ids: list[str] | None = None,
-    id: str = "",
     summary: str = "",
     result: str = "",
-    timeout_seconds: float = 0.0,
-    notes: str = "",
-    state_data: dict[str, Any] | None = None,
-    resource: str = "",
     plan_id: str = "",
     expected_revision: str | None = None,
     idempotency_key: str = "",
@@ -196,10 +179,6 @@ def local_ai_coord(
                         if name in signature.parameters and value != signature.parameters[name].default}
         else:
             supplied = dict(supplied)
-        # Some MCP hosts attach current-task metadata to every coordination
-        # call. Plans have their own task/path contract, so these envelope
-        # fields must not make plan actions fail strict per-action validation.
-        supplied.pop("changed_paths", None)
         error = services_module.validate_operation_arguments("local_ai_coord", action, supplied)
         if error:
             return services_module.contract_error(error, status_code=400)
@@ -366,30 +345,6 @@ def local_ai_coord(
                     incomplete["rel_path"] = result["rel_path"]
                 return incomplete
         return projected
-    if changed_paths is not None and not paths:
-        paths = changed_paths
-    if (path or file) and not paths:
-        paths = [p for p in (path, file) if p]
-    if id and not task_id and (action.startswith("task_") or action in {"verify_completion", "verify_export"}):
-        task_id = id
-    if id and not item_id and action.startswith("board_item_"):
-        item_id = id
-    if id and not question_id and action in {"ask", "answer"}:
-        question_id = id
-    if (summary or result) and not reason:
-        reason = summary or result
-    if timeout_seconds and not timeout:
-        timeout = timeout_seconds
-    if isinstance(labels, str):
-        labels = [labels]
-    if action.startswith("board_item_") and task_id and not linked_task_id:
-        linked_task_id = task_id
-    if resource and not name:
-        name = resource
-    if state and not status and action == "task_list":
-        status = state
-    if notes and not next_action:
-        next_action = notes
     if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= services_module.MAX_EVENT_SEQUENCE):
         return services_module.contract_error(f"after_seq must be an integer between 0 and {services_module.MAX_EVENT_SEQUENCE}")
     if not isinstance(action, str) or action not in services_module.operation_actions("local_ai_coord", None):
@@ -702,14 +657,6 @@ def local_ai_coord(
         "semaphore_acquire": {k: v for k, v in {"root": root, "name": name, "capacity": capacity, "timeout": timeout, "ttl_seconds": ttl_seconds, "purpose": purpose, "owner": owner}.items() if v is not None and v != ""},
         "semaphore_release": {k: v for k, v in {"root": root, "name": name, "lease_id": lease_id, "owner": owner}.items() if v is not None and v != ""},
         "semaphore_status": {k: v for k, v in {"root": root, "name": name}.items() if v is not None and v != ""},
-        "board_item_create": {k: v for k, v in {"root": root, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id or task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
-        "board_item_update": {k: v for k, v in {"root": root, "item_id": item_id or id, "title": title or name, "status": status, "priority": priority, "labels": labels, "assignee": assignee, "milestone": milestone, "linked_task_id": linked_task_id or task_id, "details": details or ({"description": description} if description else None)}.items() if v is not None and v != ""},
-        "board_item_get": {"root": root, "item_id": item_id},
-        "board_item_delete": {"root": root, "item_id": item_id},
-        "board_item_list": {k: v for k, v in {"root": root, "status": status, "priority": priority, "milestone": milestone, "assignee": assignee, "limit": limit}.items() if v is not None and v != ""},
-        "board_summary": {"root": root},
-        "milestone_create": {k: v for k, v in {"root": root, "name": name, "target_date": target_date, "description": description}.items() if v is not None and v != ""},
-        "milestone_status": {"root": root, "name": name},
         "session_briefing": {k: v for k, v in {"root": root, "session_id": session_id, "include": include}.items() if v is not None and v != ""},
     }
     if action in coord_canonical_inputs:
@@ -865,29 +812,27 @@ def local_ai_coord(
             if owner:
                 task_kwargs["owner"] = owner
         if action == "task_fail":
-            fail_reason = reason or error or message or "Task failed"
+            fail_reason = reason or "Task failed"
             task_kwargs["reason"] = fail_reason
         if action == "task_create":
-            task_goal = goal or task or title or description or ""
-            crit_list = acceptance_criteria if acceptance_criteria is not None else criteria
-            if crit_list is None:
-                crit_list = [criterion] if criterion else []
-            if contract is None and (task_goal or crit_list):
-                contract = {
-                    "goal": task_goal,
-                    "acceptance_criteria": crit_list,
-                    "scope": scope or "task",
-                    "non_goals": [],
-                    "constraints": [],
-                    "risk_profile": "normal",
-                }
-                task_kwargs["contract"] = contract
-            elif contract is not None and isinstance(contract, dict):
-                task_kwargs["contract"] = dict(contract)
-            if task:
-                task_kwargs["task"] = task
-            if paths:
-                task_kwargs["changed_paths"] = paths[:64]
+            task_inputs: dict[str, services_module.Any] = {
+                "root": root, "task_id": task_id, "contract": contract,
+            }
+            flat_fields = {
+                "goal": goal, "task": task, "paths": paths, "scope": scope,
+                "acceptance_criteria": acceptance_criteria, "criteria": criteria,
+                "title": title, "description": description,
+                "criterion": criterion,
+            }
+            task_inputs.update({
+                field: value for field, value in flat_fields.items()
+                if value is not None and value not in ("", [], False, 0)
+            })
+            validation_error = services_module.validate_operation_arguments(
+                "local_ai_coord", "task_create", task_inputs,
+            )
+            if validation_error is not None:
+                return services_module.contract_error(validation_error, status_code=400)
         if action == "task_complete" and allow_adopt:
             task_kwargs["allow_adopt"] = True
         if action == "task_complete" and operator_waiver is not None:
@@ -1178,16 +1123,11 @@ def local_ai_coord(
         ), "status", ["service_available", "model_resident", "runtime"])
     if action in {
         "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
-        "board_item_create", "board_item_update", "board_item_get", "board_item_delete",
-        "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing",
+        "session_briefing",
     }:
-        item_title = (title or name) if action.startswith("board_item_") else title
-        item_details = (details or ({"description": description} if description else None)) if action.startswith("board_item_") else details
         coord_kwargs = dict(
             action=action, root=root,
-            name=name, item_id=item_id, title=item_title, status=status, priority=priority,
-            labels=labels, assignee=assignee, milestone=milestone, linked_task_id=linked_task_id,
-            details=item_details, target_date=target_date, description=description,
+            name=name,
             capacity=capacity, timeout=timeout, ttl_seconds=ttl_seconds, purpose=purpose,
             owner=owner, lease_id=lease_id, topic=topic,
             filter=filter or filter_payload, limit=limit, include=include, session_id=session_id,

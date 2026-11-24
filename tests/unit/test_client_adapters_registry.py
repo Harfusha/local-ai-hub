@@ -31,6 +31,8 @@ from local_ai_hub.client_adapters.adapters.cursor import (
     WindsurfAdapter,
 )
 
+from local_ai_hub.client_adapters.adapters.devin import DevinAdapter
+
 from local_ai_hub.client_adapters.adapters.vscode import (
     VSCodeCopilotAdapter,
 )
@@ -48,10 +50,11 @@ def test_registry_contains_all_default_adapters():
     clients = ClientRegistry.all_clients()
     expected = {
         "antigravity", "gemini_antigravity", "codex", "claude",
-        "opencode", "cursor", "windsurf", "vscode", "copilot",
+        "opencode", "cursor", "windsurf", "devin", "vscode", "copilot",
         "gemini_cli", "generic_mcp"
     }
     assert expected.issubset(set(clients))
+    assert VSCodeCopilotAdapter.capabilities.hook_support.value == "pre_post_tool"
 
 
 def test_detect_client_from_header():
@@ -61,6 +64,7 @@ def test_detect_client_from_header():
     assert detect_client(agent_header="opencode-local") == "opencode"
     assert detect_client(agent_header="cursor-ide") == "cursor"
     assert detect_client(agent_header="windsurf-cascade") == "windsurf"
+    assert detect_client(agent_header="devin-local") == "devin"
     assert detect_client(agent_header="copilot-chat") == "vscode"
     assert detect_client(agent_header="vscode/1.96") == "vscode"
     assert detect_client(agent_header="gemini-cli") == "gemini_cli"
@@ -100,7 +104,7 @@ def test_get_adapter_resolution():
 
     adapter_opencode = get_adapter("opencode")
     assert isinstance(adapter_opencode, OpenCodeAdapter)
-    assert "local_ai_work" not in adapter_opencode.capabilities.tool_filter
+    assert "local_ai_work" in adapter_opencode.capabilities.tool_filter
     assert "local_ai_status" in adapter_opencode.capabilities.tool_filter
 
     adapter_cursor = get_adapter("cursor")
@@ -108,6 +112,9 @@ def test_get_adapter_resolution():
 
     adapter_windsurf = get_adapter("windsurf")
     assert isinstance(adapter_windsurf, WindsurfAdapter)
+    assert adapter_windsurf.capabilities.hook_support.value == "pre_post_tool"
+
+    assert isinstance(get_adapter("devin"), DevinAdapter)
 
     adapter_vscode = get_adapter("vscode")
     assert isinstance(adapter_vscode, VSCodeCopilotAdapter)
@@ -128,4 +135,4 @@ def test_opencode_tool_filtering():
     ]
     filtered = adapter.filter_tools(tools)
     names = [t["name"] for t in filtered]
-    assert names == ["local_ai_status", "local_ai_repo"]
+    assert names == ["local_ai_status", "local_ai_repo", "local_ai_work"]

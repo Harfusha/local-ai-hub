@@ -1732,57 +1732,6 @@ class HubClient:
             return self.post("/api/coord/semaphore_status", {
                 "name": kwargs.get("name") or None,
             })
-        if act == "board_item_create":
-            return self.post("/api/coord/board_item_create", {
-                "title": kwargs.get("title", ""),
-                "status": kwargs.get("status", "planned"),
-                "priority": kwargs.get("priority", "medium"),
-                "labels": kwargs.get("labels"),
-                "assignee": kwargs.get("assignee", ""),
-                "milestone": kwargs.get("milestone", ""),
-                "linked_task_id": kwargs.get("linked_task_id", ""),
-                "details": kwargs.get("details"),
-            })
-        if act == "board_item_update":
-            return self.post("/api/coord/board_item_update", {
-                "item_id": kwargs.get("item_id", ""),
-                "title": kwargs.get("title"),
-                "status": kwargs.get("status"),
-                "priority": kwargs.get("priority"),
-                "labels": kwargs.get("labels"),
-                "assignee": kwargs.get("assignee"),
-                "milestone": kwargs.get("milestone"),
-                "linked_task_id": kwargs.get("linked_task_id"),
-                "details": kwargs.get("details"),
-            })
-        if act == "board_item_get":
-            return self.post("/api/coord/board_item_get", {
-                "item_id": kwargs.get("item_id", ""),
-            })
-        if act == "board_item_delete":
-            return self.post("/api/coord/board_item_delete", {
-                "item_id": kwargs.get("item_id", ""),
-            })
-        if act == "board_item_list":
-            return self.post("/api/coord/board_item_list", {
-                "status": kwargs.get("status"),
-                "priority": kwargs.get("priority"),
-                "milestone": kwargs.get("milestone"),
-                "assignee": kwargs.get("assignee"),
-                "limit": kwargs.get("limit", 50),
-            })
-        if act == "board_summary":
-            return self.post("/api/coord/board_summary", {})
-        if act == "milestone_create":
-            return self.post("/api/coord/milestone_create", {
-                "name": kwargs.get("name", ""),
-                "target_date": kwargs.get("target_date", ""),
-                "description": kwargs.get("description", ""),
-            })
-        if act == "milestone_status":
-            return self.post("/api/coord/milestone_status", {
-                "name": kwargs.get("name", ""),
-            })
         if act == "session_briefing":
             return self.post("/api/coord/session_briefing", {
                 "include": kwargs.get("include"),
@@ -1937,20 +1886,14 @@ class HubClient:
 
     def create_task(
         self,
-        goal: str,
-        acceptance_criteria: list[str] | None = None,
+        contract: Mapping[str, Any],
         task_id: str = "",
-        scope: str = "task",
         root: str | None = None,
-        **kwargs: Any,
     ) -> dict[str, Any]:
         payload = {
-            **kwargs,
             "action": "create",
-            "goal": goal,
-            "acceptance_criteria": acceptance_criteria or [],
+            "contract": dict(contract),
             "task_id": task_id,
-            "scope": scope,
         }
         if root is not None:
             payload["root"] = root

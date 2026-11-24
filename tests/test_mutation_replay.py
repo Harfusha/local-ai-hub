@@ -1633,7 +1633,7 @@ def test_http_request_journal_replays_action_mutations_once(
     app = SimpleNamespace(
         config={
             "agent_state": {"retention_days": 30},
-            "debug_traces": {"enabled": True},
+            "telemetry": {"mode": "full"},
             "security": {
                 "allowed_roots": [task_root],
             },

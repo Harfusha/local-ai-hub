@@ -1,7 +1,7 @@
-"""Local adapter for Laya shadow decisions and scoped training capture.
+"""Local adapter for active Laya advisories and scoped outcome capture.
 
 LocalAIApp keeps the Laya service available for its lifetime and schedules
-eligible shadow evaluation after ordinary context retrieval. The provider is
+eligible advisory evaluation during ordinary context retrieval. The provider is
 loaded on demand from the pinned local checkpoint, then retained for the
 configured idle window after the latest completed Laya request. Decisions use
 typed signals and authorized evidence IDs, with separately bounded and redacted
@@ -250,12 +250,8 @@ class _LayaWorkerSession:
         return terminated is True or self._process.poll() is not None
 
 
-def select_laya_device(
-    candidates: Sequence[DeviceCandidate], *, evaluation_mode: bool = False
-) -> DeviceCandidate:
+def select_laya_device(candidates: Sequence[DeviceCandidate]) -> DeviceCandidate:
     """Choose the best compatible device; production selection requires quality pass."""
-    if type(evaluation_mode) is not bool:
-        raise ValueError("evaluation_mode must be a boolean")
     if isinstance(candidates, (str, bytes)):
         raise ValueError("device candidates must be a sequence of candidates")
     usable = [
@@ -264,7 +260,7 @@ def select_laya_device(
         if isinstance(candidate, DeviceCandidate)
         and candidate.available
         and candidate.supports_laya
-        and (evaluation_mode or candidate.quality_passed is True)
+        and candidate.quality_passed is True
     ]
     if not usable:
         raise RuntimeError("no Laya device has passed its quality gate")
@@ -390,7 +386,7 @@ class _LayaCapacityUnavailable(LayaRuntimeUnavailable):
 
 
 class LayaRuntimeAdapter:
-    """Run typed shadow decisions against an explicit local checkpoint.
+    """Run typed active-advisory decisions against a local checkpoint.
 
     Callers supply validated requests and inputs. There is no import-time or
     startup model load; the shared session lifecycle loads on first inference.
@@ -405,7 +401,7 @@ class LayaRuntimeAdapter:
         revision: str,
         expected_sha256: Mapping[str, str],
         device_candidates: Sequence[DeviceCandidate],
-        evaluation_mode: bool = False,
+        enabled: bool = True,
         loader: Callable[..., Any] | None = None,
         runtime_python: str | Path | None = None,
         capacity_manager: Any | None = None,
@@ -436,9 +432,9 @@ class LayaRuntimeAdapter:
         self.revision = revision
         self.expected_sha256 = hashes
         self.device_candidates = tuple(device_candidates)
-        if type(evaluation_mode) is not bool:
-            raise ValueError("evaluation_mode must be a boolean")
-        self.evaluation_mode = evaluation_mode
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        self.enabled = enabled
         self._loader = loader
         self._runtime_python = Path(runtime_python) if runtime_python is not None else None
         if self._runtime_python is not None and not self._runtime_python.is_absolute():
@@ -486,7 +482,7 @@ class LayaRuntimeAdapter:
                 for candidate in self.device_candidates
                 if candidate.available
                 and candidate.supports_laya
-                and (self.evaluation_mode or candidate.quality_passed is True)
+                and candidate.quality_passed is True
                 and (candidate.provider, candidate.device) not in self._failed_devices
             ),
             key=lambda item: (_DEVICE_PRIORITY[item.device_class], item.provider, item.device),
@@ -792,11 +788,11 @@ class LayaRuntimeAdapter:
         session_lifecycle: Any,
         outcome_recorder: Callable[[DecisionRequest, Any, LayaRuntimeOutcome], Any] | None = None,
     ) -> LayaRuntimeOutcome:
-        """Evaluate one typed shadow request; callers own auth and identity checks."""
+        """Evaluate one typed request; callers own auth, identity, and application policy."""
         if not isinstance(request, DecisionRequest):
             raise ValueError("validated Laya decision request is required")
-        if request.mode is not DecisionMode.SHADOW:
-            raise ValueError("only explicit shadow evaluation mode is supported")
+        if request.mode is not DecisionMode.ADVISORY:
+            raise ValueError("only active Laya advisory decisions are supported")
         if request.category is DecisionCategory.CONTEXT_SOURCE:
             if not isinstance(decision_input, ContextSourceEvidence):
                 raise ValueError("validated context-source evidence is required")
@@ -808,7 +804,7 @@ class LayaRuntimeAdapter:
             raise TypeError("outcome_recorder must be callable")
         if not callable(getattr(session_lifecycle, "inference_session", None)):
             raise TypeError("shared Laya session lifecycle is required")
-        if not self.evaluation_mode:
+        if not self.enabled:
             skipped = DecisionResult(
                 request=request,
                 success=False,
@@ -931,7 +927,7 @@ class LayaRuntimeAdapter:
                             decision=decision, runtime=runtime, capture_status="captured"
                         )
                     except Exception:
-                        # Shadow capture is observational: storage trouble cannot alter the decision.
+                        # Outcome capture cannot alter the active advisory decision.
                         outcome = LayaRuntimeOutcome(
                             decision=decision, runtime=runtime, capture_status="failed"
                         )

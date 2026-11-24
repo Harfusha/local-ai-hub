@@ -48,12 +48,12 @@ def test_default_profiles_are_advisory_and_use_fast_model() -> None:
     assert catalog.resolve("qwen-critic").advisory_only is True
 
 
-def test_aliases_and_unknown_profiles_are_deterministic() -> None:
+def test_short_profile_aliases_and_unknown_profiles_are_rejected() -> None:
     catalog = _catalog()
 
-    assert catalog.resolve("explorer").name == "qwen-explorer"
-    with pytest.raises(ValueError, match="qwen-explorer"):
-        catalog.resolve("writer")
+    for name in ("explorer", "drafter", "critic", "writer"):
+        with pytest.raises(ValueError, match="qwen-explorer"):
+            catalog.resolve(name)
 
 
 def test_model_resolution_does_not_select_unavailable_model() -> None:
@@ -161,7 +161,7 @@ def test_run_profile_routes_resolved_profile_and_metadata() -> None:
         return {"success": True, "text": "návrh"}
 
     agent.run = fake_run
-    result = agent.run_profile("drafter", "Navrhni opravu", "C:\\repo")
+    result = agent.run_profile("qwen-drafter", "Navrhni opravu", "C:\\repo")
 
     assert captured["model"] == "qwen2.5-coder:7b"
     assert captured["role"] == "drafter"
@@ -169,6 +169,16 @@ def test_run_profile_routes_resolved_profile_and_metadata() -> None:
     assert result["profile"] == "qwen-drafter"
     assert result["language"] == "cs"
     assert result["advisory_only"] is True
+
+
+def test_run_profile_rejects_short_profile_alias() -> None:
+    agent = object.__new__(ToolAwareLocalAgent)
+    agent.profile_catalog = _catalog()
+
+    result = agent.run_profile("drafter", "Navrhni opravu", "C:\\repo")
+
+    assert result["unsupported"] is True
+    assert "qwen-explorer" in result["error"]
 
 
 def test_run_profile_rejects_unavailable_model_without_fallback() -> None:

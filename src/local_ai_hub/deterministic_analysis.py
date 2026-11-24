@@ -187,8 +187,16 @@ class DeterministicAnalysisMixin:
         """Render a terse deterministic answer without invoking any model."""
         return render_deterministic_answer(result, max_items)
 
-    def related_paths(self, root: str, query: str, limit: int = 24) -> list[str]:
-        result = self.query(root, query, limit=max(limit, 24))
+    def related_paths(
+        self,
+        root: str,
+        query: str,
+        limit: int = 24,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> list[str]:
+        if result is None:
+            result = self.query(root, query, limit=max(limit, 24))
         return rank_related_paths(result, limit)
 
     def context_pack(self, root: str, query: str, max_chars: int = 5200, max_raw_evidence: int = 5) -> dict[str, Any]:
@@ -241,8 +249,16 @@ class DeterministicAnalysisMixin:
 
         if self.code_index is not None and used < max_chars:
             try:
+                indexed_symbols = result.get("code_index")
+                symbol_result = (
+                    indexed_symbols
+                    if isinstance(indexed_symbols, dict)
+                    and isinstance(indexed_symbols.get("symbols"), list)
+                    else None
+                )
                 sym_text, symbol_truncated = build_symbol_context(
-                    self.code_index, root, query, self._terms(query), max_chars, used
+                    self.code_index, root, query, self._terms(query), max_chars, used,
+                    symbol_result=symbol_result,
                 )
             except Exception:
                 sym_text, symbol_truncated = "", False

@@ -1,0 +1,53 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Verify official FP4 model variants ahead of installation, save them as package data and have installer/runtime consume static results without probing.",
+  "id": "plan_382d8377f040",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-23-installer-fp4-model-audit.md",
+      "revision": {
+        "content_sha256": "f9383883b5cb4c956405d161dc5c5955eee18fdd267fa726c8ad70eb9cb6d92f",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_fp4_inventory": {
+      "acceptance_criteria": [
+        "Inventory every unique model ID and role across all tiers, including preprocessing, background/subagents, fast, heavy, reasoning, general, vision and conditional max 32B.",
+        "For every unique model, locate an exact NVFP4 checkpoint or produce one from the same base weights as its Q4 comparator; record immutable revisions/digests.",
+        "Run same-model FP4 versus Q4 inference with identical prompts, settings and supported backend for every feasible pair; score correctness/quality and record latency/VRAM.",
+        "Do not compare different model versions, sizes or runtimes as a pure quantization A/B; label any necessary backend differences and their limits.",
+        "Use only approved model downloads/conversions; user authorized all required FP4 assets and conversions for this evaluation.",
+        "Record all model IDs, sources, digests, runtimes, prompts, scores, measurements, unsupported cases and recommendations in a reviewable evaluation artifact and catalog."
+      ],
+      "blocker": "14B strict quantization-only comparison is unverified: a community checkpoint ilessio-aiflowlab/Qwen2.5-Coder-14B-Instruct-NVFP4-anima revision 93ea0239bcc734939d2b320b0f78c651e44df070 was converted and measured with llama.cpp against Ollama Q4_K_M. Provisional result: quality 8/8 both, median client throughput Q4 79.43 vs NVFP4 72.54 tok/s (NVFP4 8.7% slower); exact upstream revisions are missing on both artifacts. Local ModelOpt export of the pinned 14B base also failed on this Windows host. MiniCPM-V source is gated behind contact-sharing agreement. Conditional 32B exceeds 16GB VRAM; surfaced name-only candidate says INT4 weight-only, not NVFP4. Local ModelOpt 0.48 + Transformers 5.24.0 smaller-model results remain exploratory/untested combination.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Evaluate configured Q4 model artifacts against same-source NVFP4 across every tier model-role pair. Use identical prompts and generation settings. Distinguish measured quality from cross-runtime speed; NF4 is only an optional CUDA diagnostic, not the product Q4 comparator or proof of native FP4 acceleration.",
+      "kind": "code",
+      "next_action": "For a strict 14B A/B obtain both Q4 and NVFP4 tied to one exact upstream revision and rerun same-runtime evaluation. MiniCPM needs an operator-authorized source or approval of its contact-sharing gate. Conditional 32B needs a verified NVFP4 artifact and larger GPU/runtime. Keep route catalog unchanged until full all-role coverage and quality criteria pass.",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-23-installer-fp4-model-audit.md",
+          "revision": {
+            "content_sha256": "70f3cb2dfbbd07e958d0d53583761c893d0032fdb7ef474889cd9535b05ebe92",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-23-fp4-q4-model-evaluation.md",
+          "revision": {
+            "content_sha256": "9e9c408ce14419f7f0d764d3191f34184454e9331a16ede15704edb50842623f",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Run all-tier FP4 versus Q4 evaluation",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Pre-checked FP4 capability catalog"
+}

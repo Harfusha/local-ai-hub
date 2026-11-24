@@ -41,7 +41,7 @@ def test_registered_source_reads_five_exact_lines_with_provenance(tmp_path, monk
     data = "".join(f"line_{index}\n" for index in range(1, 11)).encode()
     source.write_bytes(data)
     payload, wire = _wire(monkeypatch, tmp_path, "local_ai_artifact", {
-        "action": "source", "path": str(source) if absolute else "sample.py",
+        "action": "source", "root": str(tmp_path), "path": str(source) if absolute else "sample.py",
         "line_start": 3, "line_end": 7, "max_response_tokens": 1800,
     })
     assert payload["success"] is True, payload
@@ -58,7 +58,7 @@ def test_registered_source_rejects_outside_workspace(tmp_path, monkeypatch):
     outside = tmp_path / "outside.py"
     outside.write_text("sentinel\n", encoding="utf-8")
     payload, _ = _wire(monkeypatch, root, "local_ai_artifact", {
-        "action": "source", "path": str(outside), "line_start": 1, "line_end": 1,
+        "action": "source", "root": str(root), "path": str(outside), "line_start": 1, "line_end": 1,
     })
     assert payload["success"] is False
     assert payload["terminal"] is True and payload["retryable"] is False
@@ -89,7 +89,7 @@ def test_source_never_claims_trimmed_transport_text_is_exact(tmp_path, monkeypat
     source = tmp_path / "wide.py"
     source.write_text("x" * 10000 + "\n", encoding="utf-8")
     payload, wire = _wire(monkeypatch, tmp_path, "local_ai_artifact", {
-        "action": "source", "path": "wide.py", "line_start": 1, "line_end": 1,
+        "action": "source", "root": str(tmp_path), "path": "wide.py", "line_start": 1, "line_end": 1,
         "max_chars": 12000, "max_response_tokens": 512,
     })
     from local_ai_hub.token_accounting import json_tokens
@@ -101,7 +101,7 @@ def test_source_paginates_long_unicode_line_and_fences_revisions(tmp_path, monke
     source = tmp_path / "plan.json"
     original = '"' + ("Příliš dlouhý řádek 🐱 " * 700) + '"\n'
     source.write_bytes(original.encode("utf-8"))
-    arguments = {"action": "source", "path": "plan.json", "line_start": 1, "line_end": 1,
+    arguments = {"action": "source", "root": str(tmp_path), "path": "plan.json", "line_start": 1, "line_end": 1,
                  "max_chars": 4000, "max_response_tokens": 10000}
     first, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", arguments)
     assert first["success"] is True and first["next_offset"] is not None
@@ -125,7 +125,7 @@ def test_source_paginates_long_unicode_line_and_fences_revisions(tmp_path, monke
     assert changed["success"] is False
     assert "text" not in changed
     batch, _ = _wire(monkeypatch, tmp_path, "local_ai_artifact", {
-        "action": "source", "slices": [{"path": "plan.json", "line_start": 1, "line_end": 1}],
+        "action": "source", "root": str(tmp_path), "path": "plan.json", "slices": [{"path": "plan.json", "line_start": 1, "line_end": 1}],
         "offset": first["next_offset"], "expected_file_sha256": digest,
     })
     assert batch["success"] is False

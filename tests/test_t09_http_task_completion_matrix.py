@@ -150,7 +150,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
     state_dir.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         "[prewarm]\nenabled = false\n"
         "[preprocessing]\nenabled = false\n"

@@ -42,7 +42,6 @@ def local_ai_task(
     max_tokens: int = 0,
     context_tokens: int | None = None,
     tasks: list[dict[str, Any]] | None = None,
-    items: list[Any] | None = None,
     cases: list[dict[str, Any]] | None = None,
     delivery: str = "sync",
     latency_budget_ms: float = 0.0,
@@ -77,14 +76,8 @@ def local_ai_task(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
-    path: str = "",
-    image_path: str = "",
-    audio_path: str = "",
-    file: str = "",
     code: str = "",
-    diff: str = "",
     problem: str = "",
-    query: str = "",
     question: str = "",
     text: str = "",
 ) -> dict[str, Any]:
@@ -112,8 +105,6 @@ def local_ai_task(
     model. Use when: one bounded semantic task should run on a configured
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
-    if items and not tasks:
-        tasks = items
     if action not in services_module.operation_actions("local_ai_task", services_module.FEATURES):
         return services_module._invalid_action(
             "local_ai_task",
@@ -122,6 +113,12 @@ def local_ai_task(
             "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.",
         )
     retired_inputs = {
+        "delegate": {"prompt", "problem"},
+        "explore": {"prompt", "problem"},
+        "reason": {"task", "prompt"},
+        "review": {"context", "candidate", "prompt"},
+        "second_opinion": {"task", "prompt", "code"},
+        "compress": {"context", "prompt", "candidate"},
         "hardware_benchmark": {"task"},
         "speculative_draft": {"prompt", "workspace"},
         "vision": {"task", "context"},
@@ -137,6 +134,8 @@ def local_ai_task(
     input_values = {
         "task": task, "prompt": prompt, "context": context,
         "candidate": candidate, "workspace": workspace, "model": model,
+        "problem": problem, "question": question,
+        "text": text, "code": code,
         "context_tokens": context_tokens,
         "root": root, "language": language, "candidate_data": candidate_data,
         "evaluation_task_id": evaluation_task_id,
@@ -252,12 +251,6 @@ def local_ai_task(
         if max_tokens and (type(max_tokens) is not int or max_tokens < output_floor):
             return {"success": False, "error": f"max_tokens must be at least {output_floor} when specified for {action}",
                     "operation_not_started": True, "terminal": True, "retryable": False}
-        if not task and prompt:
-            task = prompt
-        if not task and query:
-            task = query
-        if not task and problem:
-            task = problem
     if action in {"candidate_create", "candidate_promote"}:
         if action == "candidate_create":
             return services_module._compact(services_module.CLIENT.post("/api/agent-state/learning", {
@@ -350,8 +343,10 @@ def local_ai_task(
             "conversation_id": conversation_id, "task": task, "context": context,
         }, timeout=services_module._timeout("model")), task=task, context=context, changed_paths=changed_paths), task_context_meta), "delegate")
     if profile:
+        profile_task = problem if action == "reason" else question if action == "second_opinion" else task
+        profile_candidate = code if action == "review" else candidate
         payload = {
-            "profile": profile, "task": task, "context": context, "candidate": candidate,
+            "profile": profile, "task": profile_task, "context": context, "candidate": profile_candidate,
             "complexity": complexity, "max_tokens": max_tokens, "priority": 5,
             "root": root, "workspace": workspace or None,
             "operation": action,
@@ -374,7 +369,7 @@ def local_ai_task(
             payload["conversation"] = True
         return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/delegate", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "explore" if action == "explore" else "delegate")
     if action == "reason":
-        problem_input = problem or task or prompt or query or context or ""
+        problem_input = problem
         payload = {
             "problem": problem_input, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
@@ -385,10 +380,10 @@ def local_ai_task(
             payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
-        return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/reason", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "reason")
+        return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/reason", payload), task=problem_input, context=context, changed_paths=changed_paths), task_context_meta), "reason")
     if action == "review":
-        code_input = code or diff or context or candidate or prompt
-        instructions_input = task if code_input != task else (prompt if code_input != prompt else "Report actionable defects only.")
+        code_input = code
+        instructions_input = task or "Report actionable defects only."
         payload = {
             "code": code_input, "instructions": instructions_input,
             "complexity": complexity, "max_tokens": max_tokens or 4096,
@@ -400,17 +395,17 @@ def local_ai_task(
             payload["format"] = format or json_schema
         return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/review", payload), task=task, context=code_input, changed_paths=changed_paths), task_context_meta), "review")
     if action == "second_opinion":
-        question_input = question or task or prompt or query or ""
-        candidate_input = candidate or prompt or context or code or ""
+        question_input = question
+        candidate_input = candidate
         return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/second-opinion", {
             "question": question_input, "candidate": candidate_input, "context": context if candidate_input != context else "", "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model, "complexity": complexity,
             "changed_paths": changed_paths or [], "repository_revision": repository_revision,
             "evidence_ids": context_evidence_ids,
-        }), task=task, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
+        }), task=question_input, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
     if action == "compress":
-        text_input = text or context or prompt or candidate or task
-        instructions_input = task if text_input != task else (prompt if text_input != prompt else "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.")
+        text_input = text
+        instructions_input = task or "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty."
         return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/compress", {
             "text": text_input, "instruction": instructions_input,
             "target_tokens": max_tokens or 650,
@@ -461,7 +456,7 @@ def local_ai_task(
             "task": task, "file": candidate, "context": context, "root": root,
         }, timeout=services_module._timeout("model")), "delegate")
     if action == "vision":
-        effective_image = image_artifact_id or image_path or path or candidate or ""
+        effective_image = image_artifact_id
         payload = {
             "prompt": prompt,
             "image": candidate,
@@ -509,7 +504,7 @@ def local_ai_task(
                           "network_requests_denied"],
         )
     if action == "transcribe":
-        audio = candidate or audio_path or file or path or ""
+        audio = candidate
         transcribe_payload = {
             "audio_path": audio,
             "model": model,

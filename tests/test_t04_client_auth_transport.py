@@ -38,7 +38,7 @@ def test_client_uses_tokenless_loopback_http_transport(tmp_path, monkeypatch) ->
         for index in range(2):
             config = tmp_path / f"config-{index}.toml"
             config.write_text(
-                f"[server]\nport={server.server_port}\nstate_dir='{(tmp_path / f'state-{index}').as_posix()}'\n"
+                f"[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nport={server.server_port}\nstate_dir='{(tmp_path / f'state-{index}').as_posix()}'\n"
                 "[client]\nmax_request_timeout_seconds=5\n",
                 encoding="utf-8",
             )

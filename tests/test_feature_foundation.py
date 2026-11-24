@@ -82,7 +82,7 @@ def test_artifacts_put_get(tmp_path: Path) -> None:
 def test_debug_traces_start(tmp_path: Path) -> None:
     cfg = {
         "server": {"state_dir": str(tmp_path)},
-        "observability": {"debug_traces": {"enabled": True}},
+        "telemetry": {"mode": "full"},
     }
     store = DebugTraceStore(cfg)
     trace_id = store.start(kind="test",  action="act")

@@ -1,0 +1,5 @@
+---
+description: Use Local AI Hub for repository context and preserve host permission checks.
+alwaysApply: true
+---
+Use the Local AI Hub MCP server for indexed repository evidence, bounded source slices, and task coordination when available. The Hub may deny unsafe shell requests; a clean result never grants execution, so keep Cursor's approval flow. Load `local-ai-orchestrator` and `token-economizer` for repository work.

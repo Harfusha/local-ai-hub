@@ -104,12 +104,31 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1]
 # a junction or symlink in one of the source checkout's ancestors.
 UPDATE_SOURCE_ROOT = Path(__file__).absolute().parents[1]
 SRC = SOURCE_ROOT / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from local_ai_hub.config import load_config as load_hub_config  # noqa: E402
+from tools.config_migrations import run_config_migrations  # noqa: E402
+from tools.embedding_reset import (  # noqa: E402
+    apply_embedding_reset, clear_embedding_payloads, discard_embedding_reset_backup,
+)
+from tools.prepare_release import version_parts  # noqa: E402
 from local_ai_hub.llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_managed_selected  # noqa: E402
-from local_ai_hub.generator import generate_global_policy, generate_token_economy_policy, write_all_generated  # noqa: E402
+from local_ai_hub.generator import (
+    AUTOSETUP_POLICY_BEGIN as AUTOSETUP_BEGIN,
+    AUTOSETUP_POLICY_END as AUTOSETUP_END,
+    GLOBAL_POLICY_BEGIN,
+    GLOBAL_POLICY_END,
+    TOKEN_ECONOMY_POLICY_BEGIN,
+    TOKEN_ECONOMY_POLICY_END,
+    generate_antigravity_skill_policy,
+    generate_autosetup_policy,
+    generate_global_policy,
+    generate_token_economy_policy,
+    write_all_generated,
+)  # noqa: E402
 _state_migrations_spec = importlib.util.spec_from_file_location("_local_ai_hub_state_migrations", Path(__file__).with_name("state_migrations.py"))
 if _state_migrations_spec is None or _state_migrations_spec.loader is None:
     raise ImportError("could not load sibling state_migrations.py")
@@ -120,29 +139,7 @@ inspect_state_migration_path = _state_migrations_module.inspect_state_migration_
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
 MARKER_END = "# END LOCAL AI HUB MANAGED"
-GLOBAL_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
-GLOBAL_POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
-TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
-TOKEN_ECONOMY_POLICY_END = "<!-- END TOKEN ECONOMY POLICY -->"
-AUTOSETUP_BEGIN = "<!-- BEGIN TOKEN ECONOMIZER AUTOSETUP -->"
-AUTOSETUP_END = "<!-- END TOKEN ECONOMIZER AUTOSETUP -->"
-
-
-def build_global_policy(cfg: dict[str, Any]) -> str:
-    """Build a config-aware LOCAL AI HUB TOOL POLICY block.
-
-    Only mentions tools, backends and model names that are actually enabled in
-    the given merged config.  The returned string includes the BEGIN/END markers
-    so callers can embed it verbatim into AGENTS.md / CLAUDE.md / GEMINI.md.
-    """
-    return generate_global_policy(cfg)
-
-
-# Keep a module-level default for callers that do not have a config available
-# (e.g. tests or tools that import setup.py directly).  The real policy is
-# always built via build_global_policy(cfg) at setup time.
-_DEFAULT_POLICY_CFG: dict[str, Any] = {}
-GLOBAL_POLICY = build_global_policy(_DEFAULT_POLICY_CFG)
+GLOBAL_POLICY = generate_global_policy({})
 def log(message: str) -> None:
     print(f"[local-ai-hub] {message}")
 
@@ -345,6 +342,19 @@ def copy_install_tree(
     return success
 
 
+def migrate_release_state(state_dir: Path) -> dict[str, Any]:
+    """Run ordered state migrations and the v8 vector reset for installer paths."""
+    result = run_state_migrations(state_dir)
+    version = tomllib.loads((SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    if version_parts(version) >= (8, 0, 0):
+        reset = apply_embedding_reset(state_dir)
+        result["embedding_reset"] = reset["status"]
+        result["embedding_reset_backup"] = reset.get("backup")
+        for state_backup in result.get("backups", []):
+            clear_embedding_payloads(state_backup)
+    return result
+
+
 def backup(path: Path, enabled: bool) -> None:
     if not enabled or not path.exists():
         return
@@ -491,12 +501,7 @@ def install_superpowers_skills(target: Path, manifest: Path | None = None) -> No
 
 
 def merge_antigravity_skill_policy(path: Path, backup_enabled: bool) -> None:
-    policy = f"""{ANTIGRAVITY_POLICY_BEGIN}
-## Antigravity automatic skill activation
-
-At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Call applicable endpoints directly from the main agent; managing native subagents does not replace Hub retrieval, artifact, or coordination calls. For every non-trivial repository task, start with indexed `local_ai_repo` evidence; use `local_ai_artifact` for exact source after locating it; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer; use exposed `local_ai_task` semantic actions for matching bounded review, reasoning, exploration or compression tasks after evidence. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
-If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.
-{ANTIGRAVITY_POLICY_END}"""
+    policy = generate_antigravity_skill_policy()
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_bytes().decode("utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(ANTIGRAVITY_POLICY_BEGIN) + r".*?" + re.escape(ANTIGRAVITY_POLICY_END) + r"(?:\r?\n)*", re.DOTALL)
@@ -553,9 +558,21 @@ def json_server_merge(
                 data = parsed
         except Exception as exc:
             raise RuntimeError(f"Cannot parse JSON config {path}: {exc}") from exc
-    container = data.setdefault(container_key, {})
-    if not isinstance(container, dict):
-        raise RuntimeError(f"{container_key} is not an object in {path}")
+    container = data
+    created_containers: list[str] = []
+    container_path: list[str] = []
+    for segment in container_key.split("."):
+        if not segment:
+            raise ValueError("JSON container path has an empty segment")
+        container_path.append(segment)
+        child = container.get(segment)
+        if child is None and segment not in container:
+            child = {}
+            container[segment] = child
+            created_containers.append(".".join(container_path))
+        if not isinstance(child, dict):
+            raise RuntimeError(f"{'.'.join(container_path)} is not an object in {path}")
+        container = child
     owned_writes: list[tuple[str, Any | None, dict[str, Any]]] = []
     for name, raw_entry in servers.items():
         entry = dict(raw_entry)
@@ -576,7 +593,7 @@ def json_server_merge(
             continue
         container[name] = entry
         owned_writes.append((name, existing, entry))
-    if _ACTIVE_INSTALL_ROOT is not None and not owned_writes:
+    if _ACTIVE_INSTALL_ROOT is not None and not owned_writes and not created_containers:
         return
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if _ACTIVE_INSTALL_ROOT is not None:
@@ -585,11 +602,215 @@ def json_server_merge(
                 _ACTIVE_INSTALL_ROOT, path, container=container_key, key=name,
                 preimage=preimage, postimage=postimage,
             )
+        for created in created_containers:
+            record_external_json_container(
+                _ACTIVE_INSTALL_ROOT, path, container_path=created, container_type="object",
+            )
     log(f"MCP config updated: {path}")
 
 
 def json_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool) -> None:
     json_server_merge(path, servers, backup_enabled, container_key="mcpServers")
+
+
+def opencode_mcp_merge(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+) -> None:
+    """Merge Hub MCP into OpenCode's current `mcp.servers` configuration."""
+    configured = build_mcp_entries(install_dir, hub_python, None, "opencode", cfg)
+    servers = {
+        name: {
+            "type": "local",
+            "command": [entry["command"], *entry.get("args", [])],
+            "cwd": entry["cwd"],
+            "environment": dict(entry.get("env", {})),
+        }
+        for name, entry in configured.items()
+    }
+    json_server_merge(path, servers, backup_enabled, container_key="mcp.servers")
+
+
+def sync_opencode_plugin_config(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+) -> bool:
+    """Register the local Hub plugin only when its config key is safely owned."""
+    plugin_root = (install_dir / "plugins" / "opencode" / "local-ai-hub").resolve()
+    if not plugin_root.is_dir():
+        log(f"OpenCode Hub plugin source is unavailable: {plugin_root}")
+        return False
+    mcp_entry = build_mcp_entries(install_dir, hub_python, None, "opencode", cfg).get("local-ai")
+    if not isinstance(mcp_entry, dict):
+        log("OpenCode Hub plugin server config is unavailable")
+        return False
+    environment = dict(mcp_entry.get("env", {}))
+    environment["OPENCODE_SESSION"] = "1"
+    environment["LOCAL_AI_HUB_DIR"] = str(install_dir.resolve())
+    server = {
+        "command": [str(Path(mcp_entry["command"]).resolve()), *mcp_entry.get("args", [])],
+        "cwd": str(Path(mcp_entry["cwd"]).resolve()),
+        "environment": environment,
+    }
+    plugin_entry = {"package": str(plugin_root), "options": {"server": server}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path_existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot safely merge OpenCode config {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"OpenCode config must be a JSON object: {path}")
+        data = parsed
+
+    missing = object()
+    current = data.get("plugins", missing)
+    if current is not missing and not isinstance(current, list):
+        log(f"OpenCode plugins preserved because 'plugins' is not a list: {path}")
+        return False
+    if isinstance(current, list) and plugin_entry in current:
+        return True
+    if current is missing:
+        previous: Any = None
+        plugins = [plugin_entry]
+    else:
+        previous = current
+        if _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="", key="plugins", current_value=current,
+                )
+            except ValueError:
+                log(f"OpenCode plugins preserved; merge Hub plugin manually in {path}")
+                return False
+        plugins = list(current)
+        package_path = str(plugin_root)
+        replace_index = next((
+            i for i, item in enumerate(plugins)
+            if isinstance(item, dict) and item.get("package") == package_path
+        ), None)
+        if replace_index is None:
+            plugins.append(plugin_entry)
+        else:
+            plugins[replace_index] = plugin_entry
+
+    data["plugins"] = plugins
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        record_external_json_key(
+            _ACTIVE_INSTALL_ROOT, path, container="", key="plugins",
+            preimage=previous, postimage=plugins,
+        )
+    log(f"OpenCode Hub plugin configured: {path}")
+    return True
+
+
+def _load_opencode_config(path: Path) -> dict[str, Any]:
+    """Read OpenCode JSON/JSONC config without changing its source text."""
+    text = path.read_text(encoding="utf-8-sig")
+    if path.suffix.casefold() == ".jsonc":
+        cleaned: list[str] = []
+        index = 0
+        in_string = False
+        escaped = False
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                cleaned.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+            if char == '"':
+                in_string = True
+                cleaned.append(char)
+                index += 1
+                continue
+            if text.startswith("//", index):
+                index += 2
+                while index < len(text) and text[index] not in "\r\n":
+                    index += 1
+                continue
+            if text.startswith("/*", index):
+                end = text.find("*/", index + 2)
+                if end < 0:
+                    raise ValueError("unterminated JSONC block comment")
+                cleaned.extend(char for char in text[index:end + 2] if char in "\r\n")
+                index = end + 2
+                continue
+            if char == ",":
+                lookahead = index + 1
+                while lookahead < len(text) and text[lookahead].isspace():
+                    lookahead += 1
+                if lookahead < len(text) and text[lookahead] in "}]":
+                    index += 1
+                    continue
+            cleaned.append(char)
+            index += 1
+        text = "".join(cleaned)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"OpenCode config must be a JSON object: {path}")
+    return data
+
+
+def opencode_direct_hub_mcp_configured(path: Path) -> bool:
+    """Detect the standalone Hub MCP route that duplicates the native plugin route."""
+    if not path.is_file():
+        return False
+    try:
+        data = _load_opencode_config(path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect OpenCode config {path}: {exc}") from exc
+    mcp = data.get("mcp")
+    servers = mcp.get("servers") if isinstance(mcp, dict) else None
+    return isinstance(servers, dict) and "local-ai" in servers
+
+
+def opencode_hub_mcp_paths(config_dir: Path) -> list[Path]:
+    """Return configured global OpenCode files that already contain the Hub MCP route."""
+    return [
+        path for path in (config_dir / "opencode.json", config_dir / "opencode.jsonc")
+        if opencode_direct_hub_mcp_configured(path)
+    ]
+
+
+def opencode_hub_plugin_paths(config_dir: Path) -> list[Path]:
+    """Return global OpenCode config files already registering the Hub plugin."""
+    configured: list[Path] = []
+    for path in (config_dir / "opencode.json", config_dir / "opencode.jsonc"):
+        if not path.is_file():
+            continue
+        try:
+            data = _load_opencode_config(path)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot safely inspect OpenCode config {path}: {exc}") from exc
+        entries = []
+        for key in ("plugins", "plugin"):
+            value = data.get(key)
+            if isinstance(value, list):
+                entries.extend(value)
+            elif isinstance(value, str):
+                entries.append(value)
+        if any(
+            "local-ai-hub" in str(entry.get("package", "") if isinstance(entry, dict) else entry).casefold()
+            for entry in entries
+        ):
+            configured.append(path)
+    return configured
 
 
 def prune_direct_code_intelligence(
@@ -643,98 +864,14 @@ def sync_antigravity_mcp_config(
     backup_enabled: bool,
 ) -> None:
     """Keep Antigravity's global MCP manifest aligned with the Hub-only default."""
-    json_mcp_merge(path, build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
+    json_mcp_merge(path, build_mcp_entries(install_dir, hub_python, serena, "antigravity", cfg), backup_enabled)
     if not bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
         prune_direct_code_intelligence(path, serena, backup_enabled)
 
 
 def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
-    """Ensure Antigravity global permissions pre-approve Local AI Hub MCP tools to avoid interactive prompts."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = {}
-    if path.exists():
-        backup(path, backup_enabled)
-        try:
-            raw_text = path.read_text(encoding="utf-8").strip()
-            if raw_text:
-                parsed = json.loads(raw_text)
-                if isinstance(parsed, dict):
-                    data = parsed
-        except Exception as exc:
-            log(f"WARNING: could not parse {path}: {exc}")
-
-    if "userSettings" in data and not isinstance(data["userSettings"], dict):
-        log(f"WARNING: preserving non-object userSettings in {path}")
-        return
-    user_settings_created = "userSettings" not in data
-    user_settings = data.setdefault("userSettings", {})
-    owned_keys: list[tuple[str, str, Any]] = []
-    defaults = {
-        "autoExecutionPolicy": "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER",
-        "enableTerminalSandbox": False,
-        "nonWorkspaceFileAccessPolicy": "AGENT_SETTING_POLICY_ALLOW",
-        "permissionPreset": "AGENT_PERMISSION_PRESET_TURBO",
-    }
-    for key, value in defaults.items():
-        if key not in user_settings:
-            user_settings[key] = value
-            owned_keys.append(("userSettings", key, value))
-
-    if "globalPermissionGrants" in user_settings and not isinstance(user_settings["globalPermissionGrants"], dict):
-        log(f"WARNING: preserving non-object globalPermissionGrants in {path}")
-        return
-    grants_created = "globalPermissionGrants" not in user_settings
-    grants = user_settings.setdefault("globalPermissionGrants", {})
-    if "allow" in grants and not isinstance(grants["allow"], list):
-        log(f"WARNING: preserving non-list globalPermissionGrants.allow in {path}")
-        return
-    allow_created = "allow" not in grants
-    allow_list = grants.setdefault("allow", [])
-
-    required_grants = [
-        "mcp(local-ai/*)",
-        "mcp(local-ai)",
-        "mcp(local_ai/*)",
-        "mcp(local_ai)",
-        "mcp(local-ai/local_ai_status)",
-        "mcp(local-ai/local_ai_coord)",
-        "mcp(local-ai/local_ai_repo)",
-        "mcp(local-ai/local_ai_task)",
-        "mcp(local-ai/local_ai_rag)",
-        "mcp(local-ai/local_ai_work)",
-        "mcp(local-ai/local_ai_artifact)",
-        "mcp(local_ai/local_ai_status)",
-        "mcp(local_ai/local_ai_coord)",
-        "mcp(local_ai/local_ai_repo)",
-        "mcp(local_ai/local_ai_task)",
-        "mcp(local_ai/local_ai_rag)",
-        "mcp(local_ai/local_ai_work)",
-        "mcp(local_ai/local_ai_artifact)",
-    ]
-    owned_grants: list[str] = []
-    for grant in required_grants:
-        if grant not in allow_list:
-            allow_list.append(grant)
-            owned_grants.append(grant)
-
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    if _ACTIVE_INSTALL_ROOT is not None:
-        if user_settings_created:
-            record_external_json_container(_ACTIVE_INSTALL_ROOT, path, container_path="userSettings", container_type="object")
-        if grants_created:
-            record_external_json_container(_ACTIVE_INSTALL_ROOT, path, container_path="userSettings.globalPermissionGrants", container_type="object")
-        if allow_created:
-            record_external_json_container(_ACTIVE_INSTALL_ROOT, path, container_path="userSettings.globalPermissionGrants.allow", container_type="list")
-        for container_name, key, value in owned_keys:
-            record_external_json_key(
-                _ACTIVE_INSTALL_ROOT, path, container=container_name, key=key, preimage=None, postimage=value,
-            )
-        for grant in owned_grants:
-            record_external_json_list_item(
-                _ACTIVE_INSTALL_ROOT, path,
-                container="userSettings.globalPermissionGrants.allow", item=grant,
-            )
-    log(f"Antigravity permissions configured: {path}")
+    """Leave Antigravity permission and sandbox settings entirely user-controlled."""
+    log(f"Antigravity permissions preserved; Hub adds no global grants: {path}")
 
 
 def sync_antigravity_hooks_json(
@@ -752,10 +889,11 @@ def sync_antigravity_hooks_json(
             raw_text = path.read_text(encoding="utf-8").strip()
             if raw_text:
                 parsed = json.loads(raw_text)
-                if isinstance(parsed, dict):
-                    data = parsed
+                if not isinstance(parsed, dict):
+                    raise RuntimeError(f"Antigravity hooks must be a JSON object: {path}")
+                data = parsed
         except Exception as exc:
-            log(f"WARNING: could not parse {path}: {exc}")
+            raise RuntimeError(f"Cannot safely merge Antigravity hooks at {path}: {exc}") from exc
 
     python_exe = str(hub_python.resolve())
     if os.name == "nt":
@@ -794,6 +932,13 @@ def sync_antigravity_hooks_json(
                 return
     hook_config: dict[str, Any] = {
         "enabled": True,
+        "SessionStart": [
+            {
+                "type": "command",
+                "command": "local-ai-hook.cmd SessionStart" if os.name == "nt" else "./local-ai-hook.sh SessionStart",
+                "timeout": 10,
+            }
+        ],
         "PreToolUse": [
             {
                 "matcher": "read_file|run_command",
@@ -845,6 +990,1131 @@ def sync_antigravity_hooks_json(
     log(f"Antigravity hooks configured: {path}")
 
 
+def sync_claude_session_start_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install a reversible Claude SessionStart hook without replacing user hooks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Claude settings {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Claude settings must be a JSON object: {path}")
+        data = parsed
+
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Claude hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Claude SessionStart hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host claude'
+    entry = {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    current = hooks.get("SessionStart")
+    if isinstance(current, list) and entry in current:
+        return True
+    preimage: list[Any] | None = None
+    if current is not None:
+        if not isinstance(current, list):
+            log(f"Claude SessionStart hooks preserved because the value is not a list: {path}")
+            return False
+        if _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key="SessionStart",
+                    current_value=current,
+                )
+            except ValueError:
+                log(f"Claude SessionStart hooks preserved because the existing list is not Hub-owned: {path}")
+                return False
+        preimage = json.loads(json.dumps(current))
+        hooks["SessionStart"] = [*current, entry]
+    else:
+        hooks["SessionStart"] = [entry]
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="SessionStart",
+                preimage=preimage, postimage=hooks["SessionStart"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Claude SessionStart hook configured: {path}")
+    return True
+
+
+def sync_claude_subagent_start_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install Claude subagent Laya context without replacing user hooks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path_existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Claude settings {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Claude settings must be a JSON object: {path}")
+        data = parsed
+
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Claude hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Claude SubagentStart hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host claude'
+    entry = {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    event = "SubagentStart"
+    current = hooks.get(event)
+    if isinstance(current, list) and entry in current:
+        return True
+    preimage: list[Any] | None = None
+    if current is not None:
+        if not isinstance(current, list):
+            log(f"Claude {event} hooks preserved because the value is not a list: {path}")
+            return False
+        if _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event,
+                    current_value=current,
+                )
+            except ValueError:
+                log(f"Claude {event} hooks preserved because the existing list is not Hub-owned: {path}")
+                return False
+        preimage = json.loads(json.dumps(current))
+    hooks[event] = [*(current or []), entry]
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event,
+                preimage=preimage, postimage=hooks[event],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Claude {event} hook configured: {path}")
+    return True
+
+
+def claude_hub_plugin_enabled(settings_path: Path) -> bool:
+    """Return whether Claude Code selects the bundled Hub plugin route."""
+    if not settings_path.is_file():
+        return False
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect Claude settings {settings_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Claude settings must be an object: {settings_path}")
+    enabled = data.get("enabledPlugins")
+    return isinstance(enabled, dict) and enabled.get("local-ai-hub@local-ai-hub") is True
+
+
+def global_hub_mcp_configured(mcp_path: Path) -> bool:
+    """Detect a standalone Hub MCP entry in a provider JSON configuration."""
+    if not mcp_path.is_file():
+        return False
+    try:
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect provider MCP config {mcp_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Provider MCP config must be an object: {mcp_path}")
+    servers = data.get("mcpServers")
+    return isinstance(servers, dict) and "local-ai" in servers
+
+
+def claude_global_hub_mcp_configured(mcp_path: Path) -> bool:
+    """Detect a standalone Claude Hub MCP entry that duplicates the plugin."""
+    return global_hub_mcp_configured(mcp_path)
+
+
+def global_hub_hooks_configured(settings_path: Path, host: str) -> bool:
+    """Detect global host hooks that duplicate a provider plugin's hooks."""
+    if not settings_path.is_file():
+        return False
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect provider settings {settings_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Provider settings must be an object: {settings_path}")
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            entries = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                command = entry.get("command") if isinstance(entry, dict) else None
+                if isinstance(command, str) and f"--host {host}" in command and (
+                    "host_hooks.py" in command or "host_hooks" in command
+                ):
+                    return True
+    return False
+
+
+def cursor_global_hub_hooks_configured(hooks_path: Path) -> bool:
+    """Detect Hub hooks in Cursor's event-to-command hook schema."""
+    if not hooks_path.is_file():
+        return False
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect Cursor hooks {hooks_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Cursor hooks must be an object: {hooks_path}")
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            command = entry.get("command") if isinstance(entry, dict) else None
+            if isinstance(command, str) and "--host cursor" in command and "host_hooks" in command:
+                return True
+    return False
+
+
+def claude_global_hub_hooks_configured(settings_path: Path) -> bool:
+    """Detect global Claude hooks that duplicate the Claude plugin hooks."""
+    return global_hub_hooks_configured(settings_path, "claude")
+
+
+def gemini_cli_extension_installed(gemini_dir: Path) -> bool:
+    """Detect the native Gemini CLI extension copied to its documented extension root."""
+    manifest_path = gemini_dir / "extensions" / "local-ai-hub" / "gemini-extension.json"
+    return _provider_manifest_named(manifest_path, "local-ai-hub")
+
+
+def cursor_hub_plugin_installed(cursor_dir: Path) -> bool:
+    """Detect Cursor's documented local plugin import path for Local AI Hub."""
+    manifest_path = (
+        cursor_dir / "plugins" / "local" / "local-ai-hub"
+        / ".cursor-plugin" / "plugin.json"
+    )
+    return _provider_manifest_named(manifest_path, "local-ai-hub")
+
+
+def copilot_hub_plugin_enabled(copilot_dir: Path, project_root: Path | None = None) -> bool:
+    """Read Copilot CLI enabledPlugins across user and repository settings scopes."""
+    paths = [copilot_dir / "settings.json"]
+    if project_root is not None:
+        paths.extend([
+            project_root / ".github" / "copilot" / "settings.json",
+            project_root / ".github" / "copilot" / "settings.local.json",
+            project_root / ".claude" / "settings.json",
+            project_root / ".claude" / "settings.local.json",
+        ])
+    merged: dict[str, Any] = {}
+    for settings_path in paths:
+        if not settings_path.is_file():
+            continue
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot safely inspect Copilot settings {settings_path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Copilot settings must be an object: {settings_path}")
+        enabled = data.get("enabledPlugins")
+        if enabled is None:
+            continue
+        if not isinstance(enabled, dict):
+            raise RuntimeError(f"Copilot enabledPlugins must be an object: {settings_path}")
+        for spec, state in enabled.items():
+            if not isinstance(spec, str) or not isinstance(state, bool):
+                continue
+            if spec == "local-ai-hub" or spec.split("@", 1)[0] == "local-ai-hub":
+                merged[spec] = state
+    return any(merged.values())
+
+
+def copilot_global_hub_hook_events(
+    copilot_dir: Path, project_root: Path, *, exclude_paths: set[Path] | None = None,
+) -> set[str]:
+    """Return hook events that already call the Hub across Copilot CLI scopes."""
+    paths = sorted((copilot_dir / "hooks").glob("*.json"))
+    paths.extend([
+        copilot_dir / "settings.json",
+        project_root / ".github" / "copilot" / "settings.json",
+        project_root / ".github" / "copilot" / "settings.local.json",
+        project_root / ".claude" / "settings.json",
+        project_root / ".claude" / "settings.local.json",
+    ])
+    paths.extend(sorted((project_root / ".github" / "hooks").glob("*.json")))
+
+    def contains_hub_command(value: Any) -> bool:
+        if isinstance(value, dict):
+            for field in ("command", "bash", "powershell", "exec"):
+                command = value.get(field)
+                if isinstance(command, str) and "--host copilot" in command and "host_hooks" in command:
+                    return True
+            exec_value = value.get("exec")
+            args = value.get("args")
+            if isinstance(exec_value, str) and isinstance(args, list):
+                command_line = " ".join([exec_value, *(item for item in args if isinstance(item, str))])
+                if "--host copilot" in command_line and "host_hooks" in command_line:
+                    return True
+            return any(contains_hub_command(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains_hub_command(item) for item in value)
+        return False
+
+    events: set[str] = set()
+    seen_paths: set[str] = set()
+    excluded = {
+        os.path.normcase(os.path.abspath(os.fspath(path))) for path in (exclude_paths or set())
+    }
+    for path in paths:
+        path_key = os.path.normcase(os.path.abspath(os.fspath(path)))
+        if path_key in excluded or path_key in seen_paths or not path.is_file():
+            continue
+        seen_paths.add(path_key)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot safely inspect Copilot hooks {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Copilot hooks must be an object: {path}")
+        hooks = data.get("hooks", {})
+        if not isinstance(hooks, dict):
+            continue
+        events.update(
+            event.casefold() for event, handlers in hooks.items()
+            if isinstance(event, str) and contains_hub_command(handlers)
+        )
+    return events
+
+
+def gemini_cli_extension_active(gemini_dir: Path, project_root: Path | None = None) -> bool:
+    """Check extension presence and Gemini CLI's user/workspace disabled list."""
+    if not gemini_cli_extension_installed(gemini_dir):
+        return False
+    settings_paths = [gemini_dir / "settings.json"]
+    if project_root is not None:
+        project_settings = project_root / ".gemini" / "settings.json"
+        if project_settings.is_file():
+            settings_paths = [project_settings]
+    for settings_path in settings_paths:
+        if not settings_path.is_file():
+            continue
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot safely inspect Gemini CLI settings {settings_path}: {exc}") from exc
+        if not isinstance(settings, dict):
+            raise RuntimeError(f"Gemini CLI settings must be an object: {settings_path}")
+        extensions = settings.get("extensions")
+        disabled = extensions.get("disabled") if isinstance(extensions, dict) else None
+        if isinstance(disabled, list) and "local-ai-hub" in disabled:
+            return False
+    return True
+
+
+def antigravity_plugin_installed(gemini_dir: Path) -> bool:
+    """Detect the native Antigravity plugin in its documented global plugin directory."""
+    manifest_path = gemini_dir / "config" / "plugins" / "local-ai-hub" / "plugin.json"
+    return _provider_manifest_named(manifest_path, "local-ai-hub")
+
+
+def _provider_manifest_named(manifest_path: Path, expected_name: str) -> bool:
+    if not manifest_path.is_file():
+        return False
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect provider manifest {manifest_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Provider manifest must be an object: {manifest_path}")
+    return data.get("name") == expected_name
+
+
+def sync_claude_pre_tool_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install Claude's token-policy hook without deciding ordinary tool permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path_existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Claude settings {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Claude settings must be a JSON object: {path}")
+        data = parsed
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Claude hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Claude PreToolUse hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host claude'
+    entry = {"matcher": "Bash|PowerShell|Read", "hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    current = hooks.get("PreToolUse")
+    if isinstance(current, list) and entry in current:
+        return True
+    if current is not None and not isinstance(current, list):
+        log(f"Claude PreToolUse hooks preserved because the value is not a list: {path}")
+        return False
+    if isinstance(current, list) and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="PreToolUse", current_value=current,
+            )
+        except ValueError:
+            log(f"Claude PreToolUse hooks preserved because the existing list is not Hub-owned: {path}")
+            return False
+    preimage = json.loads(json.dumps(current)) if isinstance(current, list) else None
+    hooks["PreToolUse"] = [*(current or []), entry]
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="PreToolUse",
+                preimage=preimage, postimage=hooks["PreToolUse"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Claude PreToolUse hook configured: {path}")
+    return True
+
+
+def sync_claude_permission_request_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install Claude's deny-only permission guard; never grant a request."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path_existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Claude settings {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Claude settings must be a JSON object: {path}")
+        data = parsed
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Claude hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Claude PermissionRequest hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host claude'
+    entry = {"matcher": "Bash|PowerShell|Read", "hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    current = hooks.get("PermissionRequest")
+    if isinstance(current, list) and entry in current:
+        return True
+    if current is not None and not isinstance(current, list):
+        log(f"Claude PermissionRequest hooks preserved because the value is not a list: {path}")
+        return False
+    if isinstance(current, list) and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="PermissionRequest", current_value=current,
+            )
+        except ValueError:
+            log(f"Claude PermissionRequest hooks preserved because the existing list is not Hub-owned: {path}")
+            return False
+    preimage = json.loads(json.dumps(current)) if isinstance(current, list) else None
+    hooks["PermissionRequest"] = [*(current or []), entry]
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="PermissionRequest",
+                preimage=preimage, postimage=hooks["PermissionRequest"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Claude PermissionRequest hook configured: {path}")
+    return True
+
+
+def sync_claude_post_tool_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install Claude's post-edit static-check hook without changing permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path_existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Claude settings {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Claude settings must be a JSON object: {path}")
+        data = parsed
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Claude hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Claude PostToolUse hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host claude'
+    entry = {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    current = hooks.get("PostToolUse")
+    if isinstance(current, list) and entry in current:
+        return True
+    if current is not None and not isinstance(current, list):
+        log(f"Claude PostToolUse hooks preserved because the value is not a list: {path}")
+        return False
+    if isinstance(current, list) and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="PostToolUse", current_value=current,
+            )
+        except ValueError:
+            log(f"Claude PostToolUse hooks preserved because the existing list is not Hub-owned: {path}")
+            return False
+    preimage = json.loads(json.dumps(current)) if isinstance(current, list) else None
+    hooks["PostToolUse"] = [*(current or []), entry]
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="PostToolUse",
+                preimage=preimage, postimage=hooks["PostToolUse"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Claude PostToolUse hook configured: {path}")
+    return True
+
+
+def sync_gemini_cli_hooks(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install bounded Gemini CLI lifecycle/tool hooks without replacing user hooks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path_existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Gemini CLI settings {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Gemini CLI settings must be a JSON object: {path}")
+        data = parsed
+
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Gemini CLI hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Gemini CLI hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host gemini_cli'
+    specs = {
+        "SessionStart": {"hooks": [{"name": "local-ai-hub-session-start", "type": "command", "command": command, "timeout": 5000}]},
+        "BeforeTool": {"matcher": "read_file|run_shell_command", "hooks": [{"name": "local-ai-hub-before-tool", "type": "command", "command": command, "timeout": 5000}]},
+        "AfterTool": {"matcher": "write_file|replace", "hooks": [{"name": "local-ai-hub-after-tool", "type": "command", "command": command, "timeout": 5000}]},
+    }
+    changes: dict[str, tuple[list[Any] | None, list[Any]]] = {}
+    for event, entry in specs.items():
+        current = hooks.get(event)
+        if isinstance(current, list) and entry in current:
+            continue
+        if current is not None and not isinstance(current, list):
+            log(f"Gemini CLI {event} hooks preserved because the value is not a list: {path}")
+            return False
+        if isinstance(current, list) and _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event, current_value=current,
+                )
+            except ValueError:
+                log(f"Gemini CLI {event} hooks preserved because the existing list is not Hub-owned: {path}")
+                return False
+        preimage = json.loads(json.dumps(current)) if isinstance(current, list) else None
+        changes[event] = (preimage, [*(current or []), entry])
+    if not changes:
+        return True
+
+    for event, (_preimage, postimage) in changes.items():
+        hooks[event] = postimage
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            for event, (preimage, postimage) in changes.items():
+                record_external_json_key(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event,
+                    preimage=preimage, postimage=postimage,
+                )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Gemini CLI hooks configured: {path}")
+    return True
+
+
+def sync_cursor_session_start_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install a reversible Cursor sessionStart hook when its target list is Hub-owned or absent."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_existed = path.exists()
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot parse Cursor hooks {path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Cursor hooks must be a JSON object: {path}")
+        data = parsed
+    if data.get("version", 1) != 1:
+        log(f"Cursor hooks preserved because the version is unsupported: {path}")
+        return False
+    hooks_existed = "hooks" in data
+    version_existed = "version" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Cursor hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Cursor sessionStart hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host cursor'
+    entry = {"command": command}
+    current = hooks.get("sessionStart")
+    if isinstance(current, list) and entry in current:
+        return True
+    preimage: list[Any] | None = None
+    if current is not None:
+        if not isinstance(current, list):
+            log(f"Cursor sessionStart hooks preserved because the value is not a list: {path}")
+            return False
+        if _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key="sessionStart",
+                    current_value=current,
+                )
+            except ValueError:
+                log(f"Cursor sessionStart hooks preserved because the existing list is not Hub-owned: {path}")
+                return False
+        preimage = json.loads(json.dumps(current))
+        hooks["sessionStart"] = [*current, entry]
+    else:
+        hooks["sessionStart"] = [entry]
+    backup(path, backup_enabled)
+    data["version"] = 1
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if path_existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="sessionStart",
+                preimage=preimage, postimage=hooks["sessionStart"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+            if not version_existed:
+                record_external_json_key(
+                    _ACTIVE_INSTALL_ROOT, path, container="", key="version",
+                    preimage=None, postimage=1,
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Cursor sessionStart hook configured: {path}")
+    return True
+
+
+def sync_cursor_before_shell_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Add a managed Cursor shell policy hook; safe calls still require host approval."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if existed else {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot parse Cursor hooks {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version", 1) != 1:
+        log(f"Cursor hooks preserved because the version or root is unsupported: {path}")
+        return False
+    hooks_existed = "hooks" in data
+    version_existed = "version" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Cursor hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Cursor shell hook source is unavailable: {hook_script}")
+        return False
+    entry = {
+        "command": f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host cursor --event beforeShellExecution',
+        "failClosed": True,
+    }
+    current = hooks.get("beforeShellExecution")
+    if isinstance(current, list) and entry in current:
+        if _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key="beforeShellExecution",
+                    current_value=current,
+                )
+            except ValueError:
+                log(f"Cursor beforeShellExecution hook preserved because its ownership cannot be verified: {path}")
+                return False
+        return True
+    if current is not None and not isinstance(current, list):
+        log(f"Cursor beforeShellExecution hooks preserved because the value is not a list: {path}")
+        return False
+    if current is not None and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="beforeShellExecution",
+                current_value=current,
+            )
+        except ValueError:
+            log(f"Cursor beforeShellExecution hooks preserved because the existing list is not Hub-owned: {path}")
+            return False
+    preimage = json.loads(json.dumps(current)) if current is not None else None
+    hooks["beforeShellExecution"] = [*(current or []), entry]
+    data["version"] = 1
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="beforeShellExecution",
+                preimage=preimage, postimage=hooks["beforeShellExecution"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+            if not version_existed:
+                record_external_json_key(
+                    _ACTIVE_INSTALL_ROOT, path, container="", key="version",
+                    preimage=None, postimage=1,
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Cursor beforeShellExecution hook configured: {path}")
+    return True
+
+
+def sync_cursor_after_file_edit_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Add a non-blocking Cursor post-edit static-check hook."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if existed else {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot parse Cursor hooks {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version", 1) != 1:
+        log(f"Cursor hooks preserved because the version or root is unsupported: {path}")
+        return False
+    hooks_existed = "hooks" in data
+    version_existed = "version" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Cursor hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Cursor afterFileEdit hook source is unavailable: {hook_script}")
+        return False
+    entry = {
+        "command": f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host cursor --event afterFileEdit',
+        "timeout": 5,
+    }
+    current = hooks.get("afterFileEdit")
+    if isinstance(current, list) and entry in current:
+        if _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key="afterFileEdit", current_value=current,
+                )
+            except ValueError:
+                log(f"Cursor afterFileEdit hook preserved because its ownership cannot be verified: {path}")
+                return False
+        return True
+    if current is not None and not isinstance(current, list):
+        log(f"Cursor afterFileEdit hooks preserved because the value is not a list: {path}")
+        return False
+    if current is not None and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="afterFileEdit", current_value=current,
+            )
+        except ValueError:
+            log(f"Cursor afterFileEdit hooks preserved because the existing list is not Hub-owned: {path}")
+            return False
+    preimage = json.loads(json.dumps(current)) if current is not None else None
+    hooks["afterFileEdit"] = [*(current or []), entry]
+    data["version"] = 1
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key="afterFileEdit",
+                preimage=preimage, postimage=hooks["afterFileEdit"],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+            if not version_existed:
+                record_external_json_key(
+                    _ACTIVE_INSTALL_ROOT, path, container="", key="version", preimage=None, postimage=1,
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Cursor afterFileEdit hook configured: {path}")
+    return True
+
+
+def sync_windsurf_policy_hooks(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install reversible Windsurf policy pre-hooks and post-write checks."""
+    hook_script = install_dir / "src" / "local_ai_hub" / "windsurf_hook.py"
+    if not hook_script.is_file():
+        log(f"Windsurf hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}"'
+    specs = {
+        "pre_run_command": {"command": command, "show_output": True},
+        "pre_read_code": {"command": command, "show_output": True},
+        "pre_mcp_tool_use": {"command": command, "show_output": True},
+        "post_write_code": {"command": command, "show_output": True},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
+    data: dict[str, Any] = {}
+    if existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            log(f"Windsurf hooks preserved because the file is invalid: {path} ({exc})")
+            return False
+        if not isinstance(parsed, dict):
+            log(f"Windsurf hooks preserved because the root is not an object: {path}")
+            return False
+        data = parsed
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Windsurf hooks preserved because 'hooks' is not an object: {path}")
+        return False
+
+    changes: dict[str, tuple[list[Any] | None, list[Any]]] = {}
+    for event, entry in specs.items():
+        current = hooks.get(event)
+        if isinstance(current, list) and entry in current:
+            continue
+        if current is not None and not isinstance(current, list):
+            log(f"Windsurf {event} hooks preserved because the value is not a list: {path}")
+            return False
+        if isinstance(current, list) and _ACTIVE_INSTALL_ROOT is not None:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event, current_value=current,
+                )
+            except ValueError:
+                log(f"Windsurf {event} hooks preserved because the existing list is not Hub-owned: {path}")
+                return False
+        preimage = json.loads(json.dumps(current)) if isinstance(current, list) else None
+        changes[event] = (preimage, [*(current or []), entry])
+    if not changes:
+        return True
+
+    for event, (_preimage, postimage) in changes.items():
+        hooks[event] = postimage
+    backup(path, backup_enabled)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if existed:
+            for event, (preimage, postimage) in changes.items():
+                record_external_json_key(
+                    _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event,
+                    preimage=preimage, postimage=postimage,
+                )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Windsurf policy hooks configured: {path}")
+    return True
+
+
+def sync_copilot_tool_hooks(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+    *,
+    skip_events: set[str] | None = None,
+) -> bool:
+    """Install reversible Copilot CLI tool hooks in its documented user hook directory."""
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Copilot hook source is unavailable: {hook_script}")
+        return False
+    command = f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host copilot'
+    configured_hooks = {
+        "preToolUse": [{
+            "type": "command", "command": command + " --event preToolUse", "timeoutSec": 5,
+        }],
+        "postToolUse": [{
+            "type": "command", "command": command + " --event postToolUse",
+            "matcher": "^(create|edit)$", "timeoutSec": 5,
+        }],
+    }
+    skipped = {event.casefold() for event in (skip_events or set())}
+    configured_hooks = {
+        event: handlers for event, handlers in configured_hooks.items()
+        if event.casefold() not in skipped
+    }
+    if not configured_hooks:
+        return True
+    postimage = {"version": 1, "hooks": configured_hooks}
+    serialized = json.dumps(postimage, indent=2, ensure_ascii=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            current = path.read_bytes()
+        except OSError as exc:
+            log(f"Copilot hook preserved because it cannot be read: {path} ({exc})")
+            return False
+        try:
+            assert_external_file_writable(install_dir, path, current)
+        except ValueError:
+            if current.decode("utf-8", errors="replace") == serialized:
+                return True
+            log(f"Copilot hook preserved because it is not Hub-owned: {path}")
+            return False
+    backup(path, backup_enabled)
+    path.write_text(serialized, encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        # Text-mode newline translation differs by platform; ownership must hash
+        # the exact bytes that uninstall will compare against.
+        record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Copilot {' and '.join(configured_hooks)} hooks configured: {path}")
+    return True
+
+
+sync_copilot_pre_tool_hook = sync_copilot_tool_hooks
+
+
+def devin_config_dir() -> Path:
+    """Return Devin's documented user configuration directory."""
+    appdata = os.environ.get("APPDATA")
+    if os.name == "nt" and appdata:
+        return Path(appdata) / "devin"
+    return Path.home() / ".config" / "devin"
+
+
+def devin_mcp_config_path() -> Path:
+    return devin_config_dir() / "mcp_config.json"
+
+
+def _sync_devin_tool_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+    *,
+    event: str,
+    matcher: str,
+) -> bool:
+    """Merge a managed Devin tool hook without replacing user configuration."""
+    hook_script = install_dir / "src" / "local_ai_hub" / "repo_plan" / "host_hooks.py"
+    if not hook_script.is_file():
+        log(f"Devin hook source is unavailable: {hook_script}")
+        return False
+    entry = {
+        "matcher": matcher,
+        "hooks": [{
+            "type": "command",
+            "command": f'"{hub_python.resolve()}" "{hook_script.resolve()}" --host devin --event {event}',
+            "timeout": 5,
+        }],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
+    data: dict[str, Any] = {}
+    if existed:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            log(f"Devin hooks preserved because the config is invalid: {path} ({exc})")
+            return False
+        if not isinstance(parsed, dict):
+            log(f"Devin hooks preserved because the config root is not an object: {path}")
+            return False
+        data = parsed
+    hooks_existed = "hooks" in data
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        log(f"Devin hooks preserved because 'hooks' is not an object: {path}")
+        return False
+    current = hooks.get(event)
+    if isinstance(current, list) and entry in current:
+        return True
+    if current is not None and not isinstance(current, list):
+        log(f"Devin {event} hooks preserved because the value is not a list: {path}")
+        return False
+    if current is not None and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event, current_value=current,
+            )
+        except ValueError:
+            log(f"Devin {event} hooks preserved because the existing list is not Hub-owned: {path}")
+            return False
+    preimage = json.loads(json.dumps(current)) if current is not None else None
+    hooks[event] = [*(current or []), entry]
+    backup(path, backup_enabled)
+    serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    path.write_text(serialized, encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if existed:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="hooks", key=event,
+                preimage=preimage, postimage=hooks[event],
+            )
+            if not hooks_existed:
+                record_external_json_container(
+                    _ACTIVE_INSTALL_ROOT, path, container_path="hooks", container_type="object",
+                )
+        else:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+    log(f"Devin {event} hook configured: {path}")
+    return True
+
+
+def sync_devin_pre_tool_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install Devin's native PreToolUse hook without changing host approvals."""
+    return _sync_devin_tool_hook(
+        path, install_dir, hub_python, backup_enabled, event="PreToolUse", matcher="exec",
+    )
+
+
+def sync_devin_post_tool_hook(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    backup_enabled: bool,
+) -> bool:
+    """Install Devin's non-blocking static check after file editing tools."""
+    return _sync_devin_tool_hook(
+        path, install_dir, hub_python, backup_enabled,
+        event="PostToolUse", matcher="^(edit|write|apply_patch)$",
+    )
+
+
 def _configure_gemini_instance_impl(
     gemini_dir: Path,
     install_dir: Path,
@@ -856,14 +2126,23 @@ def _configure_gemini_instance_impl(
     *,
     project_root: Path | None = None,
     agent_components: dict[str, Any] | None = None,
+    manual_actions: list[str] | None = None,
 ) -> None:
     """Configure a single .gemini root (skills, instructions, MCP configs, permissions, schemas)."""
     gemini_dir.mkdir(parents=True, exist_ok=True)
-    if _agent_component_enabled(agent_components, "gemini", "skills"):
+    gemini_extension_enabled = gemini_cli_extension_active(gemini_dir, project_root)
+    antigravity_plugin_present = antigravity_plugin_installed(gemini_dir)
+    if (
+        _agent_component_enabled(agent_components, "gemini", "skills")
+        or _agent_component_enabled(agent_components, "antigravity", "skills", default=False)
+    ):
         install_agent_skills(install_dir, gemini_dir / "skills", include_companion=include_companion)
         install_agent_skills(install_dir, gemini_dir / "config" / "skills", include_companion=include_companion)
 
-    if include_companion and _agent_component_enabled(agent_components, "gemini", "skills"):
+    if include_companion and (
+        _agent_component_enabled(agent_components, "gemini", "skills")
+        or _agent_component_enabled(agent_components, "antigravity", "skills", default=False)
+    ):
         try:
             install_superpowers_skills(gemini_dir / "skills", install_dir / ".local-ai-hub-superpowers" / ".local-ai-hub-skill-ownership.json")
         except (OSError, TimeoutError, ValueError, urllib.error.URLError) as exc:
@@ -872,7 +2151,10 @@ def _configure_gemini_instance_impl(
 
     if (
         cfg.get("tool_policy", {}).get("install_global_instructions", True)
-        and _agent_component_enabled(agent_components, "gemini", "instructions")
+        and (
+            _agent_component_enabled(agent_components, "gemini", "instructions")
+            or _agent_component_enabled(agent_components, "antigravity", "instructions", default=False)
+        )
     ):
         doc = gemini_dir / "GEMINI.md"
         try:
@@ -881,21 +2163,63 @@ def _configure_gemini_instance_impl(
         except ValueError as exc:
             if "external block has no ownership record" not in str(exc):
                 raise
-            log(f"Manual agent setup required: Gemini instructions preserved: {doc} ({exc})")
+            owners = [
+                label for provider, label in (("gemini", "Gemini"), ("antigravity", "Antigravity"))
+                if _agent_component_enabled(agent_components, provider, "instructions", default=False)
+            ]
+            owner_label = " and ".join(owners) or "Gemini/Antigravity"
+            action = f"{owner_label} instructions preserved: {doc} ({exc})"
+            if manual_actions is not None:
+                manual_actions.append(action)
+            log(f"Manual agent setup required: {action}")
         if bool(cfg.get("setup", {}).get("install_antigravity_style_policy", False)):
             merge_antigravity_skill_policy(gemini_dir / "AGENTS.md", backup_enabled)
             merge_antigravity_skill_policy((project_root or Path.cwd()) / "AGENTS.md", backup_enabled)
 
     if _agent_component_enabled(agent_components, "gemini", "mcp"):
-        json_mcp_merge(gemini_dir / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
-        sync_antigravity_mcp_config(
-            gemini_dir / "config" / "mcp_config.json",
-            install_dir, hub_python, serena, cfg, backup_enabled,
-        )
+        gemini_settings = gemini_dir / "settings.json"
+        if gemini_extension_enabled:
+            if global_hub_mcp_configured(gemini_settings):
+                action = f"Gemini CLI extension and standalone MCP both configured in {gemini_settings}; remove one route"
+                if manual_actions is not None:
+                    manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        else:
+            json_mcp_merge(
+                gemini_settings,
+                build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg),
+                backup_enabled,
+            )
+    if _agent_component_enabled(agent_components, "antigravity", "mcp", default=False):
+        antigravity_mcp = gemini_dir / "config" / "mcp_config.json"
+        if antigravity_plugin_present:
+            if global_hub_mcp_configured(antigravity_mcp):
+                action = f"Antigravity plugin and standalone MCP both configured in {antigravity_mcp}; remove one route"
+                if manual_actions is not None:
+                    manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        else:
+            sync_antigravity_mcp_config(
+                antigravity_mcp, install_dir, hub_python, serena, cfg, backup_enabled,
+            )
         sync_antigravity_config_json(
             gemini_dir / "config" / "config.json",
             backup_enabled,
         )
+
+    if _agent_hooks_enabled(agent_components, "gemini"):
+        gemini_settings = gemini_dir / "settings.json"
+        if gemini_extension_enabled:
+            if global_hub_hooks_configured(gemini_settings, "gemini_cli"):
+                action = f"Gemini CLI extension and standalone hooks both configured in {gemini_settings}; remove one route"
+                if manual_actions is not None:
+                    manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        elif not sync_gemini_cli_hooks(gemini_settings, install_dir, hub_python, backup_enabled):
+            action = f"Merge Gemini CLI lifecycle hooks manually in {gemini_settings}"
+            if manual_actions is not None:
+                manual_actions.append(action)
+            log(f"Manual agent setup required: {action}")
 
 
 def configure_gemini_instance(
@@ -909,6 +2233,7 @@ def configure_gemini_instance(
     *,
     project_root: Path | None = None,
     agent_components: dict[str, Any] | None = None,
+    manual_actions: list[str] | None = None,
 ) -> None:
     global _ACTIVE_INSTALL_ROOT
     previous_root = _ACTIVE_INSTALL_ROOT
@@ -920,16 +2245,27 @@ def configure_gemini_instance(
         _configure_gemini_instance_impl(
             gemini_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion,
             project_root=project_root, agent_components=agent_components,
+            manual_actions=manual_actions,
         )
     finally:
         _ACTIVE_INSTALL_ROOT = previous_root
-        sync_antigravity_hooks_json(
-            gemini_dir / "config" / "hooks.json",
-            install_dir, hub_python, backup_enabled,
-        )
+    antigravity_hooks = gemini_dir / "config" / "hooks.json"
+    if _agent_hooks_enabled(agent_components, "antigravity", default=False):
+        if antigravity_plugin_installed(gemini_dir):
+            try:
+                hook_data = json.loads(antigravity_hooks.read_text(encoding="utf-8")) if antigravity_hooks.is_file() else {}
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"Cannot safely inspect Antigravity hooks {antigravity_hooks}: {exc}") from exc
+            if isinstance(hook_data, dict) and "local-ai-hub" in hook_data:
+                action = f"Antigravity plugin and global Hub hooks both configured in {antigravity_hooks}; remove one route"
+                if manual_actions is not None:
+                    manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        else:
+            sync_antigravity_hooks_json(antigravity_hooks, install_dir, hub_python, backup_enabled)
 
     antigravity_mcp = gemini_dir / "antigravity" / "mcp" / "local-ai"
-    if _agent_component_enabled(agent_components, "gemini", "mcp") and (
+    if _agent_component_enabled(agent_components, "antigravity", "mcp", default=False) and not antigravity_plugin_installed(gemini_dir) and (
         antigravity_mcp.exists() or (gemini_dir / "antigravity").exists()
     ):
         antigravity_mcp.mkdir(parents=True, exist_ok=True)
@@ -944,6 +2280,24 @@ def configure_gemini_instance(
 
 def vscode_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool) -> None:
     json_server_merge(path, servers, backup_enabled, container_key="servers", require_stdio_type=True)
+
+
+def copilot_home() -> Path:
+    """Return Copilot's configured home, respecting its documented override."""
+    configured = os.environ.get("COPILOT_HOME", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".copilot"
+
+
+def copilot_hook_path() -> Path:
+    return copilot_home() / "hooks" / "local-ai-hub.json"
+
+
+def opencode_config_dirs() -> list[Path]:
+    """Return OpenCode's canonical user config root or its explicit override."""
+    configured = os.environ.get("OPENCODE_HOME", "").strip()
+    if configured:
+        return [Path(configured).expanduser()]
+    return [Path.home() / ".config" / "opencode"]
 
 def toml_quote(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
@@ -1006,7 +2360,7 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
             "enabled": True, "required": False,
             "startup_timeout_sec": max(10, int(startup_timeout)),
             "tool_timeout_sec": max(60, int(tool_timeout)),
-            "default_tools_approval_mode": "auto",
+            "default_tools_approval_mode": "prompt",
         }
         previous = existing_servers.get(name)
         if "url" in entry and isinstance(previous, dict):
@@ -1037,8 +2391,21 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
     log(f"Codex MCP config updated: {path}")
 
 
+def codex_hub_plugin_enabled(path: Path) -> bool:
+    """Return whether Codex config selects the bundled Hub plugin route."""
+    if not path.is_file():
+        return False
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect Codex config {path}: {exc}") from exc
+    plugins = data.get("plugins")
+    plugin = plugins.get("local-ai-hub@local-ai-hub") if isinstance(plugins, dict) else None
+    return isinstance(plugin, dict) and plugin.get("enabled") is True
+
+
 def merge_global_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
-    policy = build_global_policy(cfg or {})
+    policy = generate_global_policy(cfg or {})
     _merge_owned_text_block(path, policy, GLOBAL_POLICY_BEGIN, GLOBAL_POLICY_END, backup_enabled)
     log(f"Tool-first policy installed: {path}")
 
@@ -1157,22 +2524,6 @@ def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: 
             )
         log(f"Windsurf Local AI Hub rule installed: {path}")
     return None
-
-
-def generate_autosetup_policy(skills_dir: Path) -> str:
-    orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
-    tok_skill_path = skills_dir / "token-economizer" / "SKILL.md"
-    tok_skill = tok_skill_path.as_posix()
-    plan_skill = (skills_dir / "plan-led-work" / "SKILL.md").as_posix()
-    return (
-        f"{AUTOSETUP_BEGIN}\n"
-        "## Local AI Hub, plan-led work, and Token-economizer automatic setup\n\n"
-        f"- For every coding or repository task, load and follow `{orch_skill}` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.\n"
-        f"- Load and follow `{tok_skill}` before repository discovery for bounded output limits.\n"
-        f"- For substantial multi-step work, load and follow `{plan_skill}`: use Superpowers for specifications; use Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and authentic receipts for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. Report `Done / Next / Blocked` updates at milestones.\n"
-        "- Use tools already available in the environment; missing optional setup helpers do not block repository discovery or validation.\n"
-        f"{AUTOSETUP_END}"
-    )
 
 
 def merge_autosetup_policy(path: Path, backup_enabled: bool, skills_dir: Path) -> None:
@@ -1592,11 +2943,215 @@ def _http_mcp_ready(url: str) -> bool:
 
 
 def _agent_component_enabled(
-    selections: dict[str, Any] | None, agent: str, component: str
+    selections: dict[str, Any] | None, agent: str, component: str, *, default: bool = True
 ) -> bool:
     if selections is None:
-        return True
-    return bool(selections.get(f"agent_{agent}_{component}", True))
+        return default
+    return bool(selections.get(f"agent_{agent}_{component}", default))
+
+
+def _agent_hooks_enabled(
+    selections: dict[str, Any] | None, agent: str, *, default: bool = True
+) -> bool:
+    if selections is None:
+        return default
+    return bool(selections.get(f"agent_{agent}_hooks", default))
+
+
+def configure_cursor_global_routes(
+    cursor_dir: Path,
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+    agent_components: dict[str, Any] | None,
+    manual_actions: list[str],
+) -> None:
+    """Use Cursor's native plugin route when present; avoid duplicate global MCP/hooks."""
+    plugin_present = cursor_hub_plugin_installed(cursor_dir)
+    mcp_path = cursor_dir / "mcp.json"
+    hooks_path = cursor_dir / "hooks.json"
+    if _agent_component_enabled(agent_components, "cursor", "mcp"):
+        if plugin_present:
+            if global_hub_mcp_configured(mcp_path):
+                action = f"Cursor local Hub plugin is installed; standalone Hub MCP remains in {mcp_path}. Remove one route after reviewing the current file"
+                manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        else:
+            json_mcp_merge(
+                mcp_path,
+                build_mcp_entries(install_dir, hub_python, serena, "cursor", cfg),
+                backup_enabled,
+            )
+    if _agent_hooks_enabled(agent_components, "cursor"):
+        if plugin_present:
+            if cursor_global_hub_hooks_configured(hooks_path):
+                action = f"Cursor local Hub plugin is installed; global Hub hooks remain in {hooks_path}. Remove duplicate hooks after reviewing the current file"
+                manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        else:
+            session_ok = sync_cursor_session_start_hook(
+                hooks_path, install_dir, hub_python, backup_enabled,
+            )
+            shell_ok = sync_cursor_before_shell_hook(
+                hooks_path, install_dir, hub_python, backup_enabled,
+            )
+            edit_ok = sync_cursor_after_file_edit_hook(
+                hooks_path, install_dir, hub_python, backup_enabled,
+            )
+            if not session_ok or not shell_ok or not edit_ok:
+                manual_actions.append(
+                    f"Cursor session/shell/post-edit hooks not fully installed; review and merge manually: {hooks_path}"
+                )
+
+
+def configure_copilot_global_routes(
+    copilot_dir: Path,
+    project_root: Path,
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+    agent_components: dict[str, Any] | None,
+    manual_actions: list[str],
+) -> None:
+    """Prefer an enabled Copilot plugin and avoid duplicate user-level MCP/hooks."""
+    plugin_enabled = copilot_hub_plugin_enabled(copilot_dir, project_root)
+    mcp_path = copilot_dir / "mcp-config.json"
+    hooks_path = copilot_dir / "hooks" / "local-ai-hub.json"
+    if _agent_component_enabled(agent_components, "copilot", "mcp"):
+        if plugin_enabled:
+            if global_hub_mcp_configured(mcp_path):
+                action = f"Copilot Hub plugin is enabled; standalone Hub MCP remains in {mcp_path}. Remove one route after reviewing the current file"
+                manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        else:
+            json_mcp_merge(
+                mcp_path,
+                build_mcp_entries(install_dir, hub_python, serena, "copilot", cfg),
+                backup_enabled,
+            )
+    if _agent_hooks_enabled(agent_components, "copilot"):
+        existing_events = copilot_global_hub_hook_events(copilot_dir, project_root)
+        external_tool_events = copilot_global_hub_hook_events(
+            copilot_dir, project_root, exclude_paths={hooks_path},
+        )
+        if plugin_enabled and "sessionstart" in existing_events:
+            action = (
+                "Copilot Hub plugin is enabled; global Hub SessionStart hooks remain in another scope. "
+                "Review and remove duplicate hooks manually"
+            )
+            manual_actions.append(action)
+            log(f"Manual agent setup required: {action}")
+        duplicate_tool_events = external_tool_events & {"pretooluse", "posttooluse"}
+        if duplicate_tool_events:
+            events = ", ".join(sorted(duplicate_tool_events))
+            action = f"Copilot Hub tool hooks already configured for {events}; setup will not add duplicate events"
+            manual_actions.append(action)
+            log(f"Manual agent setup required: {action}")
+        if not sync_copilot_tool_hooks(
+            hooks_path, install_dir, hub_python, backup_enabled, skip_events=duplicate_tool_events,
+        ):
+            manual_actions.append(
+                f"Copilot tool hooks not installed; review and merge manually: {hooks_path}"
+            )
+
+
+def provider_integration_status(
+    agent_names: tuple[str, ...],
+    selected_agents: dict[str, bool],
+    component_installation: dict[str, dict[str, str]],
+    hook_installation: dict[str, str],
+    plugin_installation: dict[str, str],
+    *,
+    batch_error: str | None = None,
+    manual_actions_by_provider: dict[str, list[str]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Report setup state separately from host trust, connection, and runtime proof."""
+    report: dict[str, dict[str, Any]] = {}
+    for name in agent_names:
+        selected = bool(selected_agents.get(name, False))
+        component_states = component_installation.get(name, {})
+        configured_states = [
+            *component_states.values(),
+            hook_installation.get(name, "not_supported_by_hub_setup"),
+            plugin_installation.get(name, "not_supported_by_hub_setup"),
+        ]
+        if not selected:
+            configured = "not_selected"
+        elif batch_error:
+            configured = "outcome_unknown_after_batch_error"
+        elif "failed_or_partial" in configured_states:
+            configured = "failed_or_partial"
+        elif "configured_with_manual_steps" in configured_states:
+            configured = "configured_with_manual_steps"
+        elif any(state == "configured" for state in configured_states):
+            configured = "configured_by_setup"
+        elif "selected_for_manual_install" in configured_states:
+            configured = "selected_for_manual_install"
+        else:
+            configured = "no_components_configured"
+        report[name] = {
+            "selected_for_setup": selected,
+            "configured": configured,
+            "components": dict(component_states),
+            "installed": "not_observed_by_setup",
+            "enabled": "not_observed_by_setup",
+            "manual_actions": list((manual_actions_by_provider or {}).get(name, [])),
+            "hooks": hook_installation.get(name, "not_supported_by_hub_setup"),
+            "plugin": plugin_installation.get(name, "not_supported_by_hub_setup"),
+            "trust": "host_controlled_not_observed",
+            "connection": "not_probed_by_setup",
+            "runtime_verification": "not_run",
+        }
+    return report
+
+
+def provider_manual_actions(actions: list[str]) -> dict[str, list[str]]:
+    """Attribute setup warnings only to provider identities named in the action."""
+    aliases = {
+        "codex": ("codex",),
+        "claude": ("claude",),
+        "gemini": ("gemini",),
+        "antigravity": ("antigravity",),
+        "cursor": ("cursor",),
+        "windsurf": ("windsurf", "cascade"),
+        "copilot": ("copilot",),
+        "opencode": ("opencode",),
+        "devin": ("devin",),
+    }
+    attributed = {provider: [] for provider in aliases}
+    attributed["unattributed"] = []
+    for action in actions:
+        text = str(action).casefold()
+        matches = [
+            provider for provider, names in aliases.items()
+            if any(re.search(rf"\b{re.escape(name)}\b", text) for name in names)
+        ]
+        if matches:
+            for target in matches:
+                attributed[target].append(str(action))
+        else:
+            attributed["unattributed"].append(str(action))
+    return attributed
+
+
+def provider_setup_component_state(
+    selected: bool,
+    *,
+    batch_error: str | None = None,
+    manual_actions: list[str] | None = None,
+) -> str:
+    """Summarize one provider's setup outcome without borrowing sibling state."""
+    if not selected:
+        return "not_selected"
+    if batch_error:
+        return "outcome_unknown_after_batch_error"
+    if manual_actions:
+        return "configured_with_manual_steps"
+    return "configured"
 
 
 def _configure_agents_impl(
@@ -1611,14 +3166,27 @@ def _configure_agents_impl(
     manual_actions: list[str] = []
     codex_entries = build_codex_mcp_entries(install_dir, hub_python, serena, cfg)
     codex_entry = codex_entries.get("local-ai", {})
+    agents_cfg = cfg.get("agents", {})
+    codex_homes: list[Path] = []
+    if agents_cfg.get("codex", True):
+        if os.environ.get("CODEX_HOME"):
+            codex_homes.append(Path(os.environ["CODEX_HOME"]))
+        for u_home in get_user_homes():
+            ch = u_home / ".codex"
+            if ch.resolve() not in [p.resolve() for p in codex_homes]:
+                codex_homes.append(ch)
     if (
-        cfg.get("agents", {}).get("codex", True)
+        agents_cfg.get("codex", True)
         and _agent_component_enabled(agent_components, "codex", "mcp")
-        and "url" in codex_entry and not _http_mcp_ready(codex_entry["url"])
+        and "url" in codex_entry
+        and any(
+            not codex_hub_plugin_enabled(codex_home / "config.toml")
+            for codex_home in codex_homes
+        )
+        and not _http_mcp_ready(codex_entry["url"])
     ):
         raise RuntimeError("HTTP MCP transport is not ready; Codex configuration was not changed")
     backup_enabled = bool(cfg.get("setup", {}).get("backup_existing_configs", True))
-    agents_cfg = cfg.get("agents", {})
     write_all_generated(cfg, install_dir, hub_python, serena)
     # Cursor and Windsurf discover the shared ~/.agents/skills directory too.
     # Keep that shared tree only when every supported consumer is selected;
@@ -1626,20 +3194,12 @@ def _configure_agents_impl(
     standard_skill_tree_enabled = agents_cfg.get("agent_skills_standard", True) and all(
         agents_cfg.get(name, True)
         and _agent_component_enabled(agent_components, name, "skills")
-        for name in ("codex", "cursor", "windsurf")
+        for name in ("codex", "cursor", "windsurf", "devin")
     )
     if standard_skill_tree_enabled:
         for u_home in get_user_homes():
             install_agent_skills(install_dir, u_home / ".agents" / "skills", include_companion=include_companion)
     if agents_cfg.get("codex", True):
-        codex_homes: list[Path] = []
-        if os.environ.get("CODEX_HOME"):
-            codex_homes.append(Path(os.environ["CODEX_HOME"]))
-        for u_home in get_user_homes():
-            ch = u_home / ".codex"
-            if ch.resolve() not in [p.resolve() for p in codex_homes]:
-                codex_homes.append(ch)
-
         for codex_home in codex_homes:
             if _agent_component_enabled(agent_components, "codex", "skills"):
                 install_agent_skills(install_dir, codex_home / "skills", include_companion=include_companion)
@@ -1660,19 +3220,30 @@ def _configure_agents_impl(
                     log(f"Manual agent setup required: {manual_action}")
             if _agent_component_enabled(agent_components, "codex", "mcp"):
                 codex_config = codex_home / "config.toml"
-                try:
-                    codex_mcp_merge(
-                        codex_config, codex_entries, backup_enabled,
-                        startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
-                        tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
+                if codex_hub_plugin_enabled(codex_config):
+                    manual_action = (
+                        f"Codex Hub plugin is enabled in {codex_config}; standalone MCP setup skipped "
+                        "to avoid duplicate tools"
                     )
-                except ValueError as exc:
-                    if "external block has no ownership record" not in str(exc):
-                        raise
-                    manual_action = f"Codex MCP config preserved: {codex_config} ({exc})"
                     manual_actions.append(manual_action)
-                    log(f"Manual agent setup required: {manual_action}")
+                    log(manual_action)
+                else:
+                    try:
+                        codex_mcp_merge(
+                            codex_config, codex_entries, backup_enabled,
+                            startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
+                            tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
+                        )
+                    except ValueError as exc:
+                        if "external block has no ownership record" not in str(exc):
+                            raise
+                        manual_action = f"Codex MCP config preserved: {codex_config} ({exc})"
+                        manual_actions.append(manual_action)
+                        log(f"Manual agent setup required: {manual_action}")
     if agents_cfg.get("claude", True):
+        claude_settings = Path.home() / ".claude" / "settings.json"
+        claude_mcp_config = Path.home() / ".claude.json"
+        claude_plugin_enabled = claude_hub_plugin_enabled(claude_settings)
         if _agent_component_enabled(agent_components, "claude", "skills"):
             install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)
         if (
@@ -1690,14 +3261,71 @@ def _configure_agents_impl(
                 manual_actions.append(manual_action)
                 log(f"Manual agent setup required: {manual_action}")
         if _agent_component_enabled(agent_components, "claude", "mcp"):
-            json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, "claude", cfg), backup_enabled)
-    if agents_cfg.get("gemini", True):
+            if claude_plugin_enabled:
+                if claude_global_hub_mcp_configured(claude_mcp_config):
+                    manual_action = (
+                        f"Claude Hub plugin is enabled; standalone MCP remains in {claude_mcp_config}. "
+                        "Remove one route to avoid duplicate tools"
+                    )
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
+            else:
+                json_mcp_merge(
+                    claude_mcp_config,
+                    build_mcp_entries(install_dir, hub_python, serena, "claude", cfg),
+                    backup_enabled,
+                )
+        if _agent_hooks_enabled(agent_components, "claude") and claude_plugin_enabled:
+            if claude_global_hub_hooks_configured(claude_settings):
+                manual_action = (
+                    f"Claude Hub plugin is enabled; global Hub hooks remain in {claude_settings}. "
+                    "Remove duplicate hooks after reviewing the current file"
+                )
+                manual_actions.append(manual_action)
+                log(f"Manual agent setup required: {manual_action}")
+        elif _agent_hooks_enabled(agent_components, "claude"):
+            if not sync_claude_session_start_hook(
+                claude_settings, install_dir, hub_python, backup_enabled,
+            ):
+                manual_actions.append(
+                    f"Claude SessionStart hook not installed; review and merge manually: "
+                    f"{claude_settings}"
+                )
+            if not sync_claude_subagent_start_hook(
+                claude_settings, install_dir, hub_python, backup_enabled,
+            ):
+                manual_actions.append(
+                    f"Claude SubagentStart hook not installed; review and merge manually: "
+                    f"{claude_settings}"
+                )
+            if not sync_claude_pre_tool_hook(
+                claude_settings, install_dir, hub_python, backup_enabled,
+            ):
+                manual_actions.append(
+                    f"Claude PreToolUse hook not installed; review and merge manually: "
+                    f"{claude_settings}"
+                )
+            if not sync_claude_permission_request_hook(
+                claude_settings, install_dir, hub_python, backup_enabled,
+            ):
+                manual_actions.append(
+                    f"Claude PermissionRequest hook not installed; review and merge manually: "
+                    f"{claude_settings}"
+                )
+            if not sync_claude_post_tool_hook(
+                claude_settings, install_dir, hub_python, backup_enabled,
+            ):
+                manual_actions.append(
+                    f"Claude PostToolUse hook not installed; review and merge manually: "
+                    f"{claude_settings}"
+                )
+    if agents_cfg.get("gemini", True) or agents_cfg.get("antigravity", True):
         for u_home in get_user_homes():
             g_dir = u_home / ".gemini"
             if u_home.resolve() == Path.home().resolve() or g_dir.exists() or u_home.exists():
                 configure_gemini_instance(
                     g_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion,
-                    agent_components=agent_components,
+                    agent_components=agent_components, manual_actions=manual_actions,
                 )
     # Additional MCP hosts with their documented user-level skills and rules.
     if agents_cfg.get("cursor", True):
@@ -1725,8 +3353,10 @@ def _configure_agents_impl(
                     f"Cursor rule frontmatter ownership is unclear and was preserved: {cursor_rule}. "
                     "Adopt its marked Hub blocks or merge the instructions manually."
                 )
-        if _agent_component_enabled(agent_components, "cursor", "mcp"):
-            json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "cursor", cfg), backup_enabled)
+        configure_cursor_global_routes(
+            cursor_dir, install_dir, hub_python, serena, cfg, backup_enabled,
+            agent_components, manual_actions,
+        )
     if agents_cfg.get("windsurf", True):
         windsurf_dir = Path.home() / ".codeium" / "windsurf"
         if _agent_component_enabled(agent_components, "windsurf", "skills") and not standard_skill_tree_enabled:
@@ -1743,8 +3373,12 @@ def _configure_agents_impl(
                 log(f"Manual agent setup required: {manual_action}")
         if _agent_component_enabled(agent_components, "windsurf", "mcp"):
             json_mcp_merge(Path.home() / ".codeium" / "windsurf" / "mcp_config.json", build_mcp_entries(install_dir, hub_python, serena, "windsurf", cfg), backup_enabled)
+        if _agent_hooks_enabled(agent_components, "windsurf"):
+            hook_path = windsurf_dir / "hooks.json"
+            if not sync_windsurf_policy_hooks(hook_path, install_dir, hub_python, backup_enabled):
+                manual_actions.append(f"Windsurf policy hooks not installed; review and merge manually: {hook_path}")
     if agents_cfg.get("copilot", True):
-        copilot_dir = Path.home() / ".copilot"
+        copilot_dir = copilot_home()
         if _agent_component_enabled(agent_components, "copilot", "skills"):
             install_agent_skills(install_dir, copilot_dir / "skills", include_companion=include_companion)
         if (
@@ -1753,19 +3387,68 @@ def _configure_agents_impl(
         ):
             merge_global_policy(copilot_dir / "copilot-instructions.md", backup_enabled, cfg=cfg)
             merge_token_economy_policy(copilot_dir / "copilot-instructions.md", backup_enabled, cfg=cfg)
-        if _agent_component_enabled(agent_components, "copilot", "mcp"):
-            vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, "copilot", cfg), backup_enabled)
+        configure_copilot_global_routes(
+            copilot_dir, Path.cwd(), install_dir, hub_python, serena, cfg,
+            backup_enabled, agent_components, manual_actions,
+        )
+
+    if agents_cfg.get("devin", False):
+        devin_dir = devin_config_dir()
+        plugin_route = bool(agents_cfg.get("devin_plugin_route", False))
+        if (
+            _agent_component_enabled(agent_components, "devin", "skills")
+            and not standard_skill_tree_enabled and not plugin_route
+        ):
+            install_agent_skills(install_dir, devin_dir / "skills", include_companion=include_companion)
+        if (
+            cfg.get("tool_policy", {}).get("install_global_instructions", True)
+            and _agent_component_enabled(agent_components, "devin", "instructions")
+        ):
+            doc = Path.home() / ".devin" / "global_rules.md"
+            try:
+                merge_global_policy(doc, backup_enabled, cfg=cfg)
+                merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+            except ValueError as exc:
+                if "external block has no ownership record" not in str(exc):
+                    raise
+                action = f"Devin Local instructions preserved: {doc} ({exc})"
+                manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+        if _agent_component_enabled(agent_components, "devin", "mcp"):
+            mcp_path = devin_mcp_config_path()
+            if plugin_route:
+                action = (
+                    "Devin Local plugin route is selected; install the bundled plugin manually with "
+                    f"`devin plugins install --local {install_dir / 'plugins' / 'devin' / 'local-ai-hub'}`"
+                )
+                manual_actions.append(action)
+                log(f"Manual agent setup required: {action}")
+                if global_hub_mcp_configured(mcp_path):
+                    duplicate = (
+                        f"Devin Local standalone Hub MCP remains in {mcp_path}; remove that managed route "
+                        "after confirming the plugin works"
+                    )
+                    manual_actions.append(duplicate)
+                    log(f"Manual agent setup required: {duplicate}")
+            else:
+                json_mcp_merge(
+                    mcp_path,
+                    build_mcp_entries(install_dir, hub_python, serena, "devin", cfg),
+                    backup_enabled,
+                )
+        if _agent_hooks_enabled(agent_components, "devin"):
+            hooks_path = devin_dir / "config.json"
+            if not sync_devin_pre_tool_hook(hooks_path, install_dir, hub_python, backup_enabled):
+                manual_actions.append(
+                    f"Devin Local PreToolUse hook not installed; review and merge manually: {hooks_path}"
+                )
+            if not sync_devin_post_tool_hook(hooks_path, install_dir, hub_python, backup_enabled):
+                manual_actions.append(
+                    f"Devin Local PostToolUse hook not installed; review and merge manually: {hooks_path}"
+                )
 
     if agents_cfg.get("opencode", True):
-        opencode_dirs: list[Path] = []
-        if os.environ.get("OPENCODE_HOME"):
-            opencode_dirs.append(Path(os.environ["OPENCODE_HOME"]))
-        if sys.platform == "win32" and os.environ.get("APPDATA"):
-            opencode_dirs.append(Path(os.environ["APPDATA"]) / "opencode")
-        opencode_dirs.append(Path.home() / ".config" / "opencode")
-        opencode_dirs.append(Path.home() / ".opencode")
-
-        for oc_dir in opencode_dirs:
+        for oc_dir in opencode_config_dirs():
             if _agent_component_enabled(agent_components, "opencode", "skills"):
                 install_agent_skills(install_dir, oc_dir / "skills", include_companion=include_companion)
             if (
@@ -1782,9 +3465,55 @@ def _configure_agents_impl(
                     manual_action = f"OpenCode instructions preserved: {doc} ({exc})"
                     manual_actions.append(manual_action)
                     log(f"Manual agent setup required: {manual_action}")
-            if _agent_component_enabled(agent_components, "opencode", "mcp"):
-                json_mcp_merge(oc_dir / "opencode.json", build_mcp_entries(install_dir, hub_python, serena, "opencode", cfg), backup_enabled)
-                json_mcp_merge(oc_dir / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "opencode", cfg), backup_enabled)
+            if _agent_component_enabled(
+                agent_components, "opencode", "plugin",
+                default=bool(agents_cfg.get("opencode_plugin_route", True)),
+            ):
+                plugin_config = oc_dir / "opencode.json"
+                existing_mcp_paths = opencode_hub_mcp_paths(oc_dir)
+                existing_plugin_paths = opencode_hub_plugin_paths(oc_dir)
+                if existing_mcp_paths:
+                    manual_action = (
+                        "OpenCode standalone Hub MCP already exists in "
+                        f"{', '.join(str(path) for path in existing_mcp_paths)}; "
+                        "plugin route was preserved and not added to avoid duplicate tools"
+                    )
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
+                elif existing_plugin_paths:
+                    log(
+                        "OpenCode Hub plugin already registered in "
+                        f"{', '.join(str(path) for path in existing_plugin_paths)}; preserved"
+                    )
+                elif not sync_opencode_plugin_config(
+                    plugin_config, install_dir, hub_python, cfg, backup_enabled,
+                ):
+                    manual_action = f"OpenCode Hub plugin requires a manual merge in {plugin_config}"
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
+            elif _agent_component_enabled(agent_components, "opencode", "mcp"):
+                existing_mcp_paths = opencode_hub_mcp_paths(oc_dir)
+                existing_plugin_paths = opencode_hub_plugin_paths(oc_dir)
+                if existing_mcp_paths:
+                    manual_action = (
+                        "OpenCode standalone Hub MCP already exists in "
+                        f"{', '.join(str(path) for path in existing_mcp_paths)}; "
+                        "existing route was preserved"
+                    )
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
+                elif existing_plugin_paths:
+                    manual_action = (
+                        "OpenCode Hub plugin already exists in "
+                        f"{', '.join(str(path) for path in existing_plugin_paths)}; "
+                        "standalone MCP route was not added to avoid duplicate tools"
+                    )
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
+                else:
+                    opencode_mcp_merge(
+                        oc_dir / "opencode.json", install_dir, hub_python, cfg, backup_enabled,
+                    )
 
     # Escape hatch for any MCP host/build whose config path differs from
     # the common defaults above. Users provide explicit paths, so setup never guesses
@@ -1838,11 +3567,14 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
         local_config = SOURCE_ROOT / "config.toml"
         example_config = SOURCE_ROOT / "config.toml.example"
         source = (local_config if local_config.is_file() else example_config).expanduser().resolve()
+    if source.name != "config.toml.example":
+        run_config_migrations(source)
     cfg = load_hub_config(str(source))
     install_dir = expand(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub"))
     installed = (install_dir / "config.toml").resolve()
     if explicit is None and installed.exists() and installed != source:
         source = installed
+        run_config_migrations(source)
         cfg = load_hub_config(str(source))
     return source, cfg, install_dir
 
@@ -2007,11 +3739,13 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
 
     migration_result: dict[str, Any] = {}
     migration_error: Exception | None = None
+    embedding_reset_backup: str | None = None
 
     def migrate_state_after_swap() -> tuple[bool, str]:
-        nonlocal migration_result, migration_error
+        nonlocal migration_result, migration_error, embedding_reset_backup
         try:
-            migration_result = run_state_migrations(state_dir)
+            migration_result = migrate_release_state(state_dir)
+            embedding_reset_backup = migration_result.get("embedding_reset_backup")
             return True, str(migration_result.get("status", "completed"))
         except Exception as exc:
             migration_error = exc
@@ -2057,6 +3791,26 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
     state_dir = expand(str(cfg.get("server", {}).get("state_dir", install_dir / "state")))
     if args.skip_model_pull:
         cfg.setdefault("features", {})["pull_models_during_setup"] = False
+    fp4_model_catalog: dict[str, Any] = {"status": "unavailable", "catalog_version": "unavailable"}
+    try:
+        source_src = str(SOURCE_ROOT / "src")
+        if source_src not in sys.path:
+            sys.path.insert(0, source_src)
+        from local_ai_hub.fp4_capabilities import load_fp4_catalog
+
+        catalog = load_fp4_catalog()
+        hardware = cfg.get("_hardware", {})
+        routes = hardware.get("fp4_model_routes", {}) if isinstance(hardware, dict) else {}
+        fp4_model_catalog = {
+            "status": "loaded" if catalog.get("catalog_version") != "unavailable" else "unavailable",
+            "catalog_version": catalog.get("catalog_version", "unavailable"),
+            "checked_at": catalog.get("checked_at"),
+            "selected_routes": routes if isinstance(routes, dict) else {},
+        }
+        log(f"FP4 catalog: {fp4_model_catalog['catalog_version']} (pre-checked static data; no model audit run).")
+    except Exception as exc:
+        fp4_model_catalog = {"status": "unavailable", "catalog_version": "unavailable", "reason": str(exc)}
+        log(f"NOTICE: static FP4 catalog unavailable; configured routes are retained: {exc}")
     try:
         hub_python = ensure_venv(install_dir / ".venv")
         install_requirements(hub_python, install_dir / "requirements-core.txt")
@@ -2241,7 +3995,16 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
     laya_cfg = cfg.get("laya", {}) if isinstance(cfg.get("laya", {}), dict) else {}
     laya_runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg.get("runtime", {}), dict) else {}
     laya_checkpoint_path = str(laya_runtime_cfg.get("checkpoint_path", "") or "").strip()
-    laya_checkpoint_exists = bool(laya_checkpoint_path and Path(laya_checkpoint_path).is_dir())
+    laya_hf_configured = bool(
+        str(laya_runtime_cfg.get("hf_repo_id", "")).strip()
+        and str(laya_runtime_cfg.get("hf_revision", "")).strip()
+        and isinstance(laya_runtime_cfg.get("hf_sha256"), dict)
+        and bool(laya_runtime_cfg.get("hf_sha256"))
+    )
+    laya_checkpoint_configured = bool(laya_checkpoint_path or laya_hf_configured)
+    laya_checkpoint_exists = bool(
+        (laya_checkpoint_path and Path(laya_checkpoint_path).is_dir()) or laya_hf_configured
+    )
     laya_runtime_selected = bool(setup_choices.get("laya_runtime", False))
     laya_runtime_ok: bool | None = None
     if laya_runtime_selected:
@@ -2401,10 +4164,10 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         manual_actions.append("Laya runtime dependencies failed to install; see the Laya recovery steps in the installer guide.")
     if laya_checkpoint_path and not laya_checkpoint_exists:
         manual_actions.append("The configured Laya checkpoint directory is missing; provide the pinned checkpoint locally and verify its configured revision and file hashes.")
-    elif laya_checkpoint_path and not laya_runtime_selected:
+    elif laya_checkpoint_configured and not laya_runtime_selected:
         manual_actions.append("A Laya checkpoint is configured but its optional runtime packages were not selected; enable Laya runtime in the installer wizard if this route is needed.")
-    elif laya_runtime_selected and not laya_checkpoint_path:
-        manual_actions.append("Laya runtime packages were selected, but no checkpoint is configured; inference needs an absolute checkpoint path, matching revision, and file hashes.")
+    elif laya_runtime_selected and not laya_checkpoint_configured:
+        manual_actions.append("Laya runtime packages were selected, but no local or pinned Hugging Face checkpoint is configured.")
     for name, result in optional_runtime_extras.items():
         if result["status"] == "failed":
             manual_actions.append(f"Optional {name.replace('_', '-')} packages failed to install; see the runtime-extra recovery steps in the installation guide.")
@@ -2457,13 +4220,19 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         and bool(setup_cfg.get("install_optional_tools", True))
         and bool(cfg.get("code_intelligence", {}).get("serena_enabled", True))
     )
-    agent_names = ("codex", "claude", "gemini", "cursor", "windsurf", "copilot", "opencode")
+    agent_names = ("codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "opencode", "devin")
+    agent_manual_actions_by_provider = provider_manual_actions(agent_config_manual_actions)
     agent_component_selection = {
         name: {
             component: bool(
                 agent_config_selected
                 and cfg.get("agents", {}).get(name, False)
                 and setup_choices.get(f"agent_{name}_{component}", True)
+                and not (
+                    name == "devin"
+                    and cfg.get("agents", {}).get("devin_plugin_route", False)
+                    and component in {"mcp", "skills"}
+                )
                 and (
                     component != "instructions"
                     or cfg.get("tool_policy", {}).get("install_global_instructions", True)
@@ -2475,16 +4244,68 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
     }
     agent_component_installation = {
         name: {
-            component: (
-                "failed_or_partial" if selected and agent_config_error
-                else "configured_with_manual_steps" if selected and agent_config_manual_actions
-                else "configured" if selected
-                else "not_selected"
+            component: provider_setup_component_state(
+                selected,
+                batch_error=agent_config_error,
+                manual_actions=agent_manual_actions_by_provider[name],
             )
             for component, selected in components.items()
         }
         for name, components in agent_component_selection.items()
     }
+    agent_setup_selection = {
+        name: bool(
+            agent_config_selected
+            and cfg.get("agents", {}).get(name, False)
+        )
+        for name in agent_names
+    }
+    hook_setup_agents = {"claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin"}
+    agent_hook_installation: dict[str, str] = {}
+    for name in agent_names:
+        if name in hook_setup_agents:
+            selected = agent_setup_selection[name] and bool(setup_choices.get(f"agent_{name}_hooks", True))
+            agent_hook_installation[name] = provider_setup_component_state(
+                selected,
+                batch_error=agent_config_error,
+                manual_actions=agent_manual_actions_by_provider[name],
+            )
+        elif name == "codex":
+            agent_hook_installation[name] = (
+                "bundled_in_plugin_not_installed_by_setup" if agent_setup_selection[name]
+                else "not_selected"
+            )
+        elif name == "opencode":
+            agent_hook_installation[name] = "not_separate_from_plugin"
+        else:
+            agent_hook_installation[name] = "not_supported_by_hub_setup"
+    agent_plugin_installation: dict[str, str] = {}
+    for name in agent_names:
+        if name == "opencode":
+            selected = agent_setup_selection[name] and bool(setup_choices.get("agent_opencode_plugin", True))
+            agent_plugin_installation[name] = provider_setup_component_state(
+                selected,
+                batch_error=agent_config_error,
+                manual_actions=agent_manual_actions_by_provider[name],
+            )
+        elif name == "codex":
+            agent_plugin_installation[name] = "bundled_external_installation_and_trust_not_probed"
+        elif name == "devin":
+            agent_plugin_installation[name] = (
+                "selected_for_manual_install" if agent_setup_selection[name]
+                and cfg.get("agents", {}).get("devin_plugin_route", False)
+                else "bundled_external_installation_and_trust_not_probed"
+            )
+        elif name in {"claude", "gemini", "antigravity", "cursor", "copilot", "devin"}:
+            agent_plugin_installation[name] = "bundled_external_installation_and_trust_not_probed"
+        else:
+            agent_plugin_installation[name] = "not_supported_by_hub_setup"
+    provider_status = provider_integration_status(
+        agent_names, agent_setup_selection, agent_component_installation,
+        agent_hook_installation, agent_plugin_installation,
+        batch_error=agent_config_error,
+        manual_actions_by_provider=agent_manual_actions_by_provider,
+    )
     selected_components = {
         "ollama_models": bool(
             not args.skip_model_pull
@@ -2516,6 +4337,15 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         },
         "agent_components": agent_component_selection,
     }
+    if embedding_reset_backup:
+        try:
+            discard_embedding_reset_backup(state_dir, embedding_reset_backup)
+            embedding_reset_backup = None
+        except (OSError, RuntimeError, ValueError) as exc:
+            log(f"Setup incomplete: v8 embedding reset backup cleanup failed: {exc}")
+            write_setup_failure_report(install_dir, state_dir, stage="embedding_reset_cleanup", error=exc)
+            return 1
+
     install_report = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -2529,6 +4359,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             "ollama_setup_ok": ollama_setup_ok,
             "ollama_models": ollama_model_report,
             "ollama_model_pull_failures": ollama_model_report["unavailable"],
+            "fp4_model_catalog": fp4_model_catalog,
             "managed_llama_cpp_selected": managed_llama_cpp_selected,
             "managed_llama_cpp_ok": managed_llama_cpp_ok,
             "hugging_face_model_preload": local_nlp_preload_ok,
@@ -2586,6 +4417,9 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             "agent_config_error": agent_config_error,
             "agent_components": agent_component_installation,
         },
+        "provider_integration": provider_status,
+        "agent_config_unattributed_manual_actions": agent_manual_actions_by_provider["unattributed"],
+        "state_migration": migration_result,
         "manual_actions": manual_actions,
         "recovery_guide": str(SOURCE_ROOT / "docs" / "INSTALLER_RECOVERY.md"),
     }

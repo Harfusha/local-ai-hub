@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from pathlib import Path
 from local_ai_hub.repo_state import RepoStateTracker
+from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
 from local_ai_hub.services import LocalAIServices
 
 def make_services(state_dir: Path):
@@ -44,7 +45,7 @@ def test_plan_create_auto_prefix(tmp_path: Path):
     assert res2["success"] is True
     assert res2["plan_id"].startswith("plan_")
 
-def test_plan_task_edit_status_alias(tmp_path: Path):
+def test_plan_task_edit_rejects_status_alias_and_unprefixed_task_id(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".local-ai.toml").write_text("[project]\nentry_points = []\n", encoding="utf-8")
@@ -58,31 +59,26 @@ def test_plan_task_edit_status_alias(tmp_path: Path):
     )
     rev = p["file_revision"]
     
-    # Edit task with 'status' instead of 'work_status'
-    edit_res = services.plan_task_edit(
-        root=str(repo),
-        plan_id="plan_sample",
-        task_id="task_1",
-        task_data={"status": "in_progress"},
-        expected_revision=rev
-    )
-    assert edit_res["success"] is True
-    assert edit_res["task"]["work_status"] == "in_progress"
+    with pytest.raises(ValueError, match="invalid task_data field: status"):
+        services.plan_task_edit(
+            root=str(repo),
+            plan_id="plan_sample",
+            task_id="task_1",
+            task_data={"status": "in_progress"},
+            expected_revision=rev
+        )
 
-    # Edit task with un-prefixed task_id
-    rev2 = edit_res["file_revision"]
-    edit_res2 = services.plan_task_edit(
-        root=str(repo),
-        plan_id="plan_sample",
-        task_id="1", # should map to task_1
-        task_data={"work_status": "completed"},
-        expected_revision=rev2
-    )
-    assert edit_res2["success"] is True
-    assert edit_res2["task"]["work_status"] == "completed"
+    with pytest.raises(RepoPlanValidationError, match="Invalid task ID"):
+        services.plan_task_edit(
+            root=str(repo),
+            plan_id="plan_sample",
+            task_id="1",  # Retired shorthand must not resolve to task_1.
+            task_data={"work_status": "completed"},
+            expected_revision=rev
+        )
 
 
-def test_plan_task_edit_verification_alias(tmp_path: Path):
+def test_plan_task_edit_rejects_verification_alias(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".local-ai.toml").write_text("[project]\nentry_points = []\n", encoding="utf-8")
@@ -94,16 +90,14 @@ def test_plan_task_edit_verification_alias(tmp_path: Path):
         tasks={"task_1": {"title": "Task 1", "work_status": "planned"}}
     )
     rev = p["file_revision"]
-    edit_res = services.plan_task_edit(
-        root=str(repo),
-        plan_id="plan_sample2",
-        task_id="task_1",
-        task_data={"verification": "all 10 tests passed", "work_status": "completed"},
-        expected_revision=rev
-    )
-    assert edit_res["success"] is True
-    assert edit_res["task"]["results"][0]["summary"] == "all 10 tests passed"
-    assert edit_res["task"]["work_status"] == "completed"
+    with pytest.raises(ValueError, match="invalid task_data field: verification"):
+        services.plan_task_edit(
+            root=str(repo),
+            plan_id="plan_sample2",
+            task_id="task_1",
+            task_data={"verification": "all 10 tests passed", "work_status": "completed"},
+            expected_revision=rev
+        )
 
 
 def test_authorized_release_clears_internal_gpu_uncertain(tmp_path: Path, monkeypatch):

@@ -237,7 +237,7 @@ def test_code_index_compaction_keeps_largest_whole_symbol_prefix_with_continuati
     value = {
         "success": True, "root": ".", "symbols": page, "limit": 40,
         "offset": 40, "total_matches": 100, "returned_count": 40,
-        "matches_count": 40, "has_more": True,
+        "has_more": True,
     }
 
     def omit_page_rows(compacted, **_kwargs):
@@ -256,7 +256,8 @@ def test_code_index_compaction_keeps_largest_whole_symbol_prefix_with_continuati
     assert result["success"] is True
     assert 0 < len(result["symbols"]) < len(page)
     assert result["symbols"] == page[:len(result["symbols"])]
-    assert result["returned_count"] == result["matches_count"] == result["returned_limit"] == len(result["symbols"])
+    assert result["returned_count"] == len(result["symbols"])
+    assert "matches_count" not in result and "returned_limit" not in result
     assert result["offset"] == 40
     assert result["limit"] == 40
     assert result["total_matches"] == 100
@@ -281,14 +282,13 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     raw = {
         "success": True, "root": str(tmp_path), "symbols": page, "limit": 40,
         "offset": 40, "total_matches": 100, "returned_count": 40,
-        "matches_count": 40, "has_more": True, "terms": ["symbol", "function"],
-        "observed_match_count": 100, "truncated": True, "stale": False,
+        "has_more": True, "terms": ["symbol", "function"],
+        "truncated": True, "stale": False,
         "confidence": 0.05,
         "confidence_basis": "returned_query_term_coverage_result_support_and_candidate_freshness",
         "coverage": {
             "query_term_count": 2, "matched_term_count": 2,
             "matched_terms": ["function", "symbol"], "query_term_coverage": 1.0,
-            "candidate_match_count": 100, "returned_symbol_count": 40,
             "complete": False, "scope": "indexed_symbol_candidates",
         },
         "freshness": {
@@ -297,8 +297,7 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
             "unknown_paths": [symbol["path"] for symbol in page], "complete": False,
         },
         "truncation": {
-            "result_limit": 40, "returned_count": 40,
-            "observed_match_count": 100, "candidate_cap": 256,
+            "candidate_cap": 256,
             "candidate_cap_reached": False,
         },
         "parse_outcomes": {"scope": "returned_symbol_candidates", "files_examined": 40},
@@ -352,8 +351,8 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     prefix_terms = sorted({term for symbol in payload["symbols"] for term in symbol["matched_terms"]})
     assert payload["coverage"]["matched_terms"] == prefix_terms
     assert payload["coverage"]["matched_term_count"] == len(prefix_terms)
-    assert payload["coverage"]["returned_symbol_count"] == len(payload["symbols"])
-    assert payload["coverage"]["candidate_match_count"] == 100
+    assert "returned_symbol_count" not in payload["coverage"]
+    assert "candidate_match_count" not in payload["coverage"]
     assert payload["freshness"]["unknown_paths"] == [symbol["path"] for symbol in payload["symbols"]]
     assert "stale" not in payload or isinstance(payload["stale"], bool)
     assert payload["confidence"] <= raw["confidence"]
@@ -361,10 +360,9 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     assert validate_operation_output("local_ai_repo", "code_index", payload) is None
     assert "parse_outcomes" not in payload
     assert "parse_outcomes" in payload["omitted_fields"]
-    assert payload["truncation"]["returned_count"] == len(payload["symbols"])
-    assert payload["truncation"]["observed_match_count"] == 100
     assert payload["truncation"]["candidate_cap"] == 256
-    assert "observed_match_count" not in payload  # Equal total_matches is not duplicated.
+    assert "observed_match_count" not in payload
+    assert "observed_match_count" not in payload["truncation"]
     assert payload["has_more"] is True
     assert payload["next_offset"] == 40 + len(payload["symbols"])
     assert wire_tokens <= requested
@@ -531,7 +529,7 @@ def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(
     value = {
         "success": True, "root": ".", "results": page, "limit": 40,
         "offset": 40, "total_matches": 100, "returned_count": 40,
-        "matches_count": 40, "has_more": True,
+        "has_more": True,
     }
 
     def omit_page_rows(compacted, **_kwargs):
@@ -550,7 +548,8 @@ def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(
     assert result["success"] is True
     assert 0 < len(result["results"]) < len(page)
     assert result["results"] == page[:len(result["results"])]
-    assert result["returned_count"] == result["matches_count"] == result["returned_limit"] == len(result["results"])
+    assert result["returned_count"] == len(result["results"])
+    assert "matches_count" not in result and "returned_limit" not in result
     assert result["offset"] == 40
     assert result["limit"] == 40
     assert result["total_matches"] == 100
@@ -613,8 +612,8 @@ def test_registered_search_wire_keeps_prefix_and_final_wire_accounting(
     raw = {
         "success": True, "root": str(tmp_path), "results": page, "limit": 40,
         "offset": 40, "total_matches": 100, "returned_count": 40,
-        "matches_count": 40, "has_more": True, "terms": ["match"],
-        "observed_match_count": 100, "truncated": True,
+        "has_more": True, "terms": ["match"],
+        "truncated": True,
     }
 
     class DummyClient:
@@ -654,11 +653,21 @@ def test_registered_search_wire_keeps_prefix_and_final_wire_accounting(
 
     assert structured is not None
     assert 0 < len(payload["results"]) < len(page)
-    assert payload["results"] == page[:len(payload["results"])]
+    actual_identity = [
+        (item["path"], item["start_line"], item["evidence_id"])
+        for item in payload["results"]
+    ]
+    expected_identity = [
+        (item["path"], item["start_line"], item["evidence_id"])
+        for item in page[:len(payload["results"])]
+    ]
+    assert actual_identity == expected_identity
     assert payload["success"] is True
     assert not (payload.get("success") is True and payload.get("status_code") == 413)
     assert payload["returned_count"] == len(payload["results"])
     assert "returned_limit" not in payload  # The wire omits identical count aliases.
+    assert "matches_count" not in payload
+    assert "observed_match_count" not in payload
     assert payload["total_matches"] == 100
     assert payload["has_more"] is True
     assert payload["next_offset"] == 40 + len(payload["results"])
