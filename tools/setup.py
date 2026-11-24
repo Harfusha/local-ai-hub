@@ -345,10 +345,7 @@ def copy_install_tree(
 
 def migrate_release_state(state_dir: Path) -> dict[str, Any]:
     """Run ordered state migrations and the v8 vector reset for installer paths."""
-    removed_artifacts = discard_stale_migration_artifacts(state_dir)
     result = run_state_migrations(state_dir, create_backup=False)
-    if removed_artifacts:
-        result["discarded_migration_artifacts"] = removed_artifacts
     version = tomllib.loads((SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     if version_parts(version) >= (8, 0, 0):
         reset = apply_embedding_reset(state_dir, create_backup=False)
@@ -356,6 +353,9 @@ def migrate_release_state(state_dir: Path) -> dict[str, Any]:
         result["embedding_reset_backup"] = reset.get("backup")
         for state_backup in result.get("backups", []):
             clear_embedding_payloads(state_backup)
+    removed_artifacts = discard_stale_migration_artifacts(state_dir)
+    if removed_artifacts:
+        result["discarded_migration_artifacts"] = removed_artifacts
     return result
 
 
@@ -3999,16 +3999,45 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
     laya_cfg = cfg.get("laya", {}) if isinstance(cfg.get("laya", {}), dict) else {}
     laya_runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg.get("runtime", {}), dict) else {}
     laya_checkpoint_path = str(laya_runtime_cfg.get("checkpoint_path", "") or "").strip()
+    laya_local_dir_present = bool(laya_checkpoint_path and Path(laya_checkpoint_path).is_dir())
+    laya_hf_repo = str(laya_runtime_cfg.get("hf_repo_id", "") or "").strip()
+    laya_hf_rev = str(laya_runtime_cfg.get("hf_revision", "") or "").strip()
+    laya_hf_sha256 = laya_runtime_cfg.get("hf_sha256")
     laya_hf_configured = bool(
-        str(laya_runtime_cfg.get("hf_repo_id", "")).strip()
-        and str(laya_runtime_cfg.get("hf_revision", "")).strip()
-        and isinstance(laya_runtime_cfg.get("hf_sha256"), dict)
-        and bool(laya_runtime_cfg.get("hf_sha256"))
+        laya_hf_repo and laya_hf_rev and isinstance(laya_hf_sha256, dict) and bool(laya_hf_sha256)
     )
     laya_checkpoint_configured = bool(laya_checkpoint_path or laya_hf_configured)
-    laya_checkpoint_exists = bool(
-        (laya_checkpoint_path and Path(laya_checkpoint_path).is_dir()) or laya_hf_configured
-    )
+    laya_hf_cached = False
+    laya_integrity_verified = False
+    if laya_local_dir_present:
+        expected_hashes = laya_runtime_cfg.get("expected_sha256") or (laya_hf_sha256 if isinstance(laya_hf_sha256, dict) else None)
+        if isinstance(expected_hashes, dict) and expected_hashes:
+            try:
+                chk_dir = Path(laya_checkpoint_path)
+                mismatches = [
+                    rel for rel, digest in expected_hashes.items()
+                    if not (chk_dir / rel).is_file() or hashlib.sha256((chk_dir / rel).read_bytes()).hexdigest() != digest
+                ]
+                laya_integrity_verified = not mismatches
+            except Exception:
+                laya_integrity_verified = False
+        else:
+            laya_integrity_verified = True
+    elif laya_hf_configured:
+        try:
+            from local_ai_hub.trained_models import download_trained_model
+            snapshot = download_trained_model(
+                laya_hf_repo, laya_hf_rev, laya_hf_sha256, allow_download=False,
+            )
+            laya_hf_cached = bool(snapshot and snapshot.is_dir())
+            laya_integrity_verified = laya_hf_cached
+            if laya_hf_cached and not laya_checkpoint_path:
+                laya_checkpoint_path = str(snapshot)
+        except Exception:
+            laya_hf_cached = False
+            laya_integrity_verified = False
+
+    laya_checkpoint_exists = bool(laya_local_dir_present or laya_hf_cached)
     laya_runtime_selected = bool(setup_choices.get("laya_runtime", False))
     laya_runtime_ok: bool | None = None
     if laya_runtime_selected:
@@ -4166,8 +4195,8 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         manual_actions.append("OpenVINO model preload was skipped; see the recovery guide to download selected models later.")
     if laya_runtime_selected and laya_runtime_ok is False:
         manual_actions.append("Laya runtime dependencies failed to install; see the Laya recovery steps in the installer guide.")
-    if laya_checkpoint_path and not laya_checkpoint_exists:
-        manual_actions.append("The configured Laya checkpoint directory is missing; provide the pinned checkpoint locally and verify its configured revision and file hashes.")
+    if laya_checkpoint_configured and not laya_checkpoint_exists:
+        manual_actions.append("The configured Laya checkpoint is missing locally; provide the pinned checkpoint locally or verify the Hugging Face cache and hashes.")
     elif laya_checkpoint_configured and not laya_runtime_selected:
         manual_actions.append("A Laya checkpoint is configured but its optional runtime packages were not selected; enable Laya runtime in the installer wizard if this route is needed.")
     elif laya_runtime_selected and not laya_checkpoint_configured:
@@ -4373,10 +4402,14 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             "openvino_models": openvino_model_report,
             "laya_runtime_dependencies": laya_runtime_ok,
             "laya_checkpoint": {
-                "status": "directory_present" if laya_checkpoint_exists else "missing" if laya_checkpoint_path else "not_configured",
-                "path": laya_checkpoint_path or None,
-                "revision": laya_runtime_cfg.get("revision"),
-                "integrity_check": "not_run",
+                "configured": laya_checkpoint_configured,
+                "status": "present" if laya_checkpoint_exists else ("missing" if laya_checkpoint_configured else "not_configured"),
+                "directory_present": laya_local_dir_present,
+                "hf_declared": laya_hf_configured,
+                "hf_cached": laya_hf_cached,
+                "path": laya_checkpoint_path if (laya_local_dir_present or laya_hf_cached) else None,
+                "revision": laya_runtime_cfg.get("revision") or (laya_hf_rev if laya_hf_configured else None),
+                "integrity_check": "verified" if laya_integrity_verified else ("failed" if (laya_local_dir_present and not laya_integrity_verified) else "not_run"),
             },
             "optional_runtime_extras": optional_runtime_extras,
         },

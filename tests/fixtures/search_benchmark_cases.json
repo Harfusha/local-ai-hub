@@ -362,12 +362,12 @@
       "query": "Jak se vyhled\u00e1v\u00e1n\u00ed dr\u017e\u00ed ko\u0159ene aktu\u00e1ln\u00edho worktree?",
       "language": "cs",
       "expected_paths": [
-        "src/local_ai_hub/repo_tools.py"
+        "src/local_ai_hub/repo_tools_search_backend.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/repo_tools.py",
+          "path": "src/local_ai_hub/repo_tools_search_backend.py",
           "anchor": "worktree_root"
         }
       ]

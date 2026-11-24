@@ -29,6 +29,10 @@ setup-report*.json
 config.toml
 config.toml.bak*
 config.toml.local-ai-hub-backup-*
+config*.backup-*
+state.backup-*
+*.backup-config-v*
+*.backup-v*
 # Hub backup files anywhere in the repo
 *.local-ai-hub-backup-*
 

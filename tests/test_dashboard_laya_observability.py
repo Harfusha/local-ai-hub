@@ -65,6 +65,7 @@ def test_telemetry_realtime_summary_forwards_laya_reports(tmp_path):
                 "repository_id": "repo-1",
                 "task_id": "task-1",
                 "session_id": "session-1",
+                "provider_label": "generic_mcp",
                 "suggestion": "indexed",
                 "reason_codes": ["EVIDENCE_SUFFICIENT"],
                 "evidence_ids": ["evidence-1"],

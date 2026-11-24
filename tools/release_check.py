@@ -338,10 +338,16 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
     if package_version:
         readme = (root / "README.md").read_text(encoding="utf-8")
         changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
-        docs_version_ok = package_version in readme and re.search(rf"^##\s+{re.escape(package_version)}\b", changelog, re.MULTILINE) is not None
+        security = (root / "SECURITY.md").read_text(encoding="utf-8") if (root / "SECURITY.md").is_file() else ""
+        major_series = f"{package_version.split('.')[0]}.x"
+        security_ok = major_series in security
+        docs_version_ok = package_version in readme and re.search(rf"^##\s+{re.escape(package_version)}\b", changelog, re.MULTILINE) is not None and security_ok
         checks.append({"name": "release-doc-version", "ok": docs_version_ok})
         if not docs_version_ok:
-            errors.append(f"README.md/CHANGELOG.md are not aligned to {package_version}")
+            if not security_ok:
+                errors.append(f"SECURITY.md does not reference the current major series {major_series}")
+            else:
+                errors.append(f"README.md/CHANGELOG.md are not aligned to {package_version}")
 
     return {"success": not errors, "root": str(root), "errors": errors, "checks": checks}
 

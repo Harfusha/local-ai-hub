@@ -85,7 +85,7 @@ jobs:
           tests/test_structural_search_php_contract.py
           tests/test_http_route_operation_acceptance.py::test_http_structural_search_rejects_stale_inventory_revision
           tests/test_http_route_operation_acceptance.py::test_http_post_complete_acceptance
-          tests/test_search_completeness.py::test_structural_search_reports_incomplete_400_file_scan
+          tests/test_search_completeness.py::test_python_repository_search_reports_file_scan_cap
           tests/test_structural_search_completeness.py::test_structural_search_reports_incomplete_400_file_scan
           tests/test_rag_incremental_index_io.py
           tests/test_rag_read_bounds.py

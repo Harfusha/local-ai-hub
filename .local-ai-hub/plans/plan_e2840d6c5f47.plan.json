@@ -66,7 +66,7 @@
       "depends_on": [],
       "description": "New user-approved scope (2026-11-24): remove obsolete runtime compatibility and repository ballast; upgrades convert supported prior state through explicit versioned migrations; unify MCP/provider/skill/instruction surfaces and docs. Execute from docs/superpowers/plans/2026-11-24-local-ai-hub-canonical-cleanup.md; initial source findings in docs/audits/2026-11-24-local-ai-hub-canonical-cleanup.md. Preserve current user work and reconcile active scoped plans before overlapping edits.",
       "kind": "code",
-      "next_action": "Continue indexed audit of runtime compatibility, generators, documentation, and ballast. Dashboard TaskPage/root-pagination changes and the served HTML mirror are verified; reconcile provider/skill generator overlap with plan_4fc62af31642/task_endpoint_routing before editing those files. Record the current Laya telemetry fixture mismatch as an existing verification blocker.",
+      "next_action": "Continue source-linked audit beyond completed task-page/config boundaries. Inspect current runtime contract, provider/generator ownership, docs, and candidate ballast; retain partial-config validation semantics, preserve untracked user backups, and coordinate generator edits with plan_4fc62af31642/task_endpoint_routing.",
       "order": 8,
       "results": [
         {

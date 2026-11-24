@@ -18,7 +18,7 @@ from local_ai_hub.repo_tools import RepositoryTools
 def _config(tmp_path: Path):
     cfg = tmp_path / "config.toml"
     cfg.write_text(
-        f'''[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n[preprocessing]\nenabled=false\nfs_watcher_enabled=false\nhash_files_per_step=2\n''',
+        f'''[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n[preprocessing]\nenabled=false\nfs_watcher_enabled=false\nhash_files_per_step=2\n''',
         encoding="utf-8",
     )
     return load_config(str(cfg))
@@ -171,10 +171,10 @@ def test_file_card_cache_hits_share_one_writer_transaction(tmp_path: Path, monke
         connection_count = 0
         transaction_count = 0
 
-        def counted_submit(operation, *, timeout=None, priority=1):
-            def counted_operation(con):
-                connection_ids.append(id(con))
-                return operation(con)
+        def counted_connect():
+            nonlocal connection_count
+            connection_count += 1
+            return original_connect()
 
         def counted_write(operation, **kwargs):
             def record(con):

@@ -651,6 +651,8 @@ def discard_stale_migration_artifacts(state_dir: Path | str) -> list[str]:
     """Delete only sibling backups and staging dirs created by state migrations."""
     state = Path(state_dir).absolute()
     _reject_link_components(state)
+    if not state.exists():
+        return []
     if not state.is_dir():
         raise ValueError(f"state migration cleanup requires an existing directory: {state}")
     current_version = read_state_version(state)

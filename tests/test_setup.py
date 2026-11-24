@@ -1079,7 +1079,7 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
     ])
 
     assert setup.main() == 0
-    assert restart_timeouts == [270]
+    assert restart_timeouts == [420]
     assert sum(
         command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
         for command in commands

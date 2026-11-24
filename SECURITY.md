@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Security fixes target the current 1.x release.
+Security fixes target the current 8.x release.
 
 ## Reporting
 

@@ -211,19 +211,20 @@ def _verify_next_range(con: sqlite3.Connection, last_id: int | None, end_id: int
     return upper
 
 
-def advance_fts_migration(con: sqlite3.Connection) -> bool:
+def advance_fts_migration(con: sqlite3.Connection, *, drop_timeout_seconds: float = 30.0) -> bool:
     """Copy one bounded batch or atomically adopt the completed external index."""
-    with write_transaction(con, rollback_label="lexical index migration"):
-        layout = fts_layout(con)
-        if layout == SHARED_FTS_ROWS:
-            if has_retired_fts(con):
-                deadline = time.monotonic() + 4.0
+    layout = fts_layout(con)
+    if layout == SHARED_FTS_ROWS:
+        if has_retired_fts(con):
+            with write_transaction(con, max_duration_seconds=drop_timeout_seconds, rollback_label="lexical index migration"):
+                deadline = time.monotonic() + max(drop_timeout_seconds - 5.0, 4.0)
                 con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                 try:
                     con.execute("DROP TABLE source_fts_retired")
                 finally:
                     con.set_progress_handler(None, 0)
-            return False
+        return False
+    with write_transaction(con, rollback_label="lexical index migration"):
         if layout == LEGACY_FTS:
             _create_shared_schema(con, _COPY_FTS)
             con.execute("CREATE TABLE source_fts_migration (last_id INTEGER, end_id INTEGER, verifying INTEGER NOT NULL)")

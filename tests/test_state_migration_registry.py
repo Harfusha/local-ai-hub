@@ -587,6 +587,13 @@ def test_unbacked_migration_discards_only_its_stale_generated_artifacts(tmp_path
     assert unrelated.is_dir()
 
 
+def test_stale_artifact_cleanup_is_empty_for_new_state_path(tmp_path: Path):
+    state = tmp_path / "state"
+
+    assert discard_stale_migration_artifacts(state) == []
+    assert not state.exists()
+
+
 def test_v7_to_v8_archives_global_board_and_removes_active_database(tmp_path: Path):
     from local_ai_hub.legacy_board_archive import ARCHIVE_NAME, read_legacy_board_archive
 

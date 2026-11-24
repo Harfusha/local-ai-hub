@@ -377,13 +377,17 @@ class CodeTripletMiner:
         for kind in kinds:
             try:
                 if os.path.exists(file_path):
-                    cmd = [AST_BIN, "run", "--kind", kind, "--json", file_path]
-                    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", shell=True, timeout=5)
+                    cmd = [AST_BIN, "run", "--kind", kind, "--json", str(file_path)]
+                    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", shell=False, timeout=5)
                 else:
                     cmd = [AST_BIN, "run", "--kind", kind, "--stdin", "--lang", lang_name, "--json"]
-                    proc = subprocess.run(cmd, input=source_code, capture_output=True, text=True, encoding="utf-8", shell=True, timeout=5)
+                    proc = subprocess.run(cmd, input=source_code, capture_output=True, text=True, encoding="utf-8", shell=False, timeout=5)
 
-                if proc.returncode != 0 or not proc.stdout.strip():
+                if proc.returncode != 0:
+                    if proc.stderr:
+                        logger.debug("ast-grep exited %d for %s (kind %s): %s", proc.returncode, file_path, kind, proc.stderr[:500])
+                    continue
+                if not proc.stdout.strip():
                     continue
 
                 items = json.loads(proc.stdout)

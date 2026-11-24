@@ -390,7 +390,7 @@ def test_support_archive_reports_laya_runtime_metadata_without_hardware_claim(tm
         "counts_by_mode": {"advisory": 3},
         "by_mode": {
             "advisory": {
-                "records": 2,
+                "records": 3,
                 "counts_by_category": {"context_strategy": 2},
                 "counts_by_status": {"abstain": 1, "suggestion": 1},
                 "counts_by_reason_code": {"insufficient_evidence": 1},
@@ -399,7 +399,6 @@ def test_support_archive_reports_laya_runtime_metadata_without_hardware_claim(tm
                 "skips": 0,
                 "coverage": {"available": False, "reason": "eligible_decision_count_not_recorded"},
             },
-            "advisory": {"records": 1},
         },
     }
     runtime = {

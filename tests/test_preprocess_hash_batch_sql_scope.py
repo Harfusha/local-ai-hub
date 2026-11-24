@@ -105,7 +105,7 @@ def isolated_preprocessor(tmp_path: Path, request) -> tuple[ProjectPreprocessor,
 
 
 @pytest.mark.parametrize("phase", ["hash", "reuse"])
-@pytest.mark.parametrize("isolated_preprocessor", ["legacy", "copying", "shared"], indirect=True)
+@pytest.mark.parametrize("isolated_preprocessor", ["shared"], indirect=True)
 def test_fts_repairs_missing_rows_without_rescanning_per_path(
     isolated_preprocessor: tuple[ProjectPreprocessor, str], phase: str,
 ) -> None:

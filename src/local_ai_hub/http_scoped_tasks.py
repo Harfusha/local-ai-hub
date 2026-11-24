@@ -18,9 +18,33 @@ def page_scoped_tasks(
     offset: int,
     include_stale: bool,
     query: str,
+    repo_root: str | None = None,
     max_scan: int = 10000,
     chunk_size: int = 200,
 ) -> dict[str, Any]:
+    if repo_root is not None:
+        try:
+            batch = list_tasks(
+                status=status,
+                limit=limit + 1,
+                offset=offset,
+                include_stale=include_stale,
+                query=query,
+                repo_root=repo_root,
+            )
+            tasks = [t for t in batch.tasks if matches(t)]
+            has_more = len(batch.tasks) > limit
+            result = tasks[:limit]
+            return {
+                "tasks": result,
+                "next_offset": offset + len(result),
+                "has_more": has_more,
+                "incomplete": batch.query_truncated,
+                "total_count": None,
+                "global_rows_examined": len(batch.tasks),
+            }
+        except TypeError:
+            pass
     found: list[Any] = []
     scanned = 0
     matching_count = 0
@@ -56,9 +80,10 @@ def page_scoped_tasks(
 
     incomplete = query_truncated or not reached_end and len(found) <= limit
     result = found[:limit]
+    next_offset = offset + len(result) if (len(result) > 0 or reached_end) else (offset + scanned)
     return {
         "tasks": result,
-        "next_offset": offset + len(result),
+        "next_offset": next_offset,
         "has_more": len(found) > limit or incomplete,
         "incomplete": incomplete,
         "total_count": matching_count if reached_end and offset == 0 else None,

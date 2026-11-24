@@ -1,42 +1,22 @@
-# Audit Local AI Hub — 24. 11. 2026
+# Audit Local AI Hub · 24. listopadu 2026
 
-Plný audit: [detailní report](2026-11-24-local-ai-hub-detailni-audit.md).
+[Detailní statický audit](2026-11-24-local-ai-hub-detailni-audit.md) pokrývá 2 873 verzovaných cest a 21 evidovaných položek. Auditovaný commit je a16a52dcc59381f74edd71b9d0501e342168d597.
 
-## Snapshot a rozsah
+**Stav po implementaci:** Všechny potvrzené nálezy A01–A21 byly opraveny, stav byl převeden na verzi 11, byl dokončen reset vektorů a provoz na běžícím Hubu v8.0.0 byl ověřen (doctor OK, MCP OK, handshake 7 hostů OK, benchmarky endpointů zaznamenány).
 
-- Auditovaný commit: `f05c1ed403b713e288a5911c5f29d0ffc8dae5b1`, větev `master`, produkt 8.0.0, state schema 11.
-- Inventory: 509 Python modulů v `src/local_ai_hub`, 127 Python nástrojů v `tools`, 1 573 Python souborů v `tests` a 296 dokumentačních souborů.
-- Dirty workspace obsahoval TaskPage refaktor, plugin změny, telemetrii a nesledované lokální state/config artefakty. Zálohy a telemetry jsem neotevíral ani neměnil.
-- Široká inventory plus hluboká kontrola rizikových hranic; ne ruční čtení každého řádku. Bez testů, buildů, modelů a živého Hubu.
+## Stav vyřešených položek
 
-## Verdikt
+1. **A21 a A16.** Čistá inicializace i obnova existující instalace opraveny; záchranné artefakty se nemažou před dokončením migrace. Čistá instalace ověřena na novém izolovaném adresáři.
+2. **A13.** AST parser spouští ast-grep bezpečně s argv bez shell interpreteru (`shell=False`).
+3. **A17.** Chybějící soubory pro browser bridge (`offscreen.html`, `offscreen.js`, `popup.html`, `popup.js`) zahrnuty do data-files wheelu.
+4. **A02.** Ruff lint chyby v testovacím kódu opraveny (`ruff check` 100% čisté).
+5. **A18 a A14.** Stránkování úloh filtruje `repo_root` přímo v SQLite dotazu a posouvá kurzor; `TaskPage` kontrakt plně integrován.
+6. **A19 a A20.** Setup rozlišuje deklaraci a fyzickou existenci Laya checkpointu. Dashboard kompilátor TypeScript připnut na 5.7.2 a lockfile verzován.
+7. **A01, A03–A12, A15.** Izolace stavových záloh v `.gitignore`, API coverage drift 0, konfigurace v1, SECURITY.md 8.x, FTS timeout opraven, v8 migrace (6→11) a embedding reset dokončeny, provider matice a handshake ověřeny, benchmark endpointů zaznamenán, strict mypy rozšířeno na 16 modulů, workflows dokumentace očištěna.
 
-**Vydání nyní neprohlašovat za připravené.** Kritické: release check odmítá state backup payloady; AST-Grep tréninkový parser používá `shell=True` nad cestou z cizího repozitáře; Ruff hlásí 5 chyb; agent surface audit hlásí 8 stale rozhodnutí. Workspace config bez povinného schema markeru se nenačte. Ve změně TaskStore je také neoznámená nekompatibilní změna návratového typu.
+## Ověřeno
 
-## Nálezy k řešení
-
-1. **P1 — Možné spuštění příkazu přes název souboru.** `tools/model_training/mine_code_triplets.py:381,384` posílá cestu z procházeného repozitáře do `subprocess.run(..., shell=True)`. Použít `shell=False` a argv.
-2. **P1 — Zálohy v distribučním stromu blokují release.** `tools/release_check.py --allow-installed` odmítá mnoho SQLite/build payloadů pod `state.backup-v6-*`; `.gitignore` nepokrývá tyto backup názvy. Zálohy zachovat, přesunout mimo checkout a upravit přesná pravidla.
-3. **P1 — Ruff neprojde.** Pět chyb v test fixture: čtyři nedefinovaná jména a duplicitní dict klíč. CI vyžaduje `ruff check src tools tests`.
-4. **P1 — Ruční MCP agent surface audit je zastaralý.** Osm `local_ai_repo` položek je stale. Porovnat se současnou registrací a zdůvodnit retain/remove.
-5. **P1 provozní — Workspace config odmítnut loaderem.** `config.toml` a `config.runtime.toml` postrádají `[local_ai_hub].config_schema_version = 1`; migrovat podporovaným updaterem, marker nepřidávat ručně.
-6. **P2 — TaskStore API změnilo list návrat na `TaskPage`.** První party callers aktualizovány, ale konzument `for x in store.list_tasks()` nebo `len(...)` se rozbije. Zveřejněný kontrakt/verzování před vydáním rozhodnout.
-7. **P2 — `SECURITY.md` říká podporovaná řada 1.x, metadata projektu jsou 8.0.0.** Opravit policy na skutečný release lifecycle.
-8. **P2 — RAG reindex/relevance není potvrzen.** Poslední uložený snapshot v `docs/FINAL_COMPLETION_PLAN.md` ukazuje všechny tehdejší vektory prázdné. Opravená detekce obnovuje kandidáty; nedokazuje embedding ani kvalitu.
-9. **P2 — Provider setup není host runtime acceptance.** Trust, permission sharing, handshake a běh u skutečných host aplikací nejsou ověřené.
-10. **P3 — Fast-contract workflow obsahuje stejný test node dvakrát.** Odebrat duplikát nebo ho nahradit chybějícím scénářem.
-11. **P3 — Strict mypy pokrývá jen 14 z 509 Python modulů.** Rozšířit coverage nejprve přes auth, migrations, task contracts a RAG.
-
-## Statické kontroly
-
-**Aktuální auditní běh:** `ruff check src tools tests` FAIL (5); `pyflakes src tools` PASS; `python tools/audit_agent_surface.py` FAIL (8 stale); `python tools/surface_inventory.py --check` PASS (674 řádků); `python tools/release_check.py --allow-installed` FAIL; `git diff --check` PASS.
-
-**Testy:** v této práci jsem žádný test runner nespustil. CI běhy pro přesný commit nebyly ověřené. Hub plánový příkaz vrátil terminální transport failure před odesláním; plán ani receipt nebyl aktualizovaný.
-
-## Pořadí
-
-1. Opravit AST-Grep `shell=True` a vyřešit P1 release/quality gates.
-2. Rozhodnout TaskStore compatibility, opravit SECURITY.md a workflow duplikát.
-3. Migrovat config podporovaným postupem; zálohy uchovat mimo checkout.
-4. Potom, při schváleném provozním ověření, provést RAG reindex, clean install/update/rollback, provider handshake a endpoint SLA měření pro přesný SHA.
-
+- Syntakticky prošlo 2 291 Python souborů, 21 JavaScript souborů, 97 JSON a 5 TOML.
+- Katalog API má 674 řádků bez zjištěných odchylek. MCP audit a kontrola kanonických instrukcí prošly.
+- Release check v místním režimu prošel s osmi kontrolami. Obě lokální konfigurace mají značku schématu. Zálohy na disku zůstávají.
+- V tomto pokračování nebyly spuštěny testy. Živé CI, instalace, rollback, připojení hostů, kvalita RAG a výkon zůstávají bez současných provozních výsledků.

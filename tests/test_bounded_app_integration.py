@@ -456,7 +456,7 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
             and result.returncode in (-6, 134)
             and "ZygoteHostImpl::Init" in result.stderr
         ):
-            pytest.skip(sandbox_unavailable)
+            pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
         assert result.returncode == 0, result.stderr[-1000:]
         return result.stdout
 

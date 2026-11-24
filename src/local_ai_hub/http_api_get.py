@@ -203,6 +203,7 @@ class HttpGetMixin:
                         offset=offset,
                         include_stale=include_stale,
                         query=task_query,
+                        repo_root=request_root,
                     )
                     # The query root was authorized before scanning. Revalidate the returned page before disclosure.
                     if any(not self._task_matches_request(task, request_root) for task in page["tasks"]):
@@ -213,8 +214,8 @@ class HttpGetMixin:
                     response = {
                         "success": True,
                         "tasks": [task.to_dict() for task in page["tasks"]],
-                        "total_count": page["total_count"],
-                        "active_count": None,
+                        "total_count": services_module.APP.agent_tasks.count(repo_root=request_root),
+                        "active_count": services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE, repo_root=request_root),
                         "global_total_count": services_module.APP.agent_tasks.count(),
                         "global_active_count": services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE),
                         "count_scope": "repository",

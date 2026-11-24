@@ -1,13 +1,13 @@
 {
   "name": "local-ai-hub-frontend",
   "private": true,
-  "version": "5.1.0",
+  "version": "8.0.0",
   "description": "Local AI Hub frontend TypeScript dashboard",
   "scripts": {
-    "typecheck": "npx -p typescript tsc --noEmit",
-    "build": "npx -p typescript tsc && node tools/build_dashboard.mjs"
+    "typecheck": "npx -p typescript@5.7.2 tsc --noEmit",
+    "build": "npx -p typescript@5.7.2 tsc && node tools/build_dashboard.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "5.7.2"
   }
 }

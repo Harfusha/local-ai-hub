@@ -59,7 +59,16 @@ local_ai_hub = ["defaults.toml", "automation_browser.js", "ui_static/*", "data/*
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
 
 [tool.setuptools.data-files]
-"browser_bridge" = ["browser_bridge/background.js", "browser_bridge/capture.js", "browser_bridge/manifest.json", "browser_bridge/README.md"]
+"browser_bridge" = [
+  "browser_bridge/background.js",
+  "browser_bridge/capture.js",
+  "browser_bridge/manifest.json",
+  "browser_bridge/offscreen.html",
+  "browser_bridge/offscreen.js",
+  "browser_bridge/popup.html",
+  "browser_bridge/popup.js",
+  "browser_bridge/README.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -120,6 +129,8 @@ files = [
   "src/local_ai_hub/repository_scope.py",
   "src/local_ai_hub/dashboard_contracts.py",
   "src/local_ai_hub/operation_contracts.py",
+  "src/local_ai_hub/http_scoped_tasks.py",
+  "src/local_ai_hub/telemetry_contracts.py",
 ]
 
 [tool.ruff]

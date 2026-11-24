@@ -445,10 +445,17 @@ class TaskCoreMixin:
         query: str | None = None,
         *,
         offset: int = 0,
+        repo_root: str | None = None,
     ) -> TaskPage:
         if not self._db_path_available():
             return TaskPage()
         self._init_projection_table()
+        canonical_root: str | None = None
+        if repo_root is not None:
+            try:
+                canonical_root = _canonical_repository_root(repo_root)
+            except ValueError:
+                return TaskPage()
         now = time.time()
         normalized_query = self._normalize_search_text(query or "")
         query_terms = [term for term in normalized_query.split() if term]
@@ -472,6 +479,13 @@ class TaskCoreMixin:
                 if status is not None:
                     where_clauses.append("status = ?")
                     params.append(status.value)
+                if canonical_root is not None:
+                    where_clauses.append(
+                        "json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer' "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 2 "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.repo_root') = ?"
+                    )
+                    params.append(canonical_root)
                 if not query_terms and not include_stale:
                     where_clauses.append(
                         "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
@@ -541,10 +555,16 @@ class TaskCoreMixin:
         tasks = [self._row_to_state(row) for row in rows]
         return TaskPage(tuple(tasks[:page_size]), query_truncated=query_truncated)
 
-    def count(self, status: TaskStatus | None = None, *, include_stale: bool = True) -> int:
+    def count(self, status: TaskStatus | None = None, *, include_stale: bool = True, repo_root: str | None = None) -> int:
         if not self._db_path_available():
             return 0
         self._init_projection_table()
+        canonical_root: str | None = None
+        if repo_root is not None:
+            try:
+                canonical_root = _canonical_repository_root(repo_root)
+            except ValueError:
+                return 0
         def _fetch_count() -> int:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 where_clauses = []
@@ -552,6 +572,13 @@ class TaskCoreMixin:
                 if status is not None:
                     where_clauses.append("status = ?")
                     params.append(status.value)
+                if canonical_root is not None:
+                    where_clauses.append(
+                        "json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer' "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 2 "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.repo_root') = ?"
+                    )
+                    params.append(canonical_root)
                 if not include_stale:
                     where_clauses.append(
                         "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
@@ -582,7 +609,7 @@ class TaskCoreMixin:
             return True
 
         for st in (TaskStatus.ACTIVE, TaskStatus.VERIFYING, TaskStatus.PLANNED):
-            tasks = self.list_tasks(status=st, limit=20, include_stale=False)
+            tasks = self.list_tasks(status=st, limit=20, include_stale=False, repo_root=repo_root)
             for t in tasks.tasks:
                 if _matches(t):
                     return t
