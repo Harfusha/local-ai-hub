@@ -22,7 +22,7 @@ import pytest
 from local_ai_hub import diagnostics_export, http_server
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import GoalContract
+from local_ai_hub.agent_tasks import GoalContract, TaskPage
 from local_ai_hub.client import HubClient
 from local_ai_hub.scheduler import AffinityScheduler
 
@@ -517,10 +517,10 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
 
     def list_tasks(*, status=None, limit=100, offset=0, include_stale=False, query=""):
         calls.append((getattr(status, "value", status), limit, offset, include_stale, query))
-        return [task]
+        return TaskPage((task,))
 
     monkeypatch.setattr(app.agent_tasks, "list_tasks", list_tasks)
-    url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true&root={quote(str(tmp_path))}"
+    url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true"
     request = urllib_request.Request(
         url, headers={}, method="GET"
     )
@@ -530,7 +530,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "GET"
-    assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true&root={quote(str(tmp_path))}"
+    assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true"
     assert status == 200
     assert calls == [("active", 8, 3, True, "")]
     assert result["offset"] == 3 and result["limit"] == 7
@@ -566,8 +566,8 @@ def test_scoped_task_list_reuses_the_validated_request_root(running_http_hub, mo
 
     rows = [make_row(index, other if index < 20 else root) for index in range(23)]
     monkeypatch.setattr(http_server, "_strict_root_path", checked_path)
-    monkeypatch.setattr(app.agent_tasks, "list_tasks", lambda *, offset, limit, **_kwargs: rows[offset:offset + limit])
-    url = f"{base_url}/api/agent-state/tasks?scoped_page=true&limit=2&root={quote(str(root))}"
+    monkeypatch.setattr(app.agent_tasks, "list_tasks", lambda *, offset, limit, **_kwargs: TaskPage(tuple(rows[offset:offset + limit])))
+    url = f"{base_url}/api/agent-state/tasks?limit=2&root={quote(str(root))}"
     if root_changes:
         with pytest.raises(HTTPError) as exc:
             urllib_request.urlopen(url, timeout=10)

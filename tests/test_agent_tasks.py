@@ -746,7 +746,7 @@ def test_task_query_bounds_rows_scanned(store: TaskStore):
     finally:
         con.close()
 
-    assert store.list_tasks(query="absent-query", limit=1) == []
+    assert store.list_tasks(query="absent-query", limit=1).tasks == ()
 
 
 def test_task_query_scan_window_is_bounded_before_stale_filter(store: TaskStore):
@@ -797,7 +797,7 @@ def test_task_query_scan_window_is_bounded_before_stale_filter(store: TaskStore)
 
     tasks = store.list_tasks(query="needle", limit=1)
 
-    assert tasks == []
+    assert tasks.tasks == ()
     assert tasks.query_truncated is True
 
 
@@ -820,7 +820,7 @@ def test_task_query_skips_stale_candidate_before_page_limit(store: TaskStore):
 
     tasks = store.list_tasks(query="page-needle", limit=1)
 
-    assert [task.task_id for task in tasks] == ["fresh-page-match"]
+    assert [task.task_id for task in tasks.tasks] == ["fresh-page-match"]
     assert tasks.query_truncated is False
 
 
@@ -1734,9 +1734,9 @@ def test_description_only_terms_are_searchable_without_replacing_goal(store: Tas
 
     matches = store.list_tasks(query="quasar provenance")
 
-    assert [match.task_id for match in matches] == [task.task_id]
-    assert matches[0].contract.goal == "Receipt review"
-    assert matches[0].contract.description == "quasar evidence provenance"
+    assert [match.task_id for match in matches.tasks] == [task.task_id]
+    assert matches.tasks[0].contract.goal == "Receipt review"
+    assert matches.tasks[0].contract.description == "quasar evidence provenance"
 
 
 def test_task_keyword_query_matches_each_term_across_indexed_fields(store: TaskStore):
@@ -1775,20 +1775,20 @@ def test_task_keyword_query_matches_each_term_across_indexed_fields(store: TaskS
         idempotency_key="search-checkpoint",
     )
 
-    assert [task.task_id for task in store.list_tasks(TaskStatus.ACTIVE, limit=1, query="CEIPT generation signed")] == [target.task_id]
-    assert [task.task_id for task in store.list_tasks(query="closed runs")] == [target.task_id]
-    assert [task.task_id for task in store.list_tasks(query="search-target")] == [target.task_id]
-    assert store.list_tasks(query="oldmarker") == []
-    assert store.list_tasks(query="fresh missing") == []
-    assert len(store.list_tasks(query="   ")) == 2
+    assert [task.task_id for task in store.list_tasks(TaskStatus.ACTIVE, limit=1, query="CEIPT generation signed").tasks] == [target.task_id]
+    assert [task.task_id for task in store.list_tasks(query="closed runs").tasks] == [target.task_id]
+    assert [task.task_id for task in store.list_tasks(query="search-target").tasks] == [target.task_id]
+    assert store.list_tasks(query="oldmarker").tasks == ()
+    assert store.list_tasks(query="fresh missing").tasks == ()
+    assert len(store.list_tasks(query="   ").tasks) == 2
 
     con = connect_sqlite(store.state_store.db_path, isolation_level=None)
     try:
         con.execute("UPDATE agent_tasks_projection SET heartbeat_expires_at=1 WHERE task_id=?", (target.task_id,))
     finally:
         con.close()
-    assert store.list_tasks(query="CEIPT") == []
-    assert [task.task_id for task in store.list_tasks(query="CEIPT", include_stale=True)] == [target.task_id]
+    assert store.list_tasks(query="CEIPT").tasks == ()
+    assert [task.task_id for task in store.list_tasks(query="CEIPT", include_stale=True).tasks] == [target.task_id]
 
 
 def test_task_keyword_index_updates_checkpoint_grams_incrementally(store: TaskStore):
@@ -1809,8 +1809,8 @@ def test_task_keyword_index_updates_checkpoint_grams_incrementally(store: TaskSt
         idempotency_key="search-new-marker",
     )
 
-    assert store.list_tasks(query="oldmarker") == []
-    assert [item.task_id for item in store.list_tasks(query="newmarker")] == [task.task_id]
+    assert store.list_tasks(query="oldmarker").tasks == ()
+    assert [item.task_id for item in store.list_tasks(query="newmarker").tasks] == [task.task_id]
 
 
 def test_task_keyword_index_rebuilds_if_checkpoint_finds_partial_grams(store: TaskStore):
@@ -1875,7 +1875,7 @@ def test_task_keyword_query_does_not_join_grams_across_fields(store: TaskStore):
     finally:
         con.close()
     assert {"abc", "bcd", "cde"} <= indexed_grams
-    assert store.list_tasks(query="abcde") == []
+    assert store.list_tasks(query="abcde").tasks == ()
 
 
 def test_task_keyword_index_backfills_existing_projection_on_startup(store: TaskStore):
@@ -1893,7 +1893,7 @@ def test_task_keyword_index_backfills_existing_projection_on_startup(store: Task
 
     reloaded_store = TaskStore(store.state_store)
 
-    assert [item.task_id for item in reloaded_store.list_tasks(query="searchable marker")] == [task.task_id]
+    assert [item.task_id for item in reloaded_store.list_tasks(query="searchable marker").tasks] == [task.task_id]
 
 
 def test_task_keyword_index_skips_unchanged_projection_parsing_on_startup(
@@ -1959,7 +1959,7 @@ def test_task_keyword_index_repairs_partial_grams_on_startup(store: TaskStore):
 
     reloaded_store = TaskStore(store.state_store)
 
-    assert [item.task_id for item in reloaded_store.list_tasks(query="zxq")] == [task.task_id]
+    assert [item.task_id for item in reloaded_store.list_tasks(query="zxq").tasks] == [task.task_id]
 
 
 def test_task_keyword_query_uses_nfkc_normalization(store: TaskStore):
@@ -1969,7 +1969,7 @@ def test_task_keyword_query_uses_nfkc_normalization(store: TaskStore):
         task_id="task-search-unicode",
     )
 
-    assert [item.task_id for item in store.list_tasks(query="RELEASE CANDIDATE")] == [task.task_id]
+    assert [item.task_id for item in store.list_tasks(query="RELEASE CANDIDATE").tasks] == [task.task_id]
 
 
 def test_task_keyword_query_filters_before_recency_limit(store: TaskStore):
@@ -1987,8 +1987,8 @@ def test_task_keyword_query_filters_before_recency_limit(store: TaskStore):
     finally:
         con.close()
 
-    assert [item.task_id for item in store.list_tasks(query="shared", limit=2)] == [newer.task_id, older.task_id]
-    assert [item.task_id for item in store.list_tasks(query="shared", limit=1)] == [newer.task_id]
+    assert [item.task_id for item in store.list_tasks(query="shared", limit=2).tasks] == [newer.task_id, older.task_id]
+    assert [item.task_id for item in store.list_tasks(query="shared", limit=1).tasks] == [newer.task_id]
 
 def test_checkpoint_idempotency_replay_requires_same_actor(store: TaskStore):
     task = store.create(contract_with_criteria(), task_context())

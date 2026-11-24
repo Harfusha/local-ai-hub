@@ -300,21 +300,23 @@ def _reset_marker_present(state_dir: Path) -> bool:
     return bool(marker and verify_embedding_reset(state_dir))
 
 
-def apply_embedding_reset(state_dir: Path | str) -> dict[str, Any]:
-    """Clear stored vectors with a scoped snapshot and automatic rollback on error."""
+def apply_embedding_reset(state_dir: Path | str, *, create_backup: bool = True) -> dict[str, Any]:
+    """Clear stored vectors; installers may explicitly select the fast unbacked operator path."""
     state = Path(state_dir).absolute()
     if not state.is_dir() or state.is_symlink():
         raise ValueError("embedding reset requires an existing, unlinked state directory")
     if _reset_marker_present(state):
         return {"status": "already_applied", "backup": None}
     databases = _embedding_databases(state)
-    backup = _backup(state, databases)
+    backup = _backup(state, databases) if create_backup else None
     try:
         for path in databases:
             _clear_database(path, is_rag=path.name == "rag.sqlite3")
         if not verify_embedding_reset(state):
             raise RuntimeError("embedding reset postcondition failed")
     except Exception as exc:
+        if backup is None:
+            raise RuntimeError(f"unbacked embedding reset failed after starting: {exc}") from exc
         try:
             restore_embedding_reset_backup(state, backup)
         except Exception as restore_error:
@@ -322,4 +324,4 @@ def apply_embedding_reset(state_dir: Path | str) -> dict[str, Any]:
                 f"migration failed ({exc}); automatic rollback failed ({restore_error})"
             )) from exc
         raise EmbeddingResetMigrationError(backup, exc) from exc
-    return {"status": "migrated", "backup": str(backup)}
+    return {"status": "migrated", "backup": str(backup) if backup else None}

@@ -49,14 +49,17 @@ def test_cache_loading_requires_explicit_network_opt_in(tmp_path, monkeypatch, k
 @pytest.mark.parametrize("literal", ['"true"', "1", "[]"])
 def test_download_opt_in_rejects_non_boolean_config(tmp_path, literal):
     config = tmp_path / "config.toml"
-    config.write_text(f"[models]\nallow_hf_downloads={literal}\n", encoding="utf-8")
+    config.write_text(
+        f"[local_ai_hub]\nconfig_schema_version=1\n\n[models]\nallow_hf_downloads={literal}\n",
+        encoding="utf-8",
+    )
     with pytest.raises(ConfigError, match="models.allow_hf_downloads must be boolean"):
         load_config(config, probe_hardware=False)
 
 
 def test_download_default_is_on_in_source_and_packaged_defaults(tmp_path):
     config = tmp_path / "config.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text("[local_ai_hub]\nconfig_schema_version=1\n", encoding="utf-8")
     assert load_config(config, probe_hardware=False)["models"]["allow_hf_downloads"] is True
     root = Path(__file__).resolve().parents[1]
     for path in (root / "defaults.toml", root / "src/local_ai_hub/defaults.toml"):

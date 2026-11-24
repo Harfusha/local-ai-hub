@@ -199,7 +199,7 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve scoped incident identity, lifecycle and evidence. Heuristic suggested_fix is advisory; only resolved non-placeholder fixes project as verified_fix. Legacy resolved placeholders remain unverified without rewriting stored records.",
+      "response_policy": "Preserve scoped incident identity, lifecycle and evidence. Heuristic suggested_fix is advisory. State migration 10→11 normalizes persisted resolved placeholders; current runtime rejects new or reintroduced placeholders.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
@@ -273,8 +273,8 @@
     "GET /api/agent-state/tasks": {
       "decision": "retain",
       "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection. The optional scoped_page=true contract enables bounded repository-scoped pagination without breaking legacy GET fields.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque. Explicit scoped_page requests disclose count_scope, root, global counts and incomplete scans; unspecified scoped_page retains legacy response.",
+      "reason": "Task listing applies repository scope before pagination whenever a root is selected. Global and repository task pages use one response contract.",
+      "response_policy": "Preserve task results, errors, identities, evidence, and pagination. Root-scoped requests filter before pagination and report repository counts plus incomplete scans; global requests report global counts.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
@@ -3776,28 +3776,6 @@
         ]
       }
     },
-    "MCP local_ai_repo.definition": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
     "MCP local_ai_repo.delegate": {
       "decision": "retain",
       "role": "agent",
@@ -3886,28 +3864,6 @@
         ]
       }
     },
-    "MCP local_ai_repo.diff": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
     "MCP local_ai_repo.env_compat": {
       "decision": "retain",
       "role": "agent",
@@ -3975,50 +3931,6 @@
       }
     },
     "MCP local_ai_repo.find_files": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_repo.find_references": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_repo.find_symbol": {
       "decision": "retain",
       "role": "agent",
       "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
@@ -4217,28 +4129,6 @@
       }
     },
     "MCP local_ai_repo.git_status": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_repo.glob": {
       "decision": "retain",
       "role": "agent",
       "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
@@ -4722,51 +4612,7 @@
         ]
       }
     },
-    "MCP local_ai_repo.read_file": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
     "MCP local_ai_repo.refactor_impact": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_repo.references": {
       "decision": "retain",
       "role": "agent",
       "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
@@ -5100,28 +4946,6 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Explicit repository work result or guarded change workflow; retain generated code, findings and verification outcomes rather than treating them as Hub telemetry.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_repo.stat": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",

@@ -1,119 +1,42 @@
 # Audit Local AI Hub — 24. 11. 2026
 
-> Rozšířenou verzi tohoto auditu, která nahrazuje tento úvodní souhrn, najdeš v [detailním auditu projektu](2026-11-24-local-ai-hub-detailni-audit.md).
+Plný audit: [detailní report](2026-11-24-local-ai-hub-detailni-audit.md).
 
-## Stav a rozsah
+## Snapshot a rozsah
 
-Audit vychází z pracovního stromu `C:\Users\Adam\.local-ai-hub`, větve `master`, dne 24. 11. 2026. Strom měl při auditu 400 položek `git status`: 345 změněných/smazaných sledovaných položek a 55 nesledovaných. Závěry proto popisují aktuální pracovní kopii, ne čistý commit ani vydané 7.0.0.
+- Auditovaný commit: `f05c1ed403b713e288a5911c5f29d0ffc8dae5b1`, větev `master`, produkt 8.0.0, state schema 11.
+- Inventory: 509 Python modulů v `src/local_ai_hub`, 127 Python nástrojů v `tools`, 1 573 Python souborů v `tests` a 296 dokumentačních souborů.
+- Dirty workspace obsahoval TaskPage refaktor, plugin změny, telemetrii a nesledované lokální state/config artefakty. Zálohy a telemetry jsem neotevíral ani neměnil.
+- Široká inventory plus hluboká kontrola rizikových hranic; ne ruční čtení každého řádku. Bez testů, buildů, modelů a živého Hubu.
 
-Prošel jsem strukturu celého repozitáře, hlavní uživatelskou a provozní dokumentaci, release plán, existující audit, balíčkovací a testovací konfiguraci, otevřené issue v posledním provozním záznamu a cíleně rizikové oblasti migrací, RAG, diagnostiky a poskytovatelů. Zdrojový strom obsahuje 509 Python souborů a přibližně 200 tisíc řádků. Nečetl jsem ručně každý řádek každého modulu.
+## Verdikt
 
-Audit je statický a read-only, kromě tohoto nového reportu. Testy, build, instalace, restart Hubu, modelové benchmarky ani živý reindex jsem nespouštěl. Aktivní Local AI Hub MCP nástroje nebyly v tomto běhu dostupné; Hub plán a jeho ověřovací receipt proto nebylo možné synchronizovat. Stávající dirty soubory ani plány jsem neupravoval.
+**Vydání nyní neprohlašovat za připravené.** Kritické: release check odmítá state backup payloady; AST-Grep tréninkový parser používá `shell=True` nad cestou z cizího repozitáře; Ruff hlásí 5 chyb; agent surface audit hlásí 8 stale rozhodnutí. Workspace config bez povinného schema markeru se nenačte. Ve změně TaskStore je také neoznámená nekompatibilní změna návratového typu.
 
-## Kontroly k zachování
+## Nálezy k řešení
 
-- HTTP vrstva ověřuje skutečnou loopback adresu socketu, kontroluje `Host`/`Origin`, odmítá cross-origin požadavky a vede autorizační audit mutací. V této omezené statické kontrole jsem nenašel doložený bypass; nejde o penetrační test. Zdroj: `src/local_ai_hub/http_api_auth.py:67-90, 98-201`.
-- CI má release check, kompilaci, `pyflakes`, Ruff, TypeScript kontrolu, `mypy`, integrační a platformní běhy. Matice pokrývá Windows/macOS/Linux a Python 3.11–3.14; celý suite se spouští podle zvolené CI podmínky, ne při každém matrix jobu. Zachovat tyto release brány. Zdroj: `.github/workflows/ci.yml:43-83, 136-180`.
-- Core je lokální a loopback-only; `README.md:334-336` to uvádí konzistentně. `SECURITY.md` zůstává nesynchronizované ve verzi release, jak je uvedeno níže.
+1. **P1 — Možné spuštění příkazu přes název souboru.** `tools/model_training/mine_code_triplets.py:381,384` posílá cestu z procházeného repozitáře do `subprocess.run(..., shell=True)`. Použít `shell=False` a argv.
+2. **P1 — Zálohy v distribučním stromu blokují release.** `tools/release_check.py --allow-installed` odmítá mnoho SQLite/build payloadů pod `state.backup-v6-*`; `.gitignore` nepokrývá tyto backup názvy. Zálohy zachovat, přesunout mimo checkout a upravit přesná pravidla.
+3. **P1 — Ruff neprojde.** Pět chyb v test fixture: čtyři nedefinovaná jména a duplicitní dict klíč. CI vyžaduje `ruff check src tools tests`.
+4. **P1 — Ruční MCP agent surface audit je zastaralý.** Osm `local_ai_repo` položek je stale. Porovnat se současnou registrací a zdůvodnit retain/remove.
+5. **P1 provozní — Workspace config odmítnut loaderem.** `config.toml` a `config.runtime.toml` postrádají `[local_ai_hub].config_schema_version = 1`; migrovat podporovaným updaterem, marker nepřidávat ručně.
+6. **P2 — TaskStore API změnilo list návrat na `TaskPage`.** První party callers aktualizovány, ale konzument `for x in store.list_tasks()` nebo `len(...)` se rozbije. Zveřejněný kontrakt/verzování před vydáním rozhodnout.
+7. **P2 — `SECURITY.md` říká podporovaná řada 1.x, metadata projektu jsou 8.0.0.** Opravit policy na skutečný release lifecycle.
+8. **P2 — RAG reindex/relevance není potvrzen.** Poslední uložený snapshot v `docs/FINAL_COMPLETION_PLAN.md` ukazuje všechny tehdejší vektory prázdné. Opravená detekce obnovuje kandidáty; nedokazuje embedding ani kvalitu.
+9. **P2 — Provider setup není host runtime acceptance.** Trust, permission sharing, handshake a běh u skutečných host aplikací nejsou ověřené.
+10. **P3 — Fast-contract workflow obsahuje stejný test node dvakrát.** Odebrat duplikát nebo ho nahradit chybějícím scénářem.
+11. **P3 — Strict mypy pokrývá jen 14 z 509 Python modulů.** Rozšířit coverage nejprve přes auth, migrations, task contracts a RAG.
 
-## Prioritní nálezy
+## Statické kontroly
 
-### P1 — Před vydáním uzavřít aktuální pracovní strom
+**Aktuální auditní běh:** `ruff check src tools tests` FAIL (5); `pyflakes src tools` PASS; `python tools/audit_agent_surface.py` FAIL (8 stale); `python tools/surface_inventory.py --check` PASS (674 řádků); `python tools/release_check.py --allow-installed` FAIL; `git diff --check` PASS.
 
-**Důkaz:** 400 položek ve `git status`, změny zasahují zdrojový kód, migrace, HTTP/MCP, klienty, instalátor, dokumentaci i testy. Většina změn dosud nemá jeden ověřený integrovaný výsledek tohoto auditu.
+**Testy:** v této práci jsem žádný test runner nespustil. CI běhy pro přesný commit nebyly ověřené. Hub plánový příkaz vrátil terminální transport failure před odesláním; plán ani receipt nebyl aktualizovaný.
 
-**Doporučení:** Zachovat všechny změny. Rozdělit je podle existujících aktivních plánů a vlastníků, určit přesný release kandidát, zkontrolovat diff po souvislých celcích a spustit požadované brány nad týmž finálním commitem. Neoznačovat celý pracovní strom za hotový podle starších izolovaných běhů.
+## Pořadí
 
-### P1 — Dokončit v8 RAG reindex a živou akceptaci
+1. Opravit AST-Grep `shell=True` a vyřešit P1 release/quality gates.
+2. Rozhodnout TaskStore compatibility, opravit SECURITY.md a workflow duplikát.
+3. Migrovat config podporovaným postupem; zálohy uchovat mimo checkout.
+4. Potom, při schváleném provozním ověření, provést RAG reindex, clean install/update/rollback, provider handshake a endpoint SLA měření pro přesný SHA.
 
-**Důkaz:** Aktuální plán hlásí 31 719/31 719 RAG vektorů prázdných, 8 397 cest s vektorovým obsahem chybějícím a bez markeru prostoru a 23 projektů ve stavu čekání/chyby. Hub zůstává vypnutý; re-embedding, živý search a provozní akceptace jsou otevřené. Oprava opětovného zařazení cest má cílené testy, ale ještě neprokazuje obnovenou kvalitu vyhledávání.
-
-**Doporučení:** Po samostatném provozním schválení dokončit reindex po dávkách, potvrdit počty a integritu vektorů, ověřit obnovu po přerušení a porovnat živé vyhledávací případy před/po. Do té doby označit sémantické vyhledávání jako neakceptované.
-
-**Evidence:** `docs/FINAL_COMPLETION_PLAN.md:2234-2255`.
-
-### P1 — Uzavřít release migrací s maticí podporovaných stavů
-
-**Důkaz:** Instalátor používá přesné signatury starých stavů a při neznámém schématu zastaví. V5 cesta je záměrně omezená; některé tenantové záznamy stále vyžadují explicitní konverzi nebo bezpečné odmítnutí. Dokumentace výslovně říká, že podpora konkrétní v5 signatury neznamená podporu každé v5 instalace.
-
-**Doporučení:** Publikovat matici `zdrojová verze × signatura databáze × migrace × záloha × rollback × očekávaný výsledek`. Pro každou podporovanou větev přidat obnovu zálohy po selhání a fixture odpovídající skutečně vydané verzi. Neznámé ani kolidující záznamy nesmí být tiše zahazovány.
-
-**Evidence:** `docs/INSTALLER_RECOVERY.md:80-90`; širší otevřený inventář v `docs/audits/2026-11-24-local-ai-hub-canonical-cleanup.md`.
-
-### P1 — Ověřit provozní spolehlivost, nejen izolovanou logiku
-
-**Důkaz:** Poslední telemetrická základna měla `/api/review/diff` p95 120 s a maximum 156 s. Aktuální změny odkládání a opakování prošly izolovanými výběry, ale plán výslovně ponechává otevřené SLA, restartovou obnovu, živou kvalitu odpovědi a endpoint akceptaci. Hub je vypnutý.
-
-**Doporučení:** Po obnovení služby změřit p50/p95/p99 a úspěšnost pro `/api/review/diff`, `/api/review`, `/api/context/pack`, `/api/solve/repo` a `/api/search`; samostatně vyhodnotit chyby modelu, frontu, timeouty, degradaci a opakování po restartu. Nastavit cílové SLA a alerty z reálných provozních dat.
-
-**Evidence:** `docs/FINAL_COMPLETION_PLAN.md:2241-2248`, `2257-2269`.
-
-### P1 — Vyřešit rozpor v diagnostickém kontraktu context-pack
-
-**Důkaz:** Poslední širší kombinovaný běh měl 81/82 úspěchů; jediný selhal na `tests/test_context_pack_budget_e2e.py::test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance[detail-on]`, protože odpověď neobsahovala `response_budget.original_tokens`. Zdroj diagnostiky toto pole v režimu bez detailních diagnostik odstraňuje záměrně.
-
-**Doporučení:** Ujasnit kontrakt pro `detail-on` a `detail-off`: které tokenové počty jsou nutné pro klienta a které mohou odhalit diagnostické metadata. Opravit zdroj nebo očekávání testu podle rozhodnutého kontraktu; zachovat kontrolu, že soukromý zdrojový detail neuniká.
-
-**Evidence:** `docs/FINAL_COMPLETION_PLAN.md:2275-2277`; test `tests/test_context_pack_budget_e2e.py:153-157`; projekce `src/local_ai_hub/agent_diagnostics.py:257-263`.
-
-## P2 — Smlouvy, dokumentace a údržba
-
-### Bezpečnostní stránka uvádí chybnou major verzi
-
-`SECURITY.md:3-5` tvrdí, že bezpečnostní opravy cílí na aktuální 1.x. `pyproject.toml:7` a `README.md:3-5` uvádějí aktuální 7.0.0. Opravte podporovanou verzi a přidejte kontrolu synchronizace bezpečnostní stránky s `RELEASE.json`.
-
-### Provider balíčky zatím nemají plně reprodukovatelný zdroj
-
-Existující audit označuje generování a paritu provider balíčků za otevřenou; kopie sdílených dovedností se kontrolují, ale zdrojový profil pro reprodukovatelné balení není verzovaný. Zaveďte sanitizovaný verzovaný profil, přesně definujte podporované hosty a v CI porovnávejte vygenerované MCP schéma, instrukce, hooky a instalační skripty. Do balíčků nikdy nekopírujte uživatelský `config.toml`.
-
-**Evidence:** `docs/audits/2026-11-24-local-ai-hub-canonical-cleanup.md:70-80, 96-106, 254-257`.
-
-### Release plán potřebuje snadno čitelný aktuální stav
-
-`docs/FINAL_COMPLETION_PLAN.md` má přes 2 200 řádků chronologických záznamů; aktuální otevřené brány jsou až na konci. Zachovejte jediný autoritativní plán, ale jeho úvodní checklist udržujte jako stručný aktuální stav: vlastník, blocker, další krok, příkaz a výsledek. Starou chronologii neprezentujte jako dnešní stav.
-
-### Plánovací stav sjednotit přes podporované rozhraní
-
-Existující audit při svém vstupním snímku evidoval 12 aktivních plánů a překryvy mezi dokončovacím plánem, migracemi, endpoint spolehlivostí, modely a Laya. Jde o historický snímek, nikoli potvrzený aktuální počet. Po obnovení Hub MCP znovu načíst aktivní plán, sloučit duplicity a archivovat dokončené či dočasné plány podporovaným rozhraním.
-
-**Evidence:** `docs/audits/2026-11-24-local-ai-hub-canonical-cleanup.md:8-20`.
-
-### Rozšířit typovou kontrolu po dávkách
-
-`pyproject.toml:103-122` zapíná strict mypy, ale jen pro 14 explicitních modulů z 509 Python souborů. Rozšiřujte pokrytí nejprve na hranice auth, storage, migrací, command brokeru a veřejných HTTP/MCP kontraktů. V CI sledujte počet kontrolovaných modulů; neoznačovat současný výběr za typově ověřený celý projekt.
-
-### Rozdělit největší moduly podle odpovědnosti
-
-Inventář našel moduly kolem 1 500–2 900 řádků, například `agent_memory.py` (2 903), `scheduler.py` (2 689), `operation_contracts.py` (2 571), `process_utils.py` (2 190) a `client.py` (2 152). To zvyšuje náklady na review a riziko překryvu; není to samo o sobě důkaz pomalosti.
-
-**Doporučení:** Po stabilizaci rozdělovat jen při jasných hranicích odpovědnosti a s testy veřejných kontraktů. Začít `agent_memory.py`, `scheduler.py` a `process_utils.py`; měřit počet importních závislostí a složitost review, ne honit počet řádků.
-
-### Aktualizovat dokumentaci endpoint výkonu a degradace
-
-Historická telemetrie ukazuje dlouhé requesty, prázdné či chybějící RAG indexy a oříznutí výsledků. Klient musí umět poznat částečný výsledek od úplného. Zveřejněte tabulku limitů, timeoutů, retry podmínek a polí označujících degradaci napříč HTTP/MCP/SDK; ověřujte, že adaptery význam neztrácejí.
-
-**Evidence:** `docs/FINAL_COMPLETION_PLAN.md:2241-2248, 2264-2277`.
-
-## P3 — Optimalizace až po baseline
-
-1. **Context-pack:** Historická p95 byla 16,581 s; opravné zdrojové změny cílí na opakované retrieval dotazy a blokující kandidáty, ale živý dopad nebyl změřen. Přidat subphase timing pro adaptive lookup, index, RAG, kandidáty a serializaci. Potom optimalizovat pouze fázi s největším naměřeným časem.
-2. **RAG obnovování:** Po reindexu změřit dávkovou propustnost, CPU/RAM/VRAM, dobu locků a zotavení po přerušení. Nastavit limity dávky podle běžného počítače, ne pouze výkonné testovací sestavy.
-3. **Velké moduly:** Refaktoring výše nepředstavovat jako výkonovou optimalizaci bez benchmarku; měřit start, importy, paměť, vyhledávání a latenci jednotlivých cest zvlášť.
-
-## Co je zachováno jako nejisté
-
-- Historické testy uvedené v plánu nejsou novým ověřením aktuálních 400 změn.
-- Čísla telemetrie pocházejí z uloženého okna/release cutoff, nikoli z běžící služby.
-- Zdroj v8 podle plánu opravuje detekci chybějících vektorů; dokončený reindex ani obnovená kvalita RAG potvrzeny nejsou.
-- Statické vyhledání TODO markerů není seznam všech nedokončených funkcí; některé nálezy jsou generovaný kód nebo příklady.
-- CodeGraphContext je podle projektu samostatný nástroj, ne závislost Hubu; nepřidávat ho do core jako optimalizaci.
-- Tento audit neschvaluje nasazení ani neprohlašuje projekt za hotový.
-
-## Doporučené pořadí
-
-1. Zachovat a roztřídit dirty pracovní strom; určit jeden commit release kandidáta.
-2. Uzavřít migrace, v8 reindex, startup/restart a diagnostický response-budget kontrakt.
-3. Spustit release/critical brány na konečném commitu a zaznamenat přesné výsledky.
-4. Ověřit živé RAG, endpoint SLA, recovery a provider instalace na čisté instalaci.
-5. Opravit verzi `SECURITY.md`, uzavřít reprodukovatelnost provider balíčků, typovou kontrolu a aktuální checklist.
-6. Teprve potom dělat refaktoring a optimalizace podložené baseline.

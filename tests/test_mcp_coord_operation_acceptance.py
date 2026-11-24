@@ -468,7 +468,7 @@ def test_http_agent_task_rejects_unknown_action_without_store_mutation(tmp_path,
     assert status == 400
     assert result["success"] is False
     assert result["error"] == "unknown task action"
-    assert tasks.list_tasks() == []
+    assert tasks.list_tasks().tasks == ()
     assert state_store.events("task:task-1") == []
 
 

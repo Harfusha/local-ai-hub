@@ -33,8 +33,8 @@ def page_scoped_tasks(
             status=status, limit=batch_limit, offset=scanned,
             include_stale=include_stale, query=query,
         )
-        query_truncated = query_truncated or bool(getattr(batch, "query_truncated", False))
-        rows = list(batch)
+        query_truncated = query_truncated or batch.query_truncated
+        rows = batch.tasks
         if not rows:
             reached_end = not query_truncated
             break

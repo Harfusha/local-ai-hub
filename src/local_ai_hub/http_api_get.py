@@ -192,11 +192,7 @@ class HttpGetMixin:
                     }); return
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
                 task_query = (query.get("query") or [""])[0]
-                # Opt-in preserves the existing GET response contract
-                # for CLI/older clients. The modern dashboard explicitly
-                # requests correct post-scope page semantics.
-                scoped_page = str((query.get("scoped_page") or ["false"])[0]).strip().lower() in ("true", "1", "yes")
-                if request_root and scoped_page:
+                if request_root:
                     from .agent_tasks import _task_matches_scope
                     from .http_scoped_tasks import page_scoped_tasks
                     page = page_scoped_tasks(
@@ -230,25 +226,25 @@ class HttpGetMixin:
                         "query_truncated": page["incomplete"],
                     }
                 else:
-                    tasks = services_module.APP.agent_tasks.list_tasks(
+                    task_page = services_module.APP.agent_tasks.list_tasks(
                         status=status_filter,
                         limit=limit + 1,
                         offset=offset,
                         include_stale=include_stale,
                         query=task_query,
                     )
-                    has_more = len(tasks) > limit
+                    has_more = len(task_page.tasks) > limit
                     response = {
                         "success": True,
-                        "tasks": [t.to_dict() for t in tasks[:limit] if not request_root or self._task_matches_request(t, request_root)],
+                        "tasks": [t.to_dict() for t in task_page.tasks[:limit] if not request_root or self._task_matches_request(t, request_root)],
                         "total_count": services_module.APP.agent_tasks.count(),
                         "active_count": services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE),
                         "offset": offset,
                         "limit": limit,
-                        "next_offset": offset + min(len(tasks), limit),
+                        "next_offset": offset + min(len(task_page.tasks), limit),
                         "has_more": has_more,
                     }
-                    if getattr(tasks, "query_truncated", False):
+                    if task_page.query_truncated:
                         response["query_truncated"] = True
                 self._send(200, response); return
             if path == "/api/agent-state/incidents":

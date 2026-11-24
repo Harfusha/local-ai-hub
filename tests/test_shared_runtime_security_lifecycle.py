@@ -1464,7 +1464,7 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
             "status": status, "limit": limit, "offset": offset,
             "include_stale": include_stale, "query": query,
         })
-        return []
+        return http_server.TaskPage()
 
     def count_tasks(status=None):
         count_calls.append(status)

@@ -9,7 +9,7 @@ import pytest
 import local_ai_hub.agent_tasks as agent_tasks
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskList, TaskStore
+from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskPage, TaskStore
 from local_ai_hub.client import HubClient
 from local_ai_hub import mcp_server
 
@@ -39,7 +39,7 @@ def test_task_query_matches_goal_and_checkpoint_fields(store: TaskStore) -> None
 
     matches = store.list_tasks(query="HEADER")
 
-    assert {task.task_id for task in matches} == {"header-task", "search-task"}
+    assert {task.task_id for task in matches.tasks} == {"header-task", "search-task"}
 
 
 def test_task_query_reports_bounded_scan_truncation(
@@ -51,8 +51,9 @@ def test_task_query_reports_bounded_scan_truncation(
 
     matches = store.list_tasks(query="not-present")
 
-    assert matches == []
+    assert matches.tasks == ()
     assert matches.query_truncated is True
+    assert not isinstance(matches, list)
 
 
 def test_client_list_tasks_sends_query_to_agent_state_route() -> None:
@@ -98,7 +99,7 @@ def live_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     config = tmp_path / "config.toml"
     project_root = Path(__file__).resolve().parents[1]
     config.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         f'\n[security]\nallowed_roots = ["{project_root.as_posix()}"]\n',
@@ -191,7 +192,7 @@ def test_http_task_query_skips_stale_matches_before_page_limit(live_api) -> None
 
     matches = app.agent_tasks.list_tasks(query="page-needle", limit=1)
 
-    assert [task.task_id for task in matches] == ["fresh-match"]
+    assert [task.task_id for task in matches.tasks] == ["fresh-match"]
 
 
 def test_http_task_query_rejects_non_string_payload(live_api) -> None:
@@ -212,7 +213,7 @@ def test_http_task_query_surfaces_scan_truncation(live_api, monkeypatch: pytest.
     monkeypatch.setattr(
         app.agent_tasks,
         "list_tasks",
-        lambda **_kwargs: TaskList([], query_truncated=True),
+        lambda **_kwargs: TaskPage(query_truncated=True),
     )
 
     result = client.list_tasks(query="needle", root=str(Path(__file__).resolve().parents[1]))
@@ -235,7 +236,7 @@ def test_count_matches_task_list_status_and_staleness_filters(store: TaskStore) 
         idempotency_key="active-count-transition",
     )
 
-    assert store.count(include_stale=False) == len(store.list_tasks(include_stale=False))
+    assert store.count(include_stale=False) == len(store.list_tasks(include_stale=False).tasks)
     assert store.count(TaskStatus.ACTIVE, include_stale=False) == len(
-        store.list_tasks(status=TaskStatus.ACTIVE, include_stale=False)
+        store.list_tasks(status=TaskStatus.ACTIVE, include_stale=False).tasks
     )

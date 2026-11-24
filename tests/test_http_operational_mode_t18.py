@@ -119,7 +119,7 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
         state_store = SimpleNamespace(enabled=True)
 
         def list_tasks(self, **_kwargs):
-            return []
+            return http_server.TaskPage()
 
         def count(self, status=None):
             return 0
@@ -240,7 +240,7 @@ def test_maintenance_mode_blocks_same_agent_read_but_keeps_operator_reads(monkey
         state_store = SimpleNamespace(enabled=True)
 
         def list_tasks(self, **_kwargs):
-            return []
+            return http_server.TaskPage()
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")), agent_tasks=AgentTasks(),

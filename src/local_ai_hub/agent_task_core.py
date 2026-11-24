@@ -16,7 +16,7 @@ from .agent_task_models import (
     MAX_TASK_QUERY_SCAN_ROWS,
     GoalContract,
     TaskCheckpoint,
-    TaskList,
+    TaskPage,
     TaskState,
     TaskStatus,
     TaskWorktreeError,
@@ -445,9 +445,9 @@ class TaskCoreMixin:
         query: str | None = None,
         *,
         offset: int = 0,
-    ) -> TaskList:
+    ) -> TaskPage:
         if not self._db_path_available():
-            return TaskList()
+            return TaskPage()
         self._init_projection_table()
         now = time.time()
         normalized_query = self._normalize_search_text(query or "")
@@ -539,7 +539,7 @@ class TaskCoreMixin:
 
         rows, query_truncated = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
         tasks = [self._row_to_state(row) for row in rows]
-        return TaskList(tasks[:page_size], query_truncated=query_truncated)
+        return TaskPage(tuple(tasks[:page_size]), query_truncated=query_truncated)
 
     def count(self, status: TaskStatus | None = None, *, include_stale: bool = True) -> int:
         if not self._db_path_available():
@@ -583,7 +583,7 @@ class TaskCoreMixin:
 
         for st in (TaskStatus.ACTIVE, TaskStatus.VERIFYING, TaskStatus.PLANNED):
             tasks = self.list_tasks(status=st, limit=20, include_stale=False)
-            for t in tasks:
+            for t in tasks.tasks:
                 if _matches(t):
                     return t
         return None

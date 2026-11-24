@@ -727,6 +727,26 @@ def _apply_chain(
         raise StateMigrationError(backup, exc) from exc
 
 
+def _apply_chain_in_place(
+    state_dir: Path,
+    migrations: tuple[StateMigration, ...],
+    current: int,
+) -> list[str]:
+    """Apply an explicitly unbacked operator migration without copying the state tree."""
+    for migration in migrations:
+        if migration.source_version != current or migration.target_version != current + 1:
+            raise ValueError("state migrations must be consecutive N-to-N+1 steps")
+        migration.migrate(state_dir)
+        if migration.verify(state_dir) is not True:
+            raise ValueError(f"state migration verification failed for {current}->{current + 1}")
+        write_state_version(state_dir, version=current + 1, migrated_from=current)
+        _reject_links(state_dir)
+        if migration.verify(state_dir) is not True:
+            raise ValueError(f"state migration post-marker verification failed for {current}->{current + 1}")
+        current += 1
+    return []
+
+
 def inspect_state_migration_path(
     state_dir: Path | str,
     *,
@@ -782,6 +802,7 @@ def run_state_migrations(
     migrations: tuple[StateMigration, ...] = MIGRATIONS,
     target_version: int = CURRENT_STATE_VERSION,
     backup_current: bool = False,
+    create_backup: bool = True,
 ) -> dict[str, object]:
     root = Path(state_dir)
     plan = inspect_state_migration_path(root, migrations=migrations, target_version=target_version)
@@ -790,17 +811,22 @@ def run_state_migrations(
         return {**result, "backups": []}
     current = int(plan["version"])
     if plan["status"] == "current":
-        backups = [str(_make_backup(root, current))] if backup_current else []
+        backups = [str(_make_backup(root, current))] if backup_current and create_backup else []
         return {"status": "current", "version": current, "backups": backups}
     by_source: dict[int, StateMigration] = {}
     for migration in migrations:
         by_source[migration.source_version] = migration
     steps = tuple(by_source[version] for version in range(current, target_version))
-    backup, cleanup_warnings = _apply_chain(root, steps, current)
+    if create_backup:
+        backup, cleanup_warnings = _apply_chain(root, steps, current)
+        backups = [str(backup)]
+    else:
+        cleanup_warnings = _apply_chain_in_place(root, steps, current)
+        backups = []
     return {
         "status": "migrated",
         "version": target_version,
-        "backups": [str(backup)],
+        "backups": backups,
         "warnings": cleanup_warnings,
     }
 

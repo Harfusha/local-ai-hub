@@ -72,7 +72,7 @@ def test_no_query_list_keeps_expired_terminal_status(tasks, status):
             (status.value, task.task_id),
         )
     for status_filter in (None, status):
-        listed = tasks.list_tasks(status=status_filter)
+        listed = tasks.list_tasks(status=status_filter).tasks
         assert [(item.task_id, item.status) for item in listed] == [(task.task_id, status)]
 
 
@@ -83,11 +83,11 @@ def test_terminal_listing_keeps_active_stale_filter_and_query_scan_limit(tasks, 
     with closing(connect_sqlite(tasks.state_store.db_path)) as con, con:
         con.execute("UPDATE agent_tasks_projection SET status='completed', heartbeat_expires_at=1")
         con.execute("UPDATE agent_tasks_projection SET status='active' WHERE task_id='one'")
-    assert {t.task_id for t in tasks.list_tasks()} == {"two", "three"}
-    assert len(tasks.list_tasks(limit=1)) == 1
-    assert len(tasks.list_tasks(include_stale=True)) == 3
+    assert {t.task_id for t in tasks.list_tasks().tasks} == {"two", "three"}
+    assert len(tasks.list_tasks(limit=1).tasks) == 1
+    assert len(tasks.list_tasks(include_stale=True).tasks) == 3
     unmatched = tasks.list_tasks(query="missing")
-    assert unmatched == []
+    assert unmatched.tasks == ()
     assert unmatched.query_truncated is True
 
 

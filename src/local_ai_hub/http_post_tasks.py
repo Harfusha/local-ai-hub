@@ -569,7 +569,7 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "terminal": True,
                 "retryable": False,
             }); return
-        tasks = services_module.APP.agent_tasks.list_tasks(
+        task_page = services_module.APP.agent_tasks.list_tasks(
             status=status_filter,
             limit=limit,
             include_stale=include_stale,
@@ -577,9 +577,9 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
         )
         owner_filter = payload.get("owner")
         request_root = getattr(self, "_request_root", "") or getattr(self, "_authorization_root", "")
-        filtered_tasks = [t for t in tasks if (not owner_filter or getattr(t, "owner", "") == str(owner_filter)) and self._task_matches_request(t, request_root)]
+        filtered_tasks = [t for t in task_page.tasks if (not owner_filter or getattr(t, "owner", "") == str(owner_filter)) and self._task_matches_request(t, request_root)]
         response = {"success": True, "tasks": [t.to_dict() for t in filtered_tasks]}
-        if getattr(tasks, "query_truncated", False):
+        if task_page.query_truncated:
             response["query_truncated"] = True
         self._send(200, response); return
     self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return

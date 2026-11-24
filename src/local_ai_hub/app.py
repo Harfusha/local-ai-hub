@@ -65,7 +65,7 @@ from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
 from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
-from .agent_tasks import CompletionGateError, TaskStore, TaskStatus
+from .agent_tasks import CompletionGateError, TaskPage, TaskStore, TaskStatus
 from .laya_candidates import LayaCandidateStore
 from .laya_lifecycle import DEFAULT_IDLE_UNLOAD_SECONDS, LayaSessionLifecycle
 from .agent_identity import AgentScope
@@ -643,6 +643,7 @@ __all__ = [
     'StatusDependencyExecutor',
     'SwarmCoordinator',
     'TaskStatus',
+    'TaskPage',
     'TaskStore',
     'TelemetryStore',
     'TieredOllamaRuntime',

@@ -72,7 +72,7 @@ class TaskTrainingMixin:
                 raise ValueError(f"candidate file exceeds {MAX_TRAINING_DATASET_BYTES} byte limit")
             known_tasks = {
                 item.task_id
-                for item in self.list_tasks(limit=5000)
+                for item in self.list_tasks(limit=5000).tasks
                 if _task_matches_scope(item, str(scoped_root), None)
             }
             candidate_rows: list[dict[str, Any]] = []
@@ -147,7 +147,7 @@ class TaskTrainingMixin:
                 "dataset_kind": "laya_candidates",
             }
         tasks = [
-            task for task in self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
+            task for task in self.list_tasks(status=TaskStatus.COMPLETED, limit=5000).tasks
             if _task_matches_scope(task, str(scoped_root), task_id)
         ]
         samples: list[dict[str, Any]] = []

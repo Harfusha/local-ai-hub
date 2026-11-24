@@ -6169,10 +6169,8 @@ async function loadAgentOsView({appendTasks=false}={}){
   }
   if($('agentOsTasksMore'))$('agentOsTasksMore').disabled=true;
   const requestOffset=agentOsTaskOffset;
-  const scopeParam=isAll?'':'&scoped_page=true';
-
   const promises=[
-    fetchDashboardJson(`/api/agent-state/tasks?limit=${agentOsTaskPageSize}&offset=${requestOffset}&include_stale=true${scopeParam}`,{cache:'no-store',unscoped:isAll})
+    fetchDashboardJson(`/api/agent-state/tasks?limit=${agentOsTaskPageSize}&offset=${requestOffset}&include_stale=true`,{cache:'no-store',unscoped:isAll})
   ];
   if(!appendTasks){
     promises.push(fetchDashboardJson('/api/agent-state/memory',{cache:'no-store',unscoped:isAll}));

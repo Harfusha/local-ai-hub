@@ -59,4 +59,3 @@ Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. I
 ## Long output and failures
 
 Use `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_artifact` for exact lines. Reuse cache/coalesced results, do not duplicate `in_progress` work, and use native fallback only after an explicit Hub result with `terminal=true` and `retryable=false`.
-

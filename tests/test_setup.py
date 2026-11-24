@@ -7,6 +7,7 @@ import subprocess
 import os
 import tomllib
 import sqlite3
+from contextlib import closing
 import pytest
 from pathlib import Path
 from local_ai_hub.config import load_config
@@ -1581,35 +1582,32 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     assert cfg["hardware"]["profile"] == "cpu"
 
 
-def test_v8_setup_migration_clears_active_and_retained_snapshot_vectors(tmp_path: Path, monkeypatch):
+def test_v8_setup_migration_clears_active_vectors_without_backup(tmp_path: Path, monkeypatch):
     from tools.embedding_reset import verify_embedding_reset
     source = tmp_path / "source"
     state = tmp_path / "state"
-    snapshot = tmp_path / "state-backup"
     source.mkdir()
     state.mkdir()
-    snapshot.mkdir()
     (source / "pyproject.toml").write_text('[project]\nversion = "8.0.0"\n', encoding="utf-8")
     schema = (
         "CREATE TABLE chunks(embedding TEXT NOT NULL,embedding_space TEXT NOT NULL);"
         "CREATE TABLE rag_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
     )
-    for root in (state, snapshot):
-        with sqlite3.connect(root / "rag.sqlite3") as con:
-            con.executescript(schema)
-            con.execute("INSERT INTO chunks VALUES('[0.1,0.2]','old-space')")
+    with closing(sqlite3.connect(state / "rag.sqlite3")) as con:
+        con.executescript(schema)
+        con.execute("INSERT INTO chunks VALUES('[0.1,0.2]','old-space')")
+        con.commit()
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
-    monkeypatch.setattr(setup, "run_state_migrations", lambda _state: {
-        "status": "current", "version": 9, "backups": [str(snapshot)],
+    monkeypatch.setattr(setup, "run_state_migrations", lambda _state, **kwargs: {
+        "status": "current", "version": 9, "backups": [],
     })
 
     result = setup.migrate_release_state(state)
 
     assert result["embedding_reset"] == "migrated"
-    assert result["embedding_reset_backup"]
+    assert result["embedding_reset_backup"] is None
     assert setup.run_state_migrations(state)["status"] == "current"
     assert verify_embedding_reset(state)
-    assert verify_embedding_reset(snapshot)
 
 
 def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):

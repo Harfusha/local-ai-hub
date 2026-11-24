@@ -161,7 +161,7 @@ def test_description_round_trip_and_description_terms_are_indexed(stores):
     assert fetched is not None
     assert fetched.contract.goal == "Harden receipt freshness"
     assert fetched.contract.description == "quasar evidence provenance"
-    assert [match.task_id for match in matches] == [task.task_id]
+    assert [match.task_id for match in matches.tasks] == [task.task_id]
 
 
 def test_keyword_query_matches_across_indexed_task_fields(stores):
@@ -197,7 +197,7 @@ def test_keyword_query_matches_across_indexed_task_fields(stores):
 
     matches = tasks.list_tasks(query="CEIPT generation signed")
 
-    assert [match.task_id for match in matches] == [target.task_id]
+    assert [match.task_id for match in matches.tasks] == [target.task_id]
 
 
 def test_task_listing_supports_offset_pages(stores):
@@ -215,8 +215,8 @@ def test_task_listing_supports_offset_pages(stores):
     first_page = tasks.list_tasks(limit=2, offset=0)
     second_page = tasks.list_tasks(limit=2, offset=2)
 
-    assert len(first_page) == 2
-    assert [task.task_id for task in second_page] == [next(task_id for task_id in created if task_id not in {item.task_id for item in first_page})]
+    assert len(first_page.tasks) == 2
+    assert [task.task_id for task in second_page.tasks] == [next(task_id for task_id in created if task_id not in {item.task_id for item in first_page.tasks})]
 
 
 def test_keyword_search_respects_requested_result_bound(stores):
@@ -236,8 +236,8 @@ def test_keyword_search_respects_requested_result_bound(stores):
 
     matches = tasks.list_tasks(query="quasar", limit=1)
 
-    assert len(matches) == 1
-    assert matches[0].task_id in task_ids
+    assert len(matches.tasks) == 1
+    assert matches.tasks[0].task_id in task_ids
     assert matches.query_truncated is False
 
 
@@ -564,7 +564,7 @@ def test_keyword_search_backfills_missing_index_after_reopen(stores):
     reopened = TaskStore(AgentStateStore(tasks.state_store.db_path, enabled=True))
     matches = reopened.list_tasks(query="nebula retrieval")
 
-    assert [match.task_id for match in matches] == [task.task_id]
+    assert [match.task_id for match in matches.tasks] == [task.task_id]
 
 def test_source_review_receipt_without_command_completes_documentation_task(stores):
     tasks, verifier, artifacts = stores

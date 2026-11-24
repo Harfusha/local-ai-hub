@@ -100,6 +100,16 @@ def test_embedding_reset_backup_restores_only_affected_database_files(tmp_path: 
     assert unrelated.read_text(encoding="utf-8") == "changed after reset"
 
 
+def test_embedding_reset_operator_path_creates_no_backup(tmp_path: Path) -> None:
+    _state(tmp_path)
+
+    result = apply_embedding_reset(tmp_path, create_backup=False)
+
+    assert result == {"status": "migrated", "backup": None}
+    assert not list(tmp_path.parent.glob(f"{tmp_path.name}.embedding-reset-v8.0-*"))
+    assert verify_embedding_reset(tmp_path)
+
+
 def test_retained_state_snapshot_is_sanitized_without_restoring_old_vectors(tmp_path: Path) -> None:
     snapshot = tmp_path / "state-snapshot"
     snapshot.mkdir()

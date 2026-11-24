@@ -553,6 +553,20 @@ def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: 
         ]
 
 
+def test_operator_migration_can_run_in_place_without_creating_backup(tmp_path: Path):
+    state = tmp_path / "state"
+    database = _state_with_v6_agent_schema(state)
+
+    result = run_state_migrations(state, target_version=7, create_backup=False)
+
+    assert result["status"] == "migrated"
+    assert result["backups"] == []
+    assert read_state_version(state) == 7
+    assert not list(tmp_path.glob("state.backup-v*"))
+    with closing(sqlite3.connect(database)) as con:
+        assert [row[1] for row in con.execute("PRAGMA table_info(agent_entity_relations)")][-1] == "repository_id"
+
+
 def test_v7_to_v8_archives_global_board_and_removes_active_database(tmp_path: Path):
     from local_ai_hub.legacy_board_archive import ARCHIVE_NAME, read_legacy_board_archive
 

@@ -107,7 +107,7 @@ def test_adapter_capability_reports():
         "antigravity": ["SessionStart", "PreToolUse", "PostToolUse"],
         "codex": ["SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"],
         "claude": ["SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"],
-        "opencode": ["context", "execute.after"],
+        "opencode": ["context", "execute.after", "permission.evaluate"],
         "cursor": ["sessionStart", "beforeShellExecution", "afterFileEdit"],
         "windsurf": ["pre_run_command", "pre_read_code", "pre_mcp_tool_use", "post_write_code"],
         "devin": ["SessionStart", "PreToolUse", "PostToolUse"],

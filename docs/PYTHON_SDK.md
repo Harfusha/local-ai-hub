@@ -27,6 +27,10 @@ Install multiple extras together, for example `python -m pip install ".[local-nl
 
 `HubClient` communicates with Local AI Hub only.
 
+## In-process task store
+
+Code using `local_ai_hub.agent_tasks.TaskStore` receives a `TaskPage` from `list_tasks()`. Read task records from its immutable `.tasks` tuple and check `.query_truncated` before treating a searched result as complete. The page is a structured result, not a list; update in-process callers to use those fields.
+
 ## Connect
 
 ```python

@@ -9,6 +9,7 @@ import pytest
 
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_tasks import TaskPage
 from local_ai_hub.app import LocalAIApp, _laya_review_endpoint_is_loopback
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.evidence import EvidenceStore
@@ -40,7 +41,7 @@ def candidate_env(tmp_path, monkeypatch):
     )
     task_store = SimpleNamespace(
         get=lambda task_id: task if task_id == task.task_id else None,
-        list_tasks=lambda **_kwargs: [task],
+        list_tasks=lambda **_kwargs: TaskPage((task,)),
         state_store=state_store,
     )
     monkeypatch.setattr(candidates_module, "_task_matches_scope", lambda *_args: True)
@@ -1470,10 +1471,10 @@ def test_candidate_list_rejects_invalid_page_limits_and_cursors(candidate_env):
 
 def test_candidate_list_cursor_cannot_cross_task_filter(candidate_env):
     repo, _state, task_store, store = candidate_env
-    first_task = task_store.list_tasks()[0]
+    first_task = task_store.list_tasks().tasks[0]
     second_task = SimpleNamespace(task_id="task-2", is_stale=False, context=SimpleNamespace(session_id="session-2"))
     task_store.get = lambda task_id: {"task-1": first_task, "task-2": second_task}.get(task_id)
-    task_store.list_tasks = lambda **_kwargs: [first_task, second_task]
+    task_store.list_tasks = lambda **_kwargs: TaskPage((first_task, second_task))
 
     first = store.handle(_capture(), root=str(repo), task_store=task_store)
     second_operation = _capture(state="second task state")
@@ -1491,10 +1492,10 @@ def test_candidate_list_cursor_cannot_cross_task_filter(candidate_env):
 
 def test_identical_candidate_content_is_distinct_across_task_sessions(candidate_env):
     repo, _state, task_store, store = candidate_env
-    first_task = task_store.list_tasks()[0]
+    first_task = task_store.list_tasks().tasks[0]
     second_task = SimpleNamespace(task_id="task-2", is_stale=False, context=SimpleNamespace(session_id="session-2"))
     task_store.get = lambda task_id: {"task-1": first_task, "task-2": second_task}.get(task_id)
-    task_store.list_tasks = lambda **_kwargs: [first_task, second_task]
+    task_store.list_tasks = lambda **_kwargs: TaskPage((first_task, second_task))
 
     first = store.handle(_capture(), root=str(repo), task_store=task_store)
     second_operation = _capture()

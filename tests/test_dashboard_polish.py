@@ -275,15 +275,17 @@ const rows=()=>{},renderAgentOsLoadErrors=()=>{};
 const requested=[],otherRequests=[];
 let page={tasks:[{task_id:'one'}],count_scope:'repository',total_count:null,has_more:true,next_offset:1};
 const fetchDashboardJson=async(path,options)=>{
-  const url=new URL(path,'http://localhost');
+  const separator=path.includes('?')?'&':'?';
+  const scopedPath=options.unscoped?path:path+separator+'root='+encodeURIComponent($('agentOsRoot').value.trim());
+  const url=new URL(scopedPath,'http://localhost');
   if(!url.pathname.endsWith('/tasks')){otherRequests.push(url.pathname);return {records:[],incidents:[]}}
-  requested.push({scope:url.searchParams.get('scoped_page'),offset:url.searchParams.get('offset'),unscoped:options.unscoped});
+  requested.push({scope:url.searchParams.get('root'),offset:url.searchParams.get('offset'),unscoped:options.unscoped});
   return page;
 };
 (async()=>{
   $('agentOsRoot').value='C:/repo';
   await loadAgentOsView();
-  assert.deepEqual(requested[0],{scope:'true',offset:'0',unscoped:false});
+  assert.deepEqual(requested[0],{scope:'C:/repo',offset:'0',unscoped:false});
   assert.equal($('agentOsTasksMore').hidden,false);
   page={tasks:[{task_id:'two'}],count_scope:'repository',total_count:3,has_more:true,next_offset:2};
   await loadAgentOsView({appendTasks:true});

@@ -9,7 +9,7 @@ from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_tasks import (
     GoalContract,
     TaskCheckpoint,
-    TaskList,
+    TaskPage,
     TaskState,
     TaskStatus,
     TaskStore,
@@ -127,18 +127,14 @@ def test_task_state_post_init_and_helpers() -> None:
     assert ts_done.is_active() is False
 
 
-def test_task_list_helpers() -> None:
+def test_task_page_has_explicit_tasks_and_completeness() -> None:
     gc = GoalContract(goal="test")
     ctx = ScopeContext(task_id="t1")
     t1 = TaskState(task_id="t1", status=TaskStatus.ACTIVE, contract=gc, context=ctx)
-
-    tl_empty = TaskList()
-    assert tl_empty.has_tasks() is False
-    assert tl_empty.is_truncated() is False
-
-    tl_full = TaskList([t1], query_truncated=True)
-    assert tl_full.has_tasks() is True
-    assert tl_full.is_truncated() is True
+    page = TaskPage((t1,), query_truncated=True)
+    assert page.tasks == (t1,)
+    assert page.query_truncated is True
+    assert not isinstance(page, list)
 
 
 def test_task_store_has_task(tmp_path: Path) -> None:

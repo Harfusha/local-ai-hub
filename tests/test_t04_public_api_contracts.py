@@ -18,7 +18,7 @@ def live_api(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     config = tmp_path / "config.toml"
     config.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
@@ -179,7 +179,7 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api, 
     finally:
         owner_client.close()
     store_result = app.agent_tasks.list_tasks(query="BLOCKER-NEEDLE", limit=1)
-    assert [task.task_id for task in store_result] == ["query-match"]
+    assert [task.task_id for task in store_result.tasks] == ["query-match"]
 
     queries = [
         "query-match",
@@ -230,17 +230,17 @@ def test_task_list_query_skips_stale_matches_before_limit(live_api):
 
     tasks = app.agent_tasks.list_tasks(query="page-needle", limit=1)
 
-    assert [task.task_id for task in tasks] == ["fresh-match"]
+    assert [task.task_id for task in tasks.tasks] == ["fresh-match"]
 
 
 def test_task_list_surfaces_query_scan_truncation(live_api, monkeypatch, tmp_path):
-    from local_ai_hub.agent_tasks import TaskList
+    from local_ai_hub.agent_tasks import TaskPage
 
     app, client = live_api
     monkeypatch.setattr(
         app.agent_tasks,
         "list_tasks",
-        lambda **_kwargs: TaskList([], query_truncated=True),
+        lambda **_kwargs: TaskPage(query_truncated=True),
     )
 
     result = client.list_tasks(query="needle", root=str(tmp_path))

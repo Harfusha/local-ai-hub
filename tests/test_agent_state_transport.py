@@ -151,8 +151,8 @@ def test_agent_state_response_never_returns_raw_prompt_or_absolute_path(running_
             return {
                 "success": True,
                 "enabled": app.agent_state.enabled,
-                "active_tasks": [t.task_id for t in app.agent_tasks.list_tasks(status=TaskStatus.ACTIVE)],
-                "tasks_count": len(app.agent_tasks.list_tasks()),
+                "active_tasks": [t.task_id for t in app.agent_tasks.list_tasks(status=TaskStatus.ACTIVE).tasks],
+                "tasks_count": len(app.agent_tasks.list_tasks().tasks),
                 "status": "healthy",
             }
         return {"success": False}

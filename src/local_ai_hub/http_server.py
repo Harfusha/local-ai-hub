@@ -188,6 +188,7 @@ from .agent_tasks import (
     CompletionGateError,  # noqa: F401
     GoalContract,
     TaskIdempotencyConflictError,  # noqa: F401
+    TaskPage,  # noqa: F401
     TaskWorktreeError,  # noqa: F401
     TaskCheckpoint,  # noqa: F401
     TaskStatus,  # noqa: F401
@@ -1662,6 +1663,7 @@ __all__ = [
     'ScopeContext',
     'TaskCheckpoint',
     'TaskIdempotencyConflictError',
+    'TaskPage',
     'TaskStatus',
     'TaskWorktreeError',
     'ThreadingHTTPServer',

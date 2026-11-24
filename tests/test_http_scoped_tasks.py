@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from local_ai_hub.agent_tasks import TaskPage
 from local_ai_hub.http_scoped_tasks import page_scoped_tasks
 
 
@@ -17,7 +18,7 @@ class Store:
         self.tasks = tasks
 
     def list_tasks(self, *, status, limit, offset, include_stale, query):
-        return self.tasks[offset:offset + limit]
+        return TaskPage(tuple(self.tasks[offset:offset + limit]))
 
 
 def page(store, root, limit, offset, **kwargs):

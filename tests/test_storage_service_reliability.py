@@ -234,7 +234,7 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     assert fetched is not None
     assert fetched.task_id == task.task_id
 
-    listed = tstore.list_tasks()
+    listed = tstore.list_tasks().tasks
     assert len(listed) == 1
 
     # Heartbeat and reap test
@@ -267,8 +267,8 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     assert stale_fetched.to_dict()["stale"] is True
     assert stale_fetched.to_dict()["stale_reason"] == "heartbeat_expired"
 
-    assert stale_task.task_id not in [t.task_id for t in tstore.list_tasks()]
-    assert stale_task.task_id in [t.task_id for t in tstore.list_tasks(include_stale=True)]
+    assert stale_task.task_id not in [t.task_id for t in tstore.list_tasks().tasks]
+    assert stale_task.task_id in [t.task_id for t in tstore.list_tasks(include_stale=True).tasks]
 
 
 def test_blackboard_store_retry(tmp_path: Path):

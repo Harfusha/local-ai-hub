@@ -419,18 +419,12 @@ class TaskState:
         )
 
 
-class TaskList(list[TaskState]):
-    """List-compatible task page with an explicit bounded-query truncation signal."""
+@dataclass(frozen=True, slots=True)
+class TaskPage:
+    """One bounded task query result and its completeness state."""
 
-    def __init__(self, tasks: list[TaskState] | tuple[TaskState, ...] = (), *, query_truncated: bool = False) -> None:
-        super().__init__(tasks)
-        self.query_truncated = bool(query_truncated)
-
-    def is_truncated(self) -> bool:
-        return self.query_truncated
-
-    def has_tasks(self) -> bool:
-        return len(self) > 0
+    tasks: tuple[TaskState, ...] = ()
+    query_truncated: bool = False
 
 
 def _validate_checkpoint_memory_context(

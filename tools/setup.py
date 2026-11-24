@@ -344,10 +344,10 @@ def copy_install_tree(
 
 def migrate_release_state(state_dir: Path) -> dict[str, Any]:
     """Run ordered state migrations and the v8 vector reset for installer paths."""
-    result = run_state_migrations(state_dir)
+    result = run_state_migrations(state_dir, create_backup=False)
     version = tomllib.loads((SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     if version_parts(version) >= (8, 0, 0):
-        reset = apply_embedding_reset(state_dir)
+        reset = apply_embedding_reset(state_dir, create_backup=False)
         result["embedding_reset"] = reset["status"]
         result["embedding_reset_backup"] = reset.get("backup")
         for state_backup in result.get("backups", []):

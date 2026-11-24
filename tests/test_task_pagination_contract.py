@@ -15,24 +15,24 @@ def task_store(tmp_path):
 
 def test_existing_positional_include_stale_and_query_keep_their_meaning(tmp_path):
     store = task_store(tmp_path)
-    rows = store.list_tasks(None, 100, True, "needle")
+    rows = store.list_tasks(None, 100, True, "needle").tasks
     assert {row.task_id for row in rows} == {"a", "c"}
 
 
 def test_offset_applies_after_search_filtering(tmp_path):
     store = task_store(tmp_path)
-    expected = list(store.list_tasks(query="needle", include_stale=True))
+    expected = list(store.list_tasks(query="needle", include_stale=True).tasks)
     assert len(expected) == 2
     first = store.list_tasks(limit=1, offset=0, query="needle", include_stale=True)
     second = store.list_tasks(limit=1, offset=1, query="needle", include_stale=True)
-    assert [row.task_id for row in first] == [expected[0].task_id]
-    assert [row.task_id for row in second] == [expected[1].task_id]
+    assert [row.task_id for row in first.tasks] == [expected[0].task_id]
+    assert [row.task_id for row in second.tasks] == [expected[1].task_id]
 
 
 def test_unfiltered_pages_are_disjoint_and_cover_the_full_order(tmp_path):
     store = task_store(tmp_path)
-    full = list(store.list_tasks(include_stale=True))
-    pages = [store.list_tasks(limit=1, offset=i, include_stale=True) for i in range(3)]
+    full = list(store.list_tasks(include_stale=True).tasks)
+    pages = [store.list_tasks(limit=1, offset=i, include_stale=True).tasks for i in range(3)]
     actual = [row.task_id for page in pages for row in page]
     assert actual == [row.task_id for row in full]
     assert len(actual) == len(set(actual)) == 3
