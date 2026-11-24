@@ -109,6 +109,9 @@ _FILE_REFS_V6 = (
     "last_accessed_at", "generation", "card_key", "updated_at",
 )
 _FILE_REFS_V7 = (*_FILE_REFS_V6, "centrality_score")
+_FILE_REFS_V7_CENTRALITY_BEFORE_UPDATED = (
+    *_FILE_REFS_V6[:-1], "centrality_score", _FILE_REFS_V6[-1],
+)
 _EXTERNAL_INDEX_V6 = ("root", "backend", "revision_hash", "status", "updated_at", "error")
 _EXTERNAL_INDEX_V7 = (*_EXTERNAL_INDEX_V6, "retry_count")
 
@@ -192,7 +195,9 @@ def _preprocess_schema_v7(state: Path) -> bool:
             return False
         if "file_card_enrichment" in tables and _table_columns(con, "file_card_enrichment") != _FILE_CARD_V7:
             return False
-        if "file_refs" in tables and _table_columns(con, "file_refs") != _FILE_REFS_V7:
+        if "file_refs" in tables and _table_columns(con, "file_refs") not in {
+            _FILE_REFS_V7, _FILE_REFS_V7_CENTRALITY_BEFORE_UPDATED,
+        }:
             return False
         if "external_index_state" in tables and _table_columns(con, "external_index_state") != _EXTERNAL_INDEX_V7:
             return False
@@ -233,7 +238,7 @@ def _migrate_preprocess_schema_6_to_7(state: Path) -> None:
             columns = _table_columns(con, "file_refs")
             if columns == _FILE_REFS_V6:
                 con.execute("ALTER TABLE file_refs ADD COLUMN centrality_score REAL NOT NULL DEFAULT 0.0")
-            elif columns != _FILE_REFS_V7:
+            elif columns not in {_FILE_REFS_V7, _FILE_REFS_V7_CENTRALITY_BEFORE_UPDATED}:
                 raise RuntimeError("unsupported file_refs schema for state 6->7 migration")
 
         if "external_index_state" in tables:

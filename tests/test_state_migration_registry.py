@@ -458,7 +458,8 @@ def test_unversioned_v5_with_unknown_board_layout_preserves_live_state_and_backu
     assert error.value.backup_path.is_dir()
 
 
-def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: Path):
+@pytest.mark.parametrize("centrality_order", ["added", "before_updated_at"])
+def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: Path, centrality_order: str):
     from local_ai_hub.preprocess_lexical import SHARED_FTS_ROWS, fts_layout, has_retired_fts
 
     state = tmp_path / "state"
@@ -477,7 +478,9 @@ def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: 
                 size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL DEFAULT 0,
                 needs_hash INTEGER NOT NULL DEFAULT 0, rag_hash TEXT,
                 last_accessed_at REAL NOT NULL DEFAULT 0, generation INTEGER NOT NULL,
-                card_key TEXT, updated_at REAL NOT NULL, PRIMARY KEY(root,path)
+                card_key TEXT,
+                {centrality_column}
+                updated_at REAL NOT NULL, PRIMARY KEY(root,path)
             );
             CREATE TABLE external_index_state (
                 root TEXT NOT NULL, backend TEXT NOT NULL, revision_hash TEXT NOT NULL,
@@ -494,12 +497,19 @@ def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: 
             CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content);
             INSERT INTO source_index VALUES('w','a.py','h1','source A',1.0);
             INSERT INTO source_index VALUES('w','b.py','h2','source B',2.0);
-            INSERT INTO file_refs VALUES('w','a.py','h1',10,11,0,NULL,12,1,NULL,13);
+            INSERT INTO file_refs VALUES({file_refs_values});
             INSERT INTO external_index_state VALUES('w','faiss','rev','error',14,'retry me');
             INSERT INTO file_card_enrichment VALUES('h1','model','v1','ready',2,0,0,NULL,3.0);
             INSERT INTO source_fts(root,path,content) VALUES('w','a.py','duplicate shared text');
             INSERT INTO source_fts(root,path,content) VALUES('w','b.py','duplicate shared text');
-        """)
+        """.format(
+            centrality_column="centrality_score REAL NOT NULL DEFAULT 0.0, " if centrality_order == "before_updated_at" else "",
+            file_refs_values=(
+                "'w','a.py','h1',10,11,0,NULL,12,1,NULL,0.25,13"
+                if centrality_order == "before_updated_at"
+                else "'w','a.py','h1',10,11,0,NULL,12,1,NULL,13"
+            ),
+        ))
 
     result = run_state_migrations(state)
 
@@ -512,11 +522,16 @@ def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: 
         assert con.execute("SELECT path,text_origin FROM source_index ORDER BY path").fetchall() == [
             ("a.py", "unknown"), ("b.py", "unknown"),
         ]
-        assert [row[1] for row in con.execute("PRAGMA table_info(file_refs)")] == [
+        columns = [row[1] for row in con.execute("PRAGMA table_info(file_refs)")]
+        expected_columns = [
             "root", "path", "content_hash", "size", "mtime_ns", "needs_hash", "rag_hash",
-            "last_accessed_at", "generation", "card_key", "updated_at", "centrality_score",
+            "last_accessed_at", "generation", "card_key",
         ]
-        assert con.execute("SELECT root,path,centrality_score FROM file_refs").fetchone() == ("w", "a.py", 0.0)
+        expected_columns += (["centrality_score", "updated_at"] if centrality_order == "before_updated_at" else ["updated_at", "centrality_score"])
+        assert columns == expected_columns
+        assert con.execute("SELECT root,path,centrality_score FROM file_refs").fetchone() == (
+            "w", "a.py", 0.25 if centrality_order == "before_updated_at" else 0.0,
+        )
         assert [row[1] for row in con.execute("PRAGMA table_info(external_index_state)")][-1] == "retry_count"
         assert con.execute("SELECT root,backend,revision_hash,status,updated_at,error,retry_count FROM external_index_state").fetchone() == (
             "w", "faiss", "rev", "error", 14.0, "retry me", 0,
