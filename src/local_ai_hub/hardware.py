@@ -412,7 +412,7 @@ def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool =
 PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder-prep-v3:1.5b",
             "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
@@ -441,7 +441,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
         },
         "preprocessing": {
-            "model": "qwen2.5-coder-prep-v4:3b",
+            "model": "qwen2.5-coder-prep-v3:1.5b",
             "draft_model": "qwen2.5-coder-prep-v3:0.5b",
             "refiner_model": "qwen2.5-coder-prep-v3:1.5b",
             "cascade_enabled": True,
@@ -460,7 +460,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "integrated": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder-prep-v3:1.5b",
             "draft_code": "qwen2.5-coder-prep-v3:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
@@ -506,7 +506,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {
-            "model": "qwen2.5-coder-prep-v4:3b",
+            "model": "qwen2.5-coder-prep-v3:1.5b",
             "draft_model": "qwen2.5-coder-prep-v3:0.5b",
             "refiner_model": "qwen2.5-coder-prep-v3:1.5b",
             "cascade_enabled": True,
