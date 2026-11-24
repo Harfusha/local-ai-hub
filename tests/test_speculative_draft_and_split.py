@@ -242,7 +242,7 @@ def test_speculative_draft_cascade_execution(tmp_path: Path) -> None:
         "server": {"state_dir": str(tmp_path)},
         "models": {
             "fast_code": "qwen2.5-coder:7b",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
         },
     }
     services = LocalAIServices(
@@ -259,7 +259,7 @@ def test_speculative_draft_cascade_execution(tmp_path: Path) -> None:
 
     def fake_generate(model, prompt, system, max_tokens, temp, **kwargs):
         calls.append((model, prompt))
-        if model == "qwen2.5-coder-prep-v3:0.5b":
+        if model == "qwen2.5-coder:0.5b":
             return {"response": "def draft_calc():\n    return 10\n", "duration_ms": 15.0}
         return {"response": "def calculate():\n    return 42\n", "duration_ms": 50.0}
 
@@ -276,11 +276,11 @@ def test_speculative_draft_cascade_execution(tmp_path: Path) -> None:
     assert result["success"] is True
     assert result["model"] == "qwen2.5-coder:7b"
     assert result["draft"] == "def calculate():\n    return 42"
-    assert result["cascade"] == ["qwen2.5-coder-prep-v3:0.5b", "qwen2.5-coder:7b"]
-    assert result["draft_model"] == "qwen2.5-coder-prep-v3:0.5b"
+    assert result["cascade"] == ["qwen2.5-coder:0.5b", "qwen2.5-coder:7b"]
+    assert result["draft_model"] == "qwen2.5-coder:0.5b"
     assert result["target_model"] == "qwen2.5-coder:7b"
     assert len(calls) == 2
-    assert calls[0][0] == "qwen2.5-coder-prep-v3:0.5b"
+    assert calls[0][0] == "qwen2.5-coder:0.5b"
     assert calls[1][0] == "qwen2.5-coder:7b"
     assert "CANDIDATE DRAFT CODE" in calls[1][1]
 

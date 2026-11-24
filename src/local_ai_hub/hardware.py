@@ -412,8 +412,8 @@ def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool =
 PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
-            "background_code": "qwen2.5-coder-prep-v3:1.5b",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
@@ -460,8 +460,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "integrated": {
         "models": {
-            "background_code": "qwen2.5-coder-prep-v3:1.5b",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
@@ -532,7 +532,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b", "refiner_model": "qwen2.5-coder-prep-v3:1.5b", "cascade_enabled": True},
         "models": {
             "background_code": "qwen2.5-coder:1.5b",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
@@ -560,7 +560,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "preprocessing": {"model": "qwen2.5-coder-prep-v4:3b", "draft_model": "qwen2.5-coder-prep-v3:0.5b", "refiner_model": "qwen2.5-coder-prep-v3:1.5b", "cascade_enabled": True},
         "models": {
             "background_code": "qwen2.5-coder:3b",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
@@ -581,7 +581,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "medium": {
         "models": {
             "background_code": "qwen2.5-coder:3b",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:7b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
@@ -640,7 +640,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "high": {
         "models": {
             "background_code": "qwen2.5-coder:3b-instruct-q4_K_M",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:7b-instruct-q4_K_M",
             "heavy_code": "qwen2.5-coder:14b-instruct-q4_K_M",
             "reasoning": "qwen3.5:9b-q4_K_M",
@@ -699,7 +699,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "max": {
         "models": {
             "background_code": "qwen2.5-coder:7b-instruct-q4_K_M",
-            "draft_code": "qwen2.5-coder-prep-v3:0.5b",
+            "draft_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:7b-instruct-q4_K_M",
             "heavy_code": "qwen2.5-coder:14b-instruct-q4_K_M",
             "reasoning": "qwen2.5-coder:14b-instruct-q4_K_M",

@@ -277,13 +277,13 @@ class VRAMBalancer:
                 "dynamic_context_tokens": 0,
                 "throttle_background": True,
                 "speculative_inference": {
-                    "draft_model": str(models_cfg.get("draft_code", "qwen2.5-coder-prep-v3:0.5b")),
+                    "draft_model": str(models_cfg.get("draft_code", "qwen2.5-coder:0.5b")),
                     "target_model": str(models_cfg.get("fast_code", "qwen2.5-coder:3b")),
                     "strategy": "telemetry_unavailable",
                     **_speculative_pair_state(
                         models_cfg,
                         target_model=str(models_cfg.get("fast_code", "qwen2.5-coder:3b")),
-                        draft_model=str(models_cfg.get("draft_code", "qwen2.5-coder-prep-v3:0.5b")),
+                        draft_model=str(models_cfg.get("draft_code", "qwen2.5-coder:0.5b")),
                         pressure_recommends=False,
                     ),
                 },
@@ -520,7 +520,7 @@ class VRAMBalancer:
             if not isinstance(models_cfg, dict):
                 models_cfg = {}
             target_model = str(models_cfg.get("fast_code", "qwen2.5-coder:3b"))
-            draft_model = str(models_cfg.get("draft_code", "qwen2.5-coder-prep-v3:0.5b"))
+            draft_model = str(models_cfg.get("draft_code", "qwen2.5-coder:0.5b"))
             speculative_state = _speculative_pair_state(
                 models_cfg,
                 target_model=target_model,
