@@ -136,6 +136,7 @@ _state_migrations_module = importlib.util.module_from_spec(_state_migrations_spe
 _state_migrations_spec.loader.exec_module(_state_migrations_module)
 run_state_migrations = _state_migrations_module.run_state_migrations
 inspect_state_migration_path = _state_migrations_module.inspect_state_migration_path
+discard_stale_migration_artifacts = _state_migrations_module.discard_stale_migration_artifacts
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
 MARKER_END = "# END LOCAL AI HUB MANAGED"
@@ -344,7 +345,10 @@ def copy_install_tree(
 
 def migrate_release_state(state_dir: Path) -> dict[str, Any]:
     """Run ordered state migrations and the v8 vector reset for installer paths."""
+    removed_artifacts = discard_stale_migration_artifacts(state_dir)
     result = run_state_migrations(state_dir, create_backup=False)
+    if removed_artifacts:
+        result["discarded_migration_artifacts"] = removed_artifacts
     version = tomllib.loads((SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     if version_parts(version) >= (8, 0, 0):
         reset = apply_embedding_reset(state_dir, create_backup=False)

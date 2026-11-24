@@ -1598,6 +1598,7 @@ def test_v8_setup_migration_clears_active_vectors_without_backup(tmp_path: Path,
         con.execute("INSERT INTO chunks VALUES('[0.1,0.2]','old-space')")
         con.commit()
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "discard_stale_migration_artifacts", lambda _state: [])
     monkeypatch.setattr(setup, "run_state_migrations", lambda _state, **kwargs: {
         "status": "current", "version": 9, "backups": [],
     })

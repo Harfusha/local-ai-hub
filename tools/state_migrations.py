@@ -647,6 +647,33 @@ def _reject_link_components(path: Path) -> None:
         raise ValueError(f"state migration path contains a symlink or junction: {absolute}")
 
 
+def discard_stale_migration_artifacts(state_dir: Path | str) -> list[str]:
+    """Delete only sibling backups and staging dirs created by state migrations."""
+    state = Path(state_dir).absolute()
+    _reject_link_components(state)
+    if not state.is_dir():
+        raise ValueError(f"state migration cleanup requires an existing directory: {state}")
+    current_version = read_state_version(state)
+    removed: list[str] = []
+    for candidate in sorted(state.parent.iterdir()):
+        if candidate.name.startswith(f"{state.name}.backup-v"):
+            suffix = candidate.name.removeprefix(f"{state.name}.backup-v")
+            version_text, separator, timestamp = suffix.partition("-")
+            if not separator or not version_text.isdigit() or not timestamp.isdigit():
+                continue
+            if not candidate.is_dir() or read_state_version(candidate) != current_version:
+                continue
+        elif candidate.name.startswith(f".{state.name}.migration-"):
+            if not candidate.is_dir():
+                continue
+        else:
+            continue
+        _reject_links(candidate)
+        shutil.rmtree(candidate)
+        removed.append(str(candidate))
+    return removed
+
+
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     for item in sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()):

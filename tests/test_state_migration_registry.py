@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.state_lifecycle import CURRENT_STATE_VERSION, read_state_version, write_state_version
-from tools.state_migrations import StateMigrationError, run_state_migrations
+from tools.state_migrations import StateMigrationError, discard_stale_migration_artifacts, run_state_migrations
 
 
 def _state_with_v6_agent_schema(root: Path, *, old_embeddings: bool = False, version: int | None = 6) -> Path:
@@ -565,6 +565,26 @@ def test_operator_migration_can_run_in_place_without_creating_backup(tmp_path: P
     assert not list(tmp_path.glob("state.backup-v*"))
     with closing(sqlite3.connect(database)) as con:
         assert [row[1] for row in con.execute("PRAGMA table_info(agent_entity_relations)")][-1] == "repository_id"
+
+
+def test_unbacked_migration_discards_only_its_stale_generated_artifacts(tmp_path: Path):
+    state = tmp_path / "state"
+    state.mkdir()
+    write_state_version(state, version=6)
+    backup = tmp_path / "state.backup-v6-1795512446287817200"
+    backup.mkdir()
+    write_state_version(backup, version=6)
+    stage = tmp_path / ".state.migration-stale"
+    stage.mkdir()
+    (stage / "partial").write_text("incomplete staging copy", encoding="utf-8")
+    unrelated = tmp_path / "state.backup-v6-operator"
+    unrelated.mkdir()
+
+    removed = discard_stale_migration_artifacts(state)
+
+    assert set(removed) == {str(backup), str(stage)}
+    assert not backup.exists() and not stage.exists()
+    assert unrelated.is_dir()
 
 
 def test_v7_to_v8_archives_global_board_and_removes_active_database(tmp_path: Path):
