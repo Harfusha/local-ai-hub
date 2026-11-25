@@ -170,6 +170,17 @@ class RepoKnowledgeStore:
     def manifest(self) -> tuple[dict[str, Any], str]:
         return self._read(_MANIFEST)
 
+    def bootstrap(
+        self, project_id: str, *, mode: str, owner: str, idempotency_key: str,
+        authorize_write: Callable[[], bool],
+    ) -> dict[str, Any]:
+        """Explicit initial identity creation; never adopt or overwrite an identity."""
+        data = _encode({"schema_version": 1, "project_id": project_id, "mode": mode})
+        return self.storage.save_knowledge_file(
+            _MANIFEST, data, expected_revision="", owner=owner,
+            idempotency_key=idempotency_key, lease_check_fn=authorize_write,
+        )
+
     def get(self, kind: str, record_id: str) -> dict[str, Any]:
         manifest, revision = self.manifest()
         record, record_revision = self._read(_path_for(kind, record_id))
@@ -205,7 +216,7 @@ class RepoKnowledgeStore:
 
         def fence() -> bool:
             try:
-                return bool(authorize_write()) and self.manifest()[1] == manifest_revision
+                return authorize_write() is True and self.manifest()[1] == manifest_revision
             except (OSError, RepoPlanValidationError):
                 return False
 
@@ -280,3 +291,29 @@ def detect_declared_claim_conflicts(catalog: Mapping[str, Any]) -> list[dict[str
                     if len(findings) >= 128:
                         return findings
     return findings
+
+def query_declared_knowledge(catalog: Mapping[str, Any], query: str, *, limit: int = 8) -> dict[str, Any]:
+    """Bounded lexical discovery over curated records; not a semantic verifier."""
+    if not isinstance(query, str) or not query.strip() or len(query) > 2000:
+        raise ValueError("A bounded knowledge query is required")
+    if type(limit) is not int or not 1 <= limit <= 32:
+        raise ValueError("Knowledge limit must be between 1 and 32")
+    terms = set(re.findall(r"\w+", query.casefold())[:64])
+    ranked = []
+    for item in catalog["records"]:
+        record = item["record"]
+        payload = record["payload"]
+        words = set(re.findall(r"\w+", " ".join((
+            record["id"], payload["title"], payload["statement"], payload.get("claim_key", "")
+        )).casefold()))
+        score = len(terms & words)
+        if score:
+            ranked.append((score, record["kind"], record["id"], item))
+    ranked.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
+    return {
+        "project_id": catalog["project_id"], "complete": catalog["complete"],
+        "issues": catalog["issues"], "match_count": len(ranked),
+        "records": [entry[3] for entry in ranked[:limit]],
+        "truncated": len(ranked) > limit,
+        "answer_status": "declarations_only",
+    }

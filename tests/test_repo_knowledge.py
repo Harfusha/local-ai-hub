@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub.repo_knowledge import RepoKnowledgeStore, detect_declared_claim_conflicts
+from local_ai_hub.repo_knowledge import RepoKnowledgeStore, detect_declared_claim_conflicts, query_declared_knowledge
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError
 
 PROJECT = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
@@ -109,3 +109,31 @@ def test_bad_record_not_silently_treated_as_empty(tmp_path):
     result = store.catalog()
     assert not result["complete"]
     assert result["issues"] == [{"kind": "business_rule", "code": "invalid_or_unavailable_record"}]
+
+def test_bootstrap_identity_requires_authority_and_cannot_overwrite(tmp_path):
+    root = tmp_path / "new"
+    root.mkdir()
+    store = RepoKnowledgeStore(root)
+    with pytest.raises(RepoPlanConflictError):
+        store.bootstrap(PROJECT, mode="shared", owner="operator",
+                        idempotency_key="denied", authorize_write=lambda: False)
+    assert not (root / ".local-ai-hub/project.json").exists()
+    store.bootstrap(PROJECT, mode="shared", owner="operator",
+                    idempotency_key="init", authorize_write=lambda: True)
+    assert store.manifest()[0]["project_id"] == PROJECT
+    with pytest.raises(RepoPlanConflictError):
+        store.bootstrap("b6ea81c9-bcb9-4666-8916-e059a8fe9632",
+                        mode="shared", owner="operator", idempotency_key="other",
+                        authorize_write=lambda: True)
+
+
+def test_declared_knowledge_query_preserves_freshness_and_authority(tmp_path):
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    _save(store, _rule(root))
+    result = query_declared_knowledge(store.catalog(), "paid order")
+    assert result["answer_status"] == "declarations_only"
+    assert result["match_count"] == 1
+    assert result["records"][0]["authority"] == "repository_declaration"
+    assert query_declared_knowledge(store.catalog(), "unrelated")["records"] == []

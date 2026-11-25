@@ -773,7 +773,7 @@ class RepoPlanStorage:
         """
         from ..repo_knowledge import validate_knowledge_file
 
-        if not callable(lease_check_fn) or not lease_check_fn():
+        if not callable(lease_check_fn) or lease_check_fn() is not True:
             raise RepoPlanConflictError("Knowledge write is not authorized")
         if not idempotency_key or not isinstance(expected_revision, str):
             raise RepoPlanValidationError("Knowledge writes require a revision and operation key")

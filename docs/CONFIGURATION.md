@@ -238,3 +238,32 @@ Keys are exact purpose names used by the existing project-context consumer.
 Each value is a bounded list of repository-relative literal paths. Purpose-specific hints rank existing candidates ahead of broad entry points, request hints, and locally learned hints; they never add candidates, override path policy, or authenticate a fact. Missing paths are ignored by the existing validation pipeline. Use Git review for curated entries; the current implementation does not automatically publish learned hints. The ordinary configuration resolver and overlay precedence remain authoritative.
 
 See [the V4 specification](superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md) for the proposed full project-state migration. This setting and the portable source locator are initial foundations, not the complete V4 integration.
+
+## Repository knowledge (initial V4 contract)
+
+The initial Git-native reader uses `.local-ai-hub/project.json` with
+`schema_version: 1`, a canonical UUID `project_id`, and a `mode` of
+`shared`, `review_only` or `read_only`. Mode is a repository declaration,
+not an authorization grant. Knowledge files are one JSON object per record
+under `.local-ai-hub/knowledge/<kind-directory>/<stable-id>.json`. The
+initial envelope has `schema_version`, `project_id`, `kind`, `id`,
+`payload` (title, statement, layer, optional boolean claim key/value),
+`provenance`, `evidence` (portable source locators) and `relations`.
+The reader is intentionally limited to the default knowledge directory and
+128 entries per inventory; malformed, unavailable and truncated inventory
+is reported as incomplete. Source freshness is calculated without writing files.
+
+Read-only local inspection needs no running service:
+
+```sh
+python tools/hubctl.py knowledge catalog --root /path/to/project --json
+python tools/hubctl.py knowledge query --root /path/to/project --query "paid order" --json
+python tools/hubctl.py knowledge validate --root /path/to/project --json
+```
+
+The validation command fails for incomplete inventory, stale/unknown evidence,
+or explicit boolean claim conflicts. A conflict is only a candidate; source
+byte matches do not establish business truth or execution proof. The internal
+bootstrap/edit API reuses the existing plan journal, revision and checkout
+fences, and needs a caller-owned authorization callback. This is not yet an
+automatic publication, Agent OS migration or complete knowledge UI.
