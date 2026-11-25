@@ -452,8 +452,22 @@ def test_knowledge_batch_recovers_interrupted_write_only_after_explicit_review(t
         with pytest.raises(OSError):
             apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="migration",
                                   authorize_write=lambda: True)
-    assert store.get("business_rule", "order-paid")["record"] == a
+    assert (root / ".local-ai-hub/knowledge/rules/order-paid.json").is_file()
     assert not (root / ".local-ai-hub/knowledge/rules/second-rule.json").exists()
+    # Neither a fresh store nor the original process may expose partial data.
+    reopened = RepoKnowledgeStore(root)
+    with pytest.raises(RepoPlanConflictError):
+        reopened.get("business_rule", "order-paid")
+    with pytest.raises(RepoPlanConflictError):
+        reopened.catalog()
+    with pytest.raises(RepoPlanConflictError):
+        _save(reopened, {**a, "id": "unrelated"}, key="competing")
+    from local_ai_hub.repo_knowledge import query_repository_knowledge
+    assert query_repository_knowledge({}, {"root": str(root), "query": "paid order"})["status_code"] == 409
+    context = build_knowledge_context(str(root), "paid order", token_budget=400)
+    assert context["status"] == "publication_pending_or_changed"
+    assert context["text"] == "" and context["needs_revalidation"]
+
     # Generic plan recovery cannot authorize the batch.
     pending = store.storage.recover_pending_intents()
     assert any(row["resolution"] == "recovery_blocked" for row in pending)
@@ -463,6 +477,7 @@ def test_knowledge_batch_recovers_interrupted_write_only_after_explicit_review(t
     result = apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="migration",
                                    recover=True, authorize_write=lambda: True)
     assert result["success"]
+    assert store.get("business_rule", "order-paid")["record"] == a
     assert store.get("business_rule", "second-rule")["record"] == b
     assert (root / ".local-ai-hub/project.json").read_bytes() == manifest_bytes
     assert not result["canonical_cutover_supported"]
@@ -497,3 +512,65 @@ def test_knowledge_batch_recovery_refuses_changed_manifest(tmp_path, monkeypatch
         apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="batch", recover=True,
                               authorize_write=lambda: True)
     assert not (root / ".local-ai-hub/knowledge/rules/order-paid.json").exists()
+
+
+def test_completed_batch_acknowledgement_releases_read_fence_on_exact_retry(tmp_path, monkeypatch):
+    from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+    from local_ai_hub.repo_plan.storage import RepoPlanStorage
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    batch = [{"record": _rule(root), "expected_revision": ""}]
+    digest = preview_knowledge_batch(store, batch)["preview_digest"]
+
+    def interrupted(self, key):
+        raise OSError("fixture interruption after journal completion")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(RepoPlanStorage, "_finish_knowledge_batch", interrupted)
+        with pytest.raises(OSError):
+            apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="ack",
+                                  authorize_write=lambda: True)
+    with pytest.raises(RepoPlanConflictError):
+        RepoKnowledgeStore(root).catalog()
+    result = apply_knowledge_batch(RepoKnowledgeStore(root), batch, preview_digest=digest,
+                                   operation_id="ack", authorize_write=lambda: True)
+    assert result["success"]
+    assert store.catalog()["complete"]
+    epoch = store.read_epoch()
+    assert epoch
+    assert apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="ack",
+                                 authorize_write=lambda: True)["success"]
+    assert store.read_epoch() == epoch
+
+
+def test_read_epoch_detects_completed_unrelated_batch_during_context_read(tmp_path, monkeypatch):
+    from local_ai_hub.evidence import EvidenceStore
+    from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    _save(store, _rule(root))
+    batch = [{"record": {**_rule(root), "id": "unrelated"},
+              "expected_revision": ""}]
+    digest = preview_knowledge_batch(store, batch)["preview_digest"]
+    original = EvidenceStore.portable_source_status
+    applied = False
+
+    def publish_during_read(ref, *, root):
+        nonlocal applied
+        if not applied:
+            applied = True
+            apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="concurrent",
+                                  authorize_write=lambda: True)
+        return original(ref, root=root)
+
+    monkeypatch.setattr(EvidenceStore, "portable_source_status", staticmethod(publish_during_read))
+    context = build_knowledge_context(str(root), "paid order", token_budget=400)
+    assert applied
+    assert context["status"] == "publication_pending_or_changed"
+    assert context["text"] == ""
+    assert context["needs_revalidation"] is True
+    assert store.catalog()["complete"]
