@@ -344,3 +344,12 @@ Agent OS task, preview with `knowledge remediate --root ROOT --finding-id ID
 --subject-digest DIGEST`. Add `--apply --task-id NEW_ID` to create a task
 through the existing scoped client. This does not execute or complete the
 task; current evidence and fresh verification remain mandatory.
+
+Normal adaptive context and solve use the caller's scoped changed paths to
+prioritize direct source links and reverse business dependencies, even when the
+task wording shares no lexical terms with a rule. Czech business terminology
+is expanded by the existing Laya cross-lingual lexicon (deterministic fallback,
+not evidence of neural-model quality). The existing active, evidence-gated
+Laya next-step recommendation can see a bounded revalidation signal; its
+baseline requests more evidence for stale or unknown knowledge. No background
+Laya evaluation, training or approval authority is added.

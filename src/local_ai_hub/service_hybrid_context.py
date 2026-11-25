@@ -161,6 +161,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
     if mode == "adaptive":
         knowledge, technical_budget = reserve_knowledge_context(
             getattr(self, "config", {}), request.root, request.query, token_budget=request.token_budget,
+            changed_paths=tuple(request.changed_paths),
         )
     knowledge_text = str(knowledge.get("text", ""))
     context_cache_identity = {

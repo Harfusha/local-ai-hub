@@ -331,3 +331,17 @@ def test_knowledge_query_operation_contract_agrees_with_service(tmp_path):
     assert validate_operation_arguments("local_ai_repo", "knowledge_query", {**payload, "limit": 9})
     assert validate_operation_arguments("local_ai_repo", "knowledge_query", {**payload, "query": " "})
     assert select_http_routes("POST", "/api/repo/knowledge/query") == ("post_repo_knowledge_query_1",)
+
+
+def test_czech_query_and_changed_paths_select_business_context(tmp_path):
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    _save(store, _rule(root))
+    catalog = store.catalog()
+    assert query_declared_knowledge(catalog, "zaplacené objednávky")["records"][0]["record"]["id"] == "order-paid"
+    assert query_declared_knowledge(catalog, "unrelated", changed_paths=("order.py",))["records"][0]["record"]["id"] == "order-paid"
+    assert not query_declared_knowledge(catalog, "unrelated", changed_paths=("../order.py",))["records"]
+    assert build_knowledge_context(str(root), "unrelated", token_budget=400, changed_paths=("order.py",))["records"] == 1
+    (root / "order.py").write_bytes(b"paid = False\n")
+    assert build_knowledge_context(str(root), "unrelated", token_budget=400, changed_paths=("order.py",))["needs_revalidation"]

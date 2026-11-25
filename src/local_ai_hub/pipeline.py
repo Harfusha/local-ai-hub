@@ -389,7 +389,10 @@ class LocalAgentPipeline:
                 logger.debug("Laya context budget fallback: %s", type(exc).__name__)
         from .repo_knowledge import attach_knowledge_context, reserve_knowledge_context
 
-        knowledge, technical_budget = reserve_knowledge_context(self.services.config, root, task, token_budget=budget)
+        knowledge, technical_budget = reserve_knowledge_context(
+            self.services.config, root, task, token_budget=budget,
+            changed_paths=tuple(impact.get("changed_files") or ()) if isinstance(impact, dict) else (),
+        )
         reserved_tokens = budget - technical_budget
         if use_det_context:
             packed = self.services.deterministic.context_pack(
@@ -525,7 +528,7 @@ class LocalAgentPipeline:
                 if isinstance(suggested_tests, (list, tuple)) and suggested_tests:
                     guidance_options.append("run_test")
                 risk_level = str(impact.get("risk", {}).get("level", "unknown")) if isinstance(impact, dict) and isinstance(impact.get("risk"), dict) else "unknown"
-                if risk_level in {"high", "critical"}:
+                if risk_level in {"high", "critical"} or knowledge.get("needs_revalidation"):
                     guidance_options.append("ask_human")
                 guidance_evidence_ids = list(dict.fromkeys(
                     [
@@ -536,6 +539,8 @@ class LocalAgentPipeline:
                 if len(guidance_options) >= 2 and guidance_evidence_ids:
                     if risk_level in {"high", "critical"}:
                         guidance_baseline = "ask_human"
+                    elif knowledge.get("needs_revalidation"):
+                        guidance_baseline = "retrieve_evidence"
                     elif "run_test" in guidance_options:
                         guidance_baseline = "run_test"
                     elif packed_ev_count:
@@ -557,6 +562,7 @@ class LocalAgentPipeline:
                                     "risk_level": risk_level,
                                     "evidence_count": str(len(guidance_evidence_ids)),
                                     "suggested_test_count": str(len(suggested_tests)) if isinstance(suggested_tests, (list, tuple)) else "0",
+                                    "knowledge_revalidation": "true" if knowledge.get("needs_revalidation") else "false",
                                 },
                                 "training_content": {"task_input": task_input},
                             },

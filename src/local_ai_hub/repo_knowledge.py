@@ -420,13 +420,31 @@ def build_finding_review(
     }
 
 
-def query_declared_knowledge(catalog: Mapping[str, Any], query: str, *, limit: int = 8) -> dict[str, Any]:
+def query_declared_knowledge(
+    catalog: Mapping[str, Any], query: str, *, limit: int = 8,
+    changed_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Bounded lexical discovery over curated records; not a semantic verifier."""
     if not isinstance(query, str) or not query.strip() or len(query) > 2000:
         raise ValueError("A bounded knowledge query is required")
     if type(limit) is not int or not 1 <= limit <= 32:
         raise ValueError("Knowledge limit must be between 1 and 32")
+    from .laya_crosslingual_reranker import LayaCrossLingualReranker
+
     terms = set(re.findall(r"\w+", query.casefold())[:64])
+    expanded = set(LayaCrossLingualReranker().expand_query(query).expanded_terms[:64]) - terms
+    path_scores: dict[tuple[str, str], int] = {}
+    if changed_paths:
+        from .repo_knowledge_quality import knowledge_impact
+        from .repo_task_handoff import _safe_relative_path
+
+        safe_paths = list(dict.fromkeys(path for path in changed_paths[:64] if _safe_relative_path(path)))
+        if safe_paths:
+            impact = knowledge_impact(catalog, safe_paths)
+            path_scores = {
+                (item["kind"], item["id"]): {"direct_source": 100, "declared_dependency": 50, "related_candidate": 5}[item["classification"]]
+                for item in impact["impacts"]
+            }
     ranked = []
     for item in catalog["records"]:
         record = item["record"]
@@ -434,7 +452,7 @@ def query_declared_knowledge(catalog: Mapping[str, Any], query: str, *, limit: i
         words = set(re.findall(r"\w+", " ".join((
             record["id"], payload["title"], payload["statement"], payload.get("claim_key", "")
         )).casefold()))
-        score = len(terms & words)
+        score = 2 * len(terms & words) + len(expanded & words) + path_scores.get((record["kind"], record["id"]), 0)
         if score:
             ranked.append((score, record["kind"], record["id"], item))
     ranked.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
@@ -466,7 +484,9 @@ def query_declared_knowledge(catalog: Mapping[str, Any], query: str, *, limit: i
     }
 
 
-def build_knowledge_context(root: str, query: str, *, token_budget: int) -> dict[str, Any]:
+def build_knowledge_context(
+    root: str, query: str, *, token_budget: int, changed_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Bounded read-only business context for the existing adaptive retrieval path.
 
     Read only a small candidate inventory and verify only selected source refs.
@@ -482,7 +502,7 @@ def build_knowledge_context(root: str, query: str, *, token_budget: int) -> dict
     try:
         store = RepoKnowledgeStore(root)
         catalog = store.catalog(verify_sources=False, max_records=48)
-        query_result = query_declared_knowledge(catalog, query, limit=4)
+        query_result = query_declared_knowledge(catalog, query, limit=4, changed_paths=changed_paths)
         selected: list[dict[str, Any]] = []
         text = ""
         for item in query_result["records"]:
@@ -523,12 +543,16 @@ def build_knowledge_context(root: str, query: str, *, token_budget: int) -> dict
             selected.append(projection)
             text = candidate
         status = "partial" if not catalog["complete"] or len(selected) < len(query_result["records"]) or query_result["truncated"] else "available"
-        return {"status": status, "text": text, "records": len(selected)}
+        return {"status": status, "text": text, "records": len(selected),
+                "needs_revalidation": any(row["freshness"] != "matching_sources" for row in selected)}
     except (OSError, RepoPlanValidationError, ValueError, RuntimeError):
         return {"status": "unavailable", "text": ""}
 
 
-def reserve_knowledge_context(config: Mapping[str, Any], root: str, query: str, *, token_budget: int) -> tuple[dict[str, Any], int]:
+def reserve_knowledge_context(
+    config: Mapping[str, Any], root: str, query: str, *, token_budget: int,
+    changed_paths: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], int]:
     """Reserve a bounded share of the existing technical retrieval budget."""
     from .budget import estimate_tokens
     from .repository_scope import RepositoryScopeError, authorized_repository_root
@@ -541,7 +565,8 @@ def reserve_knowledge_context(config: Mapping[str, Any], root: str, query: str, 
     except RepositoryScopeError:
         return {"status": "unavailable", "text": ""}, token_budget
     # Reserve room for the separator too.
-    knowledge = build_knowledge_context(authorized, query, token_budget=min(400, token_budget // 5) - 2)
+    knowledge = build_knowledge_context(authorized, query, token_budget=min(400, token_budget // 5) - 2,
+                                        changed_paths=changed_paths)
     text = knowledge.get("text", "")
     reserved = estimate_tokens(text + "\n\n") if text else 0
     return knowledge, token_budget - reserved
@@ -573,6 +598,7 @@ def attach_knowledge_context(packed: dict[str, Any], knowledge: Mapping[str, Any
         status = "budget_omitted"
     retrieval = dict(result.get("retrieval") or {})
     retrieval["knowledge_context_status"] = status
+    retrieval["knowledge_needs_revalidation"] = bool(knowledge.get("needs_revalidation"))
     result["retrieval"] = retrieval
     return result
 
