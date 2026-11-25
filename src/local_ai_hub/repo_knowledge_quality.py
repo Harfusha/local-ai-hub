@@ -45,6 +45,7 @@ def knowledge_impact(catalog: Mapping[str, Any], changed_paths: list[str]) -> di
         assertion = record["payload"].get("source_assertion")
         if assertion:
             source_paths.add(assertion["path"])
+        source_paths.update(target["path"] for target in record["payload"].get("verification_targets", []))
         direct[key] = sorted(source_paths & paths)
     direct = {key: matched for key, matched in direct.items() if matched}
     chains: dict[tuple[str, str], list[tuple[str, str]]] = {key: [key] for key in direct}
@@ -112,10 +113,17 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
                 disposition = "needs_revalidation"
         details: dict[str, Any] = {}
         if observation:
-            details = {"assertion_status": observation["status"], "expected": observation["expected"],
-                       "assertion_path": observation["path"]}
+            if "symbol" in observation:
+                details = {"verification_status": observation["status"],
+                           "verification_path": observation["path"], "verification_symbol": observation["symbol"],
+                           "runtime_verified": False}
+            else:
+                details = {"assertion_status": observation["status"], "expected": observation["expected"],
+                           "assertion_path": observation["path"]}
+                if "actual" in observation:
+                    details["actual"] = observation["actual"]
             if "source" in observation:
-                details.update({"actual": observation["actual"], "current_source": observation["source"]})
+                details["current_source"] = observation["source"]
         findings.append({
             "id": finding_id, "subject_digest": subject, "type": code,
             "record_kind": key[0], "record_id": key[1], "discriminator": discriminator,
@@ -135,6 +143,10 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
         if assertion and assertion["status"] != "matches":
             add("source_literal_mismatch" if assertion["status"] == "mismatch" else "source_literal_unverified",
                 key, assertion["path"], assertion)
+        for target in item.get("verification_targets", []):
+            if target["status"] != "declared":
+                add("verification_target_missing" if target["status"] == "not_declared" else "verification_target_unknown",
+                    key, target["path"] + ":" + target["symbol"], target)
     for issue in catalog.get("graph_issues", []):
         key = (issue["kind"], issue["id"])
         if key in rows:
@@ -178,7 +190,8 @@ def build_remediation_contract(catalog: Mapping[str, Any], finding_id: str, subj
         raise RepoPlanValidationError("Finding has a non-remediation review; re-evaluate it first")
     subjects = finding_subjects(catalog, finding)
     locators = sorted({ref["path"] for item in subjects for ref in item["record"]["evidence"]}
-                      | ({finding["assertion_path"]} if "assertion_path" in finding else set()))
+                      | ({finding["assertion_path"]} if "assertion_path" in finding else set())
+                      | ({finding["verification_path"]} if "verification_path" in finding else set()))
     description = (
         "Repository quality candidate " + finding_id + " (" + finding["type"] + "). "
         "Subject digest: " + subject_digest + ". "
