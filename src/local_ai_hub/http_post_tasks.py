@@ -161,7 +161,20 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "terminal": True,
                 "retryable": False,
             }); return
+    if "handoff_resume" in payload and action != "create":
+        self._send(400, {"success": False, "error": "handoff_resume is only supported for task creation",
+                         "terminal": True, "retryable": False}); return
     if action == "create":
+        if "handoff_resume" in payload:
+            from .repo_task_handoff import validate_resume_creation
+            from .repo_plan.schema_validation import RepoPlanValidationError
+
+            try:
+                validate_resume_creation(payload)
+            except (OSError, ValueError, RepoPlanValidationError):
+                self._send(409, {"success": False, "error": "Handoff preview invalid or source dependencies changed",
+                                 "terminal": True, "retryable": False, "mutation_applied": False,
+                                 "operation_not_started": True}); return
         auto_worktree = payload.get("auto_worktree", False)
         if not isinstance(auto_worktree, bool):
             self._send(400, {
