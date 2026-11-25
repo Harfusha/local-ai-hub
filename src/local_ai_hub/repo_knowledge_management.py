@@ -17,6 +17,7 @@ from .repository_scope import RepositoryScopeError, authorized_repository_root
 
 _FIELDS = {
     "audit": {"action", "root"},
+    "sync_status": {"action", "root"},
     "impact": {"action", "root", "changed_paths"},
     "preview_edit": {"action", "root", "record", "expected_revision"},
     "save_edit": {"action", "root", "record", "expected_revision", "preview_digest", "operation_id", "apply"},
@@ -52,6 +53,10 @@ def manage_repository_knowledge(
     try:
         root = authorized_repository_root(config, payload["root"])
         store = RepoKnowledgeStore(root)
+        if action == "sync_status":
+            from .repo_knowledge_sync import checkout_sync_status
+
+            return {"success": True, **checkout_sync_status(store.root)}
         manifest, manifest_revision = store.manifest()
         if action == "audit":
             return {"success": True, **quality_report(store.catalog())}

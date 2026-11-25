@@ -369,3 +369,11 @@ through CAS; edits or review references are preserved. Publication failure
 does not block technical indexing, and status counts use preprocessing stats.
 This is initial bounded card-based discovery, not full semantic process
 inference. Previously indexed files need a normal card refresh to participate.
+
+`hubctl knowledge sync-status --root ROOT` and the Projects dashboard's
+Git sync status report local tracked, modified, untracked, ignored and
+conflicted shared paths, plus accidental tracking of private local state
+(without disclosing private filenames). Ahead/behind compares only the
+existing local upstream tracking ref; no fetch or remote verification occurs.
+This diagnostic never changes the Git index, commits, stashes or merges.
+It reports the default shared layout, not arbitrary custom workspace paths.

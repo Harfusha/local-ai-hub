@@ -292,8 +292,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume"}:
-            parser.error("knowledge requires catalog, query, validate, audit, impact, remediate, init, save, review, handoff-export or handoff-resume")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export or handoff-resume")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -346,6 +346,12 @@ def main() -> int:
 
         try:
             store = RepoKnowledgeStore(args.root)
+            if args.sub_arg == "sync-status":
+                from local_ai_hub.repo_knowledge_sync import checkout_sync_status
+
+                result = checkout_sync_status(store.root)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
             if args.sub_arg in {"handoff-export", "handoff-resume"}:
                 from local_ai_hub.repo_task_handoff import build_task_handoff, handoff_resume_contract
 

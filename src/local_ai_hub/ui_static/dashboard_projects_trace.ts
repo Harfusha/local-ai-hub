@@ -197,6 +197,19 @@ $('projectKnowledgeAudit')?.addEventListener('click',async()=>{
   }catch(error){if(generation===projectKnowledgeGeneration&&status)status.textContent=String(error?.message||error)}
   finally{if(button)button.disabled=false}
 });
+$('projectKnowledgeSync')?.addEventListener('click',async()=>{
+  const root=String($('projectKnowledgeRoot')?.value||'');if(!root)return;
+  const generation=++projectKnowledgeGeneration,output=$('projectKnowledgeResults'),status=$('projectKnowledgeStatus'),button=$('projectKnowledgeSync');
+  if(button)button.disabled=true;if(output)output.replaceChildren();if(status)status.textContent='Reading local Git status…';
+  try{
+    const result=await post('/api/repo/knowledge/manage',{root,action:'sync_status'});
+    if(generation!==projectKnowledgeGeneration)return;
+    if(result?.success!==true)throw new Error(result?.error||'Git status unavailable');
+    if(status)status.textContent='Shared paths: '+String(result.state)+' · remote not verified';
+    const details=document.createElement('pre');details.className='human-pre';details.textContent=JSON.stringify(result,null,2);output?.appendChild(details);
+  }catch(error){if(generation===projectKnowledgeGeneration&&status)status.textContent=String(error?.message||error)}
+  finally{if(button)button.disabled=false}
+});
 $('projectKnowledgeRoot')?.addEventListener('change',resetProjectKnowledge);
 $('projectKnowledgeForm')?.addEventListener('submit',async event=>{
   event.preventDefault();
