@@ -352,7 +352,7 @@ def preview_handoff_resume(store: RepoKnowledgeStore, handoff_id: str) -> dict[s
     }
 
 
-def validate_resume_creation(payload: Mapping[str, Any]) -> None:
+def validate_resume_creation(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Recheck reviewed handoff at the existing scoped task-create boundary.
 
     Root and repository identity have already been bound by the HTTP task
@@ -381,9 +381,23 @@ def validate_resume_creation(payload: Mapping[str, Any]) -> None:
         or payload.get("contract") != checked["contract"]
     ):
         raise _reject("Handoff or dependencies changed; preview again")
+    epoch = store.read_epoch()
+    manifest, manifest_revision = store.manifest()
     item = store.get("handoff", selection["handoff_id"], verify_sources=False)
-    if item["revision"] != checked["revision"] or item["record"]["payload"]["origin_task_id"] == payload["task_id"]:
+    origin = item["record"]["payload"]["origin_task_id"]
+    if item["revision"] != checked["revision"] or origin == payload["task_id"]:
         raise _reject("Handoff must create a new local task identity")
+    if store.manifest()[1] != manifest_revision:
+        raise _reject("Project changed during attempt creation")
+    store.require_read_epoch(epoch)
+    # Persist only portable identities and exact adopted revision, not a
+    # previous owner's lease, session, receipt or execution status.
+    return {
+        "schema_version": 1, "project_id": manifest["project_id"],
+        "handoff_id": selection["handoff_id"], "handoff_revision": item["revision"],
+        "origin_task_id": origin, "attempt_id": payload["task_id"],
+        "preview_digest": checked["preview_digest"],
+    }
 
 
 def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[str, Any]:
