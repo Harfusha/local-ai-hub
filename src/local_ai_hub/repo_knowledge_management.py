@@ -18,6 +18,7 @@ from .repository_scope import RepositoryScopeError, authorized_repository_root
 _FIELDS = {
     "audit": {"action", "root"},
     "sync_status": {"action", "root"},
+    "diff": {"action", "root", "base", "head"},
     "handoff_list": {"action", "root", "limit"},
     "impact": {"action", "root", "changed_paths"},
     "preview_edit": {"action", "root", "record", "expected_revision"},
@@ -58,6 +59,10 @@ def manage_repository_knowledge(
             from .repo_knowledge_sync import checkout_sync_status
 
             return {"success": True, **checkout_sync_status(store.root)}
+        if action == "diff":
+            from .repo_knowledge_sync import compare_knowledge_revisions
+
+            return {"success": True, **compare_knowledge_revisions(store.root, payload["base"], payload["head"])}
         if action == "handoff_list":
             from .repo_task_handoff import list_task_handoffs
 
