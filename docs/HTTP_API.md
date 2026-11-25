@@ -194,3 +194,20 @@ binding and explicit apply. The dashboard save path requires normal local
 owner/Host/Origin authorization plus same-origin dashboard request headers;
 the marker is not a separate authenticated identity. No remote MCP write,
 automatic approval or Git operation is introduced.
+
+The read-only management action `handoff_list` accepts `root` and an
+integer `limit` (1–64). It returns validated handoff IDs, record revisions,
+short goals, historical status, and explicit inventory completeness. A handoff
+is never current verification or authorization. The CLI equivalent is
+`hubctl knowledge handoff-list --root <path> --limit 32`; use
+`handoff-resume --handoff-id <id> --root <path>` for a preview, then add
+`--apply --expected-revision <reviewed-revision> --task-id <new-task-id>`
+to create a fresh local attempt with a stable identity.
+
+The `sync_status` action also provides bounded index-stage conflict
+classification for knowledge JSON records. It reports changed field groups,
+not stage contents, and does not resolve or stage files. Independent title
+edits and declaration changes may be nondivergent candidates; semantic
+declaration, provenance, evidence and relations are treated as one coupled
+group. Findings/reviews, identity changes and add/delete conflicts require
+manual review. No result grants merge or publication authority.
