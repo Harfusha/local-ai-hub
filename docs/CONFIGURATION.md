@@ -429,3 +429,48 @@ advisory and separate from source freshness. Headless validation fails on
 quality candidates, including unverified or mismatched assertions.
 Semantic diff review uses its existing metadata budget and reports whether
 knowledge needs revalidation; no additional model invocation is required.
+
+
+### Reviewed multi-record publication and offline legacy task preparation
+
+The existing repository-plan recovery journal supports batches of 1–16
+knowledge declarations or historical task handoffs. Each entry is
+`{"record": {...}, "expected_revision": ""}` (empty revision means create;
+use the exact current SHA-256 for replacement). Keep the original input in a
+private local file with top-level `{"records": [...]}`. Review all contents;
+do not commit the temporary migration input or logs. The preview returns an
+exact digest bound to the manifest, target revisions and candidate bytes.
+
+```sh
+python tools/hubctl.py knowledge batch-preview --root /path/to/project --record-file /private/batch.json
+python tools/hubctl.py knowledge batch-apply --root /path/to/project --record-file /private/batch.json --preview-digest DIGEST --operation-id migration_001 --apply
+python tools/hubctl.py knowledge batch-recover --root /path/to/project --record-file /private/batch.json --preview-digest DIGEST --operation-id migration_001 --apply
+```
+
+All target revisions are checked before the first publication. Each file is
+durably replaced, but readers may observe intermediate files; this is a
+recoverable batch, not an atomic multi-file snapshot. Recovery must use the
+same original input, operation ID and reviewed digest, with fresh operator
+authorization. A changed manifest, checkout or independently edited target
+blocks recovery. Generic plan recovery cannot publish these batches.
+
+With the Hub stopped (or a clean offline backup configured), prepare
+historical task candidates using:
+
+```sh
+python tools/hubctl.py knowledge legacy-task-batch --root /path/to/project --limit 8
+```
+
+The result contains a private `batch` object suitable for the batch input
+file, exact preview digest, state per candidate and snapshot identity. For
+the next page pass `--after-task-id NEXT --snapshot SNAPSHOT`. Restart the
+inventory if the database identity changes. Nonzero exit may indicate
+pagination, ambiguous legacy scope, live attempts or other blockers; inspect
+the report. The command reads only bounded exact-v2-root task rows and
+counts ambiguous/unscoped rows without exporting them. It blocks live tasks
+and conflicting existing records, limits affected-path hashing to 16 paths
+per page, and excludes raw owner/lease/session/evidence/receipt state.
+It does not change SQLite or grant execution authority. Review and publish
+with the batch command above. These are historical handoffs; canonical
+task/attempt migration, authoritative projection and rollback are still
+required before cutover.
