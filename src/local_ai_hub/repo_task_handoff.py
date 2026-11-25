@@ -45,10 +45,9 @@ def validate_handoff_payload(record: Mapping[str, Any]) -> None:
     payload = record.get("payload")
     if (
         not isinstance(payload, dict)
-        or set(payload) not in (
-            {"origin_task_id", "historical_status", "contract", "checkpoint"},
-            {"origin_task_id", "historical_status", "contract", "checkpoint", "historical_verification"},
-        )
+        or not {"origin_task_id", "historical_status", "contract", "checkpoint"} <= set(payload)
+        or set(payload) - {"origin_task_id", "historical_status", "contract", "checkpoint",
+                           "historical_verification", "source_dependencies"}
         or not _identifier(payload["origin_task_id"])
         or payload["historical_status"] not in tuple(status.value for status in TaskStatus)
         or record.get("id") != "handoff-" + hashlib.sha256(
@@ -81,6 +80,24 @@ def validate_handoff_payload(record: Mapping[str, Any]) -> None:
         raise _reject()
     if not isinstance(paths, list) or len(paths) > 32 or any(not _safe_relative_path(path) for path in paths):
         raise _reject("Handoff affected paths must be portable relative paths")
+    if "source_dependencies" in payload:
+        dependencies = payload["source_dependencies"]
+        if not isinstance(dependencies, list) or len(dependencies) > 32:
+            raise _reject("Invalid handoff source dependencies")
+        declared = []
+        for dependency in dependencies:
+            if (
+                not isinstance(dependency, dict)
+                or set(dependency) != {"path", "content_digest"}
+                or not _safe_relative_path(dependency["path"])
+                or not isinstance(dependency["content_digest"], str)
+                or (dependency["content_digest"] != "" and not re.fullmatch(r"[0-9a-f]{64}", dependency["content_digest"]))
+                or (dependency["content_digest"] and not _dependency_path_allowed(dependency["path"]))
+            ):
+                raise _reject("Invalid or private source dependency")
+            declared.append(dependency["path"])
+        if declared != sorted(set(paths)):
+            raise _reject("Source dependencies must cover exactly the declared affected paths")
     if "historical_verification" in payload:
         summaries = payload["historical_verification"]
         if not isinstance(summaries, list) or not 1 <= len(summaries) <= 8:
@@ -144,6 +161,96 @@ def build_task_handoff(store: RepoKnowledgeStore, task: Mapping[str, Any]) -> di
     }
     validate_handoff_payload(record)
     return record
+
+
+def _dependency_path_allowed(path: str) -> bool:
+    from .repo_knowledge_assertions import _PRIVATE
+
+    return _safe_relative_path(path) and not any(
+        part.startswith(".") or _PRIVATE.search(part) or part.lower().endswith((".pem", ".p12", ".key", ".pfx"))
+        for part in path.split("/")
+    )
+
+
+def _dependency_digest(root: Path, path: str) -> str:
+    """Hash only a single, tracked, unconflicted regular source file.
+
+    A tracked working-tree file may contain an uncommitted edit. Its hash
+    is intentionally not replaced with the index blob hash: a second clone
+    without that edit must not look ready. No contents are published.
+    """
+    from .evidence import EvidenceStore, _evidence_path_under_root
+    from .repo_knowledge_sync import _git
+
+    if not _dependency_path_allowed(path):
+        return ""
+    index = _git(root, "ls-files", "--stage", "-z", "--", ":(literal)" + path)
+    if not index:
+        return ""
+    meta, separator, name = index.partition(b"\t")
+    if (
+        not separator or name != path.encode("utf-8") + b"\0"
+        or not re.fullmatch(rb"(?:100644|100755) (?:[0-9a-f]{40}|[0-9a-f]{64}) 0", meta)
+    ):
+        return ""
+    source = _evidence_path_under_root(str(root), path, strict=True)
+    if source is None or not source.is_file():
+        return ""
+    try:
+        digest = EvidenceStore._hash_source_file(source)
+        if (
+            _evidence_path_under_root(str(root), path, strict=True) != source
+            or _git(root, "ls-files", "--stage", "-z", "--", ":(literal)" + path) != index
+        ):
+            return ""
+        return digest
+    except (OSError, ValueError, RuntimeError):
+        return ""
+
+
+def attach_source_dependencies(store: RepoKnowledgeStore, record: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture a bounded working-tree dependency inventory for explicit export."""
+    validate_handoff_payload(record)
+    manifest, revision = store.manifest()
+    if record["project_id"] != manifest["project_id"]:
+        raise _reject("Handoff project identity mismatch")
+    updated = {**record, "payload": dict(record["payload"])}
+    updated["payload"]["source_dependencies"] = [
+        {"path": path, "content_digest": _dependency_digest(store.root, path)}
+        for path in sorted(set(record["payload"]["checkpoint"]["affected_paths"]))
+    ]
+    if store.manifest()[1] != revision:
+        raise _reject("Project changed during dependency capture")
+    validate_handoff_payload(updated)
+    return updated
+
+
+def inspect_handoff_dependencies(store: RepoKnowledgeStore, record: Mapping[str, Any]) -> dict[str, Any]:
+    """Assess declared paths only, never claim full patch or runtime proof."""
+    validate_handoff_payload(record)
+    manifest, revision = store.manifest()
+    if record["project_id"] != manifest["project_id"]:
+        raise _reject("Handoff project identity mismatch")
+    payload = record["payload"]
+    paths = sorted(set(payload["checkpoint"]["affected_paths"]))
+    declared = {row["path"]: row["content_digest"] for row in payload.get("source_dependencies", [])}
+    rows = []
+    for path in paths:
+        expected = declared.get(path, "")
+        actual = _dependency_digest(store.root, path) if expected else ""
+        status = ("unrecorded" if not expected else "unavailable" if not actual
+                  else "matching" if actual == expected else "different")
+        rows.append({"path": path, "status": status, "expected_digest": expected, "current_digest": actual})
+    if store.manifest()[1] != revision:
+        raise _reject("Project changed during dependency inspection")
+    return {
+        "state": ("no_declared_paths" if not paths else "matching_declared_paths"
+                  if all(row["status"] == "matching" for row in rows) else "blocked_missing_dependency"),
+        "resume_allowed": all(row["status"] == "matching" for row in rows),
+        "paths": rows,
+        "coverage": "declared_affected_paths_only",
+        "runtime_verified": False,
+    }
 
 
 def attach_historical_verification(
