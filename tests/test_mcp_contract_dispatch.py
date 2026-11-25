@@ -587,7 +587,7 @@ def test_stdio_tools_list_hides_feature_disabled_tools(tmp_path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     config = tmp_path / "disabled-features.toml"
-    config.write_text("[features]\nrag = false\ncommands = false\n", encoding="utf-8")
+    config.write_text("[local_ai_hub]\nconfig_schema_version=1\n\n[features]\nrag = false\ncommands = false\n", encoding="utf-8")
     env = os.environ.copy()
     env["LOCAL_AI_CONFIG"] = str(config)
     env["PYTHONPATH"] = os.pathsep.join(
