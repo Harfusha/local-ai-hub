@@ -136,7 +136,7 @@ def stop_existing_runtime(
     stop_env = os.environ.copy() if env is None else dict(env)
     stop_env["LOCAL_AI_CONFIG"] = str(installed_config)
     try:
-        result = runner([str(python), str(service_script), "stop"], check=False, timeout=20, env=stop_env)
+        result = runner([str(python), str(service_script), "stop"], check=False, timeout=45, env=stop_env)
     except Exception as exc:
         return False, f"managed runtime stop failed: {exc}"
     returncode = getattr(result, "returncode", None)

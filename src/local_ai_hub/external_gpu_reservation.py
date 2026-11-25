@@ -170,59 +170,87 @@ class ExternalGpuReservationStore:
             except OSError:
                 return False
 
+    def _record_internal_fence_failure(
+        self, action: str, reason: str, *, attempt: int | None = None, error: OSError | None = None,
+    ) -> None:
+        event: dict[str, Any] = {"action": action, "reason": reason, "failed_at": self._clock()}
+        if attempt is not None:
+            event["attempt"] = attempt + 1
+        if error is not None:
+            event["winerror"] = getattr(error, "winerror", None)
+            event["errno"] = error.errno
+        with contextlib.suppress(OSError):
+            self._append_audit(event)
+
     def renew_internal(self, digest: str) -> bool:
         """Refresh a live digest-only internal fence without changing ownership."""
         _validate_digest(digest)
         with self._locked():
+            def failed(reason: str, *, attempt: int | None = None, error: OSError | None = None) -> bool:
+                self._record_internal_fence_failure("internal_renew_failed", reason, attempt=attempt, error=error)
+                return False
+
             for attempt in range(6):
-                if self.metadata_path.exists() or self.path.is_symlink():
-                    return False
+                if self.metadata_path.exists():
+                    return failed("reservation_metadata_present", attempt=attempt)
+                if self.path.is_symlink():
+                    return failed("reservation_fence_symlink", attempt=attempt)
                 try:
                     with self.path.open("rb") as stream:
                         before = os.fstat(stream.fileno())
                         if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
-                            return False
+                            return failed("reservation_fence_not_regular_64_bytes", attempt=attempt)
                         raw_digest = stream.read(65)
                         after = os.fstat(stream.fileno())
                         current = self.path.stat(follow_symlinks=False)
                         if (not os.path.samestat(before, after)
                                 or not os.path.samestat(after, current)
                                 or raw_digest.decode("ascii") != digest):
-                            return False
+                            return failed("reservation_fence_identity_or_digest_changed", attempt=attempt)
                         now = self._clock()
                         os.utime(self.path, (now, now))
                         renewed = os.fstat(stream.fileno())
                         if self.path.is_symlink():
-                            return False
+                            return failed("reservation_fence_became_symlink", attempt=attempt)
                         current = self.path.stat(follow_symlinks=False)
-                        return os.path.samestat(after, renewed) and os.path.samestat(renewed, current)
+                        if not (os.path.samestat(after, renewed) and os.path.samestat(renewed, current)):
+                            return failed("reservation_fence_identity_changed_after_renewal", attempt=attempt)
+                        return True
                 except UnicodeDecodeError:
-                    return False
+                    return failed("reservation_fence_digest_not_ascii", attempt=attempt)
                 except OSError as exc:
                     # Brief Windows sharing violations must not strand the scheduler
                     # in outcome_unknown while the same internal fence is still valid.
                     if getattr(exc, "winerror", None) != 32 or attempt == 5:
-                        return False
+                        return failed("reservation_fence_renew_os_error", attempt=attempt, error=exc)
                     time.sleep(0.01)
-            return False
+            return failed("reservation_fence_renew_retries_exhausted", attempt=5)
 
     def release_internal(self, digest: str) -> bool:
         _validate_digest(digest)
         with self._locked():
+            def failed(reason: str, *, attempt: int | None = None, error: OSError | None = None) -> bool:
+                self._record_internal_fence_failure("internal_release_failed", reason, attempt=attempt, error=error)
+                return False
+
             for attempt in range(6):
-                if self.metadata_path.exists() or self.path.is_symlink():
-                    return False
+                if self.metadata_path.exists():
+                    return failed("reservation_metadata_present", attempt=attempt)
+                if self.path.is_symlink():
+                    return failed("reservation_fence_symlink", attempt=attempt)
                 try:
                     current = self.path.read_text(encoding="ascii")
                 except FileNotFoundError:
                     return True
-                except OSError:
-                    return False
+                except OSError as exc:
+                    return failed("reservation_fence_read_os_error", attempt=attempt, error=exc)
                 if not hmac.compare_digest(current, digest):
-                    return False
+                    return failed("reservation_fence_digest_changed", attempt=attempt)
                 capacity = self._read_capacity_leases_unlocked()
-                if capacity is None or capacity["leases"]:
-                    return False
+                if capacity is None:
+                    return failed("capacity_lease_state_unavailable", attempt=attempt)
+                if capacity["leases"]:
+                    return failed("capacity_leases_present", attempt=attempt)
                 try:
                     self.path.unlink()
                     return True
@@ -230,9 +258,9 @@ class ExternalGpuReservationStore:
                     return True
                 except OSError as exc:
                     if getattr(exc, "winerror", None) != 32 or attempt == 5:
-                        return False
+                        return failed("reservation_fence_unlink_os_error", attempt=attempt, error=exc)
                     time.sleep(0.01)
-            return False
+            return failed("reservation_fence_unlink_retries_exhausted", attempt=5)
 
     def reserve(
         self, token_digest: str, *, owner: str, owner_vram_budget_bytes: int,

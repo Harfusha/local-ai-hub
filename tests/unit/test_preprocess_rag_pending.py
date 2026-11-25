@@ -1,9 +1,11 @@
+import hashlib
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 import pytest
 
+import local_ai_hub.preprocess as preprocess_module
 from local_ai_hub.preprocess import ProjectPreprocessor
 
 
@@ -156,6 +158,93 @@ def test_recreated_file_is_not_removed_by_old_rag_batch(tmp_path, recreate):
         else:
             assert row is None
             assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
+
+
+def test_stale_rag_refs_are_invalidated_in_bounded_write_batches(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    old_hash = hashlib.sha256(b"old").hexdigest()
+    new_hash = hashlib.sha256(b"new").hexdigest()
+    count = 17
+    names = [f"file_{index:02}.py" for index in range(count)]
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("new", encoding="utf-8")
+    assert preprocess_module.checked_relative_source(root, names[0]) == "inside_regular_file"
+    assert hashlib.sha256((root / names[0]).read_bytes()).hexdigest() != old_hash
+
+    db = tmp_path / "index.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
+        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
+        con.executemany(
+            "INSERT INTO file_refs VALUES(?, ?, ?, 0, ?, 0, 3, 0)",
+            [(str(root), name, old_hash, None) for name in names],
+        )
+        con.executemany(
+            "INSERT INTO source_index VALUES(?, ?, ?, 'old')",
+            [(str(root), name, old_hash) for name in names],
+        )
+        con.executemany(
+            "INSERT INTO source_fts VALUES(?, ?, 'old')",
+            [(str(root), name) for name in names],
+        )
+        con.commit()
+
+    statements = []
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        con.set_trace_callback(statements.append)
+        return con
+
+    class Rag:
+        def index_paths_step(self, *args, **kwargs):
+            return {"success": True, "processed_paths": []}
+
+        def remove_paths(self, **kwargs):
+            return None
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock, pre._stats_lock = threading.RLock(), threading.RLock()
+    pre._stats = {"rag_steps": 0}
+    pre._connect, pre._yield = connect, lambda: False
+    pre._record_progress = lambda *args: None
+    pre.repo_tools = type("RepoTools", (), {"_read_snapshot": lambda self, path: (new_hash, None)})()
+    pre.cfg, pre.deterministic, pre.rag = {"rag_files_per_step": count}, None, Rag()
+    pre._audit_rag_sync_batch = lambda *args, **kwargs: None
+
+    with closing(connect()) as con:
+        pending_count = con.execute(
+            "SELECT COUNT(*) FROM file_refs WHERE root=? AND needs_hash=0 "
+            "AND content_hash<>'' AND COALESCE(rag_hash,'')<>content_hash",
+            (str(root),),
+        ).fetchone()[0]
+    assert pending_count == count
+
+    batch_sizes = []
+    write_transaction = preprocess_module.write_transaction
+
+    @contextmanager
+    def track_write_transaction(con, **kwargs):
+        start = len(statements)
+        with write_transaction(con, **kwargs) as active_con:
+            yield active_con
+        if kwargs.get("rollback_label") == "preprocessor stale unwatched refs":
+            batch_sizes.append(sum("UPDATE file_refs SET needs_hash=1" in sql for sql in statements[start:]))
+
+    monkeypatch.setattr(preprocess_module, "write_transaction", track_write_transaction)
+
+    assert pre._step_rag({"root": str(root), "workspace": "fixture"})
+    with closing(connect()) as con:
+        refs = con.execute("SELECT needs_hash,rag_hash FROM file_refs ORDER BY path").fetchall()
+        assert [tuple(row) for row in refs] == [(1, None)] * count
+        assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM source_fts").fetchone()[0] == 0
+    assert batch_sizes == [8, 8, 1]
 
 
 def test_checked_relative_source_classifications(tmp_path):

@@ -71,6 +71,25 @@ def test_vector_similarity_uses_lazily_loaded_numpy(tmp_path: Path, monkeypatch:
     assert score >= cache.threshold
 
 
+def test_empty_semantic_scope_skips_query_embedding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from local_ai_hub import semantic_cache
+
+    class Embeddings:
+        def encode(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            raise AssertionError("an empty semantic scope must not load the embedding model")
+
+    cache = semantic_cache.SemanticGenerationCache(
+        {"server": {"state_dir": str(tmp_path)}}, embeddings=Embeddings(),
+    )
+    monkeypatch.setattr(
+        cache,
+        "_vector",
+        lambda _query: (_ for _ in ()).throw(AssertionError("no candidates should skip vectorization")),
+    )
+
+    assert cache.get_with_reason("empty-scope", "new semantic query") == (None, 0.0, "no_candidates")
+
+
 @pytest.mark.parametrize("failure", [RuntimeError("encoder unavailable"), {"success": True, "embeddings": [[object()]]}])
 def test_embedding_failures_disable_optional_cache_operation(tmp_path: Path, failure: object) -> None:
     from local_ai_hub.semantic_cache import SemanticGenerationCache

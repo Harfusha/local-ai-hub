@@ -142,6 +142,10 @@ def compress(
     models = services.config.get("models", {})
     models = models if isinstance(models, dict) else {}
     general_model = str(models.get("general", models.get("fast_code", "qwen2.5-coder:7b")))
+    profile = str(services.config.get("_hardware", {}).get("profile", "auto")).strip().lower()
+    fast_model = models.get("fast_code")
+    if profile in {"cpu", "integrated", "low"} and isinstance(fast_model, str) and fast_model.strip():
+        general_model = fast_model
     requested_role = args.get("model_role")
     requested_model = args.get("model")
     if requested_role is not None and requested_model not in (None, ""):
@@ -174,6 +178,57 @@ def compress(
                 "error": "compress model must match a configured model",
             }
         general_model = requested_model
+    fallback_model = models.get("compression_fallback")
+    fallback_model = fallback_model.strip() if isinstance(fallback_model, str) else ""
+    allow_automatic_fallback = (
+        requested_role is None
+        and requested_model in (None, "")
+        and bool(fallback_model)
+        and fallback_model != general_model
+    )
+
+    def generate_compression(
+        model: str,
+        user_prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        *,
+        source: str,
+    ) -> dict[str, Any]:
+        generate_kwargs = {
+            "source": source,
+            "priority": int(args.get("priority", 4)),
+            "internal": True,
+        }
+        if cancel_event is not None:
+            generate_kwargs["cancel_event"] = cancel_event
+        result = services._generate(
+            model, user_prompt, system_prompt, max_tokens, 0.1, **generate_kwargs
+        )
+        if result.get("success") or not allow_automatic_fallback:
+            return result
+        if result.get("last_admission_reason") != "resource_pressure":
+            return result
+
+        fallback = services._generate(
+            fallback_model, user_prompt, system_prompt, max_tokens, 0.1,
+            **generate_kwargs,
+        )
+        if fallback.get("success"):
+            fallback.setdefault("model", fallback_model)
+            fallback["model_fallback"] = {
+                "from": model,
+                "to": fallback_model,
+                "reason": "resource_pressure",
+            }
+            return fallback
+        result["fallback_attempt"] = {
+            "model": fallback_model,
+            "error_code": fallback.get("error_code"),
+            "error": fallback.get("error"),
+        }
+        return result
+
     for index, chunk in enumerate(chunks):
         if cancel_event is not None and cancel_event.is_set():
             return cancelled()
@@ -184,16 +239,14 @@ def compress(
             task=f"{instruction}\nChunk {index + 1}/{len(chunks)}",
             context=chunk,
         )
-        result = services._generate(
-            general_model, package.user,
-            package.system,
-            per_chunk_out, 0.1, source="compress:map", priority=int(args.get("priority", 4)),
-            internal=True,
-            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+        result = generate_compression(
+            general_model, package.user, package.system, per_chunk_out,
+            source="compress:map",
         )
         if not result.get("success"):
             return result
         summaries.append(str(result.get("text", "")))
+        map_fallback = result.get("model_fallback")
 
     combined = "\n\n".join(summaries)
     if cancel_event is not None and cancel_event.is_set():
@@ -206,16 +259,18 @@ def compress(
             task=f"{instruction}\nTarget: <= {target_tokens} estimated tokens.",
             context=combined,
         )
-        final = services._generate(
-            general_model,
-            package.user,
-            package.system,
-            target_tokens, 0.1, source="compress:reduce", priority=int(args.get("priority", 4)),
-            internal=True,
-            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+        final = generate_compression(
+            general_model, package.user, package.system, target_tokens,
+            source="compress:reduce",
         )
     else:
-        final = {"success": True, "model": general_model, "text": combined}
+        final = {
+            "success": True,
+            "model": result.get("model", general_model),
+            "text": combined,
+        }
+        if isinstance(map_fallback, dict):
+            final["model_fallback"] = map_fallback
     if final.get("cancelled") is True or (cancel_event is not None and cancel_event.is_set()):
         return final if final.get("cancelled") is True else cancelled()
     final["compression"] = {

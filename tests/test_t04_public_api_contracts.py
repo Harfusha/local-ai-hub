@@ -48,25 +48,26 @@ def live_api(tmp_path, monkeypatch):
 
 def test_health_reports_running_and_installed_versions_separately(live_api, monkeypatch):
     import importlib.metadata
-    import sysconfig
-    from types import SimpleNamespace
     from local_ai_hub import __version__
+    from local_ai_hub.http_admin import _installed_hub_version
 
     _app, client = live_api
+    _installed_hub_version.cache_clear()
     res = client.get("/health")
     assert res.get("success") is True
     assert res.get("version") == __version__
     assert "installed_version" in res
 
-    active_site_packages = "test-active-site-packages"
-    active_distribution = SimpleNamespace(metadata={"Name": "local-ai-hub"}, version="8.2.0")
-    monkeypatch.setattr(sysconfig, "get_path", lambda key: active_site_packages if key == "purelib" else "")
-    monkeypatch.setattr(importlib.metadata, "version", lambda pkg: "8.1.0" if pkg == "local-ai-hub" else None)
-    monkeypatch.setattr(importlib.metadata, "distributions", lambda path=None: [active_distribution])
+    monkeypatch.setattr(importlib.metadata, "version", lambda pkg: "8.2.0" if pkg == "local-ai-hub" else None)
+    _installed_hub_version.cache_clear()
     res_mocked = client.get("/health")
     assert res_mocked.get("installed_version") == "8.2.0"
 
-    monkeypatch.setattr(importlib.metadata, "distributions", lambda path=None: [])
+    def _raise(pkg):
+        raise importlib.metadata.PackageNotFoundError(pkg)
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise)
+    _installed_hub_version.cache_clear()
     res_none = client.get("/health")
     assert res_none.get("installed_version") is None
 

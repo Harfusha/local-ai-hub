@@ -304,7 +304,7 @@ class LosslessTokenRouter:
         if not self.enabled or not lines:
             return {"success": True, "context": clean_text, "evidence": [], "routed": False, "estimated_tokens": estimate_tokens(clean_text)}
         mode = self._infer_mode(text, path)
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         scope = stable_hash({
             "text": stable_hash(text), "query": query, "path": path,
             "cache_namespace": cache_namespace,

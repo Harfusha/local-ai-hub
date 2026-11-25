@@ -209,6 +209,19 @@ def test_sqlite_wal_checkpoint_and_quickcheck_in_backup(tmp_path: Path):
         con.close()
 
 
+def test_corrupt_sqlite_snapshot_is_preserved_byte_for_byte(tmp_path: Path):
+    state = tmp_path / "state"
+    state.mkdir()
+    write_state_version(state, version=6)
+    corrupt = state / "cache.sqlite.corrupt-test"
+    payload = b"SQLite format 3\x00" + b"damaged snapshot bytes"
+    corrupt.write_bytes(payload)
+
+    backup = _make_backup(state, 6)
+
+    assert (backup / corrupt.name).read_bytes() == payload
+
+
 def test_migrate_release_state_creates_backup_on_existing_state(tmp_path: Path):
     state = tmp_path / "state"
     _state_with_v6_agent_schema(state)

@@ -194,10 +194,11 @@ class SemanticGenerationCache:
             return exact_recent, 1.0, "exact_l1_hit"
         cutoff = time.time() - self.ttl_seconds if self.ttl_seconds else 0
         query_hash = stable_hash(query_text)
+        scope_key = self._scoped_key(scope)
         with self._lock, closing(self._connect()) as con:
             exact_row = con.execute(
                 "SELECT id,value_json FROM semantic_entries WHERE scope_key=? AND query_hash=? AND created_at>=? LIMIT 1",
-                (self._scoped_key(scope), query_hash, cutoff),
+                (scope_key, query_hash, cutoff),
             ).fetchone()
             if exact_row:
                 value_dict = json.loads(exact_row[1]) if isinstance(exact_row[1], str) else exact_row[1]
@@ -225,6 +226,13 @@ class SemanticGenerationCache:
                     self._recent.set(stable_hash({"s": self._scoped_key(scope), "q": query_text}), value_dict)
                     self.hits += 1
                     return value_dict, 1.0, "exact_l2_hit"
+            has_candidates = con.execute(
+                "SELECT 1 FROM semantic_entries WHERE scope_key=? AND created_at>=? LIMIT 1",
+                (scope_key, cutoff),
+            ).fetchone()
+        if not has_candidates:
+            self.misses += 1
+            return None, 0.0, "no_candidates"
 
         numpy = _load_numpy()
         if numpy is None:
@@ -237,7 +245,7 @@ class SemanticGenerationCache:
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 "SELECT id,vector_blob,value_json,created_at FROM semantic_entries WHERE scope_key=? AND created_at>=? ORDER BY accessed_at DESC LIMIT ?",
-                (self._scoped_key(scope), cutoff, self.max_candidates),
+                (scope_key, cutoff, self.max_candidates),
             ).fetchall()
             if not rows:
                 self.misses += 1

@@ -1,27 +1,16 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
 
-def _installed_distribution_version(package_name: str) -> str | None:
-    """Read the active environment's package metadata, excluding source-tree egg-info."""
+@lru_cache(maxsize=1)
+def _installed_hub_version() -> str | None:
     try:
         import importlib.metadata
-        import sysconfig
 
-        site_packages = sysconfig.get_path("purelib")
-        if not site_packages:
-            return None
-        matches = [
-            distribution
-            for distribution in importlib.metadata.distributions(path=[site_packages])
-            if str(distribution.metadata.get("Name", "")).strip().casefold() == package_name.casefold()
-        ]
-        if len(matches) != 1:
-            return None
-        version = str(matches[0].version).strip()
-        return version or None
+        return importlib.metadata.version("local-ai-hub")
     except Exception:
         return None
 
@@ -149,7 +138,7 @@ class HTTPAdminMixin:
     def _handle_health_route(self, path: str) -> bool:
         from . import http_server as services_module
         if path == "/health":
-            installed_version = _installed_distribution_version("local-ai-hub")
+            installed_version = _installed_hub_version()
             self._send(
                 200,
                 {

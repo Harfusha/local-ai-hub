@@ -867,11 +867,29 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
             except Exception:
                 pass
     if name == "local_ai_coord":
-        coord_action = str(arguments.get("action") or "")
-        coord_contract = services_module.operation_contract("local_ai_coord") or {}
-        action_contract = coord_contract.get("actions", {}).get(coord_action, {})
-        if not arguments.get("root") and "root" in action_contract.get("required", ()):
-            arguments["root"] = str(Path(".").resolve())
+        coord_action = str(arguments.get("action") or "").lower()
+        if coord_action in {"task_view", "task_status", "task_info", "task_show", "view"}:
+            coord_action = "task_get"
+        elif coord_action in {"plan_view", "board_view"}:
+            coord_action = "plan_board_view"
+        elif coord_action in {"tasks", "task_all"}:
+            coord_action = "task_list"
+        arguments["action"] = coord_action
+        owner_global_actions = {
+            "gpu_reservation_status",
+            "gpu_reservation_release",
+            "gpu_reservation_release_authorized",
+            "gpu_capacity_lease_release",
+            "gpu_scheduler_capacity_lease_release",
+        }
+        if coord_action in owner_global_actions:
+            # Global GPU operations reject a repository root attached by some MCP hosts.
+            arguments.pop("root", None)
+        else:
+            coord_contract = services_module.operation_contract("local_ai_coord") or {}
+            action_contract = coord_contract.get("actions", {}).get(coord_action, {})
+            if not arguments.get("root") and "root" in action_contract.get("required", ()):
+                arguments["root"] = str(Path(".").resolve())
         if arguments.get("action") == "memory_record":
             if not arguments.get("scope"):
                 arguments["scope"] = "repository"

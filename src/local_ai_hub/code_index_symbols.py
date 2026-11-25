@@ -560,13 +560,14 @@ class CodeIndexSymbolMixin:
     def prune(
         self, root: str, current_paths: Iterable[str], *, stale_paths: Iterable[str] | None = None,
     ) -> dict[str, Any]:
-        """Remove stale per-workspace index rows in one short transaction."""
+        """Remove stale per-workspace index rows in bounded transactions."""
         resolved_root = canonical_root(root)
         current = {self._norm_rel(p) for p in current_paths if self._norm_rel(p)}
         stale_candidates = (
             {self._norm_rel(p) for p in stale_paths if self._norm_rel(p)}
             if stale_paths is not None else None
         )
+        pruned_count = 0
         try:
             with self._lock, closing(self._connect()) as con:
                 indexed = {self._norm_rel(str(r[0])) for r in con.execute("SELECT path FROM files WHERE root=?", (resolved_root,)).fetchall()}
@@ -575,17 +576,26 @@ class CodeIndexSymbolMixin:
                     stale = [path for path in stale if path in stale_candidates]
                 if not stale:
                     return {"success": True, "root": resolved_root, "pruned": 0}
-                with write_transaction(
-                    con, max_duration_seconds=5.0, rollback_label="code index prune"
-                ):
-                    pairs = [(resolved_root, path) for path in stale]
-                    con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", pairs)
-                    for table in ("symbols", "refs", "edges", "files"):
-                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", pairs)
-                    con.executemany("DELETE FROM file_usage WHERE root=? AND path=?", pairs)
+                pairs = [(resolved_root, path) for path in stale]
+                for offset in range(0, len(pairs), 128):
+                    batch = pairs[offset:offset + 128]
+                    with write_transaction(
+                        con, max_duration_seconds=5.0, rollback_label="code index prune"
+                    ):
+                        con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", batch)
+                        for table in ("symbols", "refs", "edges", "files"):
+                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", batch)
+                        con.executemany("DELETE FROM file_usage WHERE root=? AND path=?", batch)
+                    pruned_count += len(batch)
             self._advance_query_cache_generation()
             self._status_cache.pop(resolved_root, None)
-            return {"success": True, "root": resolved_root, "pruned": len(stale), "paths": stale[:100]}
+            return {"success": True, "root": resolved_root, "pruned": pruned_count, "paths": stale[:100]}
         except sqlite3.DatabaseError as exc:
-            return {"success": False, "root": resolved_root, "pruned": 0, "error": str(exc), "busy": is_busy_error(exc)}
+            if pruned_count:
+                self._advance_query_cache_generation()
+                self._status_cache.pop(resolved_root, None)
+            return {
+                "success": False, "root": resolved_root, "pruned": pruned_count,
+                "partial": pruned_count > 0, "error": str(exc), "busy": is_busy_error(exc),
+            }
 

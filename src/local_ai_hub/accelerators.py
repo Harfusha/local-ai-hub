@@ -106,6 +106,16 @@ def _torch_gpu_route() -> tuple[str, str] | None:
     return None
 
 
+def _torch_gpu_route_for_hardware(gpus: list[Any]) -> tuple[str, str] | None:
+    """Avoid importing Torch unless inventory found a CUDA/ROCm-capable vendor."""
+    if not isinstance(gpus, list) or not any(
+        isinstance(item, dict) and str(item.get("vendor", "")).lower() in {"nvidia", "amd"}
+        for item in gpus
+    ):
+        return None
+    return _torch_gpu_route()
+
+
 def _onnx_providers() -> set[str]:
     try:
         import onnxruntime as ort
@@ -142,7 +152,7 @@ def automatic_embedding_candidates(config: dict[str, Any]) -> list[tuple[str, st
             candidates.append(("onnx-vitisai", "VitisAIExecutionProvider"))
 
     # CUDA is the preferred dGPU path for NVIDIA and supported AMD ROCm builds.
-    torch_route = _torch_gpu_route()
+    torch_route = _torch_gpu_route_for_hardware(gpus)
     torch_gpu_candidate: tuple[str, str] | None = None
     discrete: list[dict[str, Any]] = []
     if torch_route is not None:
@@ -278,6 +288,13 @@ def _configured_candidates(
 
 def accelerator_status(config: dict[str, Any]) -> dict[str, Any]:
     runtime = openvino_runtime()
+    try:
+        from .hardware import detect_hardware
+
+        hardware = detect_hardware("auto")
+    except Exception:
+        hardware = {}
+    gpus = hardware.get("gpus", []) if isinstance(hardware, dict) else []
     models_raw = config.get("models") if isinstance(config, dict) else None
     models = models_raw if isinstance(models_raw, dict) else {}
     embedding_backend = str(models.get("embedding_backend", "auto") or "auto").strip().lower()
@@ -293,7 +310,7 @@ def accelerator_status(config: dict[str, Any]) -> dict[str, Any]:
                 config, embedding_backend, embedding_device, cpu_backend="sentence-transformers",
             ),
             "onnx_providers": sorted(_onnx_providers()),
-            "torch_gpu_available": _torch_gpu_route() is not None,
+            "torch_gpu_available": _torch_gpu_route_for_hardware(gpus) is not None,
         },
         "reranker": {
             "backend": reranker_backend,

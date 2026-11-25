@@ -111,8 +111,8 @@ def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
 def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     cfg = _config(tmp_path)
     assert cfg["_hardware"]["profile"] == "cpu"
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
     assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
     assert cfg["models"]["reasoning"] == "qwen2.5-coder:3b"
     assert cfg["models"]["general"] == "qwen2.5-coder:3b"
@@ -124,7 +124,9 @@ def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
 def test_hardware_profiles_do_not_use_preprocess_model_for_inference(profile: str) -> None:
     models = PROFILE_OVERRIDES[profile]["models"]
     inference_roles = ("background_code", "fast_code", "heavy_code", "reasoning", "general")
-    assert all(models[role] != "qwen2.5-coder:0.5b" for role in inference_roles)
+    assert all(models[role] not in {"qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b"} for role in inference_roles)
+    subagents = PROFILE_OVERRIDES[profile].get("ollama_subagents", {}).get("profiles", {})
+    assert all(item.get("model") != "qwen2.5-coder:1.5b" for item in subagents.values())
 
 
 @pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))
@@ -204,6 +206,17 @@ def test_security_validation_refuses_unconfigured_remote_bind(tmp_path: Path):
 def test_health_probe_timeout_rejects_absurd_values(tmp_path: Path):
     with pytest.raises(ConfigError, match="headless.health_probe_timeout_seconds must be <= 5"):
         _config(tmp_path, '[headless]\nhealth_probe_timeout_seconds = 3600\n')
+
+
+def test_default_health_probe_timeout_matches_supervisor_fallback(tmp_path: Path):
+    path = tmp_path / "config.toml"
+    state_dir = (tmp_path / "state").as_posix()
+    path.write_text(f'[server]\nstate_dir = "{state_dir}"\n', encoding="utf-8")
+
+    config = load_config(path, probe_hardware=False)
+
+    assert config["headless"]["health_probe_timeout_seconds"] == 5.0
+    assert config["headless"]["unhealthy_grace_seconds"] == 60.0
 
 
 @pytest.mark.parametrize("value", ["true", "false"])

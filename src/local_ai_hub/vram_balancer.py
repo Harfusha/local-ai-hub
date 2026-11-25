@@ -7,7 +7,7 @@ import numbers
 import re
 from typing import Any
 
-from .gpu_monitor import get_gpu_telemetry
+from .gpu_monitor import get_gpu_telemetry, get_gpu_telemetry_for_hardware
 
 
 _MODEL_SIZE_B_RE = re.compile(r"(?<![a-z0-9])(\d+(?:\.\d+)?)b(?![a-z0-9])", re.IGNORECASE)
@@ -81,9 +81,9 @@ class VRAMBalancer:
         self._sampling_workers: set[int] = set()
         self._max_sampling_workers = 2
         self._sampling_start_error: str | None = None
-        # Windows GPU telemetry may use a bounded 4-second PowerShell probe.
-        # Keep the sampler timeout above that limit to avoid restarting a valid probe.
-        self._sample_wait_timeout_seconds = 5.0
+        # Windows GPU telemetry can include process startup beyond the bounded
+        # PowerShell probe timeout; leave room for the sample to complete.
+        self._sample_wait_timeout_seconds = 8.0
         self._last_status: dict[str, Any] = {}
         self._last_check_time = 0.0
         self._status_generation = 0
@@ -199,7 +199,33 @@ class VRAMBalancer:
         try:
             # GPU telemetry can invoke bounded subprocess probes. Keep those waits
             # out of the state lock and status caller so both stay responsive.
-            self._status_from_telemetry(get_gpu_telemetry(), sampling_generation=token)
+            hardware = self.config.get("_hardware")
+            configured_igpu = False
+            if isinstance(hardware, dict):
+                inventory = [
+                    *(hardware.get("gpus") or []),
+                    *(hardware.get("openvino_gpu_devices") or []),
+                    *(
+                        device
+                        for device in (hardware.get("openvino_devices") or [])
+                        if isinstance(device, dict)
+                        and str(device.get("kind", "")).lower() == "gpu"
+                    ),
+                ]
+                configured_igpu = any(
+                    isinstance(gpu, dict)
+                    and (
+                        gpu.get("integrated") is True
+                        or str(gpu.get("vendor", "")).lower() == "intel"
+                        and "(igpu)" in str(gpu.get("name", "")).lower()
+                    )
+                    for gpu in inventory
+                )
+            telemetry = (
+                get_gpu_telemetry_for_hardware(hardware)
+                if configured_igpu else get_gpu_telemetry()
+            )
+            self._status_from_telemetry(telemetry, sampling_generation=token)
         except Exception:
             with self._condition:
                 if self._sampling_token == token:

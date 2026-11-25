@@ -64,11 +64,15 @@ class LayaUnifiedCoordinator:
         laya_runtime_adapter: Any = None,
         training_collector: LayaTrainingCollector | None = None,
         training_capture_enabled: bool = False,
+        model_roles: Mapping[str, Any] | None = None,
         active_confidence_threshold: float = 0.65,
     ) -> None:
         self.mode = mode if mode in VALID_LAYA_MODES else "advisory"
         self.active_confidence_threshold = float(active_confidence_threshold)
-        self.gateway = LayaActiveGateway(laya_runtime_adapter=laya_runtime_adapter)
+        self.gateway = LayaActiveGateway(
+            laya_runtime_adapter=laya_runtime_adapter,
+            model_roles=model_roles,
+        )
         self.reranker = LayaCrossLingualReranker()
         self.intent_classifier = LayaEditIntentClassifier()
         self.budget_allocator = LayaBudgetAllocator(default_budget=default_budget)

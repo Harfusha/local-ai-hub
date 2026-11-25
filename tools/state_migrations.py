@@ -28,6 +28,7 @@ from local_ai_hub.telemetry_contracts import (
     _LAYA_DECISION_FIELDS,
     _LAYA_DECISION_PRE_RUNTIME_FIELDS,
     load_telemetry_json,
+    normalize_laya_decision_metadata,
 )
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -254,7 +255,7 @@ def _migrate_preprocess_schema_6_to_7(state: Path) -> None:
         # while the update owns the state. Startup refuses to perform this work.
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='source_fts'").fetchone() is None:
             initialize_fts_rows(con)
-        while advance_fts_migration(con):
+        while advance_fts_migration(con, write_timeout_seconds=30.0):
             pass
         if fts_layout(con) != SHARED_FTS_ROWS or not has_canonical_shared_fts(con):
             raise RuntimeError("preprocess FTS migration did not reach the canonical schema")
@@ -340,7 +341,7 @@ def _telemetry_snapshots_are_v10(con: sqlite3.Connection) -> bool:
         return False
     for (raw,) in con.execute("SELECT metrics_json FROM snapshots WHERE name='laya_decision'"):
         try:
-            metadata = load_telemetry_json(raw)
+            metadata = normalize_laya_decision_metadata(load_telemetry_json(raw))
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
         if isinstance(metadata, dict) and frozenset(metadata) == _LAYA_DECISION_PRE_RUNTIME_FIELDS:
@@ -584,7 +585,7 @@ def _migrate_laya_telemetry_9_to_10(state: Path) -> None:
         converted: list[tuple[int, str, str]] = []
         for row_id, raw in rows:
             try:
-                metadata = load_telemetry_json(raw)
+                metadata = normalize_laya_decision_metadata(load_telemetry_json(raw))
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if not isinstance(metadata, dict) or frozenset(metadata) != _LAYA_DECISION_PRE_RUNTIME_FIELDS:
@@ -856,6 +857,12 @@ def _make_backup(source: Path, version: int) -> Path:
                         continue
 
                 if _is_sqlite_database(src_file):
+                    # Historical `.corrupt-*` snapshots are retained as evidence,
+                    # not migrated databases. SQLite's backup API refuses damaged
+                    # files, so preserve these byte-for-byte in the verified archive.
+                    if ".corrupt-" in fn.casefold():
+                        shutil.copy2(src_file, dst_file)
+                        continue
                     with closing(sqlite3.connect(f"file:{src_file.resolve()}?mode=ro", uri=True)) as src_con, \
                          closing(sqlite3.connect(dst_file)) as dst_con:
                         src_con.backup(dst_con)

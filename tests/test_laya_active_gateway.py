@@ -37,13 +37,17 @@ def test_laya_model_routing_and_pruning():
     # Fast tier
     fast_rec = gateway.route_model("add type annotation to helper function", context_token_count=1200)
     assert fast_rec.tier == ModelTier.FAST
-    assert fast_rec.model_name == "qwen2.5-coder:1.5b"
+    assert fast_rec.model_name == "qwen2.5-coder:3b"
     assert fast_rec.speculative_window == 6
 
     # Reasoning tier
     reason_rec = gateway.route_model("design architecture for distributed consensus protocol", context_token_count=10000)
     assert reason_rec.tier == ModelTier.REASONING
-    assert reason_rec.model_name == "qwen3.5:9b"
+    assert reason_rec.model_name == "qwen2.5-coder:7b"
+
+    smart_rec = gateway.route_model("refactor the module and review the related tests")
+    assert smart_rec.tier == ModelTier.SMART
+    assert smart_rec.model_name == "qwen2.5-coder:3b"
 
     # Context pruning
     files = ["src/core/engine.py", "tests/test_unrelated.py", "src/auth/tokens.py"]

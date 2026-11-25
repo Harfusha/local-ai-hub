@@ -275,7 +275,8 @@ def test_v9_to_v10_migrates_exact_legacy_laya_snapshot_and_preserves_values(tmp_
     with closing(sqlite3.connect(database)) as con:
         stored = json.loads(con.execute("SELECT metrics_json FROM snapshots WHERE name='laya_decision'").fetchone()[0])
     assert stored == {
-        **_laya_pre_runtime_metadata(), "runtime_latency_ms": None, "inference_latency_ms": None,
+        **_laya_pre_runtime_metadata(), "baseline_available": False, "baseline_match": None,
+        "runtime_latency_ms": None, "inference_latency_ms": None,
         "queue_wait_ms": None, "backend": None, "fallback_used": None, "fallback_reason": None,
     }
 

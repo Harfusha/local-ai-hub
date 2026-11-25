@@ -701,7 +701,11 @@ def terminate_owned_process(
             return False
         try:
             identity = _windows_process_identity_from_handle(pid, handle, kernel32)
-            if not identity or not _owner_identity_matches(owner, identity):
+            # process_owner_state() above verifies the command line through the
+            # process table. The retained Windows handle exposes immutable
+            # creation time and executable identity, but not the command line.
+            handle_owner = {key: value for key, value in owner.items() if key != "command"}
+            if not identity or not _owner_identity_matches(handle_owner, identity):
                 return False
             if not kernel32.TerminateProcess(handle, 1):
                 return False
