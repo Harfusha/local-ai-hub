@@ -248,7 +248,7 @@ $('projectKnowledgeHandoffs')?.addEventListener('click',async()=>{
               const checked=await post('/api/repo/knowledge/manage',request);
               if(!current())return;
               if(checked?.success!==true||checked.resume_allowed!==true||checked.preview_digest!==candidate.preview_digest||JSON.stringify(checked.contract)!==JSON.stringify(candidate.contract))throw new Error('Handoff or dependencies changed; refresh before resuming');
-              const created=await post('/api/agent-state/tasks',{action:'create',root,task_id:taskId,contract:checked.contract});
+              const created=await post('/api/agent-state/tasks',{action:'create',root,task_id:taskId,contract:checked.contract,handoff_resume:{handoff_id:item.id,revision:checked.revision,preview_digest:checked.preview_digest}});
               if(!current())return;
               if(created?.success!==true||!created.task)throw new Error(created?.error||'Task creation not confirmed');
               details.textContent='Created planned Agent OS task '+String(created.task.task_id||taskId)+'. Historical results are not current verification.';
