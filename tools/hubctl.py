@@ -316,8 +316,8 @@ def main() -> int:
             parser.error("handoff-export --apply requires --expected-revision, --preview-digest and no --dry-run")
         if args.sub_arg == "handoff-resume" and not args.handoff_id:
             parser.error("handoff-resume requires --handoff-id")
-        if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision or not args.task_id):
-            parser.error("handoff-resume --apply requires the reviewed --expected-revision and explicit new --task-id")
+        if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision or not args.preview_digest or not args.task_id):
+            parser.error("handoff-resume --apply requires reviewed --expected-revision, --preview-digest and explicit new --task-id")
         if args.sub_arg in {"save", "review"} and args.expected_revision is None:
             parser.error("knowledge save/review requires --expected-revision (empty string for create)")
         if args.sub_arg == "save" and args.record_file is None:
@@ -394,12 +394,12 @@ def main() -> int:
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result["complete"] else 1
             if args.sub_arg in {"handoff-export", "handoff-resume"}:
-                from local_ai_hub.repo_task_handoff import build_task_handoff, handoff_resume_contract
+                from local_ai_hub.repo_task_handoff import build_task_handoff, preview_handoff_resume
 
                 target_root = str(store.root)
                 if args.sub_arg == "handoff-export":
                     from local_ai_hub.repo_knowledge import _digest_value
-                    from local_ai_hub.repo_task_handoff import attach_historical_verification
+                    from local_ai_hub.repo_task_handoff import attach_historical_verification, attach_source_dependencies
 
                     client = HubClient(config_path=_config_arg(args.config))
                     response = client.get_task(args.task_id, root=target_root)
@@ -407,7 +407,7 @@ def main() -> int:
                         print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
                         return 1
                     task = response["task"]
-                    record = build_task_handoff(store, task)
+                    record = attach_source_dependencies(store, build_task_handoff(store, task))
                     if args.include_historical_verification:
                         exported = client.post("/api/agent-state/verification", {
                             "action": "export", "root": target_root,
@@ -437,17 +437,19 @@ def main() -> int:
                     print(json.dumps({"preview": True, "record": record, "expected_revision": current_revision,
                                       "preview_digest": preview_digest}, indent=2, ensure_ascii=False))
                     return 0
-                item = store.get("handoff", args.handoff_id, verify_sources=False)
-                contract = handoff_resume_contract(item["record"])
+                preview = preview_handoff_resume(store, args.handoff_id)
                 if not args.apply:
-                    print(json.dumps({"preview": True, "revision": item["revision"], "contract": contract},
-                                     indent=2, ensure_ascii=False))
-                    return 0
-                if item["revision"] != args.expected_revision:
-                    print(json.dumps({"success": False, "error": "Handoff revision changed; review again"}))
+                    print(json.dumps(preview, indent=2, ensure_ascii=False))
+                    return 0 if preview["resume_allowed"] else 1
+                if not preview["resume_allowed"]:
+                    print(json.dumps({"success": False, "error": "Handoff dependencies missing or changed",
+                                      "dependencies": preview["dependencies"]}, indent=2))
+                    return 1
+                if preview["revision"] != args.expected_revision or preview["preview_digest"] != args.preview_digest:
+                    print(json.dumps({"success": False, "error": "Handoff or dependencies changed; review again"}))
                     return 1
                 result = HubClient(config_path=_config_arg(args.config)).create_task(
-                    contract, task_id=args.task_id, root=target_root,
+                    preview["contract"], task_id=args.task_id, root=target_root,
                 )
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result.get("success") is True else 1
