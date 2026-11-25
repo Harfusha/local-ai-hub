@@ -487,3 +487,31 @@ It does not change SQLite or grant execution authority. Review and publish
 with the batch command above. These are historical handoffs; canonical
 task/attempt migration, authoritative projection and rollback are still
 required before cutover.
+
+
+### Portable task continuation identity
+
+A resumed local TaskStore task now persists a server-managed
+`_portable_attempt` checkpoint marker in its initial task/event transaction.
+The marker contains the project UUID, stable handoff ID, exact adopted
+handoff revision, origin task ID, new local attempt ID and reviewed preview
+digest. It is preserved on ordinary checkpoint changes and cannot be
+inserted or edited by a checkpoint caller. It conveys no lease, session,
+execution authority or verification.
+
+Exporting a resumed task derives a continuation of the same shared handoff,
+not a new independent handoff. The portable `previous_attempt` identifies
+the exporting attempt and its adopted parent revision. Publication requires
+the original parent revision to still be current; competing or already
+published attempts require explicit reconciliation before further export.
+An older original task cannot reset established attempt ancestry. The
+existing CAS and recovery journal enforce the parent revision. Unchanged
+synthetic resume guidance is stripped on export to avoid repeated growth
+of the contract. Historical receipt summaries are linked to the exporting
+attempt, never adopted as fresh proof.
+
+The dashboard and API expose the logical origin and previous attempt.
+This remains explicit historical handoff publication, not automatic Git
+authority over the complete task lifecycle. Local SQLite remains the
+runtime task/event authority. No cross-machine lease or globally unique
+execution guarantee is inferred from Git history.
