@@ -94,12 +94,18 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
         for key, item in rows.items() if key[0] == "review"
     }
 
-    def add(code: str, key: tuple[str, str], discriminator: str = "", observation: Mapping[str, Any] | None = None) -> None:
+    def add(
+        code: str, key: tuple[str, str], discriminator: str = "",
+        observation: Mapping[str, Any] | None = None,
+        dependency: Mapping[str, Any] | None = None,
+    ) -> None:
         item = rows[key]
         finding_id = "f-" + _digest_value([catalog["project_id"], code, *key, discriminator])[:24]
         subject_fields = [item["revision"], item["freshness"], item.get("dependency_status", ""), discriminator]
         if observation is not None:
             subject_fields.append(observation)
+        if dependency is not None:
+            subject_fields.append(dependency)
         subject = _digest_value(subject_fields)
         review = reviews.get(finding_id)
         disposition = "unreviewed"
@@ -124,6 +130,8 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
                     details["actual"] = observation["actual"]
             if "source" in observation:
                 details["current_source"] = observation["source"]
+        if dependency is not None:
+            details["dependency"] = dict(dependency)
         findings.append({
             "id": finding_id, "subject_digest": subject, "type": code,
             "record_kind": key[0], "record_id": key[1], "discriminator": discriminator,
@@ -150,7 +158,8 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
     for issue in catalog.get("graph_issues", []):
         key = (issue["kind"], issue["id"])
         if key in rows:
-            add(issue["code"], key)
+            discriminator = ":".join((issue["relation"], issue["target_kind"], issue["target_id"]))
+            add(issue["code"], key, discriminator, dependency=issue)
     for finding in process_flow_findings(catalog):
         add(finding["type"], ("process", finding["record_id"]), finding["step_id"])
     deduped = {finding["id"]: finding for finding in findings}
