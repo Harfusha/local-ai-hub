@@ -101,3 +101,57 @@ def test_two_clone_semantic_conflict_is_read_only(tmp_path, divergent):
     assert "developer intent" not in str(result)
     assert (second / relative).read_bytes() == before
     assert _git(second, "ls-files", "-u", "-z") == stages
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_committed_knowledge_diff_is_scoped_and_does_not_claim_runtime_verification(tmp_path):
+    from local_ai_hub.repo_knowledge_sync import compare_knowledge_revisions
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Fixture")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    hub = root / ".local-ai-hub"
+    rules = hub / "knowledge/rules"
+    rules.mkdir(parents=True)
+    (hub / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project, "mode": "shared",
+    }), encoding="utf-8")
+
+    def write_rule(identifier, statement):
+        record = {
+            "schema_version": 1, "project_id": project,
+            "kind": "business_rule", "id": identifier,
+            "payload": {"title": identifier, "statement": statement, "layer": "intended"},
+            "provenance": {"origin_kind": "manual"}, "evidence": [], "relations": [],
+        }
+        (rules / (identifier + ".json")).write_text(json.dumps(record), encoding="utf-8")
+
+    write_rule("modify", "Original statement")
+    write_rule("remove", "To be removed")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "base")
+    base = _git(root, "rev-parse", "HEAD").decode().strip()
+    write_rule("modify", "Changed confidential statement")
+    write_rule("add", "New statement")
+    (rules / "remove.json").unlink()
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "change")
+    # Dirty state must not be confused with the selected Git commit.
+    write_rule("modify", "Uncommitted edit")
+    before = _git(root, "status", "--porcelain")
+    result = compare_knowledge_revisions(root, base)
+    assert result["complete"]
+    assert result["committed_only"] and not result["runtime_verified"]
+    assert {row["id"]: row["state"] for row in result["changes"]} == {
+        "add": "added", "modify": "modified", "remove": "removed",
+    }
+    changed = next(row for row in result["changes"] if row["id"] == "modify")
+    assert changed["changed_groups"] == ["payload"]
+    assert changed["previous_layer"] == changed["current_layer"] == "intended"
+    assert "confidential statement" not in str(result)
+    assert before == _git(root, "status", "--porcelain")
+    assert compare_knowledge_revisions(root, "--help")["state"] == "revision_unavailable"
+    assert compare_knowledge_revisions(root, "HEAD")["changes"] == []
