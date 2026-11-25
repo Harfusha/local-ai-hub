@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub.repo_knowledge import RepoKnowledgeStore, detect_declared_claim_conflicts, query_declared_knowledge
+from local_ai_hub.repo_knowledge import RepoKnowledgeStore, build_knowledge_context, detect_declared_claim_conflicts, query_declared_knowledge
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError
 
 PROJECT = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
@@ -137,3 +137,20 @@ def test_declared_knowledge_query_preserves_freshness_and_authority(tmp_path):
     assert result["match_count"] == 1
     assert result["records"][0]["authority"] == "repository_declaration"
     assert query_declared_knowledge(store.catalog(), "unrelated")["records"] == []
+
+
+def test_business_context_is_bounded_and_untrusted(tmp_path):
+    root = tmp_path / "repo"
+    _setup(root)
+    _save(RepoKnowledgeStore(root), _rule(root))
+    from local_ai_hub.budget import estimate_tokens
+
+    context = build_knowledge_context(str(root), "paid order", token_budget=400)
+    assert context["records"] == 1
+    assert "untrusted data" in context["text"]
+    assert "matching_sources" in context["text"]
+    assert estimate_tokens(context["text"]) <= 400
+    assert not build_knowledge_context(str(root), "unrelated", token_budget=400)["text"]
+    assert not build_knowledge_context(str(root), "paid order", token_budget=32)["text"]
+    (root / "order.py").write_bytes(b"paid = False\n")
+    assert '"freshness":"stale"' in build_knowledge_context(str(root), "paid order", token_budget=400)["text"]
