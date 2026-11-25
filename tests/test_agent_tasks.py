@@ -2253,6 +2253,11 @@ def test_handoff_attempt_lineage_is_persisted_and_server_managed(store: TaskStor
                     authorize_write=lambda: True)
     shared.save(continued, expected_revision=preview["revision"], owner="operator",
                 idempotency_key="continuation", authorize_write=lambda: True)
+    current = shared.get("handoff", record["id"])
+    assert current["record"] == continued
+    with pytest.raises(RepoPlanError, match="Cannot reset published handoff attempt ancestry"):
+        shared.save(record, expected_revision=current["revision"], owner="operator",
+                    idempotency_key="stale-origin", authorize_write=lambda: True)
     assert shared.get("handoff", record["id"])["record"] == continued
     with pytest.raises(RepoPlanError, match="Parent handoff changed"):
         build_task_handoff(shared, competing.to_dict())
