@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 
@@ -46,3 +47,57 @@ def test_checkout_status_distinguishes_shared_changes_and_private_state(tmp_path
 
 def test_non_checkout_does_not_claim_sync(tmp_path):
     assert checkout_sync_status(tmp_path) == {"state": "not_git_checkout", "complete": False}
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+@pytest.mark.parametrize("divergent", [False, True])
+def test_two_clone_semantic_conflict_is_read_only(tmp_path, divergent):
+    root = tmp_path / "first"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Fixture")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    relative = ".local-ai-hub/knowledge/rules/rule.json"
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    record = {
+        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb",
+        "kind": "business_rule", "id": "rule",
+        "payload": {"title": "Rule", "statement": "Initial intent", "layer": "intended"},
+        "provenance": {"origin_kind": "manual"}, "evidence": [], "relations": [],
+    }
+
+    def write(target, **changes):
+        # One line forces Git to surface the textual conflict even for
+        # independent semantic groups.
+        target.write_text(json.dumps({**record, "payload": {**record["payload"], **changes}}) + "\n",
+                          encoding="utf-8")
+
+    write(path)
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "base")
+    second = tmp_path / "second"
+    _git(root, "clone", str(root), str(second))
+    _git(second, "config", "user.name", "Fixture")
+    _git(second, "config", "user.email", "fixture@example.invalid")
+    write(path, statement="First developer intent")
+    _git(root, "commit", "-am", "first change")
+    write(second / relative, **({"statement": "Second developer intent"} if divergent else {"title": "New title"}))
+    _git(second, "commit", "-am", "second change")
+    _git(second, "fetch", "origin")
+    merge = subprocess.run(["git", "-C", str(second), "merge", "origin/main"], capture_output=True, timeout=10)
+    assert merge.returncode == 1
+    before = (second / relative).read_bytes()
+    stages = _git(second, "ls-files", "-u", "-z")
+    result = checkout_sync_status(second)
+    assert result["state"] == "conflict"
+    summary = result["conflicts"][0]
+    assert summary["path"] == relative
+    assert summary["classification"] == (
+        "divergent_semantic_edit" if divergent else "nondivergent_edit_candidate"
+    )
+    assert summary["conflicting_groups"] == (["declaration"] if divergent else [])
+    assert summary["requires_review"] is True
+    assert "developer intent" not in str(result)
+    assert (second / relative).read_bytes() == before
+    assert _git(second, "ls-files", "-u", "-z") == stages
