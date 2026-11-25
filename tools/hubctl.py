@@ -296,12 +296,21 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight or diff")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply or batch-recover")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
             parser.error("knowledge mutations require explicit --apply (review content first)")
+        if args.sub_arg in {"batch-preview", "batch-apply", "batch-recover"}:
+            if args.record_file is None:
+                parser.error("knowledge batch requires --record-file")
+            if args.sub_arg == "batch-preview" and args.apply:
+                parser.error("batch-preview is read-only")
+            if args.sub_arg != "batch-preview" and (
+                not args.apply or args.dry_run or not args.preview_digest or not args.operation_id
+            ):
+                parser.error("batch-apply/recover requires --apply, --preview-digest and --operation-id")
         if args.sub_arg == "init" and args.operation_id and not args.project_id:
             parser.error("knowledge init with --operation-id requires --project-id for deterministic retry")
         if args.sub_arg == "impact" and not args.changed_path:
@@ -354,6 +363,27 @@ def main() -> int:
 
         try:
             store = RepoKnowledgeStore(args.root)
+            if args.sub_arg in {"batch-preview", "batch-apply", "batch-recover"}:
+                from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+
+                with args.record_file.open("rb") as stream:
+                    raw = stream.read(200001)
+                if len(raw) > 200000:
+                    raise ValueError("Knowledge batch input exceeds 200000 bytes")
+                batch = parse_plan_json(raw)
+                if set(batch) != {"records"}:
+                    raise ValueError("Knowledge batch input requires records")
+                if args.sub_arg == "batch-preview":
+                    result = preview_knowledge_batch(store, batch["records"])
+                else:
+                    result = apply_knowledge_batch(
+                        store, batch["records"], preview_digest=args.preview_digest,
+                        operation_id=args.operation_id,
+                        authorize_write=lambda: args.apply is True and not args.dry_run,
+                        recover=args.sub_arg == "batch-recover",
+                    )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["success"] else 1
             if args.sub_arg == "diff":
                 from local_ai_hub.repo_knowledge_sync import compare_knowledge_revisions
 
