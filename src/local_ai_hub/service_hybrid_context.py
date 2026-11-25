@@ -154,12 +154,15 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
         "retrieval_weights": retrieval_weights,
     }
     retrieval_config_revision = stable_hash(retrieval_config)
-    knowledge = {"status": "skipped", "text": ""}
-    if mode == "adaptive" and request.token_budget >= 512:
-        from .repo_knowledge import build_knowledge_context
-        knowledge = build_knowledge_context(request.root, request.query, token_budget=min(400, request.token_budget // 5))
+    from .repo_knowledge import attach_knowledge_context, reserve_knowledge_context
+
+    knowledge: dict[str, Any] = {"status": "skipped", "text": ""}
+    technical_budget = request.token_budget
+    if mode == "adaptive":
+        knowledge, technical_budget = reserve_knowledge_context(
+            getattr(self, "config", {}), request.root, request.query, token_budget=request.token_budget,
+        )
     knowledge_text = str(knowledge.get("text", ""))
-    knowledge_tokens = estimate_tokens(knowledge_text + "\n\n") if knowledge_text else 0
     context_cache_identity = {
         "mode": mode,
         "task_id": request.task_id,
@@ -191,7 +194,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             request.root,
             request.query,
             workspace=request.workspace or None,
-            max_tokens=request.token_budget - knowledge_tokens,
+            max_tokens=technical_budget,
             quality_first=mode == "adaptive",
             context_identity=context_cache_identity,
             path_hints=effective_path_hints if mode == "adaptive" else (),
@@ -231,18 +234,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             normalized_evidence.append(evidence_item)
         base["evidence"] = merge_overlapping_evidence(normalized_evidence, root=request.root)
     base, preload_warnings = self._apply_context_preloads(request, base, coordination_id=coordination_id)
-    if knowledge_text and base.get("success") is True:
-        technical_context = str(base.get("context") or "")
-        combined = knowledge_text + "\n\n" + technical_context
-        if estimate_tokens(combined) <= request.token_budget:
-            base["context"] = combined
-            base["estimated_tokens"] = estimate_tokens(combined)
-        else:
-            knowledge = {**knowledge, "status": "budget_omitted"}
-    if knowledge["status"] not in {"uninitialized", "skipped"}:
-        retrieval = dict(base.get("retrieval") or {})
-        retrieval["knowledge_context_status"] = knowledge["status"]
-        base["retrieval"] = retrieval
+    base = attach_knowledge_context(base, knowledge, token_budget=request.token_budget)
     guard = self.consistency_guard
     if guard is None:
         context_id = stable_hash({

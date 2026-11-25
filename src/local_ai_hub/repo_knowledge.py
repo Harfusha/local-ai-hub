@@ -472,3 +472,52 @@ def build_knowledge_context(root: str, query: str, *, token_budget: int) -> dict
         return {"status": status, "text": text, "records": len(selected)}
     except (OSError, RepoPlanValidationError, ValueError, RuntimeError):
         return {"status": "unavailable", "text": ""}
+
+
+def reserve_knowledge_context(config: Mapping[str, Any], root: str, query: str, *, token_budget: int) -> tuple[dict[str, Any], int]:
+    """Reserve a bounded share of the existing technical retrieval budget."""
+    from .budget import estimate_tokens
+    from .repository_scope import RepositoryScopeError, authorized_repository_root
+
+    skipped = {"status": "skipped", "text": ""}
+    if token_budget < 512:
+        return skipped, token_budget
+    try:
+        authorized = authorized_repository_root(config, root)
+    except RepositoryScopeError:
+        return {"status": "unavailable", "text": ""}, token_budget
+    # Reserve room for the separator too.
+    knowledge = build_knowledge_context(authorized, query, token_budget=min(400, token_budget // 5) - 2)
+    text = knowledge.get("text", "")
+    reserved = estimate_tokens(text + "\n\n") if text else 0
+    return knowledge, token_budget - reserved
+
+
+def attach_knowledge_context(packed: dict[str, Any], knowledge: Mapping[str, Any], *, token_budget: int) -> dict[str, Any]:
+    """Attach the same advisory context to adaptive, delegate and solve paths.
+
+    Do not mutate cached retrieval results or its authoritative evidence list.
+    A failed technical retrieval is never converted into success.
+    """
+    from .budget import estimate_tokens
+
+    status = knowledge.get("status", "skipped")
+    if status in {"skipped", "uninitialized"} or packed.get("success") is not True:
+        return packed
+    result = dict(packed)
+    text = knowledge.get("text", "")
+    technical = result.get("context", "")
+    if text and isinstance(technical, str):
+        combined = text + "\n\n" + technical
+        if estimate_tokens(combined) <= token_budget:
+            result["context"] = combined
+            result["estimated_tokens"] = estimate_tokens(combined)
+            result["knowledge_context_digest"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        else:
+            status = "budget_omitted"
+    elif text:
+        status = "budget_omitted"
+    retrieval = dict(result.get("retrieval") or {})
+    retrieval["knowledge_context_status"] = status
+    result["retrieval"] = retrieval
+    return result

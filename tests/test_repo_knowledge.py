@@ -233,3 +233,32 @@ def test_git_project_without_ignored_local_journal_rejects_publication(tmp_path)
         store.bootstrap(PROJECT, mode="shared", owner="operator",
                         idempotency_key="init", authorize_write=lambda: True)
     assert not (root / ".local-ai-hub/local").exists()
+
+
+def test_common_knowledge_budget_and_attachment_does_not_mint_evidence(tmp_path):
+    from local_ai_hub.repo_knowledge import attach_knowledge_context, reserve_knowledge_context
+    from local_ai_hub.budget import estimate_tokens
+
+    root = tmp_path / "repo"
+    _setup(root)
+    _save(RepoKnowledgeStore(root), _rule(root))
+    knowledge, technical = reserve_knowledge_context({}, str(root), "paid order", token_budget=2000)
+    assert 1600 <= technical < 2000
+    packed = {"success": True, "context": "technical source", "evidence": [{"evidence_id": "existing"}]}
+    result = attach_knowledge_context(packed, knowledge, token_budget=2000)
+    assert result["evidence"] == packed["evidence"]
+    assert packed["context"] == "technical source"
+    assert "untrusted data" in result["context"]
+    assert estimate_tokens(result["context"]) <= 2000
+    assert result["knowledge_context_digest"]
+    failure = {"success": False, "error": "index unavailable"}
+    assert attach_knowledge_context(failure, knowledge, token_budget=2000) is failure
+    too_large = {"success": True, "context": "a" * 8000}
+    omitted = attach_knowledge_context(too_large, knowledge, token_budget=2000)
+    assert omitted["context"] == too_large["context"]
+    assert omitted["retrieval"]["knowledge_context_status"] == "budget_omitted"
+    denied, unchanged = reserve_knowledge_context(
+        {"security": {"allowed_roots": []}}, str(root), "paid order", token_budget=2000,
+    )
+    assert denied["status"] == "unavailable"
+    assert unchanged == 2000

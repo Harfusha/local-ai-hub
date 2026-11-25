@@ -287,3 +287,11 @@ authorization for a completion waiver. Normal adaptive context retrieval
 includes a bounded, explicitly untrusted projection of relevant knowledge
 declarations when the project manifest is present; this is not yet full
 process discovery or a substitute for current source evidence.
+
+The ordinary repository delegate and semantic solve paths now use the same
+bounded knowledge-context reservation and attachment as adaptive context.
+Pure deterministic exact-fact answers still return without model inference.
+The projection does not create evidence IDs or change the existing completion
+contract. If the projection is unavailable or exceeds the budget, technical
+retrieval remains authoritative. Semantic model cache identity includes the
+attached knowledge digest.

@@ -387,10 +387,14 @@ class LocalAgentPipeline:
                     route["laya_context_budget"] = "compact"
             except Exception as exc:
                 logger.debug("Laya context budget fallback: %s", type(exc).__name__)
+        from .repo_knowledge import attach_knowledge_context, reserve_knowledge_context
+
+        knowledge, technical_budget = reserve_knowledge_context(self.services.config, root, task, token_budget=budget)
+        reserved_tokens = budget - technical_budget
         if use_det_context:
             packed = self.services.deterministic.context_pack(
                 root, task,
-                max_chars=int(det_cfg.get("context_max_chars", 5200)),
+                max_chars=min(int(det_cfg.get("context_max_chars", 5200)), technical_budget * 3) if reserved_tokens else int(det_cfg.get("context_max_chars", 5200)),
                 max_raw_evidence=int(det_cfg.get("context_raw_evidence", 5)),
             )
             packed["context_source"] = "deterministic"
@@ -500,12 +504,13 @@ class LocalAgentPipeline:
                 except Exception as exc:
                     logger.debug("Laya typed retrieval advisory fallback: %s", type(exc).__name__)
             packed = self.services._hybrid_context(
-                root, task, workspace=args.get("workspace"), max_tokens=budget,
+                root, task, workspace=args.get("workspace"), max_tokens=max(1, budget - reserved_tokens),
                 quality_first=True, laya_retrieval_strategy=laya_retrieval_strategy,
             )
             if isinstance(packed, dict): packed["context_source"] = "hybrid"
         if not packed.get("success"):
             return packed
+        packed = attach_knowledge_context(packed, knowledge, token_budget=budget)
         packed_ev = packed.get("evidence") if isinstance(packed, dict) else None
         packed_ev_count = len(packed_ev) if isinstance(packed_ev, (list, tuple)) else 0
         laya_cfg = self.config.get("laya", {})
@@ -613,7 +618,10 @@ class LocalAgentPipeline:
             repo_state = self.services._repo_cache_state(root) or {}
             revision = str(repo_state.get("fingerprint") or "")
             if revision and not repo_state.get("stale") and not repo_state.get("degraded"):
-                semantic_context_fp = stable_hash({"root": packed.get("root"), "revision": revision})
+                semantic_context_fp = stable_hash({
+                    "root": packed.get("root"), "revision": revision,
+                    "knowledge": packed.get("knowledge_context_digest", ""),
+                })
         except Exception:
             pass
         fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
