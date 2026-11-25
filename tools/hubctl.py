@@ -269,6 +269,7 @@ def main() -> int:
     parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
     parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
+    parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
     parser.add_argument("--finding-id", default="", help="Knowledge conflict ID")
     parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
@@ -295,6 +296,8 @@ def main() -> int:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
             parser.error("knowledge mutations require explicit --apply (review content first)")
+        if args.sub_arg == "init" and args.operation_id and not args.project_id:
+            parser.error("knowledge init with --operation-id requires --project-id for deterministic retry")
         if args.sub_arg in {"save", "review"} and args.expected_revision is None:
             parser.error("knowledge save/review requires --expected-revision (empty string for create)")
         if args.sub_arg == "save" and args.record_file is None:
@@ -335,9 +338,11 @@ def main() -> int:
                     return args.apply is True and not args.dry_run
 
                 if args.sub_arg == "init":
-                    result = store.bootstrap(str(uuid4()), mode=args.knowledge_mode,
+                    project_id = args.project_id or str(uuid4())
+                    result = store.bootstrap(project_id, mode=args.knowledge_mode,
                                              owner="local-operator", idempotency_key=operation_id,
                                              authorize_write=authorize_local_operator)
+                    result["project_id"] = project_id
                 else:
                     if args.sub_arg == "save":
                         with args.record_file.open("rb") as stream:

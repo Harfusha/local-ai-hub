@@ -199,7 +199,7 @@ class RepoKnowledgeStore:
         try:
             base = ["git", "-C", str(self.root)]
             ignored = subprocess.run(
-                [*base, "check-ignore", "-q", "--", ".local-ai-hub/local/intents/.knowledge-probe"],
+                [*base, "check-ignore", "-q", "--", ".local-ai-hub/local/"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.0,
                 env=clean_git_env(), **hidden_run_kwargs(),
             ).returncode

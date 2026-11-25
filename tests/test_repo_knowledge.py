@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -180,3 +181,55 @@ def test_finding_review_is_bound_to_current_subject_and_preserved(tmp_path):
     with pytest.raises(RepoPlanValidationError):
         build_finding_review(store.catalog(), finding["id"], finding["subject_digest"], "expected", "Old review")
     assert store.get("review", review["id"])["record"] == review
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *args], check=True, capture_output=True,
+        text=True, timeout=15,
+    ).stdout.strip()
+
+
+def test_real_git_clone_and_checkout_keep_shared_knowledge_without_local_journal(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git unavailable")
+    root = tmp_path / "origin"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    _git(root, "config", "user.name", "Knowledge fixture")
+    (root / ".local-ai-hub").mkdir()
+    (root / ".local-ai-hub/.gitignore").write_text("local/\n", encoding="utf-8")
+    (root / "order.py").write_bytes(b"paid = True\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "source")
+    store = RepoKnowledgeStore(root)
+    store.bootstrap(PROJECT, mode="shared", owner="operator",
+                    idempotency_key="init", authorize_write=lambda: True)
+    _save(store, _rule(root))
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "knowledge")
+    assert not _git(root, "ls-files", ".local-ai-hub/local")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", str(root), str(clone))
+    copied = RepoKnowledgeStore(clone)
+    assert copied.get("business_rule", "order-paid")["freshness"] == "matching_sources"
+    assert not (clone / ".local-ai-hub/local").exists()
+    _git(clone, "checkout", "--detach", "HEAD~1")
+    with pytest.raises(FileNotFoundError):
+        copied.manifest()
+    _git(clone, "checkout", "main")
+    assert copied.get("business_rule", "order-paid")["freshness"] == "matching_sources"
+
+
+def test_git_project_without_ignored_local_journal_rejects_publication(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git unavailable")
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init")
+    store = RepoKnowledgeStore(root)
+    with pytest.raises(RepoPlanValidationError, match="ignored and untracked"):
+        store.bootstrap(PROJECT, mode="shared", owner="operator",
+                        idempotency_key="init", authorize_write=lambda: True)
+    assert not (root / ".local-ai-hub/local").exists()
