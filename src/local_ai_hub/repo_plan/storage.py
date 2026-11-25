@@ -783,6 +783,47 @@ class RepoPlanStorage:
             owner, idempotency_key, lease_check_fn,
         )
 
+    def save_knowledge_batch(
+        self, candidates: list[tuple[str, bytes, str]], *, owner: str,
+        idempotency_key: str, lease_check_fn: Callable[[], bool],
+    ) -> dict[str, Any]:
+        """Publish a reviewed bounded batch through the existing recovery journal.
+
+        The first target is the exact, unchanged project manifest. Including
+        it in the journal makes its revision a precondition during recovery too.
+        Other targets are declarations or historical handoffs, not live tasks.
+        """
+        if not callable(lease_check_fn) or lease_check_fn() is not True:
+            raise RepoPlanConflictError("Knowledge batch write is not authorized")
+        if not idempotency_key:
+            raise RepoPlanValidationError("Knowledge batch requires an operation key")
+        self._validate_knowledge_batch(candidates)
+        return self._save_targets("save_knowledge_batch", list(candidates), owner,
+                                  idempotency_key, lease_check_fn)
+
+    @staticmethod
+    def _validate_knowledge_batch(candidates: list[tuple[str, bytes, str]]) -> None:
+        from ..repo_knowledge import _MANIFEST, validate_knowledge_file
+
+        if not 2 <= len(candidates) <= 17:
+            raise RepoPlanValidationError("Knowledge batch must contain 1–16 records and a manifest fence")
+        path, data, revision = candidates[0]
+        if path != _MANIFEST or compute_bytes_sha256(data) != revision:
+            raise RepoPlanValidationError("Knowledge batch requires an unchanged manifest fence")
+        manifest = validate_knowledge_file(path, data)
+        if manifest["mode"] == "read_only":
+            raise RepoPlanConflictError("Knowledge project is read-only")
+        seen = {path}
+        for path, data, revision in candidates[1:]:
+            if path in seen or not isinstance(revision, str) or (
+                revision and (len(revision) != 64 or any(c not in "0123456789abcdef" for c in revision))
+            ):
+                raise RepoPlanValidationError("Invalid or duplicate knowledge batch target")
+            seen.add(path)
+            record = validate_knowledge_file(path, data)
+            if record["project_id"] != manifest["project_id"] or record.get("kind") in {None, "review", "finding"}:
+                raise RepoPlanValidationError("Invalid knowledge batch project or record kind")
+
     def save_spec_and_plan(
         self, spec_rel_path: str, spec_content: str, plan_rel_path: str,
         plan_dict: dict[str, Any], *, expected_spec_rev: str | None = None,
@@ -854,6 +895,8 @@ class RepoPlanStorage:
                     result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
             if operation in {"save_plan", "save_knowledge"}:
                 result["file_revision"] = targets[0].candidate_sha256
+            elif operation == "save_knowledge_batch":
+                result["file_revisions"] = {target.rel_path: target.candidate_sha256 for target in targets[1:]}
             else:
                 result.update(spec_revision=targets[0].candidate_sha256, plan_revision=targets[1].candidate_sha256)
             if not changed:
@@ -1000,6 +1043,21 @@ class RepoPlanStorage:
                     for target in intent.targets:
                         validate_repo_path(target.rel_path, repo_root=self.repo_root)
                     current = [self._target_sha256(target.rel_path) for target in intent.targets]
+                    if intent.operation == "save_knowledge_batch":
+                        # An unattended plan recovery must not publish a
+                        # knowledge batch. Require its exact reviewed targets
+                        # and fresh local operator authorization.
+                        if not only_key or expected_targets is None or lease_check_fn is None:
+                            raise RepoPlanConflictError("Knowledge batch recovery requires explicit reviewed authorization")
+                        self._check_fence(intent.context or self._context(), lease_check_fn)
+                        batch = [(t.rel_path, base64.b64decode(t.candidate_base64 or "", validate=True),
+                                  t.expected_sha256) for t in intent.targets]
+                        if any(compute_bytes_sha256(data) != t.candidate_sha256
+                               for t, (_, data, _) in zip(intent.targets, batch)):
+                            raise RepoPlanConflictError("Knowledge batch recovery candidate hash mismatch")
+                        self._validate_knowledge_batch(batch)
+                        if current[0] != intent.targets[0].expected_sha256:
+                            raise RepoPlanConflictError("Knowledge batch manifest changed")
                     if intent.status == "completed":
                         if (intent.context != self._context() or not isinstance(intent.result, dict)
                                 or any(actual != target.candidate_sha256 for target, actual in zip(intent.targets, current))):
