@@ -327,6 +327,29 @@ def handoff_resume_contract(record: Mapping[str, Any]) -> dict[str, Any]:
     return GoalContract.from_dict(contract).to_dict()
 
 
+def preview_handoff_resume(store: RepoKnowledgeStore, handoff_id: str) -> dict[str, Any]:
+    """One read-only resume preview shared by HTTP and the CLI."""
+    from .repo_knowledge import _digest_value
+
+    manifest_revision = store.manifest()[1]
+    item = store.get("handoff", handoff_id, verify_sources=False)
+    dependencies = inspect_handoff_dependencies(store, item["record"])
+    contract = handoff_resume_contract(item["record"])
+    if (
+        store.manifest()[1] != manifest_revision
+        or store.get("handoff", handoff_id, verify_sources=False)["revision"] != item["revision"]
+    ):
+        raise _reject("Handoff changed during preview")
+    return {
+        "preview": True, "revision": item["revision"], "contract": contract,
+        "historical_verification": item["record"]["payload"].get("historical_verification", []),
+        "dependencies": dependencies,
+        "resume_allowed": dependencies["resume_allowed"],
+        "preview_digest": _digest_value([manifest_revision, item["revision"], dependencies, contract]),
+        "requires_revalidation": True,
+    }
+
+
 def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[str, Any]:
     """Discover shared handoffs in this checkout without importing task state."""
     from itertools import islice
