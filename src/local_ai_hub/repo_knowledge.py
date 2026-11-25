@@ -19,7 +19,7 @@ from uuid import UUID
 from .evidence import EvidenceStore, _evidence_path_under_root, _valid_portable_locator
 from .project_config import resolve_project_config
 from .process_utils import clean_git_env, hidden_run_kwargs
-from .repo_plan.schema_validation import RepoPlanValidationError, parse_plan_json
+from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError, parse_plan_json
 from .repo_plan.storage import RepoPlanStorage
 from .secret_scan_config import _SECRET_SCAN_PATTERNS
 from .source_slice import read_source_slice
@@ -272,7 +272,15 @@ class RepoKnowledgeStore:
             idempotency_key=idempotency_key, lease_check_fn=authorize_write,
         )
 
+    def read_epoch(self) -> str:
+        return self.storage.knowledge_read_epoch()
+
+    def require_read_epoch(self, epoch: str) -> None:
+        if self.read_epoch() != epoch:
+            raise RepoPlanConflictError("Knowledge publication changed during read")
+
     def get(self, kind: str, record_id: str, *, verify_sources: bool = True) -> dict[str, Any]:
+        epoch = self.read_epoch()
         manifest, revision = self.manifest()
         record, record_revision = self._read(_path_for(kind, record_id))
         if record["project_id"] != manifest["project_id"]:
@@ -300,6 +308,7 @@ class RepoKnowledgeStore:
             result["verification_targets"] = [
                 inspect_verification_target(self.root, target) for target in targets
             ]
+        self.require_read_epoch(epoch)
         return result
 
     def save(
@@ -332,6 +341,7 @@ class RepoKnowledgeStore:
 
     def catalog(self, *, verify_sources: bool = True, max_records: int = _MAX_RECORDS) -> dict[str, Any]:
         """Bounded scan; missing, invalid and truncated inventory is not success."""
+        epoch = self.read_epoch()
         manifest, manifest_revision = self.manifest()
         records: list[dict[str, Any]] = []
         issues: list[dict[str, str]] = []
@@ -376,6 +386,7 @@ class RepoKnowledgeStore:
         if len(graph_issues) > 128:
             complete = False
             issues.append({"kind": "graph", "code": "issue_limit"})
+        self.require_read_epoch(epoch)
         return {"project_id": manifest["project_id"], "mode": manifest["mode"],
                 "complete": complete, "records": records, "issues": issues,
                 "graph_issues": graph_issues[:128]}
@@ -549,6 +560,7 @@ def build_knowledge_context(
         return {"status": "uninitialized", "text": ""}
     try:
         store = RepoKnowledgeStore(root)
+        epoch = store.read_epoch()
         manifest_revision = store.manifest()[1]
         catalog = store.catalog(verify_sources=False, max_records=48)
         query_result = query_declared_knowledge(catalog, query, limit=4, changed_paths=changed_paths)
@@ -605,12 +617,15 @@ def build_knowledge_context(
             for row in selected
         ):
             return {"status": "changed_during_read", "text": "", "needs_revalidation": True}
+        store.require_read_epoch(epoch)
         status = "partial" if not catalog["complete"] or len(selected) < len(query_result["records"]) or query_result["truncated"] else "available"
         return {"status": status, "text": text, "records": len(selected),
                 "needs_revalidation": status == "partial" or any(
                     row["freshness"] != "matching_sources"
                     or row.get("source_assertion", {}).get("status", "matches") != "matches"
                     for row in selected)}
+    except RepoPlanConflictError:
+        return {"status": "publication_pending_or_changed", "text": "", "needs_revalidation": True}
     except (OSError, RepoPlanValidationError, ValueError, RuntimeError):
         return {"status": "unavailable", "text": "", "needs_revalidation": True}
 
@@ -688,6 +703,7 @@ def query_repository_knowledge(config: Mapping[str, Any], payload: Mapping[str, 
     try:
         root = authorized_repository_root(config, payload.get("root"))
         store = RepoKnowledgeStore(root)
+        epoch = store.read_epoch()
         manifest_revision = store.manifest()[1]
         catalog = store.catalog(verify_sources=False)
         found = query_declared_knowledge(catalog, query, limit=limit)
@@ -730,6 +746,7 @@ def query_repository_knowledge(config: Mapping[str, Any], payload: Mapping[str, 
         ):
             return {"success": False, "status_code": 409, "error": "Knowledge changed during query",
                     "terminal": True, "retryable": True}
+        store.require_read_epoch(epoch)
         return {"success": True, **found, "records": selected, "degraded": not found["complete"],
                 "evidence_ids": []}
     except RepositoryScopeError as exc:
@@ -737,6 +754,9 @@ def query_repository_knowledge(config: Mapping[str, Any], payload: Mapping[str, 
                 "terminal": True, "retryable": False}
     except FileNotFoundError:
         return {"success": False, "status_code": 404, "error": "Knowledge project is uninitialized or unavailable",
+                "terminal": True, "retryable": False}
+    except RepoPlanConflictError:
+        return {"success": False, "status_code": 409, "error": "Knowledge publication pending or changed",
                 "terminal": True, "retryable": False}
     except (OSError, RepoPlanValidationError, ValueError, RuntimeError):
         return {"success": False, "status_code": 409, "error": "Knowledge inventory unavailable",
