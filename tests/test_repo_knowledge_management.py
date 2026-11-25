@@ -361,3 +361,34 @@ def test_agent_state_inventory_reads_only_schema_and_rejects_unknown_fields(tmp_
     sidecar.write_bytes(b"pending")
     assert inspect_agent_state_inventory(tmp_path)["reason"] == "offline_snapshot_required"
     assert sidecar.read_bytes() == b"pending"
+
+
+def test_batch_http_requires_exact_scope_authorization_and_reviewed_content(tmp_path):
+    root = tmp_path / "repo"
+    (root / ".local-ai-hub").mkdir(parents=True)
+    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project, "mode": "shared",
+    }), encoding="utf-8")
+    record = {"schema_version": 1, "project_id": project, "kind": "business_rule", "id": "rule",
+              "payload": {"title": "Rule", "statement": "Current intent", "layer": "intended"},
+              "provenance": {"origin_kind": "manual"}, "evidence": [], "relations": []}
+    records = [{"record": record, "expected_revision": ""},
+               {"record": {**record, "id": "other-rule"}, "expected_revision": ""}]
+    request = {"root": str(root), "action": "preview_batch", "records": records}
+    preview = manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)
+    assert preview["success"]
+    assert not (root / ".local-ai-hub/local").exists()
+    apply = {**request, "action": "save_batch", "preview_digest": preview["preview_digest"],
+             "operation_id": "batch", "apply": True}
+    assert manage_repository_knowledge({}, apply, authorize_operator_write=lambda: False)["status_code"] == 403
+    assert manage_repository_knowledge(
+        {"security": {"allowed_roots": []}}, apply, authorize_operator_write=lambda: True
+    )["status_code"] == 403
+    assert manage_repository_knowledge(
+        {}, {**apply, "records": records[:1]}, authorize_operator_write=lambda: True
+    )["status_code"] == 409
+    result = manage_repository_knowledge({}, apply, authorize_operator_write=lambda: True)
+    assert result["success"] and len(result["file_revisions"]) == 2
+    assert not result["canonical_cutover_supported"]
+    assert RepoKnowledgeStore(root).get("business_rule", "rule")["record"] == record
