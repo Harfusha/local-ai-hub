@@ -30,7 +30,11 @@ def test_revision_and_source_drift_propagate_without_writes():
     records[-2] = _item("c", "new")
     projected, issues = project_dependency_freshness(records)
     assert projected[0]["freshness"] == "stale"
-    assert issues == [{"kind": "business_rule", "id": "b", "code": "dependency_revision_changed"}]
+    assert issues == [{
+        "kind": "business_rule", "id": "b", "code": "dependency_revision_changed",
+        "relation": "depends_on", "target_kind": "business_rule", "target_id": "c",
+        "expected_revision": "3", "actual_revision": "new",
+    }]
 
 
 def test_missing_and_unverified_dependency_cannot_establish_freshness():
@@ -101,3 +105,34 @@ def test_external_leaf_is_a_possible_process_handoff():
     }
     item = _item("order", "rev", kind="process", payload={"flow": flow})
     assert process_flow_findings({"records": [item]}) == []
+
+
+def test_graph_findings_have_distinct_subjects_and_track_target_revision():
+    from local_ai_hub.repo_knowledge_quality import quality_report
+
+    records = [
+        _item("a", "1", relations=[_ref("b", "old-b"), _ref("c", "old-c")]),
+        _item("b", "new-b"),
+        _item("c", "new-c"),
+    ]
+    for row in records:
+        row["record"]["payload"]["layer"] = "intended"
+        row["record"]["evidence"] = []
+
+    def dependency_findings():
+        projected, issues = project_dependency_freshness(records)
+        report = quality_report({
+            "project_id": "project", "complete": True, "records": projected,
+            "issues": [], "graph_issues": issues,
+        })
+        return {row["dependency"]["target_id"]: row for row in report["findings"]
+                if row["type"] == "dependency_revision_changed"}
+
+    initial = dependency_findings()
+    assert set(initial) == {"b", "c"}
+    assert initial["b"]["id"] != initial["c"]["id"]
+    records[1]["revision"] = "newer-b"
+    changed = dependency_findings()
+    assert changed["b"]["id"] == initial["b"]["id"]
+    assert changed["b"]["subject_digest"] != initial["b"]["subject_digest"]
+    assert changed["c"]["subject_digest"] == initial["c"]["subject_digest"]
