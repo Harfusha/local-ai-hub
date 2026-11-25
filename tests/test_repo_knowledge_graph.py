@@ -60,3 +60,44 @@ def test_declared_process_anomalies_are_candidates():
     }]
     with pytest.raises(RepoPlanValidationError):
         validate_process_flow({**flow, "entry": "absent"})
+
+
+def test_closed_process_branch_has_no_declared_exit():
+    flow = {
+        "entry": "start",
+        "steps": [
+            {"id": "start", "title": "Start", "kind": "decision"},
+            {"id": "done", "title": "Done", "kind": "terminal"},
+            {"id": "retry", "title": "Retry", "kind": "action"},
+            {"id": "loop", "title": "Loop", "kind": "action"},
+        ],
+        "transitions": [
+            {"from": "start", "to": "done", "condition": "success"},
+            {"from": "start", "to": "retry", "condition": "failure"},
+            {"from": "retry", "to": "loop", "condition": ""},
+            {"from": "loop", "to": "retry", "condition": ""},
+        ],
+    }
+    item = _item("order", "rev", kind="process", payload={"flow": flow})
+    findings = process_flow_findings({"records": [item]})
+    assert {(row["type"], row["step_id"]) for row in findings} == {
+        ("no_declared_exit_path", "retry"),
+        ("no_declared_exit_path", "loop"),
+    }
+    assert all(row["status"] == "candidate" for row in findings)
+    # A retry cycle with an exit must not be treated as a closed loop.
+    flow["transitions"].append({"from": "loop", "to": "done", "condition": "recovered"})
+    assert process_flow_findings({"records": [item]}) == []
+
+
+def test_external_leaf_is_a_possible_process_handoff():
+    flow = {
+        "entry": "start",
+        "steps": [
+            {"id": "start", "title": "Start", "kind": "action"},
+            {"id": "external", "title": "External process", "kind": "external"},
+        ],
+        "transitions": [{"from": "start", "to": "external", "condition": ""}],
+    }
+    item = _item("order", "rev", kind="process", payload={"flow": flow})
+    assert process_flow_findings({"records": [item]}) == []
