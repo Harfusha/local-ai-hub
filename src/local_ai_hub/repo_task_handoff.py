@@ -47,7 +47,7 @@ def validate_handoff_payload(record: Mapping[str, Any]) -> None:
         not isinstance(payload, dict)
         or not {"origin_task_id", "historical_status", "contract", "checkpoint"} <= set(payload)
         or set(payload) - {"origin_task_id", "historical_status", "contract", "checkpoint",
-                           "historical_verification", "source_dependencies"}
+                           "historical_verification", "source_dependencies", "previous_attempt"}
         or not _identifier(payload["origin_task_id"])
         or payload["historical_status"] not in tuple(status.value for status in TaskStatus)
         or record.get("id") != "handoff-" + hashlib.sha256(
@@ -58,6 +58,17 @@ def validate_handoff_payload(record: Mapping[str, Any]) -> None:
         or record.get("relations") != []
     ):
         raise _reject()
+    if "previous_attempt" in payload:
+        attempt = payload["previous_attempt"]
+        if (
+            not isinstance(attempt, dict)
+            or set(attempt) != {"attempt_id", "parent_revision"}
+            or not _identifier(attempt["attempt_id"])
+            or attempt["attempt_id"] == payload["origin_task_id"]
+            or not isinstance(attempt["parent_revision"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", attempt["parent_revision"])
+        ):
+            raise _reject("Invalid portable attempt ancestry")
     contract = payload["contract"]
     checkpoint = payload["checkpoint"]
     if not isinstance(contract, dict) or set(contract) != _CONTRACT_FIELDS:
@@ -144,21 +155,60 @@ def build_task_handoff(store: RepoKnowledgeStore, task: Mapping[str, Any]) -> di
     if not isinstance(raw_contract, Mapping) or not isinstance(raw_checkpoint, Mapping):
         raise _reject()
     goal = GoalContract.from_dict(raw_contract).to_dict()
+    origin_task_id = task_id
+    previous_attempt = None
+    state_data = raw_checkpoint.get("state_data", {})
+    if not isinstance(state_data, Mapping):
+        raise _reject("Invalid task checkpoint state")
+    if "_portable_attempt" in state_data:
+        lineage = state_data["_portable_attempt"]
+        if (
+            not isinstance(lineage, Mapping)
+            or set(lineage) != {"schema_version", "project_id", "handoff_id", "handoff_revision",
+                                "origin_task_id", "attempt_id", "preview_digest"}
+            or type(lineage["schema_version"]) is not int or lineage["schema_version"] != 1
+            or lineage["project_id"] != manifest["project_id"]
+            or lineage["attempt_id"] != task_id
+            or not _identifier(lineage["origin_task_id"]) or lineage["origin_task_id"] == task_id
+            or lineage["handoff_id"] != "handoff-" + hashlib.sha256(
+                lineage["origin_task_id"].encode("utf-8")
+            ).hexdigest()[:24]
+            or any(not isinstance(lineage[key], str) or not re.fullmatch(r"[0-9a-f]{64}", lineage[key])
+                   for key in ("handoff_revision", "preview_digest"))
+        ):
+            raise _reject("Invalid server-managed portable attempt lineage")
+        origin_task_id = lineage["origin_task_id"]
+        previous_attempt = {"attempt_id": task_id, "parent_revision": lineage["handoff_revision"]}
+        # Require the exact adopted record; stale parallel attempts cannot
+        # silently overwrite the latest shared continuation. Same-attempt
+        # subsequent exports are left for explicit reconciliation.
+        parent = store.get("handoff", lineage["handoff_id"], verify_sources=False)
+        if parent["revision"] != lineage["handoff_revision"]:
+            raise _reject("Parent handoff changed; reconcile competing attempts before publication")
+        adopted = handoff_resume_contract(parent["record"])
+        original = parent["record"]["payload"]["contract"]
+        # Do not duplicate synthetic resume guidance in successive exports.
+        for field in ("description", "constraints"):
+            if goal[field] == adopted[field]:
+                goal[field] = original[field]
+
     # A nonempty SLO profile may carry execution policy or acceptance details.
     # Do not silently drop it and claim that the handoff is complete.
     if goal["scope"] != "task" or goal["slo_profile"]:
         raise _reject("Non-task scope or custom SLO profile requires explicit conversion")
     record = {
         "schema_version": 1, "project_id": manifest["project_id"],
-        "kind": "handoff", "id": "handoff-" + hashlib.sha256(str(task_id).encode("utf-8")).hexdigest()[:24],
+        "kind": "handoff", "id": "handoff-" + hashlib.sha256(str(origin_task_id).encode("utf-8")).hexdigest()[:24],
         "payload": {
-            "origin_task_id": task_id, "historical_status": task.get("status"),
+            "origin_task_id": origin_task_id, "historical_status": task.get("status"),
             "contract": {key: goal[key] for key in sorted(_CONTRACT_FIELDS)},
             "checkpoint": {key: raw_checkpoint.get(key, [] if key in {"blockers", "affected_paths"} else "")
                            for key in sorted(_CHECKPOINT_FIELDS)},
         },
         "provenance": {"origin_kind": "manual"}, "evidence": [], "relations": [],
     }
+    if previous_attempt is not None:
+        record["payload"]["previous_attempt"] = previous_attempt
     validate_handoff_payload(record)
     return record
 
@@ -263,7 +313,8 @@ def attach_historical_verification(
     """
     validate_handoff_payload(record)
     payload = record["payload"]
-    if task.get("task_id") != payload["origin_task_id"]:
+    attempt_id = payload.get("previous_attempt", {}).get("attempt_id", payload["origin_task_id"])
+    if task.get("task_id") != attempt_id:
         raise _reject("Receipt task scope mismatch")
     links = task.get("verification_receipts")
     if not isinstance(links, dict) or not isinstance(receipts, list) or len(receipts) > 64:
@@ -385,7 +436,9 @@ def validate_resume_creation(payload: Mapping[str, Any]) -> dict[str, Any]:
     manifest, manifest_revision = store.manifest()
     item = store.get("handoff", selection["handoff_id"], verify_sources=False)
     origin = item["record"]["payload"]["origin_task_id"]
-    if item["revision"] != checked["revision"] or origin == payload["task_id"]:
+    previous_attempt = item["record"]["payload"].get("previous_attempt", {})
+    if (item["revision"] != checked["revision"] or origin == payload["task_id"]
+            or previous_attempt.get("attempt_id") == payload["task_id"]):
         raise _reject("Handoff must create a new local task identity")
     if store.manifest()[1] != manifest_revision:
         raise _reject("Project changed during attempt creation")
