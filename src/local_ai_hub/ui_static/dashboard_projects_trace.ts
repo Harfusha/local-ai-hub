@@ -96,7 +96,7 @@ function renderProjectKnowledgeResults(result){
     const statement=document.createElement('p');statement.textContent=String(payload.statement||'');card.appendChild(statement);
     const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Sources, revision and declared relationships';details.appendChild(summary);
     const pre=document.createElement('pre');pre.className='human-pre';
-    pre.textContent=JSON.stringify({record_id:record.id,revision:item.revision,evidence:record.evidence||[],source_statuses:item.evidence_statuses||[],source_checks_complete:item.source_checks_complete,source_assertion:item.source_assertion,relations:record.relations||[],flow:payload.flow},null,2);
+    pre.textContent=JSON.stringify({record_id:record.id,revision:item.revision,evidence:record.evidence||[],source_statuses:item.evidence_statuses||[],source_checks_complete:item.source_checks_complete,source_assertion:item.source_assertion,verification_targets:item.verification_targets,verification_target_checks_complete:item.verification_target_checks_complete,relations:record.relations||[],flow:payload.flow},null,2);
     details.appendChild(pre);card.appendChild(details);
     const editor=document.createElement('details'),editorTitle=document.createElement('summary');editorTitle.textContent='Edit declaration';editor.appendChild(editorTitle);
     const input=document.createElement('textarea');input.rows=8;input.setAttribute('aria-label','Knowledge record JSON');input.value=JSON.stringify(record,null,2);editor.appendChild(input);
@@ -208,6 +208,56 @@ $('projectKnowledgeSync')?.addEventListener('click',async()=>{
     if(status)status.textContent='Shared paths: '+String(result.state)+' · remote not verified';
     const details=document.createElement('pre');details.className='human-pre';details.textContent=JSON.stringify(result,null,2);output?.appendChild(details);
   }catch(error){if(generation===projectKnowledgeGeneration&&status)status.textContent=String(error?.message||error)}
+  finally{if(button)button.disabled=false}
+});
+$('projectKnowledgeHandoffs')?.addEventListener('click',async()=>{
+  const root=String($('projectKnowledgeRoot')?.value||'');if(!root)return;
+  const generation=++projectKnowledgeGeneration,output=$('projectKnowledgeResults'),status=$('projectKnowledgeStatus'),button=$('projectKnowledgeHandoffs');
+  const current=()=>generation===projectKnowledgeGeneration&&$('projectKnowledgeRoot')?.value===root;
+  if(button)button.disabled=true;if(output)output.replaceChildren();if(status)status.textContent='Reading shared handoffs…';
+  try{
+    const result=await post('/api/repo/knowledge/manage',{root,action:'handoff_list',limit:32});
+    if(!current())return;
+    if(result?.success!==true)throw new Error(result?.error||'Handoffs unavailable');
+    const items=Array.isArray(result.handoffs)?result.handoffs:[];
+    if(status)status.textContent=items.length+' historical handoffs · '+(result.complete?'inventory complete':'inventory partial');
+    for(const item of items){
+      const card=document.createElement('section');card.className='section';
+      const title=document.createElement('h3');title.textContent=String(item.goal||item.id);card.appendChild(title);
+      const meta=document.createElement('p');meta.className='tiny muted';meta.textContent=String(item.historical_status)+' · requires current revalidation';card.appendChild(meta);
+      const preview=document.createElement('button');preview.type='button';preview.className='btn';preview.textContent='Preview new task';card.appendChild(preview);
+      const details=document.createElement('pre');details.className='human-pre';card.appendChild(details);
+      preview.addEventListener('click',async()=>{
+        preview.disabled=true;card.querySelector('[data-handoff-create]')?.remove();
+        try{
+          const request={root,action:'preview_handoff_resume',handoff_id:item.id,expected_revision:item.revision};
+          const candidate=await post('/api/repo/knowledge/manage',request);
+          if(!current())return;
+          if(candidate?.success!==true)throw new Error(candidate?.error||'Handoff preview unavailable');
+          details.textContent=JSON.stringify({contract:candidate.contract,historical_verification:candidate.historical_verification,requires_revalidation:true},null,2);
+          const create=document.createElement('button');create.type='button';create.className='btn primary';create.dataset.handoffCreate='true';create.textContent='Create reviewed new task';card.appendChild(create);
+          const taskId='task_'+crypto.randomUUID().replace(/-/g,'').slice(0,20);
+          create.addEventListener('click',async()=>{
+            if(!current())return;
+            create.disabled=true;preview.disabled=true;
+            try{
+              const checked=await post('/api/repo/knowledge/manage',request);
+              if(!current())return;
+              if(checked?.success!==true||checked.preview_digest!==candidate.preview_digest||JSON.stringify(checked.contract)!==JSON.stringify(candidate.contract))throw new Error('Handoff changed; refresh before resuming');
+              const created=await post('/api/agent-state/tasks',{action:'create',root,task_id:taskId,contract:checked.contract});
+              if(!current())return;
+              if(created?.success!==true||!created.task)throw new Error(created?.error||'Task creation not confirmed');
+              details.textContent='Created planned Agent OS task '+String(created.task.task_id||taskId)+'. Historical results are not current verification.';
+            }catch(error){
+              if(current())details.textContent=String(error?.message||error)+' · Inspect Agent OS for task '+taskId+' before retry.';
+            }finally{if(current())preview.disabled=false}
+          });
+        }catch(error){if(current())details.textContent=String(error?.message||error)}
+        finally{if(current())preview.disabled=false}
+      });
+      output?.appendChild(card);
+    }
+  }catch(error){if(current()&&status)status.textContent=String(error?.message||error)}
   finally{if(button)button.disabled=false}
 });
 $('projectKnowledgeRoot')?.addEventListener('change',resetProjectKnowledge);
