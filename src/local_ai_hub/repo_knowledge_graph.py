@@ -132,6 +132,24 @@ def process_flow_findings(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
                 if target not in reachable:
                     reachable.add(target)
                     frontier.append(target)
+        # Reverse reachability from declared exits detects closed loops and
+        # upstream branches with no possible exit. External leaf steps may
+        # hand control to another process; they are not proof of completion.
+        predecessors: dict[str, set[str]] = {step_id: set() for step_id in successors}
+        for source, targets in successors.items():
+            for target in targets:
+                predecessors[target].add(source)
+        can_exit = {
+            step["id"] for step in flow["steps"]
+            if step["kind"] == "terminal"
+            or (step["kind"] == "external" and not successors[step["id"]])
+        }
+        frontier = list(can_exit)
+        while frontier:
+            for source in predecessors[frontier.pop()]:
+                if source not in can_exit:
+                    can_exit.add(source)
+                    frontier.append(source)
         for step in flow["steps"]:
             step_id = step["id"]
             code = ""
@@ -141,6 +159,8 @@ def process_flow_findings(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
                 code = "terminal_has_successors"
             elif step["kind"] in {"action", "decision"} and not successors[step_id]:
                 code = "nonterminal_without_transition"
+            elif step_id not in can_exit:
+                code = "no_declared_exit_path"
             if code:
                 findings.append({"type": code, "record_id": record["id"], "step_id": step_id,
                                  "record_revision": item["revision"], "status": "candidate",
