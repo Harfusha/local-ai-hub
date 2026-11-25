@@ -155,3 +155,35 @@ def test_committed_knowledge_diff_is_scoped_and_does_not_claim_runtime_verificat
     assert before == _git(root, "status", "--porcelain")
     assert compare_knowledge_revisions(root, "--help")["state"] == "revision_unavailable"
     assert compare_knowledge_revisions(root, "HEAD")["changes"] == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_sync_status_never_claims_clean_during_pending_publication(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Fixture")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    hub = root / ".local-ai-hub"
+    hub.mkdir()
+    (hub / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (hub / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb",
+        "mode": "shared",
+    }), encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "base")
+    assert checkout_sync_status(root)["publication_status"] == "idle"
+    fence = hub / "local/intents/knowledge-batch-fence.json"
+    fence.parent.mkdir(parents=True)
+    record = {"state": "pending", "epoch": "a" * 32, "operation_digest": "b" * 64}
+    fence.write_text(json.dumps(record), encoding="utf-8")
+    result = checkout_sync_status(root)
+    assert result["state"] == "publication_pending_or_unavailable"
+    assert not result["complete"]
+    assert "b" * 64 not in str(result)
+    record["state"] = "idle"
+    fence.write_text(json.dumps(record), encoding="utf-8")
+    assert checkout_sync_status(root)["state"] == "clean_shared_paths"
+    fence.write_text("invalid fence", encoding="utf-8")
+    assert checkout_sync_status(root)["state"] == "publication_pending_or_unavailable"
