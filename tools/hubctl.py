@@ -273,6 +273,8 @@ def main() -> int:
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
     parser.add_argument("--preview-digest", default="", help="Exact reviewed handoff export digest")
     parser.add_argument("--include-historical-verification", action="store_true", help="Include redacted historical receipt summaries in handoff export")
+    parser.add_argument("--after-task-id", default="", help="Offline migration continuation cursor")
+    parser.add_argument("--snapshot", default="", help="Expected offline task inventory snapshot")
     parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
     parser.add_argument("--base", default="", help="Base Git commit/ref for committed knowledge diff")
     parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
@@ -296,8 +298,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply or batch-recover")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover or legacy-task-batch")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -398,6 +400,22 @@ def main() -> int:
                 result = checkout_sync_status(store.root)
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
+            if args.sub_arg == "legacy-task-batch":
+                from local_ai_hub.agent_state_migration import preview_legacy_task_batch
+                from local_ai_hub.repository_scope import authorized_repository_root
+
+                if args.apply or not 1 <= args.limit <= 16:
+                    parser.error("legacy-task-batch is read-only; use --limit 1 through 16")
+                config = load_config(_config_arg(args.config))
+                authorized_repository_root(config, str(store.root))
+                result = preview_legacy_task_batch(
+                    config["server"]["state_dir"], store, limit=args.limit,
+                    after_task_id=args.after_task_id, expected_snapshot=args.snapshot,
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["inventory_complete"] and all(
+                    row["state"] in {"review_required", "already_published"} for row in result["states"]
+                ) else 1
             if args.sub_arg == "handoff-preflight":
                 from local_ai_hub.repo_task_handoff import preflight_task_handoffs
 
