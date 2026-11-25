@@ -26,7 +26,8 @@
       "acceptance_criteria": [
         "Clean defaults name the selected trained models.",
         "First use downloads only the requested model; later use reuses cache.",
-        "Wrong hash or missing private authentication fails closed."
+        "Wrong hash or missing private authentication fails closed.",
+        "The configured BAAI/bge-small-en-v1.5 immutable revision resolves to a bert config and OpenVINO embedding warmup succeeds on the NPU."
       ],
       "blocker": null,
       "clarifications": [],
@@ -38,7 +39,7 @@
       ],
       "description": "Use exact HF commits and SHA-256, cache verified files, and keep explicit user overrides.",
       "kind": "code",
-      "next_action": "Validate clean-cache download, hash rejection and cache reuse at runtime for embedding, reranker, Laya and Ollama; static configuration is verified.",
+      "next_action": "Replace the nonexistent BAAI embedding revision pin with verified commit 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a in both defaults files; then run bounded setup/runtime checks for NPU warmup, clean-cache download and cache reuse.",
       "order": 2,
       "title": "Wire pinned first-use downloads",
       "work_status": "in_progress"
