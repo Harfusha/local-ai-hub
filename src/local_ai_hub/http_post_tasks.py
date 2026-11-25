@@ -17,6 +17,9 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
             "terminal": True,
             "retryable": False,
         }); return
+    if "handoff_resume" in payload and action != "create":
+        self._send(400, {"success": False, "error": "handoff_resume is only supported for task creation",
+                         "terminal": True, "retryable": False}); return
     if action == "budget_increase":
         self._task_budget_increase(payload)
         return
@@ -161,9 +164,6 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "terminal": True,
                 "retryable": False,
             }); return
-    if "handoff_resume" in payload and action != "create":
-        self._send(400, {"success": False, "error": "handoff_resume is only supported for task creation",
-                         "terminal": True, "retryable": False}); return
     if action == "create":
         if "handoff_resume" in payload:
             from .repo_task_handoff import validate_resume_creation
