@@ -424,6 +424,8 @@ def validate_resume_creation(payload: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise _reject("Invalid scoped handoff creation")
     store = RepoKnowledgeStore(payload["repo_root"])
+    epoch = store.read_epoch()
+    manifest, manifest_revision = store.manifest()
     checked = preview_handoff_resume(store, selection["handoff_id"])
     if (
         checked["resume_allowed"] is not True
@@ -432,8 +434,6 @@ def validate_resume_creation(payload: Mapping[str, Any]) -> dict[str, Any]:
         or payload.get("contract") != checked["contract"]
     ):
         raise _reject("Handoff or dependencies changed; preview again")
-    epoch = store.read_epoch()
-    manifest, manifest_revision = store.manifest()
     item = store.get("handoff", selection["handoff_id"], verify_sources=False)
     origin = item["record"]["payload"]["origin_task_id"]
     previous_attempt = item["record"]["payload"].get("previous_attempt", {})
