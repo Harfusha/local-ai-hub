@@ -762,6 +762,27 @@ class RepoPlanStorage:
                                   client_plan_snapshot=plan_dict if client_request_fingerprint else None,
                                   client_response_data=client_response_data)
 
+    def save_knowledge_file(
+        self, rel_path: str, data: bytes, *, expected_revision: str,
+        owner: str, idempotency_key: str, lease_check_fn: Callable[[], bool],
+    ) -> dict[str, Any]:
+        """Use the existing revision, journal and checkout fence for knowledge writes.
+
+        Internal service boundary: the caller must provide a server-owned
+        authorization/lease check, not a value taken from repository content.
+        """
+        from ..repo_knowledge import validate_knowledge_file
+
+        if not callable(lease_check_fn) or not lease_check_fn():
+            raise RepoPlanConflictError("Knowledge write is not authorized")
+        if not idempotency_key or not isinstance(expected_revision, str):
+            raise RepoPlanValidationError("Knowledge writes require a revision and operation key")
+        validate_knowledge_file(rel_path, data)
+        return self._save_targets(
+            "save_knowledge", [(rel_path, data, expected_revision)],
+            owner, idempotency_key, lease_check_fn,
+        )
+
     def save_spec_and_plan(
         self, spec_rel_path: str, spec_content: str, plan_rel_path: str,
         plan_dict: dict[str, Any], *, expected_spec_rev: str | None = None,
@@ -831,7 +852,7 @@ class RepoPlanStorage:
                     result["client_response_data"] = copy.deepcopy(client_response_data)
                 if not changed:
                     result["client_plan_snapshot"] = copy.deepcopy(client_plan_snapshot)
-            if operation == "save_plan":
+            if operation in {"save_plan", "save_knowledge"}:
                 result["file_revision"] = targets[0].candidate_sha256
             else:
                 result.update(spec_revision=targets[0].candidate_sha256, plan_revision=targets[1].candidate_sha256)
@@ -1013,6 +1034,9 @@ class RepoPlanStorage:
                                 raise RepoPlanError("Recovery candidate hash mismatch")
                             if target.rel_path.endswith(".plan.json"):
                                 validate_plan_dict(parse_plan_json(data), repo_root=self.repo_root)
+                            if intent.operation == "save_knowledge":
+                                from ..repo_knowledge import validate_knowledge_file
+                                validate_knowledge_file(target.rel_path, data)
                         for target, actual, data in zip(intent.targets, current, payloads):
                             self._check_fence(intent.context, lease_check_fn)
                             validate_repo_path(target.rel_path, repo_root=self.repo_root)
