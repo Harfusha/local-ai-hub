@@ -204,6 +204,15 @@ is never current verification or authorization. The CLI equivalent is
 `--apply --expected-revision <reviewed-revision> --task-id <new-task-id>`
 to create a fresh local attempt with a stable identity.
 
+For a read-only assessment of existing repository-scoped Agent OS tasks,
+run `hubctl knowledge handoff-preflight --root <path> --limit 64`.
+The command includes stale tasks, reports a bounded inventory and blocks
+live attempts, duplicate tasks, invalid scope/content and conflicting
+existing handoffs. It does not return task contract text, copy verification
+receipts or perform any writes. This is an assessment for reviewed handoff
+publication only; it is not the canonical Agent OS store migration or a
+claim that unscoped legacy tasks have been inventoried.
+
 The `sync_status` action also provides bounded index-stage conflict
 classification for knowledge JSON records. It reports changed field groups,
 not stage contents, and does not resolve or stage files. Independent title
