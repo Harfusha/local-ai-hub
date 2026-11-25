@@ -482,7 +482,10 @@ def main() -> int:
                         result = store.save(
                             record, expected_revision=args.expected_revision, owner="local-operator",
                             idempotency_key=args.operation_id or str(uuid4()),
-                            authorize_write=lambda: args.apply is True and not args.dry_run,
+                            authorize_write=lambda: (
+                                args.apply is True and not args.dry_run
+                                and store.manifest()[1] == manifest_revision
+                            ),
                         )
                         print(json.dumps({**result, "handoff_id": record["id"]}, indent=2))
                         return 0 if result.get("success") is True else 1
