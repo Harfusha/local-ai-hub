@@ -333,6 +333,10 @@ def main() -> int:
         if args.apply and args.root is None:
             parser.error("client config --apply requires an explicit --root workspace path")
         requested_mode = None
+    elif args.action == "agent-state" and args.sub_arg == "storage-inventory":
+        if args.apply:
+            parser.error("agent-state storage-inventory is read-only")
+        requested_mode = None
     elif args.sub_arg is not None:
         parser.error(f"Unrecognized argument '{args.sub_arg}' for action '{args.action}'")
     else:
@@ -833,6 +837,13 @@ def main() -> int:
         path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0
     if args.action == "agent-state":
+        if args.sub_arg == "storage-inventory":
+            from local_ai_hub.agent_state_inventory import inspect_agent_state_inventory
+
+            config = load_config(_config_arg(args.config))
+            report = inspect_agent_state_inventory(config["server"]["state_dir"])
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            return 0 if report["success"] and report["complete"] else 1
         c = client()
         print(json.dumps(c.status(detail="agent_state"), indent=2, ensure_ascii=False))
         return 0
