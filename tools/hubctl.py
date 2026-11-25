@@ -292,8 +292,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume or handoff-list")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list or handoff-preflight")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -352,6 +352,29 @@ def main() -> int:
                 result = checkout_sync_status(store.root)
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
+            if args.sub_arg == "handoff-preflight":
+                from local_ai_hub.repo_task_handoff import preflight_task_handoffs
+
+                if args.apply or not 1 <= args.limit <= 64:
+                    parser.error("handoff-preflight is read-only; limit must be 1 through 64")
+                response = HubClient(config_path=_config_arg(args.config)).post(
+                    "/api/agent-state/tasks", {
+                        "action": "list", "root": str(store.root),
+                        "limit": args.limit + 1, "include_stale": True,
+                    },
+                )
+                tasks = response.get("tasks")
+                if response.get("success") is not True or not isinstance(tasks, list):
+                    print(json.dumps({"success": False, "error": "Scoped legacy task inventory unavailable"}))
+                    return 1
+                result = preflight_task_handoffs(
+                    store, tasks[:args.limit],
+                    inventory_complete=len(tasks) < args.limit + 1 and not response.get("query_truncated"),
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] and all(
+                    row["state"] in {"review_required", "already_published"} for row in result["records"]
+                ) else 1
             if args.sub_arg == "handoff-list":
                 from local_ai_hub.repo_task_handoff import list_task_handoffs
 
