@@ -66,7 +66,11 @@ def _text(value: Any, maximum: int) -> bool:
 
 
 def _path_for(kind: Any, record_id: Any) -> str:
-    if not isinstance(kind, str) or kind not in _KINDS or not _identifier(record_id):
+    if not isinstance(kind, str) or not _identifier(record_id):
+        raise _invalid()
+    if kind == "handoff":
+        return f".local-ai-hub/agent-os/handoffs/{record_id}.json"
+    if kind not in _KINDS:
         raise _invalid()
     return f"{_DIR}/{_KINDS[kind]}/{record_id}.json"
 
@@ -90,6 +94,11 @@ def validate_knowledge_file(rel_path: str, data: bytes) -> dict[str, Any]:
         raise _invalid()
     if _path_for(record["kind"], record["id"]) != rel_path:
         raise _invalid()
+    if record["kind"] == "handoff":
+        from .repo_task_handoff import validate_handoff_payload
+
+        validate_handoff_payload(record)
+        return record
     payload = record["payload"]
     provenance = record["provenance"]
     if not isinstance(payload, dict) or not {"title", "statement", "layer"} <= set(payload):

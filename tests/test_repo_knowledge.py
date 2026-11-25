@@ -281,3 +281,39 @@ def test_native_query_reuses_authorized_root_and_preserves_declaration(tmp_path)
     assert query_repository_knowledge({}, {**payload, "unexpected": 1})["status_code"] == 400
     (root / "order.py").write_bytes(b"paid = False\n")
     assert query_repository_knowledge({}, payload)["records"][0]["freshness"] == "stale"
+
+
+def test_portable_task_handoff_uses_fresh_attempt_without_local_state(tmp_path):
+    from local_ai_hub.repo_task_handoff import build_task_handoff, handoff_resume_contract
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    task = {
+        "task_id": "task_123", "repo_root": str(root), "status": "completed",
+        "contract": {"goal": "Reschedule paid service", "acceptance_criteria": ["tests pass"]},
+        "checkpoint": {"phase": "verify", "next_action": "Run focused tests",
+                       "affected_paths": ["order.py"], "blockers": [],
+                       "state_data": {"secret": "private-state"}, "evidence_ids": ["local-id"]},
+        "owner": "local-owner", "lease_id": "old-lease", "verification_receipts": {"tests pass": "old-receipt"},
+    }
+    record = build_task_handoff(store, task)
+    result = _save(store, record, key="handoff")
+    assert result["success"]
+    serialized = json.dumps(record)
+    for private in (str(root), "old-lease", "old-receipt", "private-state", "local-id", "local-owner"):
+        assert private not in serialized
+    clone = tmp_path / "clone"
+    shutil.copytree(root, clone, ignore=shutil.ignore_patterns("local"))
+    imported = RepoKnowledgeStore(clone).get("handoff", record["id"])
+    contract = handoff_resume_contract(imported["record"])
+    assert contract["goal"] == task["contract"]["goal"]
+    assert contract["acceptance_criteria"] == ["tests pass"]
+    assert "Revalidate" in contract["constraints"][-1]
+    assert "status" not in contract
+    assert "verification_receipts" not in contract
+    assert not RepoKnowledgeStore(clone).catalog()["records"]
+    with pytest.raises(RepoPlanValidationError):
+        build_task_handoff(store, {**task, "repo_root": str(clone)})
+    with pytest.raises(RepoPlanValidationError):
+        build_task_handoff(store, {**task, "checkpoint": {**task["checkpoint"], "affected_paths": ["../outside"]}})

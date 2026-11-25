@@ -271,6 +271,7 @@ def main() -> int:
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
+    parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
     parser.add_argument("--finding-id", default="", help="Knowledge conflict ID")
     parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
     parser.add_argument("--decision", choices=["acceptable", "expected", "confirmed_issue", "false_positive", "deferred"])
@@ -290,14 +291,22 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "init", "save", "review"}:
-            parser.error("knowledge requires catalog, query, validate, init, save or review")
+        if args.sub_arg not in {"catalog", "query", "validate", "init", "save", "review", "handoff-export", "handoff-resume"}:
+            parser.error("knowledge requires catalog, query, validate, init, save, review, handoff-export or handoff-resume")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
             parser.error("knowledge mutations require explicit --apply (review content first)")
         if args.sub_arg == "init" and args.operation_id and not args.project_id:
             parser.error("knowledge init with --operation-id requires --project-id for deterministic retry")
+        if args.sub_arg == "handoff-export" and not args.task_id:
+            parser.error("handoff-export requires --task-id")
+        if args.sub_arg == "handoff-export" and args.apply and (args.dry_run or args.expected_revision is None):
+            parser.error("handoff-export --apply requires --expected-revision and no --dry-run")
+        if args.sub_arg == "handoff-resume" and not args.handoff_id:
+            parser.error("handoff-resume requires --handoff-id")
+        if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision):
+            parser.error("handoff-resume --apply requires the reviewed --expected-revision")
         if args.sub_arg in {"save", "review"} and args.expected_revision is None:
             parser.error("knowledge save/review requires --expected-revision (empty string for create)")
         if args.sub_arg == "save" and args.record_file is None:
@@ -330,6 +339,40 @@ def main() -> int:
 
         try:
             store = RepoKnowledgeStore(args.root)
+            if args.sub_arg in {"handoff-export", "handoff-resume"}:
+                from local_ai_hub.repo_task_handoff import build_task_handoff, handoff_resume_contract
+
+                target_root = str(store.root)
+                if args.sub_arg == "handoff-export":
+                    response = HubClient(config_path=_config_arg(args.config)).get_task(args.task_id, root=target_root)
+                    if response.get("success") is not True or not isinstance(response.get("task"), dict):
+                        print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
+                        return 1
+                    record = build_task_handoff(store, response["task"])
+                    if args.apply:
+                        result = store.save(
+                            record, expected_revision=args.expected_revision, owner="local-operator",
+                            idempotency_key=args.operation_id or str(uuid4()),
+                            authorize_write=lambda: args.apply is True and not args.dry_run,
+                        )
+                        print(json.dumps({**result, "handoff_id": record["id"]}, indent=2))
+                        return 0 if result.get("success") is True else 1
+                    print(json.dumps({"preview": True, "record": record}, indent=2, ensure_ascii=False))
+                    return 0
+                item = store.get("handoff", args.handoff_id, verify_sources=False)
+                contract = handoff_resume_contract(item["record"])
+                if not args.apply:
+                    print(json.dumps({"preview": True, "revision": item["revision"], "contract": contract},
+                                     indent=2, ensure_ascii=False))
+                    return 0
+                if item["revision"] != args.expected_revision:
+                    print(json.dumps({"success": False, "error": "Handoff revision changed; review again"}))
+                    return 1
+                result = HubClient(config_path=_config_arg(args.config)).create_task(
+                    contract, task_id="task_" + uuid4().hex[:12], root=target_root,
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
             if args.sub_arg in {"init", "save", "review"}:
                 operation_id = args.operation_id or str(uuid4())
                 # This is an explicit local operator command, not a remotely
