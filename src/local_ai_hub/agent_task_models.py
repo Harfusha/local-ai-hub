@@ -467,6 +467,13 @@ def _preserve_checkpoint_memory_state(
     if not allow_server_memory_refresh:
         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
     merged_state_data = dict(checkpoint.state_data)
+    lineage = "_portable_attempt"
+    if lineage in merged_state_data and (
+        lineage not in current_state_data or merged_state_data[lineage] != current_state_data[lineage]
+    ):
+        raise ValueError("portable attempt lineage is server-managed")
+    if lineage in current_state_data:
+        merged_state_data[lineage] = current_state_data[lineage]
     if not allow_server_work_update:
         key = "_pending_fenced_work"
         if key in merged_state_data and (key not in current_state_data or merged_state_data[key] != current_state_data[key]):
