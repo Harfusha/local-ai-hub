@@ -63,7 +63,65 @@ function groupedProjects(items){
   });
 }
 
+let projectKnowledgeGeneration=0;
+function resetProjectKnowledge(){
+  projectKnowledgeGeneration++;
+  const output=$('projectKnowledgeResults'),status=$('projectKnowledgeStatus'),button=$('projectKnowledgeSearch');
+  if(output)output.replaceChildren();
+  if(status)status.textContent='Choose a checkout and enter a query.';
+  if(button)button.disabled=false;
+}
+function updateProjectKnowledgeRoots(items){
+  const select=$('projectKnowledgeRoot');if(!select)return;
+  const selected=select.value,roots=[...new Set((Array.isArray(items)?items:[]).map(item=>String(item?.root||'')).filter(Boolean))].sort();
+  const previous=Array.from(select.options).slice(1).map(option=>option.value);
+  if(previous.length===roots.length&&previous.every((root,index)=>root===roots[index]))return;
+  const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='Choose registered checkout';
+  select.replaceChildren(placeholder);
+  roots.forEach(root=>{const option=document.createElement('option');option.value=root;option.textContent=root;select.appendChild(option)});
+  if(roots.includes(selected))select.value=selected;else if(selected)resetProjectKnowledge();
+}
+function renderProjectKnowledgeResults(result){
+  const output=$('projectKnowledgeResults'),status=$('projectKnowledgeStatus');if(!output||!status)return;
+  output.replaceChildren();
+  const records=Array.isArray(result?.records)?result.records:[];
+  const matches=Number(result?.match_count??records.length);
+  status.textContent=records.length+' shown · '+matches+' matched or linked · '+(result?.complete===true?'inventory complete':'inventory partial')+(result?.truncated?' · result limit reached':'');
+  if(!records.length){const note=document.createElement('p');note.textContent='No matching declarations in the scanned inventory.';output.appendChild(note);return}
+  for(const item of records){
+    const record=item?.record||{},payload=record.payload||{};
+    const card=document.createElement('section');card.className='section';
+    const title=document.createElement('h3');title.textContent=String(payload.title||record.id||'Knowledge record');card.appendChild(title);
+    const meta=document.createElement('p');meta.className='tiny muted';meta.textContent=[record.kind,payload.layer,item.freshness,item.dependency_status,item.authority].filter(Boolean).join(' · ');card.appendChild(meta);
+    const statement=document.createElement('p');statement.textContent=String(payload.statement||'');card.appendChild(statement);
+    const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Sources, revision and declared relationships';details.appendChild(summary);
+    const pre=document.createElement('pre');pre.className='human-pre';
+    pre.textContent=JSON.stringify({record_id:record.id,revision:item.revision,evidence:record.evidence||[],source_statuses:item.evidence_statuses||[],source_checks_complete:item.source_checks_complete,relations:record.relations||[],flow:payload.flow},null,2);
+    details.appendChild(pre);card.appendChild(details);output.appendChild(card);
+  }
+}
+$('projectKnowledgeRoot')?.addEventListener('change',resetProjectKnowledge);
+$('projectKnowledgeForm')?.addEventListener('submit',async event=>{
+  event.preventDefault();
+  const root=String($('projectKnowledgeRoot')?.value||''),query=String($('projectKnowledgeQuery')?.value||'').trim();
+  if(!root||!query)return;
+  const generation=++projectKnowledgeGeneration,button=$('projectKnowledgeSearch'),status=$('projectKnowledgeStatus'),output=$('projectKnowledgeResults');
+  if(button)button.disabled=true;
+  if(status)status.textContent='Reading repository declarations…';
+  if(output)output.replaceChildren();
+  try{
+    const result=await post('/api/repo/knowledge/query',{root,query,limit:8});
+    if(generation!==projectKnowledgeGeneration||$('projectKnowledgeRoot')?.value!==root)return;
+    if(result?.success!==true)throw new Error(result?.error||'Knowledge query failed');
+    renderProjectKnowledgeResults(result);
+  }catch(error){
+    if(generation===projectKnowledgeGeneration&&status)status.textContent='Knowledge unavailable: '+String(error?.message||error);
+  }finally{
+    if(generation===projectKnowledgeGeneration&&button)button.disabled=false;
+  }
+});
 function renderProjects(items){
+  updateProjectKnowledgeRoots(items);
   const status=preprocessingSummary(last?.preprocessing||{},last?.dependency_status||{},last?.features||{});
   if(!status.available){
     if($('projectSummary'))$('projectSummary').textContent='Project inventory unavailable';

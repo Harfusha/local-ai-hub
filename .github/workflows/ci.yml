@@ -84,6 +84,7 @@ jobs:
           tests/test_portable_source_locator.py
           tests/test_project_shared_path_hints.py
           tests/test_repo_knowledge.py
+          tests/test_repo_knowledge_graph.py
           tests/test_evidence_contract.py
           tests/test_release_check_working_tree.py
       - run: >-
