@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from types import SimpleNamespace
 from pathlib import Path
 
 
@@ -17,6 +18,29 @@ def _doctor_helpers(*names: str) -> dict[str, object]:
     namespace: dict[str, object] = {}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace
+
+
+def test_doctor_checks_optional_module_presence_without_cold_import() -> None:
+    helpers = _doctor_helpers("runtime_module_available")
+    calls: list[list[str]] = []
+
+    class FakeSubprocess:
+        DEVNULL = object()
+        SubprocessError = RuntimeError
+
+        @staticmethod
+        def run(args, **_kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0)
+
+    available = helpers["runtime_module_available"]
+    namespace = available.__globals__
+    namespace["project_python"] = lambda: Path("python.exe")
+    namespace["subprocess"] = FakeSubprocess
+
+    assert available("sentence_transformers") is True
+    assert "find_spec('sentence_transformers')" in calls[0][-1]
+    assert "import sentence_transformers" not in calls[0][-1]
 
 
 def test_missing_optional_components_have_exact_actionable_doctor_outcomes() -> None:
@@ -161,6 +185,9 @@ def test_doctor_does_not_discover_or_report_standalone_codegraph() -> None:
         source = path.read_text(encoding="utf-8")
         if path.name == "benchmark_t10_repository.py":
             source = source.replace('"tests/test_codegraph_package_policy.py"', "")
+        # The ignored directory name is an exclusion guard, not discovery or
+        # runtime integration with the standalone CodeGraph tool.
+        source = source.replace('".codegraphcontext"', "")
         assert "codegraph" not in source.casefold(), path.name
 
     doctor = (ROOT / "tools" / "doctor.py").read_text(encoding="utf-8")

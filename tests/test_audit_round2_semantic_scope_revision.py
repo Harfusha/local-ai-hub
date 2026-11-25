@@ -143,3 +143,23 @@ def test_code_bound_task_with_revision_allows_semantic_reuse(tmp_path):
     assert result.get("cache_layer") == "semantic"
     assert result.get("cache_hit") is True
     assert services.semantic_cache.get.call_count > 0
+
+
+def test_compress_task_does_not_use_semantic_cache(tmp_path):
+    services = _make_services(tmp_path)
+    services.semantic_cache.get.return_value = ({"text": "summary of another document"}, 0.99)
+
+    result = services._generate(
+        model="test-fast",
+        prompt="COMPRESS\nSummarize this input: alpha",
+        system="System prompt",
+        max_tokens=100,
+        temperature=0.0,
+        source="compress:map",
+        priority=1,
+        semantic_query="compress",
+    )
+
+    assert result.get("_lah_cache_origin") != "semantic"
+    assert services.semantic_cache.get.call_count == 0
+    assert services.semantic_cache.set.call_count == 0

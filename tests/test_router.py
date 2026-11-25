@@ -85,7 +85,7 @@ def test_heavy_review_cannot_be_downgraded_below_configured_quality_floor():
 
 
 @pytest.mark.parametrize("profile", ["integrated", "balanced", "high", "max"])
-def test_hardware_profiles_keep_heavy_review_above_fast_tier(profile):
+def test_hardware_profiles_keep_heavy_review_at_or_above_fast_floor(profile):
     from local_ai_hub.hardware import PROFILE_OVERRIDES
     from local_ai_hub.router import ModelRouter
 
@@ -94,8 +94,11 @@ def test_hardware_profiles_keep_heavy_review_above_fast_tier(profile):
     route = router.classify("review", task_type="review", complexity="heavy")
 
     assert route["model"] == models["heavy_code"]
-    with pytest.raises(ValueError, match="quality floor"):
-        router.apply_model_override(route, models["fast_code"])
+    if models["fast_code"] == models["heavy_code"]:
+        assert router.apply_model_override(route, models["fast_code"])["model"] == route["model"]
+    else:
+        with pytest.raises(ValueError, match="quality floor"):
+            router.apply_model_override(route, models["fast_code"])
 
 
 @pytest.mark.parametrize("profile", ["integrated", "balanced", "high"])

@@ -92,6 +92,7 @@ class AppRuntimeMixin:
         self._watchdog_thread: threading.Thread | None = None
         self._live_status_lock = threading.Lock()
         self._live_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._live_status_refresh_locks: dict[str, threading.Lock] = {}
         self._status_full_cache: dict[str, dict[str, Any]] = {}
         self._status_full_cache_lock = threading.Lock()
         self._status_dependency_lock = threading.Lock()
@@ -208,6 +209,7 @@ class AppRuntimeMixin:
         self.laya_coordinator = LayaUnifiedCoordinator(
             default_budget=int(self.config.get("token_saving", {}).get("max_response_tokens", 8192) or 8192),
             training_collector=self.training_collector,
+            model_roles=self.config.get("models"),
             training_capture_enabled=training_capture_enabled,
         )
         runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
@@ -391,7 +393,9 @@ class AppRuntimeMixin:
             from .hardware import detect_hardware
             threading.Thread(target=detect_hardware, name="local-ai-hardware-warmup", daemon=True).start()
             def _status_ticker() -> None:
-                while not self._shutdown.wait(2.5):
+                # Avoid making periodic refreshes compete with MCP/dashboard
+                # callers when a status collection runs longer than its cache TTL.
+                while not self._shutdown.wait(30.0):
                     try:
                         self.realtime_status(light=True)
                     except Exception:

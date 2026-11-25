@@ -453,7 +453,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "same_model_worker_passes": 1,
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
             "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
@@ -499,7 +499,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+                "qwen-explorer": {"model": "qwen2.5-coder:3b"},
                 "qwen-drafter": {"model": "qwen2.5-coder:3b"},
                 "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
@@ -550,7 +550,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
             "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
@@ -573,7 +573,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "background_gpu": {"parallel": 4, "file_batch_size": 2, "module_batch_size": 2},
         "cpu_retrieval": {"embedding_batch_size": 12, "reranker_batch_size": 4},
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
             "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},

@@ -444,7 +444,7 @@ class LlamaCppManagedRuntime:
         configured = self.llama_config.get("models", {})
         recoveries: dict[str, dict[str, Any]] = {}
         alias_contexts: dict[str, int] = {}
-        fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:3b"))
         if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict) and any(logical == fast_model for _, logical in aliases):
             default_alias = str(configured[fast_model].get("served_model", fast_model))
         for alias, logical in aliases:
@@ -525,7 +525,7 @@ class LlamaCppManagedRuntime:
     def _default_alias(self) -> str:
         _port, aliases = self._configured_routes()
         configured = self.llama_config.get("models", {})
-        fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:3b"))
         if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict) and any(logical == fast_model for _, logical in aliases):
             return str(configured[fast_model].get("served_model", fast_model))
         return aliases[0][0]
@@ -541,6 +541,23 @@ class LlamaCppManagedRuntime:
         # allow the configured startup window (up to three minutes) before CPU
         # fallback so a healthy Intel GPU is not abandoned prematurely.
         return [("SYCL0", min(timeout, 180.0)), ("none", timeout)] if intel_windows_gpu else [("none", timeout)]
+
+    def _intel_windows_gpu_available(self) -> bool:
+        if os.name != "nt":
+            return False
+        hardware = self.config.get("_hardware", {})
+        if not isinstance(hardware, dict):
+            return False
+        gpu_rows: list[Any] = []
+        for key in ("gpus", "openvino_gpu_devices"):
+            rows = hardware.get(key, [])
+            if isinstance(rows, list):
+                gpu_rows.extend(rows)
+        return any(
+            "intel" in str(row.get("vendor", "")).lower()
+            or "intel" in str(row.get("name", "")).lower()
+            for row in gpu_rows if isinstance(row, dict)
+        )
 
     def _managed_pid_alive(self) -> bool:
         try:
@@ -684,11 +701,7 @@ class LlamaCppManagedRuntime:
             if binary is None:
                 self._last_error = f"llama-server binary not found in managed runtime: {self.runtime_dir}"
                 return False
-            gpus = (self.config.get("_hardware", {}) or {}).get("gpus", [])
-            gpu = os.name == "nt" and any(
-                "intel" in str(row.get("vendor", "")).lower() or "intel" in str(row.get("name", "")).lower()
-                for row in gpus if isinstance(row, dict)
-            )
+            gpu = self._intel_windows_gpu_available()
             attempts = self._device_attempts(gpu)
             failed_attempts: list[str] = []
             for device, wait_seconds in attempts:

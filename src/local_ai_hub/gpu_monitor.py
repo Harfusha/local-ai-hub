@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import math
@@ -13,7 +14,7 @@ import time
 _LOGGER = logging.getLogger(__name__)
 from typing import Any
 
-from .hardware import detect_hardware
+from .hardware import _is_integrated_gpu, detect_hardware
 from .process_utils import hidden_run_kwargs
 
 _GPU_CACHE: dict[str, Any] = {}
@@ -50,7 +51,7 @@ def _refresh_windows_sample() -> None:
     sample: dict[str, Any] = {}
     script = (
         "$ErrorActionPreference = 'SilentlyContinue'; "
-        "$adapters = @(Get-CimInstance -ClassName Win32_VideoController | Where-Object { $_.AdapterRAM -gt 0 } | Select-Object Name,AdapterRAM); "
+        "$adapters = @(Get-CimInstance -ClassName Win32_VideoController | Where-Object { $_.Name -match 'Intel|AMD|Radeon|NVIDIA|Arc' } | Select-Object Name,AdapterRAM); "
         "$cpuValues = @(Get-CimInstance -ClassName Win32_Processor | ForEach-Object { $_.LoadPercentage } | Where-Object { $null -ne $_ }); "
         "$cpu = $null; if ($cpuValues.Count -gt 0) { $cpu = [math]::Round(($cpuValues | Measure-Object -Average).Average, 1) }; "
         "$engines = @(); try { $engines = @(Get-CimInstance -Namespace root/cimv2 -ClassName Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction Stop | Select-Object Name,UtilizationPercentage) } catch {}; "
@@ -60,7 +61,7 @@ def _refresh_windows_sample() -> None:
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
             stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=4.0, check=False,
+            capture_output=True, text=True, timeout=6.0, check=False,
             encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
         if completed.returncode == 0 and getattr(completed, "stdout", None) and completed.stdout.strip():
@@ -200,6 +201,47 @@ def _rocm_live() -> dict[str, Any] | None:
     return None
 
 
+def _windows_shared_memory_metrics() -> dict[str, float] | None:
+    """Read current system RAM capacity for integrated GPUs using shared memory."""
+    if os.name != "nt":
+        return None
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        read_status = kernel32.GlobalMemoryStatusEx
+        read_status.argtypes = [ctypes.POINTER(_MemoryStatusEx)]
+        read_status.restype = ctypes.c_int
+        if not read_status(ctypes.byref(status)) or status.ullTotalPhys <= 0:
+            return None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+    mib = 1024 * 1024
+    total_mb = status.ullTotalPhys / mib
+    available_mb = min(total_mb, status.ullAvailPhys / mib)
+    return {
+        "unified_memory_mb": round(total_mb, 1),
+        "unified_memory_used_mb": round(total_mb - available_mb, 1),
+        "unified_memory_available_mb": round(available_mb, 1),
+        "unified_memory_used_pct": round(100.0 * (total_mb - available_mb) / total_mb, 1),
+    }
+
+
 def _windows_live() -> dict[str, Any] | None:
     if os.name != "nt":
         return None
@@ -228,12 +270,63 @@ def _windows_live() -> dict[str, Any] | None:
             "integrated": is_integrated, "shared_memory": is_integrated,
             "vram_used_pct": 0.0, "live_metrics": utilization is not None, "timestamp": time.time(),
         }
+        if is_integrated:
+            result.update(_windows_shared_memory_metrics() or {})
         if utilization is not None:
             result["gpu_utilization_pct"] = utilization
         return result
     except Exception:
         pass
     return None
+
+
+def get_gpu_telemetry_for_hardware(hardware: dict[str, Any] | None) -> dict[str, Any]:
+    """Use configured and OpenVINO device inventories for Windows iGPU memory."""
+    if os.name == "nt" and isinstance(hardware, dict):
+        candidates: list[dict[str, Any]] = []
+        for key in ("gpus", "openvino_gpu_devices"):
+            devices = hardware.get(key)
+            if isinstance(devices, list):
+                candidates.extend(device for device in devices if isinstance(device, dict))
+        devices = hardware.get("openvino_devices")
+        if isinstance(devices, list):
+            candidates.extend(
+                device for device in devices
+                if isinstance(device, dict)
+                and (str(device.get("kind", "")).casefold() == "gpu"
+                     or str(device.get("device", "")).casefold() == "gpu")
+            )
+
+        for integrated in candidates:
+            vendor = str(integrated.get("vendor", "unknown"))
+            name = str(integrated.get("name", integrated.get("gpu_name", "")))
+            reported_memory_mb = _safe_float(
+                integrated.get("vram_mb", integrated.get("reported_adapter_memory_mb", 0))
+            )
+            if integrated.get("integrated") is not True and not _is_integrated_gpu(
+                vendor, name, int(max(0.0, reported_memory_mb))
+            ):
+                continue
+            shared_memory = _windows_shared_memory_metrics()
+            if shared_memory is not None:
+                return {
+                    "available": True,
+                    "vendor": vendor,
+                    "backend": integrated.get("backend", "windows"),
+                    "gpu_name": name or "Integrated GPU",
+                    "vram_total_mb": 0,
+                    "vram_available_mb": None,
+                    "reported_adapter_memory_mb": max(0, int(reported_memory_mb)),
+                    "unified_memory_mb": shared_memory["unified_memory_mb"],
+                    "unified_memory_used_mb": shared_memory["unified_memory_used_mb"],
+                    "unified_memory_available_mb": shared_memory["unified_memory_available_mb"],
+                    "unified_memory_used_pct": shared_memory["unified_memory_used_pct"],
+                    "integrated": True,
+                    "shared_memory": True,
+                    "live_metrics": False,
+                    "timestamp": time.time(),
+                }
+    return get_gpu_telemetry()
 
 
 def get_gpu_telemetry() -> dict[str, Any]:
@@ -291,6 +384,11 @@ def get_gpu_telemetry() -> dict[str, Any]:
                 "integrated": integrated, "shared_memory": bool(gpu.get("shared_memory", integrated)),
                 "live_metrics": False,
             }
+            if integrated:
+                shared_memory = _windows_shared_memory_metrics()
+                if shared_memory is not None:
+                    result.update(shared_memory)
+                    result["timestamp"] = time.time()
         _GPU_CACHE, _GPU_CACHE_TIME = result, now
         return dict(result)
     finally:

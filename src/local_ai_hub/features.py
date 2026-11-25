@@ -145,7 +145,7 @@ class FeatureSet:
             return val
 
         # Model names — used in descriptions and routing
-        self.fast_model: str = _model_str(mdl.get("fast_code"), "qwen2.5-coder:1.5b")
+        self.fast_model: str = _model_str(mdl.get("fast_code"), "qwen2.5-coder:3b")
         self.smart_model: str = _model_str(mdl.get("heavy_code"), "qwen2.5-coder:3b")
         self.reasoning_model: str = _model_str(mdl.get("reasoning"), "qwen2.5-coder:7b")
         self.general_model: str = _model_str(mdl.get("general"), self.smart_model)

@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
+
+
+@lru_cache(maxsize=1)
+def _installed_hub_version() -> str | None:
+    try:
+        import importlib.metadata
+
+        return importlib.metadata.version("local-ai-hub")
+    except Exception:
+        return None
 
 
 class HTTPAdminMixin:
@@ -127,13 +138,7 @@ class HTTPAdminMixin:
     def _handle_health_route(self, path: str) -> bool:
         from . import http_server as services_module
         if path == "/health":
-            installed_version = None
-            try:
-                import importlib.metadata
-
-                installed_version = importlib.metadata.version("local-ai-hub")
-            except Exception:
-                installed_version = None
+            installed_version = _installed_hub_version()
             self._send(
                 200,
                 {

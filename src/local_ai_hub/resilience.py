@@ -797,7 +797,28 @@ class RecoveryJournal:
                     (max(1, min(int(limit), 100)),),
                 )
             ]
-        return {"counts": counts, "recent": recent}
+        with self._changed:
+            available = not (
+                self._journal_unavailable
+                or self._writer_error is not None
+                or self._writer_overflowed
+                or self._writer_closing
+            )
+            reason = self._journal_unavailable_reason
+            if not available and not reason:
+                reason = "request journal is unavailable"
+            writer_error_type = type(self._writer_error).__name__ if self._writer_error is not None else None
+            writer_pending = len(self._pending_writes)
+            writer_in_flight = len(self._in_flight_writes)
+        return {
+            "counts": counts,
+            "recent": recent,
+            "journal_available": available,
+            "journal_unavailable_reason": reason if not available else None,
+            "writer_error_type": writer_error_type,
+            "writer_pending": writer_pending,
+            "writer_in_flight": writer_in_flight,
+        }
 
 
 class LatencyWindow:

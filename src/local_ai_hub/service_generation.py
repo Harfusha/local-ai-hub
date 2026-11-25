@@ -203,7 +203,15 @@ class ServiceGenerationMixin:
             or bool(project_namespace)
             or bool(semantic_context_fingerprint)
         )
-        allow_semantic_cache = use_cache and not (is_code_bound and not repository_revision)
+        # Compression prompts share a short semantic query (often just "compress")
+        # while the source text varies per request. Reusing semantic results here
+        # can return a summary of a different document, so only the exact prompt
+        # cache is safe for compression.
+        allow_semantic_cache = (
+            use_cache
+            and admission_action != "compress"
+            and not (is_code_bound and not repository_revision)
+        )
         started = time.perf_counter()
         cache_layer = "miss"
         semantic_score = 0.0

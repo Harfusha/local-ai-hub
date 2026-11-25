@@ -1092,7 +1092,11 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertIn("load-on-startup = false", preset)
             runtime._write_preset(device="SYCL0")
             preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
-            self.assertIn("[*]\nn-gpu-layers = 99\ndevice = SYCL0\nmodels-max = 1", preset)
+            self.assertIn(
+                "[*]\nn-gpu-layers = 99\ndevice = SYCL0\n"
+                "cache-type-k = q4_0\ncache-type-v = q4_0\nmodels-max = 1",
+                preset,
+            )
             runtime._write_preset(device="none")
             preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
             self.assertIn("device = none", preset)
@@ -1174,6 +1178,25 @@ class LlamaCppRuntimeTests(unittest.TestCase):
 
             runtime.llama_config["startup_timeout_seconds"] = 90
             self.assertEqual(runtime._device_attempts(True), [("SYCL0", 90.0), ("none", 90.0)])
+
+    def test_openvino_intel_gpu_inventory_enables_sycl_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = LlamaCppManagedRuntime({
+                "server": {"state_dir": temp},
+                "llama_cpp": {"startup_timeout_seconds": 240},
+                "_hardware": {
+                    "gpus": [],
+                    "openvino_gpu_devices": [{
+                        "vendor": "intel",
+                        "device": "GPU",
+                        "name": "Intel(R) Arc(TM) Graphics (iGPU)",
+                    }],
+                },
+            })
+            with patch("local_ai_hub.llama_cpp_runtime.os.name", "nt"):
+                intel_gpu = runtime._intel_windows_gpu_available()
+            self.assertTrue(intel_gpu)
+            self.assertEqual(runtime._device_attempts(intel_gpu), [("SYCL0", 180.0), ("none", 240.0)])
 
     def test_install_and_update_guidance_share_provider_selection_policy(self):
         for relative in ("docs/INSTALLATION.md", "docs/OPERATIONS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md", "docs/LLAMA_CPP_SYCL.md"):

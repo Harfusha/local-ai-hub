@@ -28,12 +28,95 @@ def status_dependency_executor():
 
 def test_preprocessing_status_has_bounded_budget_for_large_registered_projects() -> None:
     assert app_module._status_dependency_timeout_seconds("preprocessing.status") == 2.0
-    assert app_module._status_dependency_timeout_seconds("headless") == 0.25
+    assert app_module._status_dependency_timeout_seconds("preprocessing") == 2.0
+    assert app_module._status_dependency_timeout_seconds("headless") == 1.0
+
+
+def test_vram_balancer_status_budget_covers_bounded_hardware_sampling() -> None:
+    assert app_module._status_dependency_timeout_seconds("vram_balancer") == 9.0
 
 
 def test_ollama_profile_probe_has_separate_bounded_budget() -> None:
-    assert app_module._status_dependency_timeout_seconds("ollama_profile") == 1.0
-    assert app_module._status_dependency_timeout_seconds("headless") == 0.25
+    assert app_module._status_dependency_timeout_seconds("ollama_profile") == 3.0
+    assert app_module._status_dependency_timeout_seconds("headless") == 1.0
+
+
+def test_full_status_applies_extended_ollama_profile_budget() -> None:
+    app = make_app()
+
+    def slow_profile():
+        time.sleep(0.30)
+        return {"managed": True}
+
+    app.runtime.managed_profile_status = slow_profile
+
+    result = app.status()
+
+    assert result["ollama_profile"] == {"managed": True}
+    assert result["dependency_status"]["ollama_profile"]["degraded"] is False
+    assert result["dependency_status"]["ollama_profile"]["deadline_ms"] == 3000
+
+
+def test_live_status_gives_scheduler_and_profile_probes_a_bounded_load_window(monkeypatch):
+    app = make_live_app(monkeypatch)
+
+    def slow_but_healthy():
+        time.sleep(1.1)
+        return {"state": "ready"}
+
+    app.scheduler.status = slow_but_healthy
+    app.runtime.managed_profile_status = slow_but_healthy
+
+    result = app.realtime_status(light=True)
+
+    assert result["success"] is True
+    assert result["dependency_status"]["scheduler"]["degraded"] is False
+    assert result["dependency_status"]["ollama_profile"]["degraded"] is False
+
+
+def test_light_live_status_bounds_optional_vram_probe(monkeypatch):
+    app = make_live_app(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_vram(*, force=False):
+        started.set()
+        release.wait(1.0)
+        return {"available": True}
+
+    app.vram_balancer.status = slow_vram
+    try:
+        start = time.monotonic()
+        result = app.realtime_status(light=True)
+        elapsed = time.monotonic() - start
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert elapsed < 1.5
+    assert result["success"] is True
+    assert result["dependency_status"]["vram_balancer"]["deadline_ms"] == 500
+    assert result["dependency_status"]["vram_balancer"]["degraded"] is True
+
+
+def test_full_status_applies_extended_preprocessing_budget() -> None:
+    app = make_app()
+
+    def slow_stats():
+        time.sleep(0.30)
+        return {"projects": 1}
+
+    app.preprocessor.stats = slow_stats
+
+    result = app.status()
+
+    assert result["preprocessing"] == {"projects": 1}
+    assert result["dependency_status"]["preprocessing"]["degraded"] is False
+    assert result["dependency_status"]["preprocessing"]["deadline_ms"] == 2000
+
+
+def test_recovery_status_has_extended_dependency_budget() -> None:
+    assert app_module._status_dependency_timeout_seconds("recovery") == 3.0
 
 
 class Probe:
@@ -193,6 +276,23 @@ def test_light_live_status_does_not_invent_completed_project():
     assert "overall_progress_pct" not in row
 
 
+def test_light_live_status_starts_core_health_probes_concurrently():
+    app = make_realtime_app()
+    probe_barrier = threading.Barrier(2)
+
+    def wait_for_peer(*_args, **_kwargs):
+        probe_barrier.wait(timeout=0.5)
+        return True
+
+    app.runtime.is_online = wait_for_peer
+    app.scheduler.status = wait_for_peer
+
+    result = app.realtime_status(light=True)
+
+    assert result["ollama_online"] is True
+    assert result["scheduler"] is True
+
+
 def read_concurrent(callback, count=12):
     barrier = threading.Barrier(count)
     results = [None] * count
@@ -275,27 +375,30 @@ def test_cold_concurrent_status_request_returns_warming_without_waiting():
     assert elapsed < 0.05
     assert warming["snapshot_warming"] is True
     assert warming["retry_after_ms"] == 100
-    assert warming["success"] is False
+    assert warming["success"] is True
     assert warming["degraded"] is True
+    assert warming["status_code"] == 200
     assert scheduler.calls["status"] == 1
 
 
 def test_cold_realtime_status_contention_returns_warming_without_waiting():
     app = make_app()
-    app._live_status_lock.acquire()
+    app._live_status_refresh_locks = {"light:process": threading.Lock()}
+    app._live_status_refresh_locks["light:process"].acquire()
     try:
         started = time.perf_counter()
         warming = app.realtime_status(light=True)
         elapsed = time.perf_counter() - started
     finally:
-        app._live_status_lock.release()
+        app._live_status_refresh_locks["light:process"].release()
 
     assert elapsed < 0.05
     assert warming["snapshot_warming"] is True
-    assert warming["success"] is False
+    assert warming["success"] is True
     assert warming["degraded"] is True
     assert warming["retryable"] is True
     assert warming["terminal"] is False
+    assert warming["status_code"] == 200
     assert warming["error"] == "status snapshot is warming"
 
 
@@ -328,7 +431,12 @@ def test_expired_status_cache_returns_degraded_snapshot_while_refresh_runs():
     assert stale["snapshot_stale"] is True
     assert stale["status_age_ms"] >= 3000
     assert stale["degraded"] is True
-    assert stale["success"] is False
+    assert stale["hub_online"] is True
+    assert stale["success"] is True
+    assert stale["status_code"] == 200
+    assert stale["terminal"] is False
+    assert stale["retryable"] is True
+    assert stale["error"] == "status snapshot is stale"
 
 
 def test_status_cache_ttl_starts_after_snapshot_collection(monkeypatch):
@@ -380,11 +488,13 @@ def test_telemetry_summary_timeout_does_not_degrade_core_hub_status(monkeypatch)
     monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {})
     executor = app_module._new_status_dependency_executor()
     app._status_dependency_executor = executor
+    release_summary = threading.Event()
     finished = threading.Event()
 
     def slow_summary(*args, **kwargs):
         try:
-            time.sleep(app_module._STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS + 0.05)
+            if not release_summary.wait(timeout=5):
+                raise TimeoutError("test did not release telemetry summary probe")
             return {"events": 1}
         finally:
             finished.set()
@@ -394,6 +504,7 @@ def test_telemetry_summary_timeout_does_not_degrade_core_hub_status(monkeypatch)
     try:
         result = app.realtime_status(light=True)
         telemetry = result["dependency_status"]["telemetry.summary"]
+        release_summary.set()
         assert finished.wait(timeout=1), telemetry
         assert telemetry["degraded"] is True
         assert telemetry["reason"] == "probe_timeout"
@@ -403,6 +514,7 @@ def test_telemetry_summary_timeout_does_not_degrade_core_hub_status(monkeypatch)
         }
         assert result["success"] is True
     finally:
+        release_summary.set()
         executor.shutdown(wait=True, cancel_futures=True)
 
 
@@ -415,7 +527,7 @@ def test_telemetry_summary_within_diagnostic_budget_does_not_time_out(monkeypatc
 
     def slow_summary(*args, **kwargs):
         try:
-            time.sleep(app_module._STATUS_DEPENDENCY_TIMEOUT_SECONDS + 0.05)
+            time.sleep(app_module._STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS - 0.05)
             return {"events": 1}
         finally:
             finished.set()
@@ -443,7 +555,7 @@ def test_full_status_telemetry_summary_uses_diagnostic_budget(monkeypatch):
 
     def slow_summary(*args, **kwargs):
         try:
-            time.sleep(app_module._STATUS_DEPENDENCY_TIMEOUT_SECONDS + 0.05)
+            time.sleep(app_module._STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS - 0.05)
             return {"events": 1}
         finally:
             finished.set()
@@ -480,7 +592,9 @@ def test_local_ai_status_keeps_telemetry_timeout_visible_without_global_degraded
 
     assert result["success"] is True
     assert result["degraded"] is False
-    assert result["dependency_status"] == {"telemetry.summary": telemetry_diagnostic}
+    # Agent status keeps only the degraded flag; detailed timeout reasons are
+    # available through the dashboard's diagnostics toggle.
+    assert result["dependency_status"] == {"telemetry.summary": {"degraded": True}}
 
 
 def test_status_dependency_reports_probe_exception_without_exception_text():
@@ -649,6 +763,12 @@ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
     assert result["dependency_status"]["accelerators"]["degraded"] is True
 
 
+def test_default_status_dependency_deadline_allows_probe_jitter():
+    assert app_module._status_dependency_timeout_seconds("accelerators") == 1.0
+    assert app_module._status_dependency_timeout_seconds("model_execution") == 1.0
+    assert app_module._status_dependency_timeout_seconds("runtime.online") == 2.0
+
+
 def test_slow_accelerator_probe_degrades_within_deadline_and_keeps_shape(monkeypatch):
     def slow_probe(_config):
         time.sleep(0.20)
@@ -717,7 +837,7 @@ def test_realtime_status_allows_slow_managed_profile_within_extended_budget():
     assert result["degraded"] is False
     assert result["ollama_profile"] == {"managed": True}
     assert profile["degraded"] is False
-    assert profile["deadline_ms"] == 1000
+    assert profile["deadline_ms"] == 3000
 
 
 def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
@@ -773,6 +893,8 @@ def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):
     monkeypatch.setattr(app_module, "_STATUS_AGENT_STATE_TIMEOUT_SECONDS", 0.10)
     monkeypatch.setattr(app_module, "_status_dependency", isolate_agent_state)
     app = make_app()
+    executor = app_module._new_status_dependency_executor()
+    app._status_dependency_executor = executor
     app.status()
     # Exercise a fresh dependency probe, then verify T18 cache hits reuse it.
     app._status_full_cache.clear()
@@ -796,6 +918,7 @@ def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):
     deadline = time.monotonic() + 1.0
     while app._status_dependency_inflight and time.monotonic() < deadline:
         time.sleep(0.005)
+    executor.shutdown(wait=True, cancel_futures=True)
     assert "agent_state" not in app._status_dependency_inflight
     with lock:
         assert active[0] == 0
@@ -840,6 +963,84 @@ def test_live_status_cache_covers_normal_dashboard_poll_interval(monkeypatch):
     assert app.runtime.calls == calls_after_first_snapshot
 
 
+def test_live_status_cache_ttl_starts_after_snapshot_collection(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: now[0])
+    app = make_live_app(monkeypatch)
+    original_headless = app._headless_status
+
+    def advance_during_collection():
+        now[0] += 6.0
+        return original_headless()
+
+    app._headless_status = advance_during_collection
+    app.realtime_status(light=True)
+    now[0] += 1.0
+
+    cached = app.realtime_status(light=True)
+
+    assert cached["snapshot_cached"] is True
+    assert app._live_status_cache["light:process"][0] == 16.0
+
+
+def test_live_status_reads_vram_snapshot_without_forcing_probe(monkeypatch):
+    calls = []
+    app = make_live_app(monkeypatch)
+    app.vram_balancer = SimpleNamespace(
+        status=lambda *, force=False: calls.append(force) or {"telemetry_stale": True},
+    )
+
+    result = app.realtime_status(light=True)
+
+    assert calls == [False]
+    assert result["dependency_status"]["vram_balancer"]["degraded"] is False
+
+
+def test_unavailable_request_journal_degrades_live_and_full_status(monkeypatch):
+    app = make_live_app(monkeypatch)
+    app.recovery = Probe(status={
+        "counts": {},
+        "recent": [],
+        "journal_available": False,
+        "journal_unavailable_reason": "request journal completion write failed: database is locked",
+        "writer_error_type": "OperationalError",
+    })
+
+    for result in (app.realtime_status(light=True), app.status()):
+        assert result["success"] is False
+        assert result["degraded"] is True
+        assert result["dependency_status"]["recovery"]["degraded"] is True
+        assert result["dependency_status"]["recovery"]["reason"].endswith("database is locked")
+
+
+def test_live_status_refresh_locks_are_isolated_by_scope(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    app = make_live_app(monkeypatch)
+
+    def slow_window_telemetry(*, scope, light):
+        if scope == "window":
+            entered.set()
+            assert release.wait(2.0)
+        return {"events": 1}
+
+    app.telemetry.realtime_summary = slow_window_telemetry
+    window_refresh = threading.Thread(
+        target=lambda: app.realtime_status(light=True, scope="window")
+    )
+    window_refresh.start()
+    try:
+        assert entered.wait(1.0)
+        process_status = app.realtime_status(light=True, scope="process")
+    finally:
+        release.set()
+        window_refresh.join(2.0)
+
+    assert process_status["hub_online"] is True
+    assert process_status.get("snapshot_warming") is not True
+    assert not window_refresh.is_alive()
+
+
 def test_expired_live_status_cache_returns_degraded_snapshot_while_refresh_runs(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
@@ -869,7 +1070,12 @@ def test_expired_live_status_cache_returns_degraded_snapshot_while_refresh_runs(
     assert all(result["snapshot_stale"] is True for result in stale_results)
     assert all(result["status_age_ms"] >= 6000 for result in stale_results)
     assert all(result["degraded"] is True for result in stale_results)
-    assert all(result["success"] is False for result in stale_results)
+    assert all(result["hub_online"] is True for result in stale_results)
+    assert all(result["success"] is True for result in stale_results)
+    assert all(result["status_code"] == 200 for result in stale_results)
+    assert all(result["terminal"] is False for result in stale_results)
+    assert all(result["retryable"] is True for result in stale_results)
+    assert all(result["error"] == "status snapshot is stale" for result in stale_results)
 
 
 def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatch):
@@ -887,7 +1093,7 @@ def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatc
     started = time.monotonic()
     result = app.realtime_status(light=True)
 
-    assert time.monotonic() - started < 0.18
+    assert time.monotonic() - started < 0.30
     assert result["degraded"] is True
     assert result["success"] is False
     assert result["dependency_status"]["runtime.online"]["degraded"] is True

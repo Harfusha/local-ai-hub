@@ -49,14 +49,17 @@ def live_api(tmp_path, monkeypatch):
 def test_health_reports_running_and_installed_versions_separately(live_api, monkeypatch):
     import importlib.metadata
     from local_ai_hub import __version__
+    from local_ai_hub.http_admin import _installed_hub_version
 
     _app, client = live_api
+    _installed_hub_version.cache_clear()
     res = client.get("/health")
     assert res.get("success") is True
     assert res.get("version") == __version__
     assert "installed_version" in res
 
     monkeypatch.setattr(importlib.metadata, "version", lambda pkg: "6.0.0" if pkg == "local-ai-hub" else None)
+    _installed_hub_version.cache_clear()
     res_mocked = client.get("/health")
     assert res_mocked.get("installed_version") == "6.0.0"
 
@@ -64,6 +67,7 @@ def test_health_reports_running_and_installed_versions_separately(live_api, monk
         raise importlib.metadata.PackageNotFoundError(pkg)
 
     monkeypatch.setattr(importlib.metadata, "version", _raise)
+    _installed_hub_version.cache_clear()
     res_none = client.get("/health")
     assert res_none.get("installed_version") is None
 

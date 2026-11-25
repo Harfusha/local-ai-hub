@@ -1,4 +1,5 @@
 import pytest
+import threading
 
 from local_ai_hub.services import LocalAIServices
 
@@ -41,6 +42,36 @@ def test_embedding_service_does_not_reuse_vectors_across_embedding_spaces():
     assert first['embedding_space_id'] == 'space-a'
     assert second['embedding_space_id'] == 'space-b', second
     assert second['embeddings'] == [[2.0, 1.0]] and service.embeddings.calls == 2
+
+
+def test_openvino_cold_load_timeout_does_not_block_request_thread():
+    service = _service()
+    service.config['models']['embedding_backend'] = 'openvino'
+    started = threading.Event()
+    finish = threading.Event()
+
+    def slow_encode(texts, **_kwargs):
+        started.set()
+        assert finish.wait(3.0)
+        return {
+            'success': True,
+            'embedding_space_id': 'openvino:test-device',
+            'embedding_dimension': 2,
+            'embeddings': [[1.0, 0.0] for _ in texts],
+        }
+
+    service.embeddings.encode = slow_encode
+    try:
+        result = service.embed(['cold query'], query=True, wait_timeout=0.05)
+        assert result['success'] is False
+        assert result['timed_out'] is True
+        assert result['retryable'] is True
+        assert started.wait(1.0)
+    finally:
+        finish.set()
+    warmed = service.embed(['cold query'], query=True, wait_timeout=2.0)
+    assert warmed['success'] is True
+    assert warmed['embeddings'] == [[1.0, 0.0]]
 
 
 def test_service_uses_model_cache_without_reserving_gpu(tmp_path, monkeypatch):

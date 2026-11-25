@@ -137,6 +137,29 @@ class ModelExecutionPolicy:
             return 8192
         return None
 
+    def _configured_runtime_context_limit(self, model: str) -> int | None:
+        """Return a configured llama.cpp context cap for a routed model."""
+        llama_cfg = self.config.get("llama_cpp", {})
+        if not isinstance(llama_cfg, Mapping):
+            return None
+        mode = _clean_str(llama_cfg.get("mode", "auto")).strip().lower()
+        if mode == "off":
+            return None
+        configured = llama_cfg.get("models", {})
+        if not isinstance(configured, Mapping):
+            return None
+        entry = configured.get(_clean_str(model).strip())
+        if not isinstance(entry, Mapping):
+            return None
+        raw_limit = entry.get("context_length")
+        if isinstance(raw_limit, bool) or (isinstance(raw_limit, float) and not raw_limit.is_integer()):
+            return None
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return limit if limit >= 4096 else None
+
     def profile(
         self,
         model: str,
@@ -175,6 +198,11 @@ class ModelExecutionPolicy:
             minimum=4096,
         )
         model_ctx_limit = self._model_context_limit(model)
+        runtime_ctx_limit = self._configured_runtime_context_limit(model)
+        if runtime_ctx_limit is not None and (
+            model_ctx_limit is None or runtime_ctx_limit < model_ctx_limit
+        ):
+            model_ctx_limit = runtime_ctx_limit
         if model_ctx_limit is not None:
             default_ctx = min(default_ctx, model_ctx_limit)
             large_ctx = min(large_ctx, model_ctx_limit)

@@ -1546,8 +1546,8 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             then.setdefault("properties", {})["limit"] = {
                 "type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 20,
             }
-        if disallowed:
-            then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
+        if tool == "local_ai_artifact" and action == "list" and "artifact_id" in disallowed:
+            then["not"] = {"required": ["artifact_id"]}
         if not then:
             continue
         conditions.append({
@@ -1557,6 +1557,10 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             },
             "then": then,
         })
+    # The handler validates action-specific allowed fields before dispatch.
+    # Duplicating every field exclusion in each MCP conditional inflated public
+    # schemas by hundreds of kilobytes; keep only conditions that clients need
+    # for argument construction (required fields and explicit cross-field rules).
     # Codex's type renderer does not show conditional `required` clauses.
     # Repeat the registry's action-specific requirements as field descriptions.
     required_by_field: dict[str, list[str]] = {}

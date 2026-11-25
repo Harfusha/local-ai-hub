@@ -39,13 +39,17 @@ def runtime_module_available(module: str) -> bool:
     try:
         from local_ai_hub.process_utils import hidden_run_kwargs
         result = subprocess.run(
-            [str(interpreter), "-c", f"import {module}"],
+            [
+                str(interpreter), "-c",
+                "import importlib.util,sys; "
+                f"sys.exit(0 if importlib.util.find_spec({module!r}) is not None else 1)",
+            ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            # A cold SentenceTransformers/Torch import on Windows can exceed
-            # eight seconds even when the installed backend is healthy.
-            timeout=30,
+            # Check installation without importing large runtimes such as
+            # SentenceTransformers and Torch into a throwaway process.
+            timeout=5,
             check=False,
             **hidden_run_kwargs(),
         )

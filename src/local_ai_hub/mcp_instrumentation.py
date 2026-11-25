@@ -364,7 +364,9 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
                     mem.pop("instruction", None)
 
     profile = str(arguments.get("response_profile") or "").strip().lower()
-    if profile == "minimal" and isinstance(result, dict) and result.get("success") is True:
+    # local_ai_status already has a dedicated compact projection above. The
+    # generic minimal projection drops its required readiness identity fields.
+    if profile == "minimal" and tool != "local_ai_status" and isinstance(result, dict) and result.get("success") is True:
         result = _project_minimal_agent_response(result, tool=tool, action=str(arguments.get("action", "")))
 
     return services_module._reconcile_existing_budget(result) or result

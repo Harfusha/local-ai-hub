@@ -221,6 +221,29 @@ def test_status_batches_registered_project_counts_and_reuses_index_connections(t
         assert "group by root" in file_queries[0].lower()
 
 
+def test_status_snapshot_cache_avoids_reopening_large_indexes_for_three_seconds(tmp_path: Path) -> None:
+    pre, _, _ = _status_preprocessor(tmp_path, project_count=2)
+    original_connect = pre._connect
+    connect_calls = 0
+
+    def counted_connect() -> sqlite3.Connection:
+        nonlocal connect_calls
+        connect_calls += 1
+        return original_connect()
+
+    pre._connect = counted_connect
+    pre.status()
+    assert connect_calls == 1
+
+    pre._status_cache["__all__"]["time"] -= 2.0
+    pre.status()
+    assert connect_calls == 1
+
+    pre._status_cache["__all__"]["time"] -= 1.1
+    pre.status()
+    assert connect_calls == 2
+
+
 def test_status_keeps_sqlite_index_error_fallback(tmp_path: Path) -> None:
     pre, roots, _ = _status_preprocessor(tmp_path)
     pre.code_index = _MissingFilesIndex()
@@ -253,15 +276,40 @@ def test_rag_workspace_stats_limits_counts_to_requested_workspaces(tmp_path: Pat
                 ("unrelated", "other.py"),
             ],
         )
+        con.executemany(
+            "INSERT INTO rag_meta(key, value) VALUES(?, ?)",
+            [
+                (RAGStore._workspace_index_generation_key("wanted"), "7"),
+                (RAGStore._workspace_read_uncertainty_key("wanted"), '["a.py","b.py","a.py"]'),
+            ],
+        )
         con.commit()
 
+    queries: list[str] = []
     rag = object.__new__(RAGStore)
-    rag._connect = lambda: sqlite3.connect(db_path)
+
+    def connect() -> sqlite3.Connection:
+        con = sqlite3.connect(db_path)
+        con.set_trace_callback(queries.append)
+        return con
+
+    rag._connect = connect
 
     assert rag.workspace_stats(["wanted", "missing"]) == {
-        "wanted": {"chunks": 3, "files": 3, "chunked_files": 2, "index_generation": 0},
+        "wanted": {
+            "chunks": 3,
+            "files": 3,
+            "chunked_files": 2,
+            "index_generation": 7,
+            "read_uncertain_files": 2,
+        },
         "missing": {"index_generation": 0},
     }
+    metadata_selects = [
+        sql for sql in queries
+        if sql.lower().startswith("select key, value from rag_meta where key in (")
+    ]
+    assert len(metadata_selects) == 1
 
 
 def test_file_card_generation_respects_configured_batch_limit():

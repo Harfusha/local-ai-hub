@@ -1283,10 +1283,40 @@ def test_mcp_tools_list_scopes_artifact_list_arguments():
     input_schema = tool.inputSchema
     list_rule = next(
         rule for rule in input_schema["then"]["allOf"]
-        if rule.get("if", {}).get("properties", {}).get("action", {}).get("const") == "list"
+        if (
+            rule.get("if", {}).get("properties", {}).get("action", {}).get("const") == "list"
+            or "list" in rule.get("if", {}).get("properties", {}).get("action", {}).get("enum", [])
+        )
+        and rule.get("then", {}).get("not", {}).get("required") == ["artifact_id"]
     )
 
-    assert {"required": ["artifact_id"]} in list_rule["then"]["not"]["anyOf"]
+    assert list_rule["if"]["properties"]["action"].get("const", "list") == "list"
+    assert list_rule["then"]["not"] == {"required": ["artifact_id"]}
+
+
+def test_public_mcp_input_schemas_stay_bounded_after_action_scoping():
+    import json
+
+    tools = (
+        "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
+        "local_ai_coord", "local_ai_work", "local_ai_artifact",
+    )
+    size = sum(
+        len(json.dumps(operation_tool_input_schema(tool), separators=(",", ":")))
+        for tool in tools
+    )
+
+    assert size < 100_000
+    assert validate_operation_arguments(
+        "local_ai_task",
+        "hardware_benchmark",
+        {
+            "action": "hardware_benchmark",
+            "model": "qwen2.5-coder:0.5b",
+            "prompt": "bounded validation",
+            "task": "must remain server-rejected",
+        },
+    ) == "task is not valid for action='hardware_benchmark'"
 
 
 def test_receipt_schema_conditionally_requires_evidence_only_when_passed():

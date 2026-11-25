@@ -3,3 +3,4 @@
 sentence-transformers[openvino]>=5.4,<6
 optimum-intel[openvino]>=2.2,<3
 openvino>=2026.1,<2027
+transformers>=4.57.4,<4.58
