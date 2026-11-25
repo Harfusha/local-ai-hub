@@ -186,3 +186,11 @@ their record revisions, source freshness, and inventory completeness.
 Only two source locators per returned record are checked in this bounded
 query; additional locators mean freshness is unknown, not verified.
 No repository writes or model inference are performed.
+
+`POST /api/repo/knowledge/manage` supports scoped audit, impact and
+preview-only remediation contracts. Knowledge edits and finding reviews are
+a two-step preview/save operation with exact record and candidate revision
+binding and explicit apply. The dashboard save path requires normal local
+owner/Host/Origin authorization plus same-origin dashboard request headers;
+the marker is not a separate authenticated identity. No remote MCP write,
+automatic approval or Git operation is introduced.

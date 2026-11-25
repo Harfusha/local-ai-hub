@@ -155,6 +155,7 @@ _CURRENT_ROUTE_PATHS = {
 }
 _CURRENT_ADDED_ROUTES = {
     'post_repo_knowledge_query_1': {'paths': ['/api/repo/knowledge/query'], 'before': 'post_repo_deterministic_1'},
+    'post_repo_knowledge_manage_1': {'paths': ['/api/repo/knowledge/manage'], 'before': 'post_repo_deterministic_1'},
     'post_updates_1': {'paths': ['/api/updates'], 'before': 'post_admin_mode_1'},
     'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},
     'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},

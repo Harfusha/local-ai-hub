@@ -89,3 +89,11 @@ a verified absence of matching knowledge. Changing the checkout discards an
 in-flight result. This panel uses the same repository knowledge HTTP query as
 the existing MCP repo tool. Explicit record edits and review publication
 currently use the local hubctl CLI; this is not yet the full V4 editor.
+
+The Projects knowledge panel also includes a quality inbox, review-note
+editor, corrective-task preview and declaration JSON editor. Edits require
+an exact revision preview, explicit apply, and a current checkout. Save
+writes the repository record through the existing journal, not Git commit
+or push. Refresh the query after edits. Corrective-task creation currently
+uses the existing Agent OS/CLI workflow rather than automatically executing
+a displayed proposal.

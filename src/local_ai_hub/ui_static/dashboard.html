@@ -833,8 +833,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       <label for="projectKnowledgeQuery" class="tiny">Question or terms</label>
       <input id="projectKnowledgeQuery" type="search" required maxlength="2000" placeholder="e.g. paid order rescheduling" aria-label="Search project knowledge" autocomplete="off" style="flex:1;min-width:200px">
       <button id="projectKnowledgeSearch" type="submit" class="btn primary">Search knowledge</button>
+      <button id="projectKnowledgeAudit" type="button" class="btn">Review findings</button>
     </form>
-    <p class="tiny muted">Read-only. These are repository declarations, not verified runtime behavior or task completion evidence. Select the exact checkout, not a grouped repository identity.</p>
+    <p class="tiny muted">Repository declarations are not verified runtime behavior or task completion evidence. Select the exact checkout. Edits require a preview and explicit save; no Git commit or push is performed.</p>
     <div id="projectKnowledgeStatus" class="tiny muted" role="status" aria-live="polite">Choose a checkout and enter a query.</div>
     <div id="projectKnowledgeResults" style="padding:12px"></div>
   </section>

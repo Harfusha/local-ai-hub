@@ -87,6 +87,7 @@ jobs:
           tests/test_repo_knowledge_graph.py
           tests/test_repo_knowledge_quality.py
           tests/test_repo_knowledge_discovery.py
+          tests/test_repo_knowledge_management.py
           tests/test_evidence_contract.py
           tests/test_release_check_working_tree.py
       - run: >-

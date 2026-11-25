@@ -717,6 +717,22 @@ class HTTPPostRoutesMixin:
                 self._send(200, services_module.APP.services.benchmark()); return
             if 'post_evaluation_1' in post_route_ids:
                 self._send(200, services_module.APP.services.evaluation(payload)); return
+            if 'post_repo_knowledge_manage_1' in post_route_ids:
+                from .repo_knowledge_management import manage_repository_knowledge
+                def knowledge_operator_write() -> bool:
+                    # Local-owner trust is established by normal Host/Origin and
+                    # loopback checks above; the dashboard marker is not identity.
+                    return (
+                        getattr(self, "_authorization_actor", "") == "local"
+                        and self.headers.get("X-LocalAI-Client", "") == "dashboard"
+                        and self.headers.get("Sec-Fetch-Site", "").lower() == "same-origin"
+                        and bool(self.headers.get("Origin", "").strip())
+                    )
+                result = manage_repository_knowledge(
+                    services_module.APP.config, payload, authorize_operator_write=knowledge_operator_write,
+                )
+                self._send(int(result.pop("status_code", 200)), result)
+                return
             if 'post_repo_knowledge_query_1' in post_route_ids:
                 from .repo_knowledge import query_repository_knowledge
                 result = query_repository_knowledge(services_module.APP.config, payload)

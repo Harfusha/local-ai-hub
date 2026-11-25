@@ -118,6 +118,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_repo_diagnose_1', frozenset(('/api/repo/diagnose',))),
     RouteRule('post_repo_briefing_1', frozenset(('/api/repo/briefing',))),
     RouteRule('post_repo_knowledge_query_1', frozenset(('/api/repo/knowledge/query',))),
+    RouteRule('post_repo_knowledge_manage_1', frozenset(('/api/repo/knowledge/manage',))),
     RouteRule('post_repo_deterministic_1', frozenset(('/api/repo/deterministic',))),
     RouteRule('post_repo_impact_1', frozenset(('/api/repo/impact',))),
     RouteRule('post_search_1', frozenset(('/api/search',))),

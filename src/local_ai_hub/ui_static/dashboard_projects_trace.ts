@@ -97,9 +97,85 @@ function renderProjectKnowledgeResults(result){
     const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Sources, revision and declared relationships';details.appendChild(summary);
     const pre=document.createElement('pre');pre.className='human-pre';
     pre.textContent=JSON.stringify({record_id:record.id,revision:item.revision,evidence:record.evidence||[],source_statuses:item.evidence_statuses||[],source_checks_complete:item.source_checks_complete,relations:record.relations||[],flow:payload.flow},null,2);
-    details.appendChild(pre);card.appendChild(details);output.appendChild(card);
+    details.appendChild(pre);card.appendChild(details);
+    const editor=document.createElement('details'),editorTitle=document.createElement('summary');editorTitle.textContent='Edit declaration';editor.appendChild(editorTitle);
+    const input=document.createElement('textarea');input.rows=8;input.setAttribute('aria-label','Knowledge record JSON');input.value=JSON.stringify(record,null,2);editor.appendChild(input);
+    const preview=document.createElement('button');preview.type='button';preview.className='btn';preview.textContent='Preview edit';editor.appendChild(preview);
+    const review=document.createElement('pre');review.className='human-pre';editor.appendChild(review);
+    preview.addEventListener('click',async()=>{
+      try{
+        const proposed=JSON.parse(input.value);
+        if(proposed.id!==record.id||proposed.kind!==record.kind||proposed.project_id!==record.project_id)throw new Error('Record identity cannot change in this editor');
+        await previewKnowledgeWrite(editor,review,preview,{action:'preview_edit',record:proposed,expected_revision:item.revision},'save_edit');
+      }catch(error){review.textContent=String(error?.message||error)}
+    });
+    if(record.kind!=='review')card.appendChild(editor);
+    output.appendChild(card);
   }
 }
+async function previewKnowledgeWrite(container,review,trigger,payload,saveAction){
+  const root=String($('projectKnowledgeRoot')?.value||''),generation=projectKnowledgeGeneration;
+  if(!root)return;
+  trigger.disabled=true;
+  container.querySelector('[data-knowledge-apply]')?.remove();
+  review.textContent='Validating current revision…';
+  try{
+    const result=await post('/api/repo/knowledge/manage',{root,...payload});
+    if(generation!==projectKnowledgeGeneration||$('projectKnowledgeRoot')?.value!==root)return;
+    if(result?.success!==true)throw new Error(result?.error||'Preview failed');
+    review.textContent=JSON.stringify({before:result.before,after:result.after},null,2);
+    if(!result.writable_mode){review.textContent+='\nRead-only project: cannot save.';return}
+    const save=document.createElement('button');save.type='button';save.className='btn primary';save.dataset.knowledgeApply='true';save.textContent='Save reviewed declaration to checkout';container.appendChild(save);
+    const operationId=crypto.randomUUID();
+    save.addEventListener('click',async()=>{
+      if(generation!==projectKnowledgeGeneration||$('projectKnowledgeRoot')?.value!==root)return;
+      save.disabled=true;trigger.disabled=true;
+      try{
+        const updated=await post('/api/repo/knowledge/manage',{root,...payload,action:saveAction,expected_revision:result.expected_revision,preview_digest:result.preview_digest,operation_id:operationId,apply:true});
+        if(generation!==projectKnowledgeGeneration)return;
+        if(updated?.success!==true)throw new Error(updated?.error||'Save failed');
+        review.textContent='Saved to current checkout. Refresh before further edits. Review Git diff before commit.';
+      }catch(error){review.textContent=String(error?.message||error)+' · Refresh and inspect current state before retry.'}
+      finally{if(generation===projectKnowledgeGeneration)trigger.disabled=false}
+    });
+  }catch(error){if(generation===projectKnowledgeGeneration)review.textContent=String(error?.message||error)}
+  finally{if(generation===projectKnowledgeGeneration)trigger.disabled=false}
+}
+$('projectKnowledgeAudit')?.addEventListener('click',async()=>{
+  const root=String($('projectKnowledgeRoot')?.value||'');if(!root)return;
+  const generation=++projectKnowledgeGeneration,output=$('projectKnowledgeResults'),status=$('projectKnowledgeStatus'),button=$('projectKnowledgeAudit');
+  if(button)button.disabled=true;if(output)output.replaceChildren();if(status)status.textContent='Inspecting knowledge freshness and findings…';
+  try{
+    const result=await post('/api/repo/knowledge/manage',{root,action:'audit'});
+    if(generation!==projectKnowledgeGeneration)return;
+    if(result?.success!==true)throw new Error(result?.error||'Audit unavailable');
+    const findings=Array.isArray(result.findings)?result.findings:[];
+    if(status)status.textContent=findings.length+' candidates · '+(result.complete?'inventory complete':'partial inventory; cannot approve absent findings');
+    for(const finding of findings){
+      const card=document.createElement('section');card.className='section';
+      const title=document.createElement('h3');title.textContent=String(finding.type||'Quality candidate');card.appendChild(title);
+      const meta=document.createElement('p');meta.textContent=[finding.id,finding.record_id||finding.claim_key,finding.freshness,finding.review_disposition].filter(Boolean).join(' · ');card.appendChild(meta);
+      const old=document.createElement('p');old.textContent=String(finding.review_note||'');card.appendChild(old);
+      const choice=document.createElement('select');choice.setAttribute('aria-label','Finding disposition');
+      for(const value of ['confirmed_issue','expected','acceptable','false_positive','deferred']){const option=document.createElement('option');option.value=value;option.textContent=value;choice.appendChild(option)}card.appendChild(choice);
+      const note=document.createElement('textarea');note.rows=2;note.maxLength=2000;note.placeholder='Review note';note.setAttribute('aria-label','Finding review note');card.appendChild(note);
+      const preview=document.createElement('button');preview.type='button';preview.className='btn';preview.textContent='Preview review';card.appendChild(preview);
+      const remediation=document.createElement('button');remediation.type='button';remediation.className='btn';remediation.textContent='Preview corrective task';card.appendChild(remediation);
+      const review=document.createElement('pre');review.className='human-pre';card.appendChild(review);
+      preview.addEventListener('click',()=>previewKnowledgeWrite(card,review,preview,{action:'preview_review',finding_id:finding.id,subject_digest:finding.subject_digest,decision:choice.value,note:note.value},'save_review'));
+      remediation.addEventListener('click',async()=>{
+        try{
+          const result=await post('/api/repo/knowledge/manage',{root,action:'preview_remediation',finding_id:finding.id,subject_digest:finding.subject_digest});
+          if(generation!==projectKnowledgeGeneration)return;
+          if(result?.success!==true)throw new Error(result?.error||'Remediation unavailable');
+          review.textContent=JSON.stringify(result.contract,null,2)+'\nCreate the reviewed task through existing Agent OS or hubctl knowledge remediate.';
+        }catch(error){if(generation===projectKnowledgeGeneration)review.textContent=String(error?.message||error)}
+      });
+      output?.appendChild(card);
+    }
+  }catch(error){if(generation===projectKnowledgeGeneration&&status)status.textContent=String(error?.message||error)}
+  finally{if(button)button.disabled=false}
+});
 $('projectKnowledgeRoot')?.addEventListener('change',resetProjectKnowledge);
 $('projectKnowledgeForm')?.addEventListener('submit',async event=>{
   event.preventDefault();
