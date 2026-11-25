@@ -2186,3 +2186,55 @@ def test_commit_update_only_refreshes_search_index_when_indexed_fields_change(
         idempotency_key="checkpoint-search-index-refresh-guard",
     )
     assert refreshed == [task.task_id]
+
+
+def test_handoff_attempt_lineage_is_persisted_and_server_managed(store: TaskStore, tmp_path):
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_task_handoff import build_task_handoff, preview_handoff_resume
+    from local_ai_hub.repo_plan.schema_validation import RepoPlanError
+
+    root = (tmp_path / "shared-project").resolve()
+    (root / ".local-ai-hub").mkdir(parents=True)
+    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project, "mode": "shared",
+    }), encoding="utf-8")
+    shared = RepoKnowledgeStore(root)
+    origin = {"task_id": "task-origin", "repo_root": str(root), "status": "completed",
+              "contract": {"goal": "Review order", "acceptance_criteria": ["Run tests"]},
+              "checkpoint": {"phase": "review", "next_action": "Run tests"}}
+    record = build_task_handoff(shared, origin)
+    shared.save(record, expected_revision="", owner="operator", idempotency_key="handoff",
+                authorize_write=lambda: True)
+    preview = preview_handoff_resume(shared, record["id"])
+    selection = {"handoff_id": record["id"], "revision": preview["revision"],
+                 "preview_digest": preview["preview_digest"]}
+    contract = GoalContract.from_dict(preview["contract"])
+    context = ScopeContext(repository_id="a" * 64)
+    attempt = store.create(contract, context, task_id="task-attempt", repo_root=str(root),
+                           _handoff_resume=selection)
+    expected = {"schema_version": 1, "project_id": project, "handoff_id": record["id"],
+                "handoff_revision": preview["revision"], "origin_task_id": "task-origin",
+                "attempt_id": "task-attempt", "preview_digest": preview["preview_digest"]}
+    assert attempt.status is TaskStatus.PLANNED
+    assert not attempt.lease_id and not attempt.verification_receipts
+    assert attempt.checkpoint.state_data["_portable_attempt"] == expected
+    reloaded = TaskStore(store.state_store)
+    assert reloaded.get("task-attempt").checkpoint.state_data["_portable_attempt"] == expected
+    events = list(store.state_store.events("task:task-attempt"))
+    created = next(event for event in events if event.kind == "task.created")
+    assert created.payload["checkpoint"]["state_data"]["_portable_attempt"] == expected
+    updated = reloaded.checkpoint("task-attempt", TaskCheckpoint(phase="new phase"))
+    assert updated.checkpoint.state_data["_portable_attempt"] == expected
+    with pytest.raises(ValueError, match="portable attempt lineage is server-managed"):
+        reloaded.checkpoint("task-attempt", TaskCheckpoint(state_data={
+            "_portable_attempt": {**expected, "origin_task_id": "forged"},
+        }))
+    ordinary = reloaded.create(GoalContract(goal="Ordinary task"), context,
+                               task_id="task-ordinary", repo_root=str(root))
+    with pytest.raises(ValueError, match="portable attempt lineage is server-managed"):
+        reloaded.checkpoint(ordinary.task_id, TaskCheckpoint(state_data={"_portable_attempt": expected}))
+    with pytest.raises(RepoPlanError):
+        reloaded.create(GoalContract(goal="Different goal"), context, task_id="task-forged",
+                        repo_root=str(root), _handoff_resume=selection)
+    assert reloaded.get("task-forged") is None
