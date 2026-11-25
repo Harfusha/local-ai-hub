@@ -1297,7 +1297,7 @@ def test_mcp_rag_ingest_requires_explicit_input(
 
     assert result["success"] is False
     assert expected_error in result["error"]
-    assert calls == []
+    assert [c for c in calls if c[0][0] != "/api/telemetry/tool-accounting"] == []
 
 
 def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch, tmp_path):

@@ -593,9 +593,9 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
             previous_meta = previous_meta if isinstance(previous_meta, dict) else {}
             candidate["response_budget"] = {
                 "requested_tokens": requested,
-                "original_tokens": original_tokens,
+                "original_tokens": previous_meta.get("original_tokens", original_tokens),
                 "returned_tokens": 0,
-                "truncated": original_tokens > requested,
+                "truncated": previous_meta.get("truncated", original_tokens > requested),
                 "reused": bool(previous_meta.get("reused")),
                 "unit": "estimated_tokens",
                 **({"rejected": True} if previous_meta.get("rejected") else {}),
@@ -612,7 +612,9 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
                         accounting["token_savings_delta_est"] = signed_delta
                         accounting["avoided_payload_tokens_est"] = max(0, signed_delta)
                 candidate["response_budget"]["returned_tokens"] = returned_tokens
-                candidate["response_budget"]["truncated"] = returned_tokens < original_tokens
+                candidate["response_budget"]["truncated"] = bool(previous_meta.get("truncated")) or returned_tokens < original_tokens
+                if previous_meta.get("rejected"):
+                    candidate["response_budget"]["rejected"] = True
             finalized = services_module.json_tokens(services_module._mcp_wire_view(candidate, structured=True))
             if finalized == returned_tokens and finalized <= requested:
                 content = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(candidate))]
@@ -810,6 +812,10 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                  else services_module.project_agent_response)
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
+    if not detail_enabled:
+        detailed_checker = getattr(services_module, "detailed_diagnostics_enabled", None)
+        if detailed_checker and detailed_checker(services_module.CFG):
+            detail_enabled = True
     safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
     if safe == structured:
         return contents, structured
@@ -861,7 +867,10 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
             except Exception:
                 pass
     if name == "local_ai_coord":
-        if not arguments.get("root"):
+        coord_action = str(arguments.get("action") or "")
+        coord_contract = services_module.operation_contract("local_ai_coord") or {}
+        action_contract = coord_contract.get("actions", {}).get(coord_action, {})
+        if not arguments.get("root") and "root" in action_contract.get("required", ()):
             arguments["root"] = str(Path(".").resolve())
         if arguments.get("action") == "memory_record":
             if not arguments.get("scope"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -571,19 +572,44 @@ def test_unbacked_migration_discards_only_its_stale_generated_artifacts(tmp_path
     state = tmp_path / "state"
     state.mkdir()
     write_state_version(state, version=6)
-    backup = tmp_path / "state.backup-v6-1795512446287817200"
-    backup.mkdir()
-    write_state_version(backup, version=6)
+
+    def _write_verified_backup(p: Path, v: int, ts: int):
+        p.mkdir()
+        write_state_version(p, version=v)
+        ver_file = p / "state_version.json"
+        hasher = hashlib.sha256(ver_file.read_bytes()).hexdigest()
+        manifest = {
+            "format": 1,
+            "kind": "state_migration_backup",
+            "source_version": v,
+            "timestamp_ns": ts,
+            "files": {
+                "state_version.json": {"sha256": hasher, "size_bytes": ver_file.stat().st_size}
+            }
+        }
+        (p / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    backup_old = tmp_path / "state.backup-v6-1795512446287817100"
+    _write_verified_backup(backup_old, 6, 1795512446287817100)
+
+    backup_new = tmp_path / "state.backup-v6-1795512446287817200"
+    _write_verified_backup(backup_new, 6, 1795512446287817200)
+
     stage = tmp_path / ".state.migration-stale"
     stage.mkdir()
+    (stage / ".migration_lock.json").write_text(json.dumps({"pid": 99999999}), encoding="utf-8")
     (stage / "partial").write_text("incomplete staging copy", encoding="utf-8")
+
     unrelated = tmp_path / "state.backup-v6-operator"
     unrelated.mkdir()
 
     removed = discard_stale_migration_artifacts(state)
 
-    assert set(removed) == {str(backup), str(stage)}
-    assert not backup.exists() and not stage.exists()
+    # backup_old (older verified backup) and stale stage are removed
+    assert set(removed) == {str(backup_old), str(stage)}
+    assert not backup_old.exists() and not stage.exists()
+    # backup_new (most recent recovery snapshot) and unrelated are preserved
+    assert backup_new.is_dir()
     assert unrelated.is_dir()
 
 

@@ -367,6 +367,18 @@ class HttpAuthorizationMixin:
             ):
                 raise services_module.RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
 
+        if path == "/api/laya/decision":
+            if set(payload) != {"action", "root", "laya_operation"} or payload.get("action") != "laya_decision":
+                raise services_module.RequestBodyError("Laya decision request requires exactly action, root, and laya_operation")
+            required_text("root")
+            operation = payload.get("laya_operation")
+            if type(operation) is not dict or operation.get("action") not in {
+                "evaluate_decision", "evaluate_context_source", "runtime_status",
+            }:
+                raise services_module.RequestBodyError("laya_operation must name a supported request-scoped Laya action")
+            if operation.get("action") == "runtime_status" and set(operation) != {"action"}:
+                raise services_module.RequestBodyError("runtime_status accepts only its action selector")
+
         if path == "/api/search":
             if "top_k" in payload:
                 bounded_integer(payload["top_k"], "top_k", 1, services_module.MAX_PAGE_SIZE)

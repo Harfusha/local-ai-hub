@@ -333,6 +333,10 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     services_module = _get_services_module()
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
+    if not detail_enabled:
+        detailed_checker = getattr(services_module, "detailed_diagnostics_enabled", None)
+        if detailed_checker and detailed_checker(services_module.CFG):
+            detail_enabled = True
     projector = (services_module.project_status_response if tool == "local_ai_status"
                  else services_module.project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"

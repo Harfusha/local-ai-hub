@@ -25,6 +25,7 @@ def test_dashboard_contains_laya_observability_surfaces():
     # Verify Laya feature pill
     assert "k:'laya'" in DASHBOARD_HTML
     assert "label:'Laya'" in DASHBOARD_HTML
+    assert "wiredLayaCategories=['context_source','context_budget','model_route','redundant_step','next_step','delegation','completion_gap','watchdog','retrieval_strategy','subagent_budget']" in DASHBOARD_HTML
 
     # Verify HTML structure validity and uniqueness of IDs
     valid, errors = validate_dashboard_html(DASHBOARD_HTML)

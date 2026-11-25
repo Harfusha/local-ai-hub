@@ -382,11 +382,13 @@ class ServiceCommandMixin:
         *,
         source: str,
         diagnostic_timeout_seconds: float | None = None,
+        repository_root: str | None = None,
     ) -> dict[str, Any]:
         reject_retired_tenancy_fields(payload)
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
-        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:7b"))
+        explicit_model = str(payload.get("model") or "").strip()
+        model = explicit_model or str(self.config.get("models", {}).get("general", "qwen2.5-coder:7b"))
         clean = dict(payload)
         clean.pop("_hub_timeout_seconds", None)
         has_diagnostic_cap = diagnostic_timeout_seconds is not None
@@ -404,6 +406,46 @@ class ServiceCommandMixin:
                 last_msg = promptish[-1]
                 if isinstance(last_msg, dict) and isinstance(last_msg.get("content"), str):
                     semantic_query = last_msg.get("content", "").strip()
+
+            # Repository-scoped direct requests can benefit from the same typed
+            # model-route advisory as repository delegation. Explicit model
+            # choices and requests without an authorized repository root remain
+            # fully deterministic and never invoke Laya.
+            if (
+                endpoint in {"/api/generate", "/api/chat"}
+                and not explicit_model
+                and isinstance(repository_root, str)
+                and repository_root.strip()
+                and len(semantic_query) >= 8
+            ):
+                try:
+                    context_parts: list[str] = []
+                    system = clean.get("system")
+                    if isinstance(system, str) and system.strip():
+                        context_parts.append(system.strip())
+                    if isinstance(promptish, list):
+                        for message in promptish[:-1]:
+                            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                                content = message["content"].strip()
+                                if content:
+                                    context_parts.append(content)
+                    request_context = "\n\n".join(context_parts)[-4096:]
+                    route = self.router.classify(
+                        semantic_query[:4096], request_context, "auto", "auto",
+                    )
+                    route.setdefault("model", model)
+                    project_context, _, _, _ = self._resolve_local_task_project(repository_root)
+                    laya_route = self._request_laya_model_route(
+                        {"root": repository_root},
+                        route,
+                        semantic_query[:4096],
+                        request_context,
+                        project_settings=project_context.settings if project_context is not None else None,
+                    )
+                    if laya_route is not None and isinstance(route.get("model"), str) and route["model"].strip():
+                        model = route["model"]
+                except Exception as exc:
+                    logger.debug("Laya proxy model-route fallback: %s", type(exc).__name__)
 
             input_tokens = estimate_tokens(json_dumps(promptish, ensure_ascii=False, default=str) if not isinstance(promptish, str) else promptish)
             opts = clean.get("options", {}) if isinstance(clean.get("options"), dict) else {}

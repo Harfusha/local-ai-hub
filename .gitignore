@@ -31,6 +31,8 @@ config.toml.bak*
 config.toml.local-ai-hub-backup-*
 config*.backup-*
 state.backup-*
+state.embedding-reset-*
+*.embedding-reset-*
 *.backup-config-v*
 *.backup-v*
 # Hub backup files anywhere in the repo
@@ -105,4 +107,6 @@ config.runtime.toml
 /.sync-069d-runtime/
 /.case132-fixture-*/
 MagicMock/
+/.local-ai-hub/telemetry/
+/telemetry/
 

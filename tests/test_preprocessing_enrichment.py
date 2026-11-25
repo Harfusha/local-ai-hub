@@ -37,7 +37,7 @@ def test_file_card_output_rejects_unbounded_model_fields():
     assert not valid({**card, "purpose": "ž" * purpose_limit + " "})
     assert not valid({**card, "purpose": " "})
     for field, rule in CARD_SCHEMA["properties"].items():
-        if rule["type"] == "array":
+        if rule["type"] == "array" and field != "evidence":
             items_limit = rule["maxItems"]
             item_limit = rule["items"]["maxLength"]
             assert valid({**card, field: ["ž" * item_limit] * items_limit})
@@ -895,8 +895,10 @@ def test_file_card_enrichment_refreshes_module_and_project_cards(tmp_path, monke
             assert json.loads(project["card_json"])["summary"] == _enriched_card()["purpose"]
             assert project["revision_hash"] != old_project["revision_hash"]
             card_key = prep._content_card_key(digest)
+            current_card_json = con.execute("SELECT card_json FROM content_cards WHERE card_key=?", (card_key,)).fetchone()[0]
+            current_card = json.loads(current_card_json)
             con.execute("UPDATE content_cards SET card_json=? WHERE card_key=?",
-                        (json.dumps(_enriched_card(), indent=2, sort_keys=True), card_key))
+                        (json.dumps(current_card, indent=2, sort_keys=True), card_key))
             con.commit()
         assert prep._modules_needing_card(key) == []
         with closing(prep._connect()) as con:
@@ -1207,11 +1209,11 @@ def test_default_file_card_synthesis_enabled_and_background_gpu_profile_defaults
     assert PROFILE_OVERRIDES["integrated"]["background_gpu"].get("enabled", True) is False
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text("", encoding="utf-8")
+    config_path.write_text("[local_ai_hub]\nconfig_schema_version = 1\n", encoding="utf-8")
     effective = load_config(config_path, probe_hardware=False)
     assert effective["preprocessing"]["disable_llm_card_synthesis"] is False
     assert effective["background_gpu"]["enabled"] is False
-    config_path.write_text("[preprocessing]\ndisable_llm_card_synthesis = true\n[background_gpu]\nenabled = false\n", encoding="utf-8")
+    config_path.write_text("[local_ai_hub]\nconfig_schema_version = 1\n[preprocessing]\ndisable_llm_card_synthesis = true\n[background_gpu]\nenabled = false\n", encoding="utf-8")
     override = load_config(config_path, probe_hardware=False)
     assert override["preprocessing"]["disable_llm_card_synthesis"] is True
     assert override["background_gpu"]["enabled"] is False

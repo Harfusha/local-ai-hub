@@ -221,7 +221,17 @@ class ServiceRepositoryMixin:
                 cache_degraded = bool(state.get("degraded", False))
                 cache_reason = state.get("degraded_reason")
         except (FileNotFoundError, ValueError) as exc:
-            return {"success": False, "stale_root": True, "error": str(exc), "error_type": type(exc).__name__, "operation": operation}
+            return {
+                "success": False,
+                "stale_root": True,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "error_code": "stale_repository_input",
+                "status_code": 409,
+                "terminal": True,
+                "retryable": False,
+                "operation": operation,
+            }
         if operation in {"hybrid-context", "deterministic-context"} and not self._context_evidence_current(raw):
             if hit or coalesced:
                 raw = compute()

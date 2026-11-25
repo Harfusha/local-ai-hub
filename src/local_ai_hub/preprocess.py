@@ -214,6 +214,11 @@ CARD_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "epistemic_class": {
+            "type": "string",
+            "enum": ["deterministic_fact", "source_verified_fact", "llm_draft", "llm_enriched", "verified_fact"],
+        },
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
     },
     "required": ["purpose", "symbols", "dependencies", "side_effects", "risks", "tests", "keywords", "evidence"],
     "additionalProperties": False,
@@ -300,6 +305,12 @@ class _RetryablePreprocessingError(RuntimeError):
     def __init__(self, message: str, retry_after_seconds: float = 60.0) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+class _NonRetryablePreprocessingError(RuntimeError):
+    """A project step needs an explicit repair or operator action before retry."""
+
+    retryable = False
 
 
 class _FileCardClaim(NamedTuple):

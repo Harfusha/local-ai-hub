@@ -1171,15 +1171,16 @@ def _strict_root_path(raw: Any) -> Path:
     try:
         checked_paths = (candidate, *candidate.parents)
         before = {}
+        from .repository_scope import _is_redirecting_link
         for path in checked_paths:
             info = path.lstat()
-            if path.is_symlink():
-                raise ValueError("symlink roots are not allowed")
+            if _is_redirecting_link(path):
+                raise ValueError("symlink or junction roots are not allowed")
             before[path] = (info.st_dev, info.st_ino)
         resolved = candidate.resolve(strict=True)
         for path in checked_paths:
             info = path.lstat()
-            if path.is_symlink() or (info.st_dev, info.st_ino) != before[path]:
+            if _is_redirecting_link(path) or (info.st_dev, info.st_ino) != before[path]:
                 raise ValueError("root path changed during validation")
         resolved_info = resolved.stat()
         candidate_info = candidate.stat()

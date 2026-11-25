@@ -361,6 +361,7 @@ def local_ai_task(
             "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
             "operation": action, "changed_paths": changed_paths or [], "repository_revision": repository_revision,
+            "root": root or None, "workspace": workspace or None,
             "evidence_ids": context_evidence_ids,
         }
         if format or json_schema:
@@ -374,6 +375,7 @@ def local_ai_task(
             "problem": problem_input, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
             "operation": "reason", "changed_paths": changed_paths or [], "repository_revision": repository_revision,
+            "root": root or None, "workspace": workspace or None,
             "evidence_ids": context_evidence_ids,
         }
         if format or json_schema:
@@ -389,6 +391,7 @@ def local_ai_task(
             "complexity": complexity, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
             "operation": "review", "changed_paths": changed_paths or [], "repository_revision": repository_revision,
+            "root": root or None, "workspace": workspace or None,
             "evidence_ids": context_evidence_ids,
         }
         if format or json_schema:
@@ -401,6 +404,7 @@ def local_ai_task(
             "question": question_input, "candidate": candidate_input, "context": context if candidate_input != context else "", "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model, "complexity": complexity,
             "changed_paths": changed_paths or [], "repository_revision": repository_revision,
+            "root": root or None, "workspace": workspace or None,
             "evidence_ids": context_evidence_ids,
         }), task=question_input, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
     if action == "compress":
@@ -409,6 +413,7 @@ def local_ai_task(
         return services_module._compact(services_module._attach_task_context_receipt(services_module._quality_check_semantic_result(services_module.CLIENT.post("/api/compress", {
             "text": text_input, "instruction": instructions_input,
             "target_tokens": max_tokens or 650,
+            "root": root or None, "evidence_ids": context_evidence_ids,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
         }, timeout=services_module._timeout("model")), task=task, context=text_input, changed_paths=changed_paths), task_context_meta), "compress")
     if action == "route":

@@ -111,7 +111,7 @@ def simhash_votes(values: Any) -> int:
     if len(validated) == 0:
         return 0
 
-    if is_native_enabled():
+    if is_native_enabled() and _NATIVE_SIMHASH_MODULE is not None:
         try:
             return int(_NATIVE_SIMHASH_MODULE.simhash_votes(validated))
         except Exception:

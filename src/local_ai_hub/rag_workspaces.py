@@ -34,10 +34,12 @@ class RAGWorkspaceMixin:
             placeholders = ",".join("?" for _ in batch)
             with closing(self._connect()) as con:
                 rows = con.execute(
-                    f"""SELECT workspace, 'files', COUNT(*), COUNT(DISTINCT path)
+                    f"""SELECT workspace, 'files', COUNT(*), COUNT(DISTINCT path), 0, 0
                         FROM files WHERE workspace IN ({placeholders}) GROUP BY workspace
                         UNION ALL
-                        SELECT workspace, 'chunks', COUNT(*), COUNT(DISTINCT path)
+                        SELECT workspace, 'chunks', COUNT(*), COUNT(DISTINCT path),
+                               SUM(CASE WHEN embedding IS NOT NULL AND length(embedding)>0 AND trim(embedding) NOT IN ('','[]') THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN embedding IS NULL OR trim(embedding) IN ('','[]') THEN 1 ELSE 0 END)
                         FROM chunks WHERE workspace IN ({placeholders}) GROUP BY workspace""",
                     (*batch, *batch),
                 ).fetchall()
@@ -49,6 +51,9 @@ class RAGWorkspaceMixin:
                 else:
                     stats["chunks"] = int(row[2])
                     stats["chunked_files"] = int(row[3])
+                    stats["vector_chunks"] = int(row[4] or 0)
+                    stats["empty_chunks"] = int(row[5] or 0)
+                    stats["fully_indexed"] = bool(stats["chunks"] > 0 and stats["empty_chunks"] == 0)
             with closing(self._connect()) as con:
                 for workspace in batch:
                     counts.setdefault(workspace, {})["index_generation"] = self._workspace_index_generation(

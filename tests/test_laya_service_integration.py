@@ -282,7 +282,7 @@ def test_laya_subagent_budget_baseline_defaults_to_single_agent_with_linked_evid
     task = SimpleNamespace(checkpoint=SimpleNamespace(evidence_ids=(evidence_id,)))
 
     assert app._derive_laya_decision_baseline(request, task) == {
-        "method": "agent_os_delegation_budget",
+        "method": "request_delegation_budget",
         "suggestion": "single_agent",
         "evidence_id": evidence_id,
     }

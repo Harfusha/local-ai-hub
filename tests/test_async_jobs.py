@@ -544,6 +544,22 @@ def test_async_job_payload_rejects_nested_retired_fields_and_preserves_scope_ids
     }
 
 
+def test_async_review_diff_payload_preserves_supplied_diff():
+    diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # Title\n+Description\n"
+
+    clean = AsyncJobManager._safe_payload({
+        "root": "C:/repo",
+        "diff": diff,
+        "request_id": "request-1",
+        "untrusted_extra": "must be discarded",
+    })
+
+    assert clean["diff"] == diff
+    assert clean["root"] == "C:/repo"
+    assert clean["request_id"] == "request-1"
+    assert "untrusted_extra" not in clean
+
+
 def test_async_job_task_validation_bounds_depth_and_rejects_cycles():
     cyclic = []
     cyclic.append({"tasks": cyclic})

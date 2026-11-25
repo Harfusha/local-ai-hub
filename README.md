@@ -65,15 +65,14 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 
 ## Laya Typed Decisions (MCP/API)
 
-Laya is available through the existing `local_ai_coord` MCP tool and the root-authorized HTTP API. Use `curate_dataset` with a nested `laya_operation` for typed evaluation or candidate review:
+Laya request advice is available through `local_ai_coord(action="laya_decision")` and the root-authorized `POST /api/laya/decision`; it does not require Agent OS or a task ID. Use `curate_dataset` only for candidate capture and lifecycle operations:
 
 ```json
 {
-  "action": "curate_dataset",
+  "action": "laya_decision",
   "root": "C:/path/to/repository",
   "laya_operation": {
     "action": "evaluate_decision",
-    "task_id": "<task-id>",
     "decision": {
       "category": "context_budget",
       "evidence_ids": ["<authorized-evidence-id>"],
@@ -89,11 +88,11 @@ Laya is available through the existing `local_ai_coord` MCP tool and the root-au
 }
 ```
 
-For MCP, pass this object as `local_ai_coord` arguments. For HTTP, send it to `POST /api/agent-state/tasks`. `evaluate_context_source` is the other typed decision operation. It captures the bounded task query and source excerpts automatically. Eligible task-bound model-route and context-budget observations capture bounded task input and successful model responses; `solve_repo` also captures bounded tool-output excerpts. Rejected Agent OS completion gates queue a shadow completion-gap recommendation from typed status, mutation generation, and verified checkpoint evidence only. These remain shadow data tied to verified evidence, with deterministic Hub behavior authoritative. Decision `training_content` accepts `task_input`, `context_excerpt`, `model_response`, and `tool_output_excerpt`; include raw answer or tool text only when it improves later learning. Each field is capped at 8 KiB and recognized secret patterns are redacted before candidate persistence and export. `runtime_status` is read-only and does not load the model.
+For MCP, pass this object as `local_ai_coord` arguments. For HTTP, send it to `POST /api/laya/decision`. `evaluate_context_source` is the other typed request advice operation. It does not fetch a source or change host permissions. Ordinary request outcomes go to operational telemetry, not supervised candidates. Candidate capture remains task-bound. Decision `training_content` accepts `task_input`, `context_excerpt`, `model_response`, and `tool_output_excerpt`; include raw text only when it improves later learning. Each field is capped at 8 KiB and recognized secret patterns are redacted before persistence and export. `runtime_status` is read-only and does not load the model.
 
-`evaluate_decision` returns `decision.suggestion` as Laya's proposal and `baseline` as the server-derived deterministic suggestion with its method and evidence ID. The response also includes runtime and candidate-capture status. This stays shadow-only; callers must keep the deterministic Hub decision authoritative.
+`evaluate_decision` returns `decision.suggestion` as Laya's advisory and `baseline` as the server-derived deterministic suggestion with its method and evidence ID. Routing changes apply only when the suggestion passes existing low-risk validation. Laya quality remains uncalibrated until an independent labeled evaluation supports a quality claim.
 
-The `task_id` must resolve to a task under the authorized repository and that task must carry a real `session_id`; the server derives session identity from the task and rejects missing identity. Do not invent or override session IDs in the decision operation.
+For request advice, `task_id` is optional; if supplied it must resolve to a real task under the authorized repository and the server derives its session identity. Task lifecycle, completion, watchdog decisions and supervised candidate capture remain task-bound.
 
 Candidate review uses the same `curate_dataset` transport. First list and inspect candidates without Laya's answer or prior reviews; then either confirm a target locally or request a separately attributed local-model review:
 

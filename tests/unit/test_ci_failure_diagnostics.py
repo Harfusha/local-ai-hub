@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -148,3 +149,28 @@ def test_absent_capture_sections_do_not_mask_failure(monkeypatch, capsys):
         SimpleNamespace(failed=True, nodeid="test_worker", longreprtext="parent failure", sections=None)
     )
     assert "parent failure" in capsys.readouterr().out
+
+
+def test_export_coverage_absent_data_records_not_collected_without_error(tmp_path):
+    output_json = tmp_path / "out" / "coverage.json"
+    absent_data = tmp_path / "does_not_exist.sqlite3"
+    code = ci_diagnostics.export_coverage(output_json, absent_data)
+    assert code == 0
+    assert output_json.is_file()
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert payload["status"] == "NOT_COLLECTED"
+    assert payload["reason"] == "coverage_data_absent"
+
+
+def test_export_coverage_corrupt_data_records_failure_without_nonzero_exit(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    output_json = tmp_path / "coverage.json"
+    corrupt_data = tmp_path / ".coverage-corrupt"
+    corrupt_data.write_text("not a sqlite coverage database", encoding="utf-8")
+    code = ci_diagnostics.export_coverage(output_json, corrupt_data)
+    assert code == 0
+    assert output_json.is_file()
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert payload["status"] == "NOT_COLLECTED"
+    assert payload["reason"] == "coverage_export_failed"
+

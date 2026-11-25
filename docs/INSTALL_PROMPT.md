@@ -474,7 +474,7 @@ Reference global policy blocks deployed by 	ools/setup.py into global agent file
 > - **Repository & Code Search**: Call an action advertised by the current local_ai_repo MCP schema with the project root. DO NOT use broad native discovery (find, dir /s, unconstrained rg, glob) or dump entire files.
 > - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion", ...)`. Proactively initialize task contracts, query memory, and record findings.
 > - **Semantic Compression**: Use `local_ai_task(action="compress")` to condense evidence after deterministic/indexed retrieval.
-> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.
+> - **Antigravity lazy tools**: When tools appear under `Lazy`, use `call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="<tool>", Arguments={<same arguments>})`; this is the plugin-namespaced server alias.
 > - **Native fallback**: Use authorized native tools when the schema has no matching Hub action; after an advertised action fails, fallback requires explicit `terminal=true` and `retryable=false`. Full routing and scope rules are in `local-ai-orchestrator`.
 
 Load `local-ai-orchestrator` for full ownership, scope, retrieval, lifecycle, mutation, model, GPU and receipt rules.

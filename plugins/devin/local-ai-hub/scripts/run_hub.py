@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -31,6 +32,10 @@ def resolve_hub_install() -> Path | None:
     if configured:
         return valid_install(Path(configured).expanduser())
     candidates.append(Path.home() / ".local-ai-hub")
+    candidates.append(Path("C:/Users/Adam/.local-ai-hub"))
+    candidates.append(Path.cwd())
+    user_home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
+    candidates.append(user_home / ".local-ai-hub")
     for parent in Path(__file__).resolve().parents:
         candidates.append(parent)
 
@@ -85,12 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     source = str(root / "src")
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = source + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
-    os.execve(
-        str(python),
+    return subprocess.call(
         [str(python), "-m", ALLOWED_MODULES[module], *module_args],
-        env,
+        env=env,
     )
-    return 0
 
 
 if __name__ == "__main__":

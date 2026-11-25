@@ -174,6 +174,9 @@ class TelemetryAggregateMixin:
             "tool_adoption": history.get("tool_adoption", {}),
             "by_model": report.get("by_model", []) if isinstance(report, dict) else [],
             "by_agent": report.get("by_agent", []) if isinstance(report, dict) else [],
+            "provider_token_usage": report.get("provider_token_usage", []) if isinstance(report, dict) else [],
+            "agent_slo": report.get("agent_slo", {}) if isinstance(report, dict) else {},
+            "evaluation": report.get("evaluation", {}) if isinstance(report, dict) else {},
             "execution_routes": report.get("execution_routes", []) if isinstance(report, dict) else [],
             "recent_errors": report.get("error_fingerprints", []) if isinstance(report, dict) else [],
             "laya_decisions": report.get("laya_decisions", {}) if isinstance(report, dict) else {},
@@ -937,6 +940,29 @@ class TelemetryAggregateMixin:
         """Produce a prompt/source-free diagnostic report suitable for sharing."""
         if not self.enabled:
             return {"enabled": False}
+        if getattr(self, "mode", "full") == "minimal":
+            days = max(1, min(int(days), self.rollup_retention_days))
+            _, scope = self._scope_cutoff(days, scope)
+            return {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "window_days": days,
+                "scope": scope,
+                "status": "unavailable",
+                "reason": "telemetry_mode_minimal",
+                "privacy": {
+                    "mode": "metadata_only", "payloads": "not_stored",
+                    "labels": "bounded and sanitized",
+                    "error_messages": "sanitized paths/tokens; max 500 chars",
+                },
+                "summary": self.summary(days, scope=scope, _flush=False),
+                "by_agent": [],
+                "by_model": [],
+                "provider_token_usage": [],
+                "by_operation": [],
+                "laya_decisions": {
+                    "available": False, "reason": "telemetry_mode_minimal", "scope": scope,
+                },
+            }
         flush_complete = True
         if _flush:
             flush_complete = self.flush(1.0)

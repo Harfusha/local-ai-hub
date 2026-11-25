@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+from pathlib import Path
 import sys
 import traceback
 from collections.abc import Callable
@@ -126,13 +128,63 @@ def pytest_sessionfinish(session: Any, exitstatus: Any) -> None:
         emit_error(f"{_omitted_count} additional failed reports (bounded node IDs):\n" + "\n".join(_omitted_ids))
 
 
+def export_coverage(output_path: Path, data_file: Path | None = None) -> int:
+    """Export coverage to JSON if data exists; emit diagnostic JSON if data is absent."""
+    resolved_data = data_file or Path(os.environ.get("COVERAGE_FILE", ".coverage"))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not resolved_data.is_file() or resolved_data.stat().st_size == 0:
+        diagnostic = {
+            "status": "NOT_COLLECTED",
+            "reason": "coverage_data_absent",
+            "coverage_file": str(resolved_data),
+        }
+        output_path.write_text(json.dumps(diagnostic, indent=2) + "\n", encoding="utf-8")
+        return 0
+
+    cov = None
+    try:
+        import coverage
+
+        cov = coverage.Coverage(data_file=str(resolved_data))
+        cov.load()
+        cov.json_report(outfile=str(output_path))
+        return 0
+    except Exception as exc:
+        diagnostic = {
+            "status": "NOT_COLLECTED",
+            "reason": "coverage_export_failed",
+            "error": str(exc),
+            "coverage_file": str(resolved_data),
+        }
+        output_path.write_text(json.dumps(diagnostic, indent=2) + "\n", encoding="utf-8")
+        emit_error(f"Coverage export failure: {exc}")
+        return 0
+    finally:
+        if cov is not None:
+            try:
+                data = cov.get_data()
+                if hasattr(data, "close"):
+                    data.close()
+            except Exception:
+                pass
+
+
 def _cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--selftest", action="store_true", required=True)
-    parser.parse_args()
-    from tools.selftest import main
+    parser.add_argument("--selftest", action="store_true", help="Run selftest wrapped in diagnostics")
+    parser.add_argument("--export-coverage", type=Path, default=None, help="Safely export JSON coverage report")
+    parser.add_argument("--coverage-data", type=Path, default=None, help="Explicit coverage data file path")
+    args = parser.parse_args()
 
-    raise SystemExit(run_selftest(main))
+    if args.export_coverage is not None:
+        raise SystemExit(export_coverage(args.export_coverage, args.coverage_data))
+
+    if args.selftest:
+        from tools.selftest import main
+
+        raise SystemExit(run_selftest(main))
+
+    parser.error("one of --selftest or --export-coverage is required")
 
 
 if __name__ == "__main__":

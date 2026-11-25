@@ -52,6 +52,16 @@ class PreprocessSchedulerMixin:
             except (TimeoutError, services_module._RetryablePreprocessingError):
                 # Slot bookkeeping is advisory; a busy writer must not stall selection.
                 pass
+        # Auto-recover projects paused by legacy embedding_space_rebuild_required (NEW-001)
+        with self._db_lock, services_module.closing(self._connect()) as con:
+            recovered_count = con.execute(
+                "UPDATE projects SET paused=0, status='queued', last_error=NULL, retry_after=0 "
+                "WHERE last_error='embedding_space_rebuild_required' AND paused=1"
+            ).rowcount
+            if recovered_count > 0:
+                con.commit()
+                services_module.logger.info("Auto-recovered %d projects paused by embedding_space_rebuild_required", recovered_count)
+
         with self._db_lock, services_module.closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT * FROM projects
@@ -322,7 +332,11 @@ class PreprocessSchedulerMixin:
         if phase not in {"inventory", "files", "modules", "project", "hot_queries", "rag", "complete"}:
             phase = "step"
         try:
-            self.telemetry.record_error("preprocess", phase, error, retryable=True, recovered=False)
+            self.telemetry.record_error(
+                "preprocess", phase, error,
+                retryable=getattr(error, "retryable", True) is not False,
+                recovered=False,
+            )
         except Exception as telemetry_exc:
             # Metadata only: no exception message, repository path or payload.
             fingerprint = services_module.stable_hash(f"preprocess:{phase}:{type(telemetry_exc).__name__}")[:20]
@@ -440,12 +454,14 @@ class PreprocessSchedulerMixin:
                         except (services_module.json.JSONDecodeError, TypeError, ValueError) as stats_exc:
                             services_module.logger.warning("Preprocessing error counter reset (%s)", type(stats_exc).__name__)
                     errors = prev + 1
+                    retryable = getattr(exc, "retryable", True) is not False
                     backoff = min(float(self.cfg.get("max_error_backoff_seconds", 300)), 2 ** min(errors, 8))
                     self._set_project(
                         root,
                         status="error",
+                        paused=not retryable,
                         last_error=str(exc)[:1000],
-                        retry_after=services_module.time.time() + backoff,
+                        retry_after=services_module.time.time() + backoff if retryable else 0,
                         stats_json=services_module.json_dumps({"consecutive_errors": errors}),
                         actor_priority=0,
                     )

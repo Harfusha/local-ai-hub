@@ -1,0 +1,162 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Authoritative completion plan for Local AI Hub 8.1.0 covering LAH-001..048, A01..A21, open prior items, and NEW-* defects.",
+  "id": "plan_lah_8_1_0_completion",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-24-lah-8-1-0-completion-design.md",
+      "revision": {
+        "content_sha256": "4fd5b0f01998787f69c692a098aa3be940c73c949bc717c6ac0371cbc31b182e",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-24-lah-8-1-0-completion.md",
+      "revision": {
+        "content_sha256": "9afd37274ccfed1b4bd87a162d48378476ce43583a07f70e1139a7db0500963a",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_etapa_0": {
+      "acceptance_criteria": [
+        "LAH-001: release_check.py & --strict-tree pass cleanly; unauthorized .agents files fail negative test",
+        "LAH-002: deleted test_laya_pipeline_shadow.py resolved; machine-validated CI cohort manifest + preflight collection check pass",
+        "LAH-003: skipped integration/conditional jobs separated from PASS; zero-test/skipped/stale-SHA gate rejects release",
+        "LAH-004: coverage export records NOT_COLLECTED cleanly on pre-test failures while preserving real failure root cause and failing-test coverage",
+        "LAH-021: audit_acceptance.json & generate_audit_acceptance.py enforce SHA-bound verifiable receipts",
+        "LAH-037: conftest cache invalidation & NO_TEST_CACHE=1 --run-all verified",
+        "NEW-003: .venv dev toolchain (mypy) consistent with pyproject[dev]"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Restore CI and release credibility (LAH-001..004, LAH-021, LAH-037, A02, A09, A15, NEW-003).",
+      "kind": "code",
+      "next_action": "Proceed to Etapa 1",
+      "order": 0,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-24-lah-8-1-0-completion-design.md",
+          "revision": {
+            "content_sha256": "4fd5b0f01998787f69c692a098aa3be940c73c949bc717c6ac0371cbc31b182e",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-24-lah-8-1-0-completion.md",
+          "revision": {
+            "content_sha256": "9afd37274ccfed1b4bd87a162d48378476ce43583a07f70e1139a7db0500963a",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Etapa 0: Restore CI and release credibility",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_etapa_1": {
+      "acceptance_criteria": [
+        "LAH-005: agents.jsonl untracked, .gitignore hardened, repo secret scan clean",
+        "LAH-015: sqlite3.Connection.backup verified with sha256 before schema changes/embedding reset",
+        "LAH-016: manifest-driven backup retention replaces prefix wiping; retention tests pass",
+        "LAH-017: embedding_trust_remote_code=false default with explicit sha256/trust gate",
+        "LAH-018: loopback boundary documented, server-side caller-identity spoofing denied",
+        "LAH-022: wheel/sdist packaging contains grammars, browser_bridge, schemas",
+        "LAH-023: pip install into clean venv succeeds; pip check clean",
+        "LAH-024: state migrations rollback path verified; dry-run mode operational",
+        "LAH-026: confinement guards prevent symlink/junction path traversal",
+        "LAH-027: command broker rejects unauthorized side effects; broker tests pass",
+        "LAH-028: leases, task ownership, fencing prevent concurrent writes",
+        "LAH-029: cancellation & deadline propagation tested across subprocesses",
+        "LAH-035: browser bridge sanitizes untrusted input; payload limits enforced",
+        "LAH-036: telemetry redaction masks sensitive paths, keys, prompts"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_lah_8_1_0_completion",
+          "task_id": "task_etapa_0"
+        }
+      ],
+      "description": "Etapa 1 covering LAH-005, LAH-015..018, LAH-022..024, LAH-026..029, LAH-035..036, A01, A04, A06, A07, A10, A12, A17, A18, A21",
+      "kind": "code",
+      "next_action": "Proceed to Etapa 2",
+      "order": 1,
+      "title": "Etapa 1: Security, data protection, operational durability",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_etapa_2": {
+      "acceptance_criteria": [
+        "LAH-006: Strict separation of deterministic facts from LLM hypotheses across storage, cache, dashboard, context",
+        "LAH-007: AI provenance tracking and confidence scoring on all model outputs",
+        "LAH-008: Output schema validation and JSON repair fail-closed; structured output conformance",
+        "LAH-009: Model fallback cascade: explicit opt-in, no silent quality degradation",
+        "LAH-010: Model role selection matching capability to task; invalid roles rejected",
+        "LAH-011: Speculative inference verification: draft validation before acceptance",
+        "LAH-012: Preprocessing pipeline identity & versioning; hash-addressed pipeline stages",
+        "LAH-013: Cache invalidation on source modification; no stale context leakage",
+        "LAH-014: Semantic deduplication & threshold tuning; avoid over-aggressive deduplication",
+        "LAH-025: CZ/EN multilingual embedding qualification; benchmark retrieval quality",
+        "LAH-030: Laya decision pipeline validation & typed advisory lifecycle",
+        "LAH-031: Ground truth training data curation & provenance tracking",
+        "LAH-032: Resource management & dynamic model unloading on memory pressure",
+        "LAH-033: Hybrid RAG retrieval (BM25 + dense) fusion & reciprocal rank fusion (RRF)",
+        "LAH-034: Real provider integration matrix: Codex, Antigravity, OpenCode, Claude, Gemini CLI, Cursor, Windsurf",
+        "LAH-039: Agent verification receipts cryptographically verifiable & SHA-bound",
+        "LAH-040: Native SimHash & accelerated lexical index consistency",
+        "NEW-001: Ground truth validation check in dataset curation",
+        "NEW-002: Provider matrix error handling & connection fallback"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_lah_8_1_0_completion",
+          "task_id": "task_etapa_1"
+        }
+      ],
+      "description": "Etapa 2: Local AI correctness, preprocessing, RAG and provider integration (LAH-006..014, LAH-025, LAH-030..034, LAH-039..040, NEW-001, NEW-002)",
+      "kind": "code",
+      "next_action": "Proceed to Etapa 3",
+      "order": 2,
+      "title": "Etapa 2: Local AI Correctness, Preprocessing, RAG & Providers",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_etapa_3": {
+      "acceptance_criteria": [
+        "LAH-019: Decompose monolithic modules (mcp_server, services, generator) with clear boundaries",
+        "LAH-020: Resolve circular dependency clusters and enforce acyclic module imports",
+        "LAH-038: Strict mypy type safety expansion across core production modules",
+        "LAH-046: Eliminate redundant code paths, duplicated generators, and dead compatibility shims",
+        "LAH-047: Standardize error contracts, exception hierarchy, and validation across HTTP/MCP APIs",
+        "A11: Type safety coverage expansion across all entrypoints without broad ignore",
+        "A13: AST parser eliminate shell invocation",
+        "A14: TaskStore return type list operations supported cleanly",
+        "A20: Dashboard type checking reach and compiler version alignment"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_lah_8_1_0_completion",
+          "task_id": "task_etapa_2"
+        }
+      ],
+      "description": "Etapa 3: Architecture, type safety, modular decomposition and maintainability (LAH-019..020, LAH-038, LAH-046..047, A11, A13, A14, A20)",
+      "kind": "code",
+      "next_action": "Audit circular dependencies and strict mypy targets",
+      "order": 3,
+      "title": "Etapa 3: Architecture, Type Safety & Maintainability",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Local AI Hub 8.1.0 Completion & Verification"
+}

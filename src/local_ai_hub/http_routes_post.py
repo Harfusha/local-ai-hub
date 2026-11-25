@@ -803,27 +803,107 @@ class HTTPPostRoutesMixin:
                 workspace = str(payload.get("workspace", ""))
                 if not workspace:
                     self._send(400, {"success": False, "error": "workspace is required"}); return
-                services_module.APP.rag.require_workspace_root(workspace=workspace, root=payload["root"])
-                services_module.APP.services._touch_project(str(payload["root"]))
+                root = payload["root"]
+                services_module.APP.rag.require_workspace_root(workspace=workspace, root=root)
+                services_module.APP.services._touch_project(str(root))
                 try:
                     reranking_available = services_module.FeatureSet(services_module.APP.config).capability_status().get("reranking", {}).get("available") is True
                 except Exception:
                     reranking_available = False
                 use_reranker = payload.get("use_reranker") is True and reranking_available
                 query = str(payload.get("query", ""))
+                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                laya_strategy = None
+                strategy_router = getattr(services_module.APP.services, "recommend_direct_rag_strategy", None)
+                # The adaptive preflight performs its own bounded retrieval. Keep
+                # disconnect-cancellable requests on the single deterministic path
+                # so a dropped client cannot be held by work outside the cancel gate.
+                if connection is None and callable(strategy_router):
+                    try:
+                        laya_strategy = strategy_router(root, query, workspace=workspace)
+                    except Exception:
+                        laya_strategy = None
                 deadline = services_module.time.perf_counter() + services_module.repository_search_timeout(services_module.APP.config)
                 options = {"workspace": workspace, "top_k": int(payload.get("top_k", 8)),
-                           "use_reranker": use_reranker, "semantic_only": True, "deadline": deadline}
-                connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
+                           "use_reranker": use_reranker,
+                           "semantic_only": laya_strategy != "lexical_bm25",
+                           "deadline": deadline}
+                if laya_strategy == "lexical_bm25":
+                    options["lexical_only"] = True
+                def search_with_lexical_fallback(cancel_event=None):
+                    search_options = dict(options)
+                    if cancel_event is not None:
+                        search_options["cancel_event"] = cancel_event
+                    semantic_result = services_module.APP.rag.search(query, **search_options)
+                    if laya_strategy == "lexical_bm25":
+                        if (
+                            isinstance(semantic_result, dict)
+                            and semantic_result.get("success") is True
+                            and semantic_result.get("results")
+                        ):
+                            return semantic_result
+                        semantic_options = {
+                            **options,
+                            "semantic_only": True,
+                            "lexical_only": False,
+                        }
+                        if cancel_event is not None:
+                            semantic_options["cancel_event"] = cancel_event
+                        baseline_result = services_module.APP.rag.search(query, **semantic_options)
+                        if isinstance(baseline_result, dict) and baseline_result.get("success") is True:
+                            return {
+                                **baseline_result,
+                                "degraded": True,
+                                "laya_retrieval_fallback": "lexical_no_results_or_error",
+                            }
+                        return {
+                            **(semantic_result if isinstance(semantic_result, dict) else {}),
+                            "degraded": True,
+                            "laya_retrieval_fallback": "lexical_and_semantic_failed",
+                            "semantic_fallback_error": baseline_result.get("error") if isinstance(baseline_result, dict) else None,
+                        }
+                    if not (
+                        isinstance(semantic_result, dict)
+                        and semantic_result.get("success") is True
+                        and semantic_result.get("fallback") == "embedding_backend"
+                    ):
+                        return semantic_result
+
+                    lexical_options = {
+                        **options,
+                        "semantic_only": False,
+                        "lexical_only": True,
+                    }
+                    if cancel_event is not None:
+                        lexical_options["cancel_event"] = cancel_event
+                    lexical_result = services_module.APP.rag.search(query, **lexical_options)
+                    if not (
+                        isinstance(lexical_result, dict)
+                        and lexical_result.get("success") is True
+                        and lexical_result.get("results")
+                    ):
+                        return semantic_result
+                    return {
+                        **lexical_result,
+                        "degraded": True,
+                        "semantic_fallback_used": True,
+                        "semantic_fallback_reason": semantic_result.get("reason", "embedding_backend_unavailable"),
+                        "reason": semantic_result.get("reason", "embedding_backend_unavailable"),
+                    }
+
                 if connection is None:
-                    result = services_module.APP.rag.search(query, **options)
+                    result = search_with_lexical_fallback()
                 else:
                     result = services_module._invoke_cancellable_request(
                         services_module._ACTIVE_DELEGATES,
-                        lambda _request, *, cancel_event: services_module.APP.rag.search(query, cancel_event=cancel_event, **options),
+                        lambda _request, *, cancel_event: search_with_lexical_fallback(cancel_event=cancel_event),
                         payload,
                         connection=connection,
                     )
+                if laya_strategy is not None and isinstance(result, dict):
+                    result["laya_retrieval_strategy"] = laya_strategy
+                    if laya_strategy == "dense_rag" and result.get("semantic_fallback_used") is True:
+                        result["laya_retrieval_fallback"] = "embedding_backend"
                 self._send(200, result); return
             if 'post_speculative_draft_1' in post_route_ids:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
@@ -1160,7 +1240,18 @@ class HTTPPostRoutesMixin:
             if 'post_chat_1' in post_route_ids:
                 if payload.get("stream") is True:
                     self._send(400, {"error": "streaming is intentionally disabled through the affinity queue"}); return
-                result = services_module.APP.services.proxy_request(path, payload, source=f"proxy:{path}")
+                proxy_payload = payload
+                proxy_kwargs = {}
+                if path in {"/api/generate", "/api/chat"} and "root" in payload:
+                    repository_root = self._bind_root(payload.get("root"))
+                    if repository_root is None:
+                        return
+                    proxy_payload = dict(payload)
+                    proxy_payload.pop("root", None)
+                    proxy_kwargs["repository_root"] = repository_root
+                result = services_module.APP.services.proxy_request(
+                    path, proxy_payload, source=f"proxy:{path}", **proxy_kwargs,
+                )
                 self._send(200 if "error" not in result else 500, result); return
 
             self._send(404, {"error": "not found"})

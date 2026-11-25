@@ -67,6 +67,8 @@ def test_generated_stdio_manifest_performs_initialize_and_complete_tools_list(tm
     config = tmp_path / "config.toml"
     state_dir = json.dumps(str(tmp_path / "state" / agent))
     config.write_text(
+        "[local_ai_hub]\n"
+        "config_schema_version = 1\n\n"
         "[server]\n"
         f"state_dir = {state_dir}\n"
         "port = 21435\n"
@@ -107,6 +109,8 @@ def test_merged_host_manifest_entry_performs_initialize_and_complete_tools_list(
     config = install_dir / "config.toml"
     state_dir = json.dumps(str(tmp_path / "state"))
     config.write_text(
+        "[local_ai_hub]\n"
+        "config_schema_version = 1\n\n"
         "[server]\n"
         f"state_dir = {state_dir}\n"
         "port = 21435\n"
@@ -149,3 +153,13 @@ def test_merged_host_manifest_entry_performs_initialize_and_complete_tools_list(
     assert manifest_entry["env"]["LOCAL_AI_AGENT"] == agent
     assert manifest_entry["env"]["LOCAL_AI_AGENT_PROFILE"] == agent
     asyncio.run(asyncio.wait_for(_handshake(manifest_entry), timeout=45))
+
+
+def test_gemini_cli_mcp_entries_omit_unsupported_server_options():
+    cfg = load_config(str(ROOT / "config.toml"))
+    generated = generate_mcp_configs(cfg, ROOT, Path(sys.executable), agent="gemini")
+    installed = setup.build_mcp_entries(ROOT, Path(sys.executable), None, "gemini", cfg)
+
+    for entry in (generated["local-ai"], installed["local-ai"]):
+        assert "force_all_tools_eager" not in entry
+        assert "skip_tool_name_prefix" not in entry

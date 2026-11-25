@@ -630,17 +630,30 @@ class ExternalGpuReservationStore:
         lost = threading.Event()
         interval = self.ttl_seconds / 3.0
 
+        def renew_owned_reservation() -> bool:
+            for attempt in range(3):
+                try:
+                    if self.renew(token_digest, generation, state=state):
+                        return True
+                    current = self.read()
+                except Exception:
+                    current = None
+                if (not self._matches(current, token_digest, generation)
+                        or current["expires_at"] <= self._clock()):
+                    return False
+                if attempt < 2:
+                    stopped.wait(min(0.1 * (attempt + 1), max(0.01, interval / 4.0)))
+                    if stopped.is_set():
+                        return False
+            return False
+
         def renew_until_stopped() -> None:
             while not stopped.wait(interval):
-                try:
-                    if not self.renew(token_digest, generation, state=state):
-                        lost.set()
-                        return
-                except Exception:
+                if not renew_owned_reservation():
                     lost.set()
                     return
 
-        if not self.renew(token_digest, generation, state=state):
+        if not renew_owned_reservation():
             lost.set()
         else:
             worker = threading.Thread(

@@ -2,13 +2,15 @@
 
 The active tool surface reflects your configuration:
 
-- `local_ai_repo`: deterministic, code index/search, semantic, context, preprocess, impact, security_audit, patch validation and repository checks.
-- `local_ai_task`: exposed local actions (compress|route|benchmark|hardware_benchmark|evaluation_record|evaluation_report|status|wait|result|cancel|candidate_create|candidate_promote|transcribe|browser|eval_suite|prompt_eval|eval_drift), including semantic compression; follow the active profile and verify model availability. Use deterministic/indexed tools for exact facts, symbols, diff and tests.
+- `local_ai_repo`: deterministic, code index/search, semantic, context/solve, preprocess, impact, review_diff, security_audit, patch validation and repository checks.
+- `local_ai_work`: bounded implementation for explicit closed delegation after `features.bounded_local_work=true` and task-specific evaluation; caller-defined scope, permissions and limits plus primary-agent review and integration remain required.
+- `local_ai_task`: exposed local actions (delegate|explore|reason|continue|review|second_opinion|compress|route|batch|benchmark|hardware_benchmark|evaluation_record|evaluation_report|submit|status|wait|result|cancel|candidate_create|candidate_promote|speculative_draft|vision|transcribe|browser|eval_suite|prompt_eval|eval_drift|complete_code|scaffold|automation), including semantic generation, review, independent second opinions, semantic compression; follow the active profile and verify model availability. Use deterministic/indexed tools for exact facts, symbols, diff and tests.
+- `local_ai_repo(action="solve")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.
 - `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.
 - `local_ai_artifact`: exact `E...` evidence or artifact slices.
 - `local_ai_coord`: edit leases, Agent OS task lifecycle, scoped memory/relations, context, verification, negative knowledge, and coordination primitives.
 - `local_ai_status`: bounded health/cache/telemetry/debug-trace, Agent OS task/incident state inspection; no polling loops.
-- Semantic routing contract: Semantic delegation is on-demand under the active schema and quality gates. This profile advertises `local_ai_task(action="compress")`; use matching exposed actions by default after deterministic/indexed evidence; cloud planning is never blocked by mandatory local handoffs. Deterministic/indexed evidence is authoritative; the primary agent accepts. Use `local_ai_task(action="compress")` for semantic condensation. Actions unavailable under this profile are omitted.
+- Semantic routing contract: Semantic delegation is on-demand under the active schema and quality gates. This profile advertises `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`; use matching exposed actions by default after deterministic/indexed evidence; cloud planning is never blocked by mandatory local handoffs. Deterministic/indexed evidence is authoritative; the primary agent accepts. Use `local_ai_task(action="delegate")` for bounded implementation or test suggestions. Use `local_ai_task(action="explore")` for bounded semantic exploration. Use `local_ai_task(action="reason")` for bounded reasoning after gathering evidence. Use `local_ai_task(action="review")` for an evidence-grounded semantic review. Use `local_ai_task(action="second_opinion")` for independent critique. Use `local_ai_task(action="compress")` for semantic condensation. Actions unavailable under this profile are omitted.
 
 ## Categorized Operational Triggers (Prioritize over shell / raw reads)
 
@@ -42,6 +44,8 @@ The active tool surface reflects your configuration:
 - **Negative Knowledge**: Check known failure modes before repeating mistakes -> `local_ai_coord(action="negative_knowledge_find", query=...)`
 
 ### 6. Semantic Tasks & Review (`local_ai_task`)
+- **Adversarial Code Review**: Skeptical review of changes before commit -> `local_ai_task(action="review", ...)`
+- **Local Reasoning / 2nd Opinion**: Bounded local reasoning or alternative perspective -> `local_ai_task(action="reason"|"second_opinion", ...)`
 - **Evidence Compression**: Compress voluminous logs/evidence -> `local_ai_task(action="compress", ...)`
 
 ### 7. Exact Slices & Artifacts (`local_ai_artifact`)
@@ -70,7 +74,7 @@ Use this for non-trivial multi-step, long-running, delegated, or acceptance-crit
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
-
+- Use `local_ai_task(action="batch")` for bounded independent tasks.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or Hub repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.

@@ -1,12 +1,12 @@
 {
   "schema_version": "2.0",
   "audit_name": "Fourth Audit Action Plan (HUB-076–HUB-112)",
-  "generated_at": null,
-  "git_head_sha": null,
+  "generated_at": "2026-11-24T22:21:15Z",
+  "git_head_sha": "718b1eba521069411308b3e6d5e19c6b39db7325",
   "environment": {
-    "platform": null,
-    "os": null,
-    "python_version": null,
+    "platform": "win32",
+    "os": "Windows-11-10.0.26300-SP0",
+    "python_version": "3.13.2",
     "hardware_profile": null,
     "gpu_target": null
   },
@@ -14,23 +14,22 @@
     "total_items": 37,
     "verified_count": 0,
     "locally_tested_count": 0,
-    "unverified_count": 19,
-    "blocked_count": 6,
+    "unverified_count": 21,
+    "blocked_count": 4,
     "regressions_count": null,
     "overall_status": "BLOCKED",
     "status_counts": {
-      "UNVERIFIED": 19,
+      "UNVERIFIED": 21,
+      "USER_CANCELLED": 12,
       "BLOCKED_MODEL_ABSENT": 1,
-      "BLOCKED_EVIDENCE": 2,
       "BLOCKED_EXTERNAL": 1,
       "BLOCKED_RESERVATION": 1,
-      "BLOCKED_PLATFORM_ABSENT": 1,
-      "USER_CANCELLED": 12
+      "BLOCKED_PLATFORM_ABSENT": 1
     }
   },
   "release_gate": {
     "approved": false,
-    "reason": "Repository snapshot only. Run the generator with exact-commit test receipts; require current green CI and live external acceptance.",
+    "reason": "Generated local receipts cannot prove release CI or external integration acceptance.",
     "ci": "UNKNOWN"
   },
   "items": [
@@ -400,7 +399,7 @@
       "category": "User decision",
       "verification_command": "",
       "files": [],
-      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "historical_claim": "Cancelled with dashboard host-inspection preview on 2026-11-15.",
       "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
@@ -411,7 +410,7 @@
       "category": "User decision",
       "verification_command": "",
       "files": [],
-      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "historical_claim": "Cancelled with dashboard host-inspection preview on 2026-11-15.",
       "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
@@ -485,7 +484,7 @@
         "tools/generate_audit_acceptance.py",
         "audit_acceptance.json"
       ],
-      "historical_claim": "audit_acceptance.json generated; 31 verified, 6 truthfully classified blocked states",
+      "historical_claim": "audit_acceptance.json records 12 user-cancelled dashboard items, 19 unverified items, and 6 blocked states",
       "verification_status": "UNVERIFIED",
       "verification_receipt": null
     },

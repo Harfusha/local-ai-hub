@@ -7,6 +7,38 @@ from .http_route_registry import POST_ROUTE_SERVICE_METHODS
 
 
 class HttpPostHelpersMixin:
+    def _handle_post_laya_decision(self, payload: dict[str, Any]) -> None:
+        operation = payload.get("laya_operation")
+        if type(operation) is not dict:
+            self._send(400, {"success": False, "error": "laya_operation must be an object", "terminal": True, "retryable": False}); return
+        root = self._bind_root(payload.get("root"))
+        if root is None:
+            return
+        action = operation.get("action")
+        try:
+            if action == "evaluate_decision":
+                result = services_module.APP.evaluate_laya_decision(operation, root=root)
+            elif action == "evaluate_context_source":
+                result = services_module.APP.evaluate_laya_context_source(operation, root=root)
+            elif action == "runtime_status":
+                lifecycle = getattr(services_module.APP, "laya_lifecycle", None)
+                runtime_status = getattr(lifecycle, "status", None)
+                if not isinstance(runtime_status, dict):
+                    raise RuntimeError("Laya lifecycle status is unavailable")
+                result = {
+                    "success": True,
+                    "service_available": True,
+                    "model_resident": runtime_status.get("available") is True,
+                    "runtime": runtime_status,
+                }
+            else:
+                raise ValueError("unsupported taskless Laya operation")
+            self._send(200, result); return
+        except RuntimeError as exc:
+            self._send(503, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        except Exception as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+
     def _handle_post_agent_state_tasks(self, payload: dict[str, Any]) -> None:
         from .http_post_tasks import handle_agent_state_tasks
 
@@ -273,9 +305,12 @@ class HttpPostHelpersMixin:
             return None
         try:
             estimate = services_module.APP.telemetry.http_latency_estimate(path)
-            default_delivery = "auto" if job_action in {"review", "rag_index"} else "sync"
+            default_delivery = "auto" if job_action in {"review", "review_diff", "rag_index"} else "sync"
             delivery = str(payload.get("delivery", default_delivery))
-            default_budget_ms = 20_000 if job_action == "review" else 30_000 if job_action == "rag_index" else 0
+            default_budget_ms = (
+                20_000 if job_action in {"review", "review_diff"}
+                else 30_000 if job_action == "rag_index" else 0
+            )
             budget_ms = float(payload.get("latency_budget_ms", default_budget_ms) or 0)
             samples = int(estimate.get("samples", 0) or 0)
             queue_age_ms = float(payload.get("queue_age_ms", estimate.get("queue_age_ms", 0)) or 0)

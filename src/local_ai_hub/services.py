@@ -478,16 +478,14 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
             raise TypeError("Laya decision evaluator must be callable")
         self.laya_decision_evaluator = evaluator
 
-    def evaluate_laya_advisory(
-        self, operation: Mapping[str, Any], *, root: str, baseline: Mapping[str, str],
-    ) -> str | None:
-        """Return a validated active advisory choice; unavailable paths use deterministic routing."""
+    def laya_advisory_available(self) -> bool:
+        """Check configured runtime and evaluator before doing advisory-only work."""
         cfg = self.config.get("laya", {})
         if not isinstance(cfg, Mapping) or cfg.get("enabled") is not True:
-            return None
+            return False
         runtime_cfg = cfg.get("runtime", {})
         if not isinstance(runtime_cfg, Mapping):
-            return None
+            return False
         checkpoint = runtime_cfg.get("checkpoint_path")
         if isinstance(checkpoint, str) and checkpoint:
             revision = runtime_cfg.get("revision")
@@ -504,8 +502,6 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
             repo_id = runtime_cfg.get("hf_repo_id")
             revision = runtime_cfg.get("hf_revision")
             hashes = runtime_cfg.get("hf_sha256")
-            # Only admit a pinned allowlisted config here; checkpoint resolution below the evaluator
-            # handles cache lookup, download consent, and file hash verification.
             from .trained_models import TRAINED_MODEL_FILES
 
             checkpoint_configured = (
@@ -516,11 +512,15 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
                 and isinstance(hashes, Mapping)
                 and bool(hashes)
             )
-        if not checkpoint_configured:
+        return checkpoint_configured and callable(getattr(self, "laya_decision_evaluator", None))
+
+    def evaluate_laya_advisory(
+        self, operation: Mapping[str, Any], *, root: str, baseline: Mapping[str, str],
+    ) -> str | None:
+        """Return a validated active advisory choice; unavailable paths use deterministic routing."""
+        if not self.laya_advisory_available():
             return None
-        evaluator = getattr(self, "laya_decision_evaluator", None)
-        if not callable(evaluator):
-            return None
+        evaluator = self.laya_decision_evaluator
         try:
             result = evaluator(operation, root=root, _server_baseline=baseline)
         except Exception as exc:

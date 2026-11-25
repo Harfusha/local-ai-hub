@@ -24,6 +24,8 @@ def _metadata(**changes):
         "model_estimate": True,
         "uncertainty": "UNCALIBRATED",
         "execution_verification": "NOT_VERIFIED",
+        "baseline_available": True,
+        "baseline_match": True,
         "runtime_latency_ms": None,
         "inference_latency_ms": None,
         "queue_wait_ms": None,
@@ -32,6 +34,10 @@ def _metadata(**changes):
         "fallback_reason": None,
     }
     value.update(changes)
+    if "baseline_match" not in changes:
+        value["baseline_match"] = (
+            True if value["baseline_available"] and value["status"] == "success" else None
+        )
     return value
 
 
@@ -56,6 +62,37 @@ def test_laya_decision_metadata_uses_existing_snapshot_table_without_raw_payload
         assert saved["provider_label"] == "generic_mcp"
         assert saved["suggestion"] == "indexed"
         assert "raw_output" not in saved
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("category", "suggestion"),
+    [("retrieval_strategy", "hybrid"), ("subagent_budget", "single_agent")],
+)
+def test_request_scoped_laya_categories_are_recorded_and_counted(tmp_path, category, suggestion):
+    store = TelemetryStore(tmp_path)
+    try:
+        metadata = _metadata(
+            decision_id=f"decision-{category}",
+            category=category,
+            task_id=None,
+            session_id=None,
+            suggestion=suggestion,
+        )
+        assert store.record_laya_eligibility(
+            decision_id=metadata["decision_id"], mode="advisory", category=category,
+        ) is True
+        assert store.record_laya_decision(
+            metadata, repository_id="repo-1", task_id=None, session_id=None,
+        ) is True
+        assert store.flush(2.0) is True
+
+        report = store.report(days=1)["laya_decisions"]
+        mode = report["by_mode"]["advisory"]
+        assert mode["eligible_by_category"][category] == 1
+        assert mode["counts_by_category"][category] == 1
+        assert mode["counts_by_category_scope"][category] == {"request": 1, "task": 0}
     finally:
         store.close()
 
@@ -205,6 +242,13 @@ def test_report_summarizes_laya_decisions_by_mode_category_and_status(tmp_path):
             "TIMEOUT": 1,
         }
         mode_report = summary["by_mode"]["advisory"]
+        assert mode_report["baseline_comparison"] == {
+            "matched": 1,
+            "diverged": 0,
+            "not_comparable": 3,
+            "comparable": 1,
+            "agreement_rate": 1.0,
+        }
         assert mode_report["coverage"] == {
             "available": True,
             "eligible_decisions": 4,

@@ -72,7 +72,7 @@ def test_readme_laya_mcp_example_passes_typed_candidate_contract():
     )
 
 
-def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None):
+def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None, path="/api/agent-state/tasks"):
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"laya": {"runtime": {"enabled": False}}}
     app.recovery = None
@@ -87,6 +87,7 @@ def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None
         headers = {}
 
         def __init__(self):
+            self.path = path
             self._authorization_root = str(tmp_path)
             self.response = None
 
@@ -108,6 +109,12 @@ def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None
         def _handle_telemetry_post(self, path, value):
             return http_server.Handler._handle_telemetry_post(self, path, value)
 
+        def _handle_post_agent_state_tasks(self, value):
+            return http_server.Handler._handle_post_agent_state_tasks(self, value)
+
+        def _handle_post_laya_decision(self, value):
+            return http_server.Handler._handle_post_laya_decision(self, value)
+
         def _agent(self):
             return "wire-test"
 
@@ -116,6 +123,12 @@ def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None
                 return True
             self._send(403, {"success": False, "error": "root identity mismatch"})
             return False
+
+        def _bind_root(self, value):
+            if value == self._authorization_root:
+                return value
+            self._send(403, {"success": False, "error": "root identity mismatch"})
+            return None
 
         def _claim_recovery(self, *_args, **_kwargs):
             return True
@@ -193,6 +206,41 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     assert page_result["success"] is True
     task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
     assert task_calls[-1][1]["laya_operation"] == page_operation
+
+
+def test_mcp_laya_decision_uses_taskless_coord_route(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", False)
+
+    def post(path, payload, *, timeout):
+        calls.append((path, payload, timeout))
+        return {
+            "success": True,
+            "decision": {"suggestion": "compact"},
+            "baseline": {"suggestion": "standard"},
+        }
+
+    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
+    operation = {
+        "action": "evaluate_decision",
+        "decision": {
+            "category": "context_budget",
+            "evidence_ids": ["repo:evidence:1"],
+            "options": ["compact", "standard"],
+            "state": {"current_tokens": 1200},
+        },
+    }
+
+    result = mcp_server.local_ai_coord(
+        action="laya_decision", root=str(tmp_path), laya_operation=operation,
+    )
+
+    assert result["success"] is True, result
+    assert result["decision"]["suggestion"] == "compact"
+    assert result["baseline"]["suggestion"] == "standard"
+    assert calls[0][0] == "/api/laya/decision"
+    assert calls[0][1] == {"action": "laya_decision", "root": str(tmp_path), "laya_operation": operation}
 
 
 @pytest.mark.parametrize("laya_action", ["model_review", "model_review_history"])
@@ -284,8 +332,6 @@ def test_mcp_curate_dataset_forwards_scoped_candidate_get(monkeypatch, tmp_path)
 @pytest.mark.parametrize(
     "action, expected_diagnostic",
     [
-        ("evaluate_decision", False),
-        ("evaluate_context_source", False),
         ("model_review", False),
         ("model_review_history", False),
         ("list", False),
@@ -314,20 +360,24 @@ def test_laya_runtime_and_scoped_curation_bypass_diagnostic_gate(action, expecte
 
 def test_laya_http_wire_accepts_typed_shape_and_rejects_extra_nested_fields(monkeypatch, tmp_path):
     operation = _decision_operation()
+    operation.pop("task_id")
     valid_status, valid_body = _http_post_via_handler(
         monkeypatch,
         tmp_path,
-        {"action": "curate_dataset", "root": str(tmp_path), "laya_operation": operation},
+        {"action": "laya_decision", "root": str(tmp_path), "laya_operation": operation},
+        path="/api/laya/decision",
     )
     assert valid_status == 503
     assert valid_body["error"] == "pinned Laya checkpoint is unavailable locally or could not be verified"
 
     malformed = _decision_operation()
+    malformed.pop("task_id")
     malformed["decision"]["caller_mode"] = "advisory"
     invalid_status, invalid_body = _http_post_via_handler(
         monkeypatch,
         tmp_path,
-        {"action": "curate_dataset", "root": str(tmp_path), "laya_operation": malformed},
+        {"action": "laya_decision", "root": str(tmp_path), "laya_operation": malformed},
+        path="/api/laya/decision",
     )
     assert invalid_status == 400
     assert invalid_body["error"] == "Laya decision input fields invalid"
@@ -336,10 +386,26 @@ def test_laya_http_wire_accepts_typed_shape_and_rejects_extra_nested_fields(monk
     invalid_mode_status, invalid_mode_body = _http_post_via_handler(
         monkeypatch,
         tmp_path,
-        {"action": "curate_dataset", "root": str(tmp_path), "laya_operation": caller_mode},
+        {"action": "laya_decision", "root": str(tmp_path), "laya_operation": caller_mode},
+        path="/api/laya/decision",
     )
     assert invalid_mode_status == 400
     assert invalid_mode_body["error"] == "Laya decision fields invalid"
+
+
+def test_agent_state_curation_no_longer_dispatches_request_inference(monkeypatch, tmp_path):
+    status, body = _http_post_via_handler(
+        monkeypatch,
+        tmp_path,
+        {
+            "action": "curate_dataset",
+            "root": str(tmp_path),
+            "laya_operation": {"action": "evaluate_decision"},
+        },
+    )
+
+    assert status == 400
+    assert body["error"] == "request-scoped Laya inference uses POST /api/laya/decision"
 
 
 def test_app_laya_close_callback_uses_capacity_aware_adapter_close():
@@ -406,7 +472,7 @@ def test_laya_runtime_adapter_uses_shared_scheduler_for_capacity(monkeypatch):
     assert captured["capacity_manager"] is scheduler
 
 
-def test_mcp_curate_dataset_forwards_runtime_status(monkeypatch, tmp_path):
+def test_mcp_laya_decision_forwards_runtime_status(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(
@@ -426,13 +492,15 @@ def test_mcp_curate_dataset_forwards_runtime_status(monkeypatch, tmp_path):
 
     operation = {"action": "runtime_status"}
     result = mcp_server.local_ai_coord(
-        action="curate_dataset",
+        action="laya_decision",
         root=str(tmp_path), laya_operation=operation,
     )
 
     assert result["success"] is True
-    assert result["runtime"]["model_configuration"] == "unconfigured"
+    assert result["service_available"] is True
+    assert result["model_resident"] is False
     assert calls[0][1]["laya_operation"] == operation
+    assert calls[0][0] == "/api/laya/decision"
 
 
 def test_http_curate_dataset_returns_laya_lifecycle_status(monkeypatch, tmp_path):
@@ -451,11 +519,12 @@ def test_http_curate_dataset_returns_laya_lifecycle_status(monkeypatch, tmp_path
         monkeypatch,
         tmp_path,
         {
-            "action": "curate_dataset",
+            "action": "laya_decision",
             "root": str(tmp_path),
             "laya_operation": {"action": "runtime_status"},
         },
         app_overrides={"laya_lifecycle": SimpleNamespace(status=lifecycle)},
+        path="/api/laya/decision",
     )
 
     assert response == (
@@ -474,11 +543,12 @@ def test_http_laya_runtime_status_reports_unavailable_lifecycle(monkeypatch, tmp
         monkeypatch,
         tmp_path,
         {
-            "action": "curate_dataset",
+            "action": "laya_decision",
             "root": str(tmp_path),
             "laya_operation": {"action": "runtime_status"},
         },
         app_overrides={"laya_lifecycle": SimpleNamespace(status=None)},
+        path="/api/laya/decision",
     )
 
     assert response == (
@@ -496,8 +566,8 @@ def test_laya_runtime_status_does_not_require_detailed_diagnostics():
     operation = {"action": "runtime_status"}
 
     assert diagnostic_mcp_operation(
-        "local_ai_coord", {"action": "curate_dataset", "laya_operation": operation}
+        "local_ai_coord", {"action": "laya_decision", "laya_operation": operation}
     ) is False
     assert diagnostic_http_operation(
-        "POST", "/api/agent-state/tasks", {"action": "curate_dataset", "laya_operation": operation}
+        "POST", "/api/laya/decision", {"action": "laya_decision", "laya_operation": operation}
     ) is False

@@ -1,8 +1,15 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "local-ai-hub",
-  "version": "1.0.0",
+  "version": "8.1.0",
   "description": "Local AI Hub MCP tools and shared agent skills for GitHub Copilot CLI.",
-  "author": { "name": "Local AI Hub" },
-  "keywords": ["local-ai", "mcp", "skills", "copilot"]
+  "author": {
+    "name": "Local AI Hub"
+  },
+  "keywords": [
+    "local-ai",
+    "mcp",
+    "skills",
+    "copilot"
+  ]
 }

@@ -135,7 +135,9 @@ def _local_ai_repo_impl(
         "circular_dependencies": ("query", "task", "workspace", "diff", "path"),
         "skeletonize": ("diff", "task"),
         "context": ("task", "diff", "path"),
-        "solve": ("query", "diff", "path", "task_id"),
+        # solve accepts an optional task_id only for real Agent OS provenance;
+        # ordinary request-scoped Laya decisions do not require task identity.
+        "solve": ("query", "diff", "path"),
         "delegate": ("query", "diff", "path", "task_id"),
         "code_index": ("task", "diff", "workspace", "path"),
         "deterministic": ("task", "diff", "workspace", "path"),
@@ -549,6 +551,8 @@ def _local_ai_repo_impl(
         return services_module._compact(services_module.CLIENT.post("/api/solve/repo", {
             "root": root, "task": task, "workspace": workspace or None, "mode": mode,
             "complexity": "auto", "context_tokens": max_tokens or 0, "base": base, "staged": staged,
+            **({"task_id": task_id} if task_id else {}),
+            **({"session_id": session_id} if session_id else {}),
         }, timeout=services_module._timeout("long")), "solve")
     if action == "review_diff":
         payload = {

@@ -58,6 +58,62 @@ def test_setup_wizard_enables_devin_mcp_skills_instructions_and_hooks_by_default
     assert effective["agents"]["devin_plugin_route"] is True
 
 
+def test_provider_plugin_generation_tracks_current_hub_release_version(tmp_path, monkeypatch):
+    provider_manifests = {
+        "antigravity": "plugin.json",
+        "claude": ".claude-plugin/plugin.json",
+        "codex": "plugin.json",
+        "copilot": "plugin.json",
+        "cursor": ".cursor-plugin/plugin.json",
+        "devin": "plugin.json",
+        "gemini": "gemini-extension.json",
+    }
+    root = tmp_path / "hub"
+    root.mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nversion = "8.1.0"\n', encoding="utf-8")
+    for skill in ("local-ai-orchestrator", "plan-led-work", "token-economizer"):
+        skill_file = root / "skills" / skill / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        skill_file.write_text(f"---\nname: {skill}\n---\n", encoding="utf-8")
+    for provider, relative_manifest in provider_manifests.items():
+        manifest = root / "plugins" / provider / "local-ai-hub" / relative_manifest
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            json.dumps({"name": "local-ai-hub", "version": "6.1.0"}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(setup, "SOURCE_ROOT", root)
+    setup.generate_provider_plugin_skills()
+
+    for provider, relative_manifest in provider_manifests.items():
+        manifest = root / "plugins" / provider / "local-ai-hub" / relative_manifest
+        assert json.loads(manifest.read_text(encoding="utf-8"))["version"] == "8.1.0"
+
+
+def test_setup_generation_refreshes_managed_policy_blocks_in_install_prompts(tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    prompts = ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md")
+    for name in prompts:
+        (docs / name).write_text(
+            "before\n<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\nstale\n"
+            "<!-- END LOCAL AI HUB TOOL POLICY -->\nmiddle\n"
+            "<!-- BEGIN TOKEN ECONOMY POLICY -->\nstale\n"
+            "<!-- END TOKEN ECONOMY POLICY -->\nafter\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(setup, "SOURCE_ROOT", tmp_path)
+
+    setup.sync_generated_prompt_policies()
+
+    for name in prompts:
+        text = (docs / name).read_text(encoding="utf-8")
+        assert setup.generate_global_policy({}) in text
+        assert setup.generate_token_economy_policy({}) in text
+        assert "\nstale\n" not in text
+
+
 def test_setup_wizard_exposes_opencode_and_plugin_route_independently():
     wizard = setup._setup_wizard_module
     cfg = load_config(probe_hardware=False)
@@ -1307,6 +1363,114 @@ def test_codex_mcp_merge_writes_stable_working_directory(tmp_path: Path):
     assert f"cwd = {setup.toml_quote(str(tmp_path / 'hub'))}" in text
 
 
+def test_codex_hub_plugin_refreshes_cache_from_its_selected_local_marketplace(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text('[plugins."local-ai-hub@local-ai-hub"]\nenabled = true\n', encoding="utf-8")
+    manifest = tmp_path / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    calls = []
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1:4] == ["plugin", "marketplace", "list"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"marketplaces": [
+                {"name": "local-ai-hub", "root": str(tmp_path)},
+            ]}), "")
+        if command[1:3] == ["plugin", "list"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"installed": [
+                {"pluginId": "local-ai-hub@local-ai-hub", "version": "6.1.0", "installed": True},
+            ]}), "")
+        if command[1:3] == ["plugin", "add"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"version": "8.1.0"}), "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "codex.exe" if name == "codex" else None)
+    monkeypatch.setattr(setup, "run", fake_run)
+
+    success, detail = setup.refresh_codex_hub_plugin_cache(config, tmp_path)
+
+    assert success is True
+    assert "8.1.0" in detail
+    assert calls[2][1:] == ["plugin", "add", "local-ai-hub@local-ai-hub", "--json"]
+
+
+def test_codex_hub_plugin_refresh_does_not_replace_foreign_marketplace_source(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text('[plugins."local-ai-hub@local-ai-hub"]\nenabled = true\n', encoding="utf-8")
+    manifest = tmp_path / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    calls = []
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "codex.exe" if name == "codex" else None)
+    monkeypatch.setattr(setup, "run", lambda command, **kwargs: (
+        calls.append(command) or subprocess.CompletedProcess(
+            command, 0, json.dumps({"marketplaces": [
+                {"name": "local-ai-hub", "root": str(tmp_path / "other-source")},
+            ]}), "",
+        )
+    ))
+
+    success, detail = setup.refresh_codex_hub_plugin_cache(config, tmp_path)
+
+    assert success is False
+    assert "marketplace" in detail.lower()
+    assert len(calls) == 1
+
+
+def test_codex_hub_plugin_refresh_skips_non_active_codex_home(tmp_path, monkeypatch):
+    codex_home = tmp_path / "other-codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text('[plugins."local-ai-hub@local-ai-hub"]\nenabled = true\n', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "active-codex-home"))
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: (_ for _ in ()).throw(AssertionError("CLI must not run")))
+
+    success, detail = setup.refresh_codex_hub_plugin_cache(config, tmp_path)
+
+    assert success is False
+    assert "different CODEX_HOME" in detail
+
+
+def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text('[plugins."local-ai-hub@local-ai-hub"]\nenabled = true\n', encoding="utf-8")
+    manifest = tmp_path / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    calls = []
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "codex.exe" if name == "codex" else None)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1:4] == ["plugin", "marketplace", "list"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"marketplaces": [
+                {"name": "local-ai-hub", "root": str(tmp_path)},
+            ]}), "")
+        if command[1:3] == ["plugin", "list"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"installed": [
+                {"pluginId": "local-ai-hub@local-ai-hub", "version": "8.1.0", "installed": True},
+            ]}), "")
+        raise AssertionError(f"unexpected Codex CLI mutation: {command}")
+
+    monkeypatch.setattr(setup, "run", fake_run)
+
+    success, detail = setup.refresh_codex_hub_plugin_cache(config, tmp_path)
+
+    assert success is True
+    assert "already current" in detail.lower()
+    assert len(calls) == 2
+
+
 def test_codex_unowned_files_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):
     root_home = tmp_path / "root"
     profile_home = tmp_path / "profile"
@@ -1603,12 +1767,43 @@ def test_v8_setup_migration_clears_active_vectors_without_backup(tmp_path: Path,
         "status": "current", "version": 9, "backups": [],
     })
 
-    result = setup.migrate_release_state(state)
+    result = setup.migrate_release_state(state, create_backup=False)
 
     assert result["embedding_reset"] == "migrated"
     assert result["embedding_reset_backup"] is None
     assert setup.run_state_migrations(state)["status"] == "current"
     assert verify_embedding_reset(state)
+
+
+def test_v8_setup_migration_clears_active_vectors_with_backup(tmp_path: Path, monkeypatch):
+    from tools.embedding_reset import verify_embedding_reset
+    source = tmp_path / "source"
+    state = tmp_path / "state"
+    source.mkdir()
+    state.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nversion = "8.0.0"\n', encoding="utf-8")
+    schema = (
+        "CREATE TABLE chunks(embedding TEXT NOT NULL,embedding_space TEXT NOT NULL);"
+        "CREATE TABLE rag_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+    )
+    with closing(sqlite3.connect(state / "rag.sqlite3")) as con:
+        con.executescript(schema)
+        con.execute("INSERT INTO chunks VALUES('[0.1,0.2]','old-space')")
+        con.commit()
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "discard_stale_migration_artifacts", lambda _state: [])
+    monkeypatch.setattr(setup, "run_state_migrations", lambda _state, **kwargs: {
+        "status": "current", "version": 9, "backups": [],
+    })
+
+    result = setup.migrate_release_state(state)
+
+    assert result["embedding_reset"] == "migrated"
+    assert result["embedding_reset_backup"] is not None
+    assert Path(result["embedding_reset_backup"]).is_dir()
+    assert setup.run_state_migrations(state)["status"] == "current"
+    assert verify_embedding_reset(state)
+
 
 
 def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):

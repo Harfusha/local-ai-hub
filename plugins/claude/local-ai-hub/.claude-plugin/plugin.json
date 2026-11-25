@@ -1,6 +1,6 @@
 {
   "name": "local-ai-hub",
-  "version": "6.1.0",
+  "version": "8.1.0",
   "description": "Local-first repository context, Laya routing, and bounded AI coordination.",
   "author": {
     "name": "Local AI Hub"

@@ -137,6 +137,12 @@ def test_telemetry_store_minimal_mode(tmp_path):
     assert summ["output_tokens"] == 75
     assert summ["total_tokens"] == 325
     assert "uptime_seconds" in summ
+    report = store.report()
+    assert report["status"] == "unavailable"
+    assert report["reason"] == "telemetry_mode_minimal"
+    assert report["summary"]["requests_total"] == 2
+    assert report["by_agent"] == []
+    assert not (tmp_path / "telemetry.sqlite3").exists()
 
 
 def test_telemetry_store_full_mode(tmp_path):

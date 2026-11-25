@@ -181,7 +181,12 @@ def handle_session_start(payload: dict[str, Any]) -> dict[str, Any]:
         "injectSteps": [{"systemMessage": {
             "systemMessage": (
                 "For repository or code tasks, use the connected Local AI Hub MCP tools and "
-                "follow the local-ai-orchestrator workflow. Laya is active advisory inside the "
+                "follow the local-ai-orchestrator workflow. Antigravity may expose Hub tools as Lazy: "
+                "call them with call_mcp_tool(ServerName=\"local-ai-hub_local-ai\", ToolName=\"local_ai_repo\", "
+                "Arguments={\"action\":\"search\",\"query\":\"<task query>\","
+                "\"root\":\"<absolute workspace root>\"}) before native repository reads or commands. "
+                "Use the matching live-schema tool/action and its exact arguments; do not guess fields. "
+                "Laya is active advisory inside the "
                 "Hub: it may guide bounded retrieval, context and model routing after Hub validation. "
                 "The Hub and host retain tool permissions, approvals, task-state changes and "
                 "completion decisions. Ignore this guidance for unrelated tasks."
@@ -243,7 +248,7 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
                     "reason": (
                         f"Requested line range ({s}-{e}, {diff} lines) exceeds the {max_lines}-line limit "
                         f"(Local AI Hub Token Economy policy).{total_note} Specify a narrower slice (<= {max_lines} lines) "
-                        f'or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "context", "query": "...", "root": "..."}}).'
+                        f'or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "context", "query": "...", "root": "..."}}).'
                     ),
                 }
         except (ValueError, TypeError):
@@ -256,7 +261,7 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
             "reason": (
                 f"Full read of '{p.name}' ({line_count} lines > {max_lines}) prohibited by "
                 f"Local AI Hub Token Economy policy. Specify targeted slice with StartLine and EndLine "
-                f'(<= {max_lines} lines) or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", '
+                f'(<= {max_lines} lines) or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", '
                 f'Arguments={{"action": "context", "query": "...", "root": "..."}}).'
             ),
         }
@@ -292,7 +297,7 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
                 "decision": "deny",
                 "reason": (
                     f"Unconstrained repository search '{cmd}' prohibited by Local AI Hub policy. "
-                    f'Use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "search"|"code_index", "query": "...", "root": "..."}}) '
+                    f'Use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "search"|"code_index", "query": "...", "root": "..."}}) '
                     f"or add bounded limits (e.g. -m 5)."
                 ),
             }
@@ -306,7 +311,7 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
                     "decision": "deny",
                     "reason": (
                         f"Unbounded ripgrep command '{cmd}' prohibited by Local AI Hub policy. "
-                        f'Add bounded limit (e.g. rg -m 5) or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "search", "query": "...", "root": "..."}}).'
+                        f'Add bounded limit (e.g. rg -m 5) or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "search", "query": "...", "root": "..."}}).'
                     ),
                 }
 

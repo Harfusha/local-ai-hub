@@ -77,7 +77,14 @@ class EmbeddingModel:
         self._st_candidate_index = -1
         self.ollama_url = str(server_cfg.get("ollama_url", "http://127.0.0.1:11434")).replace("\x00", "").rstrip("/")
         self.enabled = bool(features_cfg.get("rag", True))
-        self.trust_remote_code = bool(cpu_cfg.get("embedding_trust_remote_code", False))
+        raw_trust_remote_code = bool(cpu_cfg.get("embedding_trust_remote_code", False))
+        models_cfg = cfg.get("models", {})
+        has_pinned_review = bool(
+            models_cfg.get("embedding_sha256")
+            or models_cfg.get("embedding_revision")
+            or models_cfg.get("trusted_remote_code_operator_override")
+        )
+        self.trust_remote_code = raw_trust_remote_code and has_pinned_review
         self.max_seq_length = _safe_int(cpu_cfg.get("embedding_max_seq_length"), 8192, 128)
         self.batch_size = _safe_int(cpu_cfg.get("embedding_batch_size"), 32, 1)
         self._model = None

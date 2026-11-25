@@ -430,21 +430,37 @@ def generate_acceptance(
             item["verification_status"] = claimed_status
         elif receipts_dir is not None and head_sha != "unknown":
             file = receipts_dir / (str(item["id"]) + ".json")
+            if not file.is_file() and "finding_id" in item:
+                file = receipts_dir / (str(item["finding_id"]) + ".json")
             try:
                 receipt = json.loads(file.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 receipt = None
-            if (
-                isinstance(receipt, dict)
-                and receipt.get("item_id") == item["id"]
-                and receipt.get("source_sha") == head_sha
-                and receipt.get("command") == item["verification_command"]
-                and receipt.get("exit_code") == 0
-                and isinstance(receipt.get("timestamp_utc"), str)
-                and receipt.get("timestamp_utc")
-            ):
-                item["verification_status"] = "LOCAL_TESTED"
-                item["verification_receipt"] = receipt
+            if isinstance(receipt, dict):
+                r_item_id = receipt.get("item_id") or receipt.get("finding_id") or receipt.get("acceptance_id")
+                r_sha = receipt.get("source_sha") or receipt.get("commit_sha")
+                r_cmd = receipt.get("command") or receipt.get("verification_command")
+                is_mock = bool(receipt.get("mock", False) or receipt.get("mocked", False))
+                is_skipped = bool(receipt.get("skipped", False))
+                has_assertions = receipt.get("passed_assertions", 1) > 0 and receipt.get("assertion_count", 1) > 0
+
+                if r_sha and r_sha != head_sha:
+                    item["stale"] = True
+                    item["stale_reason"] = f"commit drift: receipt sha {r_sha} != head sha {head_sha}"
+
+                if (
+                    r_item_id == item["id"]
+                    and r_sha == head_sha
+                    and r_cmd == item["verification_command"]
+                    and receipt.get("exit_code") == 0
+                    and isinstance(receipt.get("timestamp_utc"), str)
+                    and receipt.get("timestamp_utc")
+                    and not is_mock
+                    and not is_skipped
+                    and has_assertions
+                ):
+                    item["verification_status"] = "LOCAL_TESTED"
+                    item["verification_receipt"] = receipt
         output_items.append(item)
 
     status_counts: dict[str, int] = {}

@@ -814,3 +814,37 @@ def test_legacy_vectors_without_space_still_require_rebuild_and_preserve_rows(
             (workspace,),
         ).fetchall()
     assert after_rows == before_rows
+
+
+def test_cleared_empty_vector_placeholders_are_reembedded_after_reset(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
+    workspace = RAGStore.workspace_id(str(root))
+    embedder = SpaceEmbedder("space-a")
+    store = RAGStore(_config(tmp_path / "state"), services=embedder)
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
+
+    with closing(store._connect()) as con:
+        con.execute(
+            "DELETE FROM rag_meta WHERE key=?",
+            (store._workspace_embedding_space_key(workspace),),
+        )
+        con.execute(
+            "UPDATE chunks SET embedding='[]', embedding_space='' WHERE workspace=?",
+            (workspace,),
+        )
+        con.commit()
+
+    result = store.index_paths_step(str(root), workspace=workspace, paths=["stable.py"])
+
+    assert result["success"] is True, result
+    assert embedder.calls == 2
+    with closing(store._connect()) as con:
+        assert store._stored_workspace_embedding_space(con, workspace) == "space-a"
+        rows = con.execute(
+            "SELECT embedding,embedding_space FROM chunks WHERE workspace=?",
+            (workspace,),
+        ).fetchall()
+    assert rows
+    assert all(str(row[0]) != "[]" and str(row[1]) == "space-a" for row in rows)

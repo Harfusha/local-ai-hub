@@ -24,6 +24,170 @@ from .services import (
 
 
 class ServiceDelegationMixin:
+    def _request_laya_model_route(
+        self,
+        args: dict[str, Any],
+        route: dict[str, Any],
+        task: str,
+        context: str,
+        *,
+        project_settings: Any = None,
+    ) -> str | None:
+        """Apply a safe typed model-route advisory to a repository request."""
+        if str(args.get("model", "")).strip():
+            return None
+        root_value = args.get("root")
+        if not isinstance(root_value, str) or not root_value.strip():
+            return None
+        available_routes = getattr(self, "_available_laya_model_route_options", None)
+        evaluate_laya = getattr(self, "evaluate_laya_advisory", None)
+        if not callable(available_routes) or not callable(evaluate_laya):
+            return None
+
+        try:
+            canonical_root = str(Path(root_value).expanduser().resolve(strict=True))
+            if not Path(canonical_root).is_dir():
+                return None
+        except (OSError, ValueError):
+            return None
+
+        evidence_ids = args.get("evidence_ids")
+        if isinstance(evidence_ids, (list, tuple)):
+            evidence_ids = list(dict.fromkeys(
+                item.strip() for item in evidence_ids
+                if isinstance(item, str) and item.strip()
+            ))[:64]
+        else:
+            evidence_ids = []
+        if not evidence_ids:
+            pack_context = getattr(self, "_hybrid_context", None)
+            if callable(pack_context):
+                changed_paths = args.get("changed_paths", ())
+                if not isinstance(changed_paths, (list, tuple)):
+                    changed_paths = ()
+                try:
+                    packed = pack_context(
+                        canonical_root,
+                        (task + "\n" + context)[:4096],
+                        workspace=args.get("workspace"),
+                        max_tokens=512,
+                        changed_paths=tuple(
+                            item for item in changed_paths if isinstance(item, str)
+                        )[:64],
+                    )
+                    rows = packed.get("evidence", []) if isinstance(packed, dict) else []
+                    evidence_ids = list(dict.fromkeys(
+                        row.get("evidence_id") for row in rows
+                        if isinstance(row, dict)
+                        and isinstance(row.get("evidence_id"), str)
+                        and row.get("evidence_id")
+                    ))[:64] if isinstance(rows, list) else []
+                except Exception:
+                    evidence_ids = []
+        if not evidence_ids:
+            return None
+
+        evidence_store = getattr(self, "evidence_store", None)
+        get_many = getattr(evidence_store, "get_many", None)
+        if not callable(get_many):
+            return None
+        try:
+            verified_rows = get_many(evidence_ids, verify=True, root=canonical_root)
+            if type(verified_rows) is not list or len(verified_rows) != len(evidence_ids):
+                return None
+            if not all(
+                type(row) is dict
+                and row.get("success") is True
+                and row.get("evidence_id") == evidence_id
+                and row.get("root") == canonical_root
+                and row.get("stale") is False
+                for row, evidence_id in zip(verified_rows, evidence_ids, strict=True)
+            ):
+                return None
+        except Exception:
+            return None
+
+        task_type = str(route.get("task_type", "general"))
+        complexity = str(route.get("complexity", "fast"))
+        current_role = (
+            "heavy_code" if complexity == "heavy" else "fast_code"
+        ) if task_type in {"code", "review"} else (
+            "reasoning" if complexity == "heavy" else "heavy_code"
+        ) if task_type == "reasoning" else "general"
+        if task_type == "reasoning" and complexity != "heavy":
+            return None
+        options = [
+            option for option in ("fast", "smart", "generic")
+            if option in available_routes(current_role, project_settings=project_settings)
+        ]
+        baseline_suggestion = {
+            "fast_code": "fast", "heavy_code": "smart",
+            "reasoning": "smart", "general": "generic",
+        }[current_role]
+        if len(options) < 2 or baseline_suggestion not in options:
+            return None
+
+        decision = {
+            "action": "evaluate_decision",
+            **({"task_id": args["task_id"]} if isinstance(args.get("task_id"), str) and args["task_id"].strip() else {}),
+            "decision": {
+                "category": "model_route",
+                "evidence_ids": evidence_ids,
+                "options": options,
+                "state": {
+                    "task_type": task_type,
+                    "complexity": complexity,
+                    "semantic_required": "true" if route.get("semantic_required") is True else "false",
+                    "context_present": "true" if context.strip() else "false",
+                },
+                "training_content": {
+                    "task_input": task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore"),
+                },
+            },
+        }
+        try:
+            suggestion = evaluate_laya(
+                decision,
+                root=canonical_root,
+                baseline={
+                    "method": "model_router_classify",
+                    "suggestion": baseline_suggestion,
+                    "evidence_id": evidence_ids[0],
+                },
+            )
+        except Exception as exc:
+            logger.debug("Laya request-route fallback: %s", type(exc).__name__)
+            return None
+
+        # General delegation has no impact score. Allow only quality-preserving
+        # upgrades here; repository solve retains its stricter measured risk gate.
+        if suggestion == "smart":
+            target_role = current_role if current_role in {"heavy_code", "reasoning"} else "heavy_code"
+        elif suggestion == "generic" and task_type == "general":
+            target_role = "general"
+        else:
+            return None
+        try:
+            selected_model = self.router.model_for_role(target_role)
+            if project_settings is not None:
+                selected_model, _ = self.model_policy.apply_project_settings(
+                    selected_model, {"model": selected_model},
+                    settings=project_settings, role=target_role,
+                )
+        except Exception:
+            return None
+        if not isinstance(selected_model, str) or not selected_model.strip():
+            return None
+        if selected_model == str(route.get("model", "")) and not (
+            suggestion == "smart" and complexity != "heavy"
+        ):
+            return None
+        route["model"] = selected_model
+        if suggestion == "smart":
+            route["complexity"] = "heavy"
+        route["laya_model_route"] = suggestion
+        return suggestion
+
     def _resolve_local_task_project(self, root: Any) -> tuple[Any | None, str, str, str]:
         root_value = str(root or "").strip()
         if not root_value:
@@ -50,6 +214,7 @@ class ServiceDelegationMixin:
 
     def delegate(
         self, args: dict[str, Any], *, cancel_event: threading.Event | None = None,
+        laya_checked: bool = False,
     ) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
         if "prompt" in args:
@@ -106,6 +271,9 @@ class ServiceDelegationMixin:
             return {"success": False, "error": str(exc), "error_code": "model_override_below_quality_floor",
                     "status_code": 400, "terminal": True, "retryable": False}
         task_type = route["task_type"]
+        laya_model_route = None if laya_checked else self._request_laya_model_route(
+            args, route, task, context, project_settings=project_settings,
+        )
         if task_type in {"code", "review"}:
             project_role = "heavy_code" if route.get("complexity") == "heavy" else "fast_code"
         elif task_type == "reasoning":
@@ -174,6 +342,8 @@ class ServiceDelegationMixin:
         if result.get("cancelled") is True:
             result["route"] = route
             return attach_project_warning(result)
+        if laya_model_route is not None:
+            result["laya_model_route"] = laya_model_route
         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
         return attach_project_warning(result)
@@ -371,6 +541,15 @@ class ServiceDelegationMixin:
         except ValueError as exc:
             return {"success": False, "error": str(exc), "error_code": "model_override_below_quality_floor",
                     "status_code": 400, "terminal": True, "retryable": False}
+        project_context, _, _, _ = self._resolve_local_task_project(args.get("root", ""))
+        project_settings = project_context.settings if project_context is not None else None
+        laya_model_route = self._request_laya_model_route(
+            args,
+            route,
+            f"{question}\n{focus}",
+            f"{candidate}\n{context}",
+            project_settings=project_settings,
+        )
         model = str(route["model"])
         package = build_prompt(
             operation="second_opinion",
@@ -397,6 +576,8 @@ class ServiceDelegationMixin:
             return result
         result = self._apply_semantic_quality(result, task=question, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
+        if laya_model_route is not None:
+            result["laya_model_route"] = laya_model_route
         return result
 
     def speculative_draft(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
@@ -423,6 +604,22 @@ class ServiceDelegationMixin:
         draft_model = str(args.get("draft_model") or models_cfg.get("draft_code", "")).strip()
         use_cascade = bool(args.get("use_cascade", bool(draft_model and draft_model != fast_model)))
         cascade_layers: list[str] = []
+        laya_model_route = None
+        if not use_cascade and not str(args.get("draft_model", "")).strip() and root.strip():
+            try:
+                route = self.router.classify(task, context, "code", "fast")
+                route["complexity"] = "fast"
+                route["model"] = fast_model
+                laya_model_route = self._request_laya_model_route(
+                    {**args, "changed_paths": [file_path] if file_path else []},
+                    route,
+                    task,
+                    context,
+                )
+                if laya_model_route is not None:
+                    fast_model = str(route["model"])
+            except Exception:
+                laya_model_route = None
 
         if use_cascade and draft_model and draft_model != fast_model:
             # Tier 1: Draft model generates rapid candidate patch
@@ -600,6 +797,8 @@ class ServiceDelegationMixin:
             res["cascade"] = cascade_layers
             res["draft_model"] = cascade_layers[0]
             res["target_model"] = cascade_layers[-1]
+        if laya_model_route is not None:
+            res["laya_model_route"] = laya_model_route
         return res
 
     def speculative_lint(self, args: dict[str, Any]) -> dict[str, Any]:

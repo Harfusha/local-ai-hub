@@ -376,6 +376,29 @@ class PreprocessRAGMixin:
             return False
         if not result.get("success"):
             message = str(result.get("error", "RAG preprocessing failed"))
+            # NEW-001: Graceful auto-recovery for embedding_space_rebuild_required
+            if result.get("rebuild_required") is True or message == "embedding_space_rebuild_required":
+                reindex_fn = getattr(self.rag, "_request_workspace_reindex", None)
+                target_space = getattr(self.rag, "_embedding_space_id", lambda: None)()
+                if callable(reindex_fn) and target_space:
+                    reindex_fn(workspace, target_space)
+                    if hasattr(self.rag, "_connect"):
+                        try:
+                            with services_module.closing(self.rag._connect()) as rag_con:
+                                with services_module.write_transaction(
+                                    rag_con, max_duration_seconds=5.0, rollback_label="clear legacy vectors for rebuild"
+                                ):
+                                    rag_con.execute(
+                                        "UPDATE chunks SET embedding='[]', embedding_space='' WHERE workspace=? AND (embedding<>'[]' OR embedding_space<>?)",
+                                        (workspace, target_space),
+                                    )
+                        except Exception as rag_exc:
+                            services_module.logger.debug("RAG legacy vector reset yielded: %s", rag_exc)
+                    with self._db_lock, services_module.closing(self._connect()) as con:
+                        con.execute("UPDATE file_refs SET rag_hash=NULL WHERE root=?", (root,))
+                        con.commit()
+                    services_module.logger.info("Automatically scheduled RAG embedding space rebuild for workspace %s into %s", workspace, target_space)
+                    return False
             if result.get("retryable") is True:
                 retry_after = result.get("retry_after_seconds", 60.0)
                 try:
@@ -383,6 +406,8 @@ class PreprocessRAGMixin:
                 except (TypeError, ValueError):
                     retry_after = 60.0
                 raise services_module._RetryablePreprocessingError(message, retry_after)
+            if result.get("retryable") is False:
+                raise services_module._NonRetryablePreprocessingError(message)
             raise RuntimeError(message)
         if result.get("skipped") is True and result.get("reason") == "project phase disabled":
             self._set_project(root, phase="files")

@@ -191,6 +191,36 @@ def test_active_lease_heartbeat_prevents_expiry_until_owner_finishes(tmp_path, m
     assert store.read() is None
 
 
+def test_keepalive_retries_transient_renewal_failure_while_exact_lease_is_still_valid(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=10)
+    token = _digest("transient-renew-owner")
+    lease = store.reserve(
+        token, owner_vram_budget_bytes=16 * 1024**3, owner="embedding:123:456",
+    )
+    assert lease is not None
+    original_renew = store.renew
+    attempts = 0
+
+    def transient_failure(token_digest, generation, *, state="idle"):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        return original_renew(token_digest, generation, state=state)
+
+    monkeypatch.setattr(store, "renew", transient_failure)
+    with store.keepalive(token, lease["generation"], state="active") as lost:
+        assert lost.is_set() is False
+        current = store.read()
+        assert current is not None
+        assert current["generation"] == lease["generation"]
+        assert current["state"] == "active"
+        assert attempts >= 2
+
+
 def test_expired_ownerless_digest_fence_stays_fail_closed(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"

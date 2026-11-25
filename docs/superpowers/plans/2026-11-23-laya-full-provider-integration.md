@@ -590,3 +590,61 @@
 - Provider identity/security checks — 50 passed; Laya service integration — 30 passed. They cover normalized provider attribution, request-scoped identity under concurrent HTTP requests, stdio fallback attribution, and the rule that provider headers cannot authorize remote admin actions. Host-level permission transfer/session behavior remains unobserved.
 - No Local AI Hub/MCP server or provider runtime was launched. Live provider handshakes, model-backed inference/device quality, and host-level permission/session acceptance remain open.
 - Read-only host audit found enabled Codex and Claude plugin entries plus installed Antigravity and Cursor bundles. Backed up and synchronized all four app-owned plugin caches from their current source bundles; each installed tree now matches source SHA-256. Codex and Claude config/installed state stayed intact; Claude reports enabled and its marketplace manifest validates. No plugin runtime was invoked; host reload may be needed.
+
+## 2026-11-24 request-scoped Laya correction
+
+- Current request paths include repository `solve`, direct repository `delegate`, typed context-source evaluation, and request-scoped subagent-budget advice. None require an Agent OS `task_id`; supplied task identity is accepted only after server verification.
+- Fixed `DecisionRequest` post-validation so `session_id=None` remains valid after the request mapper accepts taskless scope. Request-scoped `subagent_budget` now has a deterministic `single_agent` baseline under `request_delegation_budget`; it remains metadata only and cannot start agents.
+- Task identity remains required for task lifecycle, completion/watchdog decisions, task-scoped memory, and supervised candidate capture. Taskless memory is accepted only at repository scope; request outcomes never become supervised candidates.
+- Static AST and `git diff --check` passed for current changed Python sources. No focused test suite or live model inference/device validation was run for this candidate; provider handshakes remain open.
+
+## 2026-11-24 request-scope observability audit
+
+- Found that telemetry duplicated the typed category options and omitted `retrieval_strategy` and `subagent_budget`; both request decisions were rejected before persistence. Telemetry now derives its accepted categories/options from the canonical typed decision contract.
+- Dashboard category rows now enumerate all ten typed categories, including request/task scope counts. Explicit model choice in direct repository delegation is copied into the delegate payload; Laya routing is skipped for that request.
+- Removed the solve path's legacy coordinator model/budget override so route/context changes are made only by typed, observable advisories with deterministic baselines.
+- Added request-scope telemetry/dashboard, taskless solve, taskless context-source, and direct-delegation coverage. Focused Laya, pipeline, provenance, telemetry and dashboard tests: 214 passed. HTTP Laya contract selections: 4 passed after repairing their helper to dispatch the current split handler.
+- Live inference/device placement, provider handshakes, and RAG embedding migration remain unverified and open.
+
+## 2026-11-24 expanded request entrypoints
+
+- Request-scoped model-route advice now covers public delegate/review/reason/second-opinion calls with a repository root and current EvidenceStore evidence. Missing IDs trigger one bounded repository-context lookup; stale evidence, explicit models, ambiguous routes, and lower-quality route downgrades retain deterministic behavior.
+- `review_diff` obtains current changed-path evidence once and forwards the root/evidence into bounded review segments. Taskless local task wrappers now preserve root/workspace for eligible semantic calls.
+- Repository test generation and non-cascade speculative drafts may take quality-preserving model upgrades. Long narrative compression may use typed context-budget advice after deterministic compression declines. Adaptive context packs may select a typed retrieval strategy and rerun only when the returned pack succeeds.
+- The canonical orchestrator and seven packaged provider skills now describe these request routes and taskless scope.
+- Static Python compilation and plan validation passed. No automated tests or live inference/host handshakes were run during this continuation; runtime/device acceptance, provider handshakes, and RAG migration remain open.
+- Solve now omits `task_id` entirely from ordinary model-route, context-budget, retrieval, next-step, delegation, and subagent-budget decision requests when no verified task is present. Taskless decisions retain repository/evidence scope.
+- The context-source endpoint remains available without a task ID. It is called only for a caller-identified unresolved gap: the adaptive pack does not return enough typed freshness/coverage and memory-record provenance to build this contract safely, so automatic activation there would invent signals.
+
+## 2026-11-25 direct RAG request path
+
+- Direct `/api/rag/search` now asks the adaptive context service for a bounded request-scoped retrieval suggestion only when the pinned Laya runtime/evaluator is configured. The context path verifies current repository evidence; no task identity is synthesized.
+- Only typed `dense_rag` and `lexical_bm25` choices influence direct search. No valid advice preserves the semantic default; selected lexical search retries semantic when it errors or returns no results; semantic embedding failures retain the existing lexical fallback. Responses report the selected route and fallback.
+- Laya telemetry explicitly labels model estimates `UNCALIBRATED`; decision counts, route choice, latency, and fallbacks are observability, not proof of quality/value. Matched labeled evaluation remains required before claiming improvement.
+- Runtime decision telemetry now stores only baseline availability and match status, aggregates alignment/divergence by category, and displays it in the dashboard. Alignment is not correctness. Active outputs, telemetry backfills, and coordinator heuristics no longer become self-generated expected labels.
+- Static Python compilation and scoped diff checks passed; the active Hub plan was updated and validated through the supported planner client. No focused route checks or automated tests were run. Matched labeled retrieval evaluation, live inference/device placement, and provider handshakes remain unverified, so this task stays in progress pending authentic acceptance evidence.
+
+## 2026-11-25 request API and observability correction
+
+- Expose runtime evaluation as `local_ai_coord(action="laya_decision")` over a dedicated `POST /api/laya/decision` route. Do not dispatch request inference through `curate_dataset` or `/api/agent-state/tasks`; taskless decisions must work when Agent OS storage is disabled, with a canonical authorized repository root and current server-verified evidence.
+- Restrict `laya_decision` to typed `evaluate_decision`, `evaluate_context_source`, and `runtime_status`. Keep candidate review, human labels, evaluation snapshots, and export under `curate_dataset`; supervised capture still requires a verified task/session.
+- Keep active Laya advice on every registered eligible request path. Valid typed suggestions can affect low-risk route/context choices. Preserve explicit selections, quality/permission/mutation/FIM gates, and deterministic fallbacks.
+- Keep dashboard claims precise: decision scope, eligibility, latency, fallback and deterministic-baseline alignment are operational telemetry. They do not prove correctness or utility. `UNCALIBRATED` remains until independent matched labeled evaluation passes predeclared thresholds.
+- Add route/MCP contract tests, taskless/root-provenance tests, candidate task-bound rejection tests, direct RAG advisory/fallback tests, and dashboard reporting assertions. Run these focused checks plus compile/diff checks after implementation. Do not claim live model quality/device placement without fresh runtime evidence.
+
+### 2026-11-25 implementation result
+
+- Added independent taskless `local_ai_coord(action="laya_decision")` and root-authorized `POST /api/laya/decision`; MCP action is available without the Agent OS feature gate. The endpoint validates the canonical repository root and accepts only typed request decisions, context-source advice, or runtime status.
+- Kept `curate_dataset` on `/api/agent-state/tasks` for candidate curation. Request inference sent there is rejected with the new route; supervised capture remains task/session-bound.
+- Updated the MCP operation contract, route/auth validation, API and README examples, tool description, and existing specification. Existing low-risk RAG/adaptive request wiring and deterministic fallback behavior remain covered.
+- Final focused command `python -m pytest tests/test_laya_mcp_contract.py tests/test_operation_contracts.py tests/test_http_route_operation_acceptance.py -k "laya or http_rag_search or unified_coordinator" -q`: **39 passed, 129 deselected**. Touched Python modules compile with `py_compile`; scoped `git diff --check` passes.
+- Laya quality calibration and live provider/device placement remain `NOT_VERIFIED`; operational telemetry and baseline agreement do not prove utility. Full provider activation also remains open pending an active Antigravity profile.
+
+### 2026-11-25 direct generation proxy integration
+
+- [x] Add taskless typed `model_route` advice for repository-scoped `/api/chat` and `/api/generate` only when the model is omitted and the HTTP root passes Hub authorization.
+- [x] Keep request text bounded, use the deterministic router baseline and current EvidenceStore verification in the shared model-route helper, and leave the configured model in force on missing evidence, unavailable Laya, abstention, or invalid advice.
+- [x] Preserve explicit model selection; do not apply this advisory to `/api/embed`; strip the authorized repository root before forwarding to Ollama. No `task_id` or `session_id` is created or required.
+- [x] Add focused tests for taskless chat/generate routing, explicit-model/rootless/embed bypass, authorized HTTP root binding, and rejection before proxying for an unauthorized root.
+- [x] Verification: `tests/test_laya_request_scope_entrypoints.py` (**8 passed**) and `tests/test_http_route_operation_acceptance.py -k "proxy_binds_authorized_repository_root or proxy_rejects_unauthorized_repository_root"` (**2 passed, 42 deselected**).
+- Laya decision quality and live provider/runtime behavior remain uncalibrated or unverified; baseline agreement and passing mocked route tests do not prove utility.

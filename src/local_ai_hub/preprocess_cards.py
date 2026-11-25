@@ -387,8 +387,31 @@ class PreprocessCardsMixin:
                 progressed = True
                 continue
 
+            if provisional_data is None:
+                # Always persist deterministic metadata first before any model attempt (LAH-006).
+                data = {
+                    "purpose": f"source file ({services_module.Path(str(item['path'])).suffix})",
+                    "symbols": [],
+                    "dependencies": [],
+                    "side_effects": [],
+                    "risks": [],
+                    "tests": [],
+                    "keywords": [services_module.Path(str(item["path"])).stem],
+                    "epistemic_class": "deterministic_fact",
+                    "confidence": 1.0,
+                }
+                stub_key = services_module.stable_hash({"app_version": services_module.PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
+                self._store_file_card(root, item, stub_key, data, "deterministic-stub", content_hash)
+                progressed = True
+                provisional_data = data
+                if not enrich_cards:
+                    continue
+
+            if not enrich_cards:
+                continue
+
             draft_model = self._configured_preprocessing_draft_model()
-            if provisional_data is None and draft_model and self._file_card_enrichment_enabled():
+            if draft_model and self._file_card_enrichment_enabled():
                 try:
                     draft_res = self._run_background_generate(
                         draft_model,
@@ -402,43 +425,68 @@ class PreprocessCardsMixin:
                     if isinstance(draft_res, dict) and draft_res.get("success"):
                         data_draft = draft_res.get("data") or draft_res.get("card")
                         if isinstance(data_draft, dict) and (data_draft.get("symbols") or data_draft.get("purpose")):
-                            provisional_data = {
-                                "purpose": str(data_draft.get("purpose") or f"source file ({services_module.Path(str(item['path'])).suffix})"),
-                                "symbols": list(data_draft.get("symbols") or []),
-                                "dependencies": list(data_draft.get("dependencies") or []),
+                            # Validate symbols/deps against source (never promote hallucinations)
+                            source_lower = file_text.casefold()
+                            valid_symbols = [
+                                str(s) for s in (data_draft.get("symbols") or [])
+                                if isinstance(s, str) and s.strip() and s.strip().casefold() in source_lower
+                            ]
+                            valid_deps = [
+                                str(d) for d in (data_draft.get("dependencies") or [])
+                                if isinstance(d, str) and d.strip() and d.strip().casefold() in source_lower
+                            ]
+                            draft_card = {
+                                "purpose": str(data_draft.get("purpose") or provisional_data.get("purpose", "")),
+                                "symbols": valid_symbols,
+                                "dependencies": valid_deps,
                                 "side_effects": list(data_draft.get("side_effects") or []),
                                 "risks": list(data_draft.get("risks") or []),
                                 "tests": list(data_draft.get("tests") or []),
-                                "keywords": list(data_draft.get("keywords") or [services_module.Path(str(item["path"])).stem]),
+                                "keywords": list(data_draft.get("keywords") or provisional_data.get("keywords", [])),
+                                "epistemic_class": "llm_draft",
+                                "model": draft_model,
+                                "confidence": 0.5,
+                                "read_span": [0, min(len(file_text), 4000)],
                             }
                             draft_key = services_module.stable_hash({"app_version": services_module.PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": f"draft-{draft_model}"})
-                            self._store_file_card(root, item, draft_key, provisional_data, "deterministic-stub", content_hash)
+                            self._store_file_card(root, item, draft_key, draft_card, draft_model, content_hash)
                             progressed = True
-                except Exception:
-                    pass
-
-            if provisional_data is None:
-                # Persist deterministic metadata before any model attempt.
-                data = {"purpose": f"source file ({services_module.Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [services_module.Path(str(item["path"])).stem]}
-                stub_key = services_module.stable_hash({"app_version": services_module.PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
-                self._store_file_card(root, item, stub_key, data, "deterministic-stub", content_hash)
-                progressed = True
-                provisional_data = data
-                if not enrich_cards:
-                    continue
+                            provisional_data = draft_card
+                except Exception as exc:
+                    services_module.logger.debug("Draft generation failed for %s: %s", item.get("path"), exc)
 
             item_model = background_model
 
             # Diff-based update: if old card exists and fewer than 15% lines changed, use diff prompt
             old_card_text: str | None = None
+            is_minor_diff = False
+            diff_section = ""
             with self._db_lock, services_module.closing(self._connect()) as con:
-                prev = con.execute(
-                    "SELECT card_key, card_json FROM content_cards WHERE content_hash<>? AND analyzer_version=? AND card_key IN "
-                    "(SELECT card_key FROM file_refs WHERE root=? AND path=?)",
-                    (content_hash, services_module.PREPROCESS_ANALYZER_VERSION, root, str(item["path"])),
+                old_src_row = con.execute(
+                    "SELECT content_hash, text FROM source_index WHERE root=? AND path=? AND content_hash<>? ORDER BY updated_at DESC LIMIT 1",
+                    (root, str(item["path"]), content_hash),
                 ).fetchone()
-                if prev:
-                    old_card_text = str(prev[1])
+                if old_src_row:
+                    old_hash = str(old_src_row[0])
+                    old_src_text = str(old_src_row[1])
+                    prev = con.execute(
+                        "SELECT card_key, card_json FROM content_cards WHERE content_hash=? AND analyzer_version=? LIMIT 1",
+                        (old_hash, services_module.PREPROCESS_ANALYZER_VERSION),
+                    ).fetchone()
+                    if prev:
+                        old_card_text = str(prev[1])
+                        import difflib, re
+                        old_lines = [re.sub(r"^\d+:\s*", "", l) for l in old_src_text.splitlines()]
+                        new_lines = [re.sub(r"^\d+:\s*", "", l) for l in file_text.splitlines()]
+                        if old_lines and new_lines:
+                            matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+                            if matcher.ratio() >= 0.85:
+                                is_minor_diff = True
+                                diff_lines = [
+                                    line for line in difflib.unified_diff(old_lines, new_lines, lineterm="")
+                                    if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+                                ]
+                                diff_section = "\n".join(diff_lines[:40])
 
             file_text = slice_result.get("text", "")
             neighborhood_section = ""
@@ -448,11 +496,11 @@ class PreprocessCardsMixin:
                     neighbors = find_file_neighbors(con, root, str(item["path"]))
                     if neighbors:
                         neighborhood_section = format_neighborhood_prompt_section(neighbors) + "\n\n"
-            except Exception:
-                pass
+            except Exception as exc:
+                services_module.logger.debug("Neighborhood resolution failed for %s: %s", item.get("path"), exc)
 
-            if old_card_text:
-                prompt_text = f"FILE: {item['path']}\n\n{neighborhood_section}PREVIOUS SUMMARY:\n{old_card_text[:800]}\n\nCURRENT SOURCE (authority):\n{file_text}"
+            if old_card_text and is_minor_diff:
+                prompt_text = f"FILE: {item['path']}\n\n{neighborhood_section}PREVIOUS SUMMARY:\n{old_card_text[:800]}\n\nDIFF (<15% lines changed):\n{diff_section[:1200]}\n\nCURRENT SOURCE (authority):\n{file_text}"
             else:
                 prompt_text = f"FILE: {item['path']}\n\n{neighborhood_section}DETERMINISTIC BASELINE (preserve valid parsed facts and complement with semantic details):\n{services_module.json_dumps(provisional_data, ensure_ascii=False)[:1800] if provisional_data else 'none'}\n\nCURRENT SOURCE (authority):\n{file_text}"
 

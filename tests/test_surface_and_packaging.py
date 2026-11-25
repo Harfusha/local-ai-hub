@@ -16,11 +16,14 @@ def test_compact_mcp_surface_is_exactly_seven_tools():
     tree = ast.parse(source)
     tools = []
     for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for deco in node.decorator_list:
-            if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute) and deco.func.attr == "tool":
-                tools.append(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for deco in node.decorator_list:
+                if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute) and deco.func.attr == "tool":
+                    tools.append(node.name)
+        elif isinstance(node, ast.Assign):
+            target = node.targets[0].id if node.targets and isinstance(node.targets[0], ast.Name) else ""
+            if "mcp.tool()" in ast.unparse(node.value):
+                tools.append(target)
     assert len(tools) == 7
     assert set(tools) == {"local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_coord", "local_ai_artifact", "local_ai_work"}
     assert not (ROOT / "mcp" / "local_ai_mcp_full.py").exists()
@@ -51,9 +54,10 @@ def test_sdist_manifest_prunes_internal_superpowers_docs_after_docs_include():
 def test_shipping_agent_policy_advertises_compact_workflow():
     policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "local_ai_work" in policy
-    assert "seven existing tools" in policy
-    assert "eight existing tools" not in policy
-    assert "qwen2.5-coder:1.5b" in policy
+    assert "local_ai_repo" in policy
+    assert "local_ai_coord" in policy
+    assert "local_ai_artifact" in policy
+    assert "qwen2.5-coder:3b" in policy
 
 
 def test_version_and_disconnect_regressions(tmp_path: Path):
@@ -71,7 +75,7 @@ def test_version_and_disconnect_regressions(tmp_path: Path):
     assert _is_client_disconnect(OSError("WinError 10054: connection reset")) is True
     assert _is_client_disconnect(ValueError("not socket error")) is False
     p = tmp_path / "config.toml"
-    p.write_text(f'[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
+    p.write_text(f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
     cfg = load_config(str(p))
     assert Path(cfg["server"]["state_dir"]).resolve() == (tmp_path / "state").resolve()
 
@@ -178,6 +182,16 @@ def test_repo_cache_stale_root_and_none_result_are_structured():
     assert stale["success"] is False
     assert stale["stale_root"] is True
     assert stale["error_type"] == "ValueError"
+    assert stale["error_code"] == "stale_repository_input"
+    assert stale["status_code"] == 409
+    assert stale["terminal"] is True
+    assert stale["retryable"] is False
+
+    from local_ai_hub.http_server import _api_result_http_response
+
+    status, body = _api_result_http_response(stale)
+    assert status == 409
+    assert body["error_code"] == "stale_repository_input"
 
     svc.repo_state = _State(fail=False)
     svc.repo_flight = _Flight(None)

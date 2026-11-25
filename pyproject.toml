@@ -55,7 +55,14 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_ai_hub = ["defaults.toml", "automation_browser.js", "ui_static/*", "data/*.json"]
+local_ai_hub = [
+  "defaults.toml",
+  "automation_browser.js",
+  "grammars/*.gbnf",
+  "ui_static/*",
+  "ui_static/dist/*",
+  "data/*.json",
+]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
 
 [tool.setuptools.data-files]
@@ -131,6 +138,14 @@ files = [
   "src/local_ai_hub/operation_contracts.py",
   "src/local_ai_hub/http_scoped_tasks.py",
   "src/local_ai_hub/telemetry_contracts.py",
+  "src/local_ai_hub/agent_identity.py",
+  "src/local_ai_hub/compact.py",
+  "src/local_ai_hub/monotonic_deadline.py",
+  "src/local_ai_hub/native_kernels.py",
+  "src/local_ai_hub/runtime_assets.py",
+  "src/local_ai_hub/source_facts.py",
+  "src/local_ai_hub/source_slice.py",
+  "src/local_ai_hub/token_accounting.py",
 ]
 
 [tool.ruff]

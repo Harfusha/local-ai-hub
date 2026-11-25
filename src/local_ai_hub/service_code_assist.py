@@ -54,6 +54,87 @@ def compress(
             return det
 
     chunk_tokens = int(services.config.get("token_saving", {}).get("compression_chunk_tokens", 4800))
+    laya_context_budget = None
+    root_value = args.get("root")
+    supplied_evidence_ids = args.get("evidence_ids")
+    if (
+        estimate_tokens(text) > chunk_tokens
+        and isinstance(root_value, str) and root_value.strip()
+    ):
+        evidence_ids = list(dict.fromkeys(
+            item.strip() for item in supplied_evidence_ids
+            if isinstance(item, str) and item.strip()
+        ))[:64] if isinstance(supplied_evidence_ids, (list, tuple)) else []
+        if not evidence_ids:
+            pack_context = getattr(services, "_hybrid_context", None)
+            if callable(pack_context):
+                try:
+                    packed = pack_context(
+                        root_value,
+                        instruction[:2048],
+                        workspace=args.get("workspace"),
+                        max_tokens=512,
+                    )
+                    rows = packed.get("evidence", []) if isinstance(packed, dict) else []
+                    evidence_ids = list(dict.fromkeys(
+                        row.get("evidence_id") for row in rows
+                        if isinstance(row, dict)
+                        and isinstance(row.get("evidence_id"), str)
+                        and row.get("evidence_id")
+                    ))[:64] if isinstance(rows, list) else []
+                except Exception:
+                    evidence_ids = []
+        evidence_store = getattr(services, "evidence_store", None)
+        get_many = getattr(evidence_store, "get_many", None)
+        evaluate_laya = getattr(services, "evaluate_laya_advisory", None)
+        if evidence_ids and callable(get_many) and callable(evaluate_laya):
+            try:
+                canonical_root = str(Path(root_value).expanduser().resolve(strict=True))
+                if not Path(canonical_root).is_dir():
+                    raise ValueError("repository root is not a directory")
+                rows = get_many(evidence_ids, verify=True, root=canonical_root)
+                verified = (
+                    type(rows) is list and len(rows) == len(evidence_ids)
+                    and all(
+                        type(row) is dict
+                        and row.get("success") is True
+                        and row.get("evidence_id") == evidence_id
+                        and row.get("root") == canonical_root
+                        and row.get("stale") is False
+                        for row, evidence_id in zip(rows, evidence_ids, strict=True)
+                    )
+                )
+                if verified:
+                    suggestion = evaluate_laya(
+                        {
+                            "action": "evaluate_decision",
+                            "decision": {
+                                "category": "context_budget",
+                                "evidence_ids": evidence_ids,
+                                "options": ["compact", "standard"],
+                                "state": {
+                                    "operation": "compress",
+                                    "input_tokens": str(estimate_tokens(text)),
+                                    "target_tokens": str(target_tokens),
+                                    "chunk_tokens": str(chunk_tokens),
+                                },
+                                "training_content": {
+                                    "task_input": instruction.encode("utf-8", errors="replace")[:2048].decode("utf-8", errors="ignore"),
+                                },
+                            },
+                        },
+                        root=canonical_root,
+                        baseline={
+                            "method": "compression_chunk_budget",
+                            "suggestion": "standard",
+                            "evidence_id": evidence_ids[0],
+                        },
+                    )
+                    if suggestion == "compact":
+                        chunk_tokens = max(512, int(chunk_tokens * 0.75))
+                        laya_context_budget = suggestion
+            except Exception:
+                laya_context_budget = None
     chunk_chars = chars_for_tokens(chunk_tokens)
     chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
     summaries: list[str] = []
@@ -142,6 +223,8 @@ def compress(
         "output_tokens_est": estimate_tokens(str(final.get("text", ""))),
         "chunks": len(chunks),
     }
+    if laya_context_budget is not None:
+        final["laya_context_budget"] = laya_context_budget
     return services.artifacts.compact(final, kind="compress")
 
 
@@ -349,6 +432,28 @@ def generate_tests(
         "- Return ONLY the executable test code inside markdown code blocks\n"
     )
     model = str(services.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+    laya_model_route = None
+    classifier = getattr(getattr(services, "router", None), "classify", None)
+    if callable(classifier) and isinstance(payload.get("root"), str) and payload.get("root", "").strip():
+        try:
+            route = classifier(
+                f"Generate tests for {symbol} in {path}", code_context, "code", "fast",
+            )
+            route["complexity"] = "fast"
+            route["model"] = model
+            route_args = dict(payload)
+            if path:
+                route_args["changed_paths"] = [path]
+            laya_model_route = services._request_laya_model_route(
+                route_args,
+                route,
+                f"Generate tests for {symbol} in {path}",
+                code_context,
+            )
+            if laya_model_route is not None:
+                model = str(route["model"])
+        except Exception:
+            laya_model_route = None
     res = services._generate(model, prompt, "You are an expert test engineer.", 1500, 0.2, source="generate_tests",
                              **({"cancel_event": cancel_event} if cancel_event is not None else {}))
     if cancel_event is not None and cancel_event.is_set():
@@ -358,7 +463,7 @@ def generate_tests(
     raw_code = str(res.get("text", ""))
     match = re.search(r"```(?:\w+)?\n(.*?)```", raw_code, re.DOTALL)
     test_code = match.group(1).strip() if match else raw_code.strip()
-    return {
+    result = {
         "success": True,
         "framework": framework,
         "test_code": test_code,
@@ -366,6 +471,9 @@ def generate_tests(
         "symbol": symbol,
         "path": path,
     }
+    if laya_model_route is not None:
+        result["laya_model_route"] = laya_model_route
+    return result
 
 
 def validate_patch(services: Any, payload: dict[str, Any]) -> dict[str, Any]:

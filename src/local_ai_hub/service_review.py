@@ -190,6 +190,38 @@ class ServiceReviewMixin:
         det_hint = fit_text(det_hint, 700).text if det_hint else ""
 
         diff_text = str(diff["diff"])
+        laya_evidence_ids = args.get("evidence_ids")
+        if isinstance(laya_evidence_ids, (list, tuple)):
+            laya_evidence_ids = list(dict.fromkeys(
+                item.strip() for item in laya_evidence_ids
+                if isinstance(item, str) and item.strip()
+            ))[:64]
+        else:
+            laya_evidence_ids = []
+        review_root = args.get("root")
+        if not laya_evidence_ids and isinstance(review_root, str) and review_root.strip():
+            pack_context = getattr(self, "_hybrid_context", None)
+            if callable(pack_context):
+                try:
+                    packed_context = pack_context(
+                        review_root,
+                        instructions[:2048],
+                        workspace=args.get("workspace"),
+                        max_tokens=512,
+                        changed_paths=tuple(
+                            path for path in diff.get("changed_files", [])
+                            if isinstance(path, str)
+                        )[:64],
+                    )
+                    evidence = packed_context.get("evidence", []) if isinstance(packed_context, dict) else []
+                    laya_evidence_ids = list(dict.fromkeys(
+                        row.get("evidence_id") for row in evidence
+                        if isinstance(row, dict)
+                        and isinstance(row.get("evidence_id"), str)
+                        and row.get("evidence_id")
+                    ))[:64] if isinstance(evidence, list) else []
+                except Exception:
+                    laya_evidence_ids = []
         complexity_hint = review_diff_complexity(args, det_diff, diff)
         full_route = self.router.classify(
             instructions + det_hint, diff_text, "review", complexity_hint
@@ -346,6 +378,8 @@ class ServiceReviewMixin:
                 "operation": "review_diff",
                 "task": task,
                 "context": review_code,
+                **({"root": review_root} if isinstance(review_root, str) and review_root.strip() else {}),
+                **({"evidence_ids": laya_evidence_ids} if laya_evidence_ids else {}),
                 "changed_paths": diff.get("changed_files", []),
                 "static_facts": det_hint,
                 "complexity": complexity,

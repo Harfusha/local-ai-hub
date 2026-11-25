@@ -261,6 +261,42 @@ def _compact(
         ):
             return {"success": False, "status_code": 413, "terminal": True, "retryable": False,
                     "error": "Event exceeds response budget; increase max_response_tokens"}
+        if (
+            options.get("action") == "plan_list"
+            and isinstance(raw_value, dict)
+            and raw_value.get("success") is True
+            and isinstance(raw_value.get("plans"), list)
+        ):
+            expected_plans = services_module.json.dumps(raw_value["plans"], sort_keys=True, separators=(",", ":"))
+            if (
+                not isinstance(compacted, dict)
+                or compacted.get("success") is not True
+                or services_module.json.dumps(compacted.get("plans"), sort_keys=True, separators=(",", ":")) != expected_plans
+                or services_module.json_tokens(compacted) > requested
+            ):
+                diag_checker = getattr(services_module, "detailed_diagnostics_enabled", None)
+                diag_enabled = diag_checker(services_module.CFG) if diag_checker else False
+                orig_tokens = services_module.json_tokens(services_module._mcp_wire_view(raw_value, structured=True))
+                rejection_budget = {
+                    "requested_tokens": requested,
+                    "returned_tokens": 0,
+                    "rejected": True,
+                    "truncated": True,
+                    "unit": "estimated_tokens",
+                }
+                if diag_enabled:
+                    rejection_budget["original_tokens"] = orig_tokens
+                rejection = {
+                    "success": False,
+                    "status_code": 413,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Plan list exceeds response budget; Reduce limit or narrow query, or increase max_response_tokens.",
+                    "response_budget": rejection_budget,
+                }
+                if "root" in raw_value:
+                    rejection["root"] = raw_value["root"]
+                return rejection
         if expected_context_delta is not None and (
             not isinstance(compacted, dict) or compacted.get("delta") != expected_context_delta
         ):

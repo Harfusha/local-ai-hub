@@ -421,7 +421,7 @@ max_queue_age_ms = 30000
 foreground_priority = 3
 # Runs outside the GPU scheduler. These limits bound CPU/RAM contention while the
 # foreground model is active; both layers retain their own persistent caches.
-embedding_trust_remote_code = true
+embedding_trust_remote_code = false
 embedding_max_seq_length = 8192
 embedding_batch_size = 16
 reranker_batch_size = 4

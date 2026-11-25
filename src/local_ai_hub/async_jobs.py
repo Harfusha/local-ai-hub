@@ -237,7 +237,7 @@ class AsyncJobManager:
         allowed = {
             "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "cwd", "paths", "command",
             "repository_id", "session_id", "clone_id", "worktree_id", "branch",
-            "instructions", "base", "staged", "mode", "diff_tokens", "consensus", "_async_job", "request_id",
+            "instructions", "base", "staged", "mode", "diff", "diff_tokens", "consensus", "_async_job", "request_id",
             "workspace",
         }
         return {key: payload[key] for key in allowed if key in payload}

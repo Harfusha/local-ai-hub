@@ -18,6 +18,11 @@ include install.sh
 recursive-include tools *.py *.js *.cjs *.ps1 *.json
 recursive-include plugins *.json *.py *.md *.mdc *.yaml *.yml *.js *.cjs
 include src/local_ai_hub/repo_plan/repo-plan.v1.schema.json
+recursive-include src/local_ai_hub/grammars *.gbnf
+recursive-include src/local_ai_hub/ui_static *
+recursive-include src/local_ai_hub/data *.json
+include src/local_ai_hub/automation_browser.js
+include src/local_ai_hub/defaults.toml
 include tools/release-build-requirements.txt
 include tools/release-pip-requirements.txt
 include tools/release-runtime-constraints.txt

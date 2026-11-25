@@ -717,6 +717,7 @@ class HTTPAdminMixin:
                     "retryable": False,
                 })
         except Exception as exc:
+            services_module.APP.logger.exception("diagnostic support archive export failed")
             if not services_module._is_client_disconnect(exc) and not response_started:
                 self._send(500, {
                     "success": False,

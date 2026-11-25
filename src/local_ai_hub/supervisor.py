@@ -745,7 +745,7 @@ class Supervisor:
                             self.log("hub listener retained; safe termination unavailable")
                             self._wait_interruptibly(interval)
                             continue
-                now = time.time()
+                now = time.monotonic()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
                 manage_llama_cpp = llama_cpp_managed_selected(self.config)
                 self._start_mixed_cuda()
@@ -793,8 +793,8 @@ class Supervisor:
                 # Cold startup may initialize several local derived stores and model
                 # metadata. Do not recycle a live child using the much shorter runtime
                 # unhealthy grace; that creates a self-sustaining restart storm.
-                deadline = time.time() + startup_grace
-                while not self.stopping and time.time() < deadline:
+                deadline = time.monotonic() + startup_grace
+                while not self.stopping and time.monotonic() < deadline:
                     if self.hub_ready():
                         self.child_ready = True
                         break

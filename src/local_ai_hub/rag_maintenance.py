@@ -196,7 +196,7 @@ class RAGMaintenanceMixin:
                     con.execute(
                         "SELECT DISTINCT COALESCE(TRIM(CAST(embedding_space AS TEXT)), '') "
                         "FROM chunks WHERE workspace=? AND embedding IS NOT NULL "
-                        "AND length(embedding)>0",
+                        "AND length(embedding)>0 AND TRIM(CAST(embedding AS TEXT))<>'[]'",
                         (workspace,),
                     ).fetchall()
                     if stored_space is None else []
@@ -209,7 +209,7 @@ class RAGMaintenanceMixin:
                     unresolved_legacy_vectors = True
                 else:
                     inferred_spaces.add(row_space)
-            if stored_space is None and (unresolved_legacy_vectors or len(inferred_spaces) > 1):
+            if stored_space is None and not reindex_target and (unresolved_legacy_vectors or len(inferred_spaces) > 1):
                 return {
                     "success": False, "workspace": workspace,
                     "error": "embedding_space_rebuild_required",

@@ -31,7 +31,7 @@ from .budget import estimate_tokens
 try:
     import orjson as _orjson
 except ImportError:  # pragma: no cover
-    _orjson = None
+    _orjson = None  # type: ignore[assignment]
 
 
 _PRIVATE_KEY = "_token_accounting"
@@ -466,8 +466,8 @@ def account_projection(raw_value: Any, projected_value: Any) -> Any:
         if output_saved:
             measured["gross_output_tokens_avoided_est"] = output_saved
             measured["output_savings_source"] = "response_compaction"
-            breakdown = measured.get("savings_breakdown") if isinstance(measured.get("savings_breakdown"), dict) else {}
-            breakdown = dict(breakdown)
+            sb = measured.get("savings_breakdown")
+            breakdown = dict(sb) if isinstance(sb, dict) else {}
             breakdown["response_compaction"] = max(_nonneg_int(breakdown.get("response_compaction")), output_saved)
             measured["savings_breakdown"] = breakdown
         measured["gross_cloud_tokens_avoided_est"] = input_saved if input_saved else output_saved

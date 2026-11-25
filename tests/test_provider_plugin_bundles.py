@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 import pytest
@@ -78,6 +80,41 @@ def test_portable_provider_launchers_stay_identical():
     assert all(b'provider = "generic_mcp"' in launcher for launcher in launchers)
 
 
+def test_windows_portable_launcher_preserves_mcp_stdio(tmp_path: Path) -> None:
+    install = tmp_path / "hub-install"
+    package = install / "src" / "local_ai_hub"
+    package.mkdir(parents=True)
+    (install / "config.toml").write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n", encoding="utf-8",
+    )
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "mcp_server.py").write_text(
+        "import sys\n"
+        "line = sys.stdin.readline()\n"
+        "print('ACK:' + line.strip(), flush=True)\n",
+        encoding="utf-8",
+    )
+    runner = ROOT / "plugins" / "antigravity" / "local-ai-hub" / "scripts" / "run_hub.py"
+    env = os.environ.copy()
+    env["LOCAL_AI_HUB_DIR"] = str(install)
+    env.pop("LOCAL_AI_CONFIG", None)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(runner), "mcp_server"],
+        cwd=runner.parent.parent,
+        env=env,
+        input="MCP-STDIO-PROBE\n",
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ACK:MCP-STDIO-PROBE"
+
+
 @pytest.mark.parametrize("provider", ("codex", "antigravity", "claude", "copilot", "cursor", "gemini", "devin"))
 def test_explicit_host_hook_identity_overrides_inherited_provider_env(tmp_path, monkeypatch, provider):
     script = ROOT / "plugins" / provider / "local-ai-hub" / "scripts" / "run_hub.py"
@@ -91,7 +128,11 @@ def test_explicit_host_hook_identity_overrides_inherited_provider_env(tmp_path, 
     monkeypatch.setattr(module, "resolve_hub_install", lambda: install)
     monkeypatch.setenv("LOCAL_AI_AGENT", "antigravity")
     monkeypatch.setenv("LOCAL_AI_AGENT_PROFILE", "antigravity")
-    monkeypatch.setattr(module.os, "execve", lambda _python, _argv, env: installed.update(env))
+    monkeypatch.setattr(
+        module.subprocess,
+        "call",
+        lambda _argv, *, env: (installed.update(env) or 0),
+    )
 
     assert module.main(["host_hooks", "--host", provider]) == 0
     assert installed["LOCAL_AI_AGENT"] == provider

@@ -42,6 +42,61 @@ def test_absent_telemetry_does_not_claim_lost_callback():
     assert processor._stats["lost_error_count"] == 0
 
 
+def test_terminal_preprocessing_failure_is_not_reported_retryable():
+    class TerminalError(RuntimeError):
+        retryable = False
+
+    telemetry = Mock()
+    processor = _preprocessor(telemetry)
+    error = TerminalError("embedding space needs an operator rebuild")
+
+    ProjectPreprocessor._record_failure_telemetry(processor, {"phase": "rag"}, error)
+
+    telemetry.record_error.assert_called_once_with(
+        "preprocess", "rag", error, retryable=False, recovered=False,
+    )
+
+
+def test_cpu_worker_pauses_terminal_preprocessing_failure(monkeypatch):
+    monkeypatch.setattr(preprocess_module, "set_current_thread_priority", Mock())
+    class TerminalError(RuntimeError):
+        retryable = False
+
+    error = TerminalError("embedding space needs an operator rebuild")
+    row = {"root": "fixture", "phase": "rag", "stats_json": "{}"}
+    stop = threading.Event()
+    wakeup_wait = Mock(side_effect=lambda _delay: stop.set())
+    processor = SimpleNamespace(
+        cpu_priority="normal",
+        cfg={"startup_delay_seconds": 0, "poll_seconds": 0.3},
+        _stats_lock=threading.Lock(),
+        _stats={"loops": 0, "errors": 0},
+        _stop=SimpleNamespace(is_set=stop.is_set, wait=Mock()),
+        _paused=threading.Event(),
+        _background_work_allowed=lambda: True,
+        cpu_runs_during_foreground=True,
+        _is_locked_error=lambda _exc: False,
+        _next_cpu_project=Mock(side_effect=[row, None]),
+        _run_project_step=Mock(side_effect=error),
+        _project_row=Mock(return_value=row),
+        _set_project=Mock(),
+        _record_failure_telemetry=Mock(),
+        _run_idle_database_maintenance=Mock(),
+        _cpu_wakeup=SimpleNamespace(wait=wakeup_wait, clear=Mock()),
+    )
+
+    ProjectPreprocessor._cpu_loop(processor)
+
+    processor._set_project.assert_called_once()
+    saved = processor._set_project.call_args.kwargs
+    assert saved["status"] == "error"
+    assert saved["paused"] is True
+    assert saved["retry_after"] == 0
+    assert processor._next_cpu_project.call_count == 2
+    processor._run_project_step.assert_called_once_with(row)
+    processor._record_failure_telemetry.assert_called_once_with(row, error)
+
+
 def test_cpu_worker_backs_off_if_error_state_cannot_be_written(monkeypatch):
     monkeypatch.setattr(preprocess_module, "set_current_thread_priority", Mock())
     original_error = RuntimeError("synthetic preprocessing failure")

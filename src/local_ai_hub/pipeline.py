@@ -169,7 +169,7 @@ class LocalAgentPipeline:
     def _select_worker_model(
         route: dict[str, Any] | None, mode: str, risk_score: int,
         direct_smart_risk_score: int, fast_model: str, heavy_model: str,
-        reasoning_model: str | None = None,
+        reasoning_model: str | None = None, generic_model: str | None = None,
     ) -> str:
         """Keep ordinary repository workers on Qwen 2.5; escalate intentionally."""
         route_dict = route if isinstance(route, dict) else {}
@@ -180,6 +180,8 @@ class LocalAgentPipeline:
             if route_dict.get("task_type") == "reasoning" and isinstance(reasoning_model, str) and reasoning_model:
                 return reasoning_model
             return heavy_model
+        if laya_model_route == "generic" and isinstance(generic_model, str) and generic_model:
+            return generic_model
         complexity_score = _safe_int(route_dict.get("complexity_score"), 0)
         smart_required = (
             mode == "quality"
@@ -270,15 +272,30 @@ class LocalAgentPipeline:
         available_routes = getattr(self.services, "_available_laya_model_route_options", None)
         evaluate_laya = getattr(self.services, "evaluate_laya_advisory", None)
         if (
-            isinstance(task_id, str) and task_id.strip() and evidence_ids
+            evidence_ids
             and callable(available_routes) and callable(evaluate_laya)
+            and not (
+                route.get("task_type") == "reasoning"
+                and route.get("complexity") != "heavy"
+            )
         ):
             try:
-                verified_routes = available_routes(str(route.get("task_type", "")))
-                options = [option for option in ("fast", "smart") if option in verified_routes]
+                task_type = str(route.get("task_type", "general"))
+                complexity = str(route.get("complexity", "fast"))
+                current_role = (
+                    "heavy_code" if complexity == "heavy" else "fast_code"
+                ) if task_type in {"code", "review"} else (
+                    "reasoning" if complexity == "heavy" else "heavy_code"
+                ) if task_type == "reasoning" else "general"
+                verified_routes = available_routes(current_role)
+                options = [option for option in ("fast", "smart", "generic") if option in verified_routes]
                 baseline_suggestion = {
                     "fast_code": "fast", "heavy_code": "smart", "reasoning": "smart",
-                }.get(str(route.get("task_type", "")))
+                    # General work may have its own distinct, digest-verified
+                    # route. Let Laya choose it when the installed inventory
+                    # proves there are at least two real alternatives.
+                    "general": "generic",
+                }.get(current_role)
                 if len(options) >= 2 and baseline_suggestion in options:
                     baseline = {
                         "method": "model_router_classify",
@@ -287,14 +304,14 @@ class LocalAgentPipeline:
                     }
                     operation = {
                         "action": "evaluate_decision",
-                        "task_id": task_id.strip(),
+                        **({"task_id": task_id.strip()} if isinstance(task_id, str) and task_id.strip() else {}),
                         "decision": {
                             "category": "model_route",
                             "evidence_ids": evidence_ids,
                             "options": options,
                             "state": {
-                                "task_type": str(route.get("task_type", "general")),
-                                "complexity": str(route.get("complexity", "fast")),
+                                "task_type": task_type,
+                                "complexity": complexity,
                                 "semantic_required": "true" if route.get("semantic_required") is True else "false",
                                 "context_present": "true",
                             },
@@ -312,7 +329,11 @@ class LocalAgentPipeline:
                         and int(route.get("complexity_score", 0) or 0) < self.direct_smart_complexity_score
                         and route.get("complexity") != "heavy"
                     )
-                    if laya_model_route == "smart" or low_risk_fast_route:
+                    if (
+                        laya_model_route == "smart"
+                        or (laya_model_route == "generic" and current_role == "general")
+                        or low_risk_fast_route
+                    ):
                         route["laya_model_route"] = laya_model_route
                         if laya_model_route == "smart":
                             route["complexity"] = "heavy"
@@ -351,13 +372,13 @@ class LocalAgentPipeline:
             not context_budget_explicit and not use_det_context
             and route.get("complexity") != "heavy"
             and risk_score < self.direct_smart_risk_score
-            and isinstance(task_id, str) and task_id.strip() and evidence_ids
+            and evidence_ids
             and callable(evaluate_laya)
         ):
             try:
                 operation = {
                     "action": "evaluate_decision",
-                    "task_id": task_id.strip(),
+                    **({"task_id": task_id.strip()} if isinstance(task_id, str) and task_id.strip() else {}),
                     "decision": {
                         "category": "context_budget",
                         "evidence_ids": evidence_ids,
@@ -396,60 +417,13 @@ class LocalAgentPipeline:
             packed["context_source"] = "deterministic"
         else:
             laya_retrieval_strategy = None
-            laya_cfg = self.config.get("laya", {})
-            laya_coordinator = getattr(self.services, "laya_coordinator", None)
-            if (
-                isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
-                and laya_coordinator is not None
-            ):
-                try:
-                    laya_plan = laya_coordinator.analyze_task(
-                        task,
-                        query=task,
-                        affected_paths=tuple(impact.get("changed_files", ())) if isinstance(impact, dict) else (),
-                        incoming_context_tokens=budget,
-                        max_budget=budget,
-                    )
-                    coordinator_confidence = float(getattr(laya_plan, "overall_confidence", 0.0) or 0.0)
-                    low_risk_auto_budget = (
-                        not context_budget_explicit
-                        and not use_det_context
-                        and route.get("complexity") != "heavy"
-                        and mode != "quality"
-                        and risk_score < min(self.direct_smart_risk_score, self.critic_risk_score)
-                        and int(route.get("complexity_score", 0) or 0) < self.direct_smart_complexity_score
-                    )
-                    if low_risk_auto_budget and coordinator_confidence >= 0.80:
-                        budget_plan = getattr(laya_plan, "budget_plan", None)
-                        retrieval_budget = int(getattr(budget_plan, "retrieval_tokens", 0) or 0)
-                        if retrieval_budget > 0 and budget > 0:
-                            # Keep a 75% floor; the heuristic allocator cannot erase needed context.
-                            budget = min(budget, max(int(budget * 0.75), retrieval_budget))
-                            route = dict(route)
-                            route["laya_context_budget"] = "adaptive"
-
-                    model_recommendation = getattr(laya_plan, "model_recommendation", None)
-                    model_tier = getattr(getattr(model_recommendation, "tier", None), "value", "")
-                    model_confidence = float(getattr(model_recommendation, "confidence", 0.0) or 0.0)
-                    low_risk_fast_route = (
-                        low_risk_auto_budget
-                        and model_tier == "fast"
-                        and model_confidence >= 0.90
-                        and route.get("task_type") != "reasoning"
-                        and route.get("laya_model_route") != "smart"
-                    )
-                    if low_risk_fast_route:
-                        route = dict(route)
-                        route["laya_model_route"] = "fast"
-
-                except Exception as exc:
-                    logger.debug("Laya retrieval routing fallback: %s", type(exc).__name__)
             # Retrieval is an active typed decision with a closed option set.
-            # The coordinator's legacy heuristic recommendation is not authoritative.
+            # Typed model-route and context-budget advisories ran above; avoid
+            # applying a second untyped coordinator recommendation here.
             laya_cfg = self.config.get("laya", {})
             if (
                 isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
-                and isinstance(task_id, str) and task_id.strip() and evidence_ids
+                and evidence_ids
                 and callable(evaluate_laya)
             ):
                 try:
@@ -471,7 +445,7 @@ class LocalAgentPipeline:
                     }
                     operation = {
                         "action": "evaluate_decision",
-                        "task_id": task_id.strip(),
+                        **({"task_id": task_id.strip()} if isinstance(task_id, str) and task_id.strip() else {}),
                         "decision": {
                             "category": "retrieval_strategy",
                             "evidence_ids": evidence_ids,
@@ -511,7 +485,7 @@ class LocalAgentPipeline:
         laya_cfg = self.config.get("laya", {})
         if (
             isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
-            and isinstance(task_id, str) and task_id.strip() and evidence_ids
+            and evidence_ids
             and callable(evaluate_laya)
         ):
             try:
@@ -541,7 +515,7 @@ class LocalAgentPipeline:
                     suggestion = evaluate_laya(
                         {
                             "action": "evaluate_decision",
-                            "task_id": task_id.strip(),
+                            **({"task_id": task_id.strip()} if isinstance(task_id, str) and task_id.strip() else {}),
                             "decision": {
                                 "category": "next_step",
                                 "evidence_ids": guidance_evidence_ids,
@@ -592,6 +566,103 @@ class LocalAgentPipeline:
             plan = dict(plan)
             plan["explorer"] = False
             plan["reason"] = "direct-smart-no-redundant-scout"
+        # Laya may recommend a delegation posture, but planner/quality gates
+        # remain authoritative and the advisory never starts extra work.
+        delegation_evidence_ids = list(dict.fromkeys(
+            evidence_ids + [
+                item.get("evidence_id") for item in (packed_ev if isinstance(packed_ev, (list, tuple)) else ())
+                if isinstance(item, dict) and isinstance(item.get("evidence_id"), str) and item["evidence_id"]
+            ]
+        ))[:64]
+        laya_cfg = self.config.get("laya", {})
+        if (
+            isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
+            and delegation_evidence_ids and callable(evaluate_laya)
+            and risk_score < self.direct_smart_risk_score
+            and (
+                any(plan.get(key) for key in ("explorer", "worker", "critic"))
+                or deterministic.get("requires_synthesis", True)
+            )
+        ):
+            try:
+                if plan.get("worker"):
+                    delegation_baseline = "delegate_bounded"
+                elif plan.get("critic"):
+                    delegation_baseline = "review_only"
+                else:
+                    delegation_baseline = "no_delegation"
+                delegation_options = ["no_delegation", "review_only", "delegate_bounded"]
+                task_input = task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore")
+                suggestion = evaluate_laya(
+                    {
+                        "action": "evaluate_decision",
+                        **({"task_id": task_id.strip()} if isinstance(task_id, str) and task_id.strip() else {}),
+                        "decision": {
+                            "category": "delegation",
+                            "evidence_ids": delegation_evidence_ids,
+                            "options": delegation_options,
+                            "state": {
+                                "task_type": str(route.get("task_type", "general")),
+                                "complexity": str(route.get("complexity", "fast")),
+                                "risk_level": str(impact.get("risk", {}).get("level", "unknown")) if isinstance(impact, dict) else "unknown",
+                                "worker_planned": "true" if plan.get("worker") else "false",
+                                "critic_planned": "true" if plan.get("critic") else "false",
+                            },
+                            "training_content": {"task_input": task_input},
+                        },
+                    },
+                    root=root,
+                    baseline={
+                        "method": "pipeline_worker_escalation",
+                        "suggestion": delegation_baseline,
+                        "evidence_id": delegation_evidence_ids[0],
+                    },
+                )
+                if suggestion in delegation_options:
+                    route = dict(route)
+                    route["laya_delegation"] = suggestion
+            except Exception as exc:
+                logger.debug("Laya delegation advisory fallback: %s", type(exc).__name__)
+        if (
+            isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True
+            and delegation_evidence_ids and callable(evaluate_laya)
+            and risk_score < self.direct_smart_risk_score
+            and (
+                any(plan.get(key) for key in ("explorer", "worker", "critic"))
+                or deterministic.get("requires_synthesis", True)
+            )
+        ):
+            try:
+                suggestion = evaluate_laya(
+                    {
+                        "action": "evaluate_decision",
+                        **({"task_id": task_id.strip()} if isinstance(task_id, str) and task_id.strip() else {}),
+                        "decision": {
+                            "category": "subagent_budget",
+                            "evidence_ids": delegation_evidence_ids,
+                            "options": ["single_agent", "parallel_split", "swarm"],
+                            "state": {
+                                "task_type": str(route.get("task_type", "general")),
+                                "complexity": str(route.get("complexity", "fast")),
+                                "planned_stages": str(sum(bool(plan.get(key)) for key in ("explorer", "worker", "critic"))),
+                            },
+                            "training_content": {
+                                "task_input": task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore"),
+                            },
+                        },
+                    },
+                    root=root,
+                    baseline={
+                        "method": "request_delegation_budget",
+                        "suggestion": "single_agent",
+                        "evidence_id": delegation_evidence_ids[0],
+                    },
+                )
+                if suggestion in {"single_agent", "parallel_split", "swarm"}:
+                    route = dict(route)
+                    route["laya_subagent_budget"] = suggestion
+            except Exception as exc:
+                logger.debug("Laya subagent-budget advisory fallback: %s", type(exc).__name__)
         if not any(plan.get(x) for x in ("explorer", "worker", "critic")) and not deterministic.get("requires_synthesis", True):
             return {
                 "success": True,
@@ -619,6 +690,7 @@ class LocalAgentPipeline:
         fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         heavy_model = str(self.config.get("models", {}).get("heavy_code", fast_model))
         reasoning_model = str(self.config.get("models", {}).get("reasoning", heavy_model))
+        generic_model = str(self.config.get("models", {}).get("general", fast_model))
 
         if bool(plan.get("explorer")):
             explorer = self._stage(
@@ -700,7 +772,7 @@ class LocalAgentPipeline:
             self.worker_runs += 1
             worker_model = self._select_worker_model(
                 route, mode, risk_score, self.direct_smart_risk_score, fast_model, heavy_model,
-                reasoning_model=reasoning_model,
+                reasoning_model=reasoning_model, generic_model=generic_model,
             )
 
             def compute_worker() -> dict[str, Any]:
@@ -794,7 +866,8 @@ class LocalAgentPipeline:
         if need_critic:
             self.critic_runs += 1
             critic_model = self._select_worker_model(
-                route, mode, risk_score, self.direct_smart_risk_score, fast_model, reasoning_model
+                route, mode, risk_score, self.direct_smart_risk_score, fast_model, heavy_model,
+                reasoning_model=reasoning_model, generic_model=generic_model,
             )
             def compute_critic() -> dict[str, Any]:
                 if self.tool_agent is not None:

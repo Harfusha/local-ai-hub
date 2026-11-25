@@ -111,6 +111,42 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     assert result["content"] == "value"
 
 
+def test_http_laya_decision_is_taskless_and_independent_of_agent_os(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    app.agent_tasks.state_store.enabled = False
+    calls = []
+
+    def evaluate(operation, *, root, _server_baseline=None):
+        calls.append((operation, root, _server_baseline))
+        return {"success": True, "decision": {"suggestion": "compact"}}
+
+    monkeypatch.setattr(app, "evaluate_laya_decision", evaluate)
+    operation = {
+        "action": "evaluate_decision",
+        "decision": {
+            "category": "context_budget",
+            "evidence_ids": ["repo:evidence:1"],
+            "options": ["compact", "standard"],
+            "state": {"current_tokens": 1200},
+        },
+    }
+    request = urllib_request.Request(
+        f"{base_url}/api/laya/decision",
+        data=json.dumps({"action": "laya_decision", "root": str(tmp_path), "laya_operation": operation}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert response.status == 200
+    assert result["success"] is True
+    assert calls == [(operation, str(tmp_path), None)]
+
+
 def test_http_post_declaration_not_found_returns_http_404(
     running_http_hub, monkeypatch, tmp_path
 ):
@@ -141,6 +177,7 @@ def test_http_post_declaration_not_found_returns_http_404(
 
     assert exc_info.value.code == 404
     body = json.loads(exc_info.value.read().decode("utf-8"))
+    exc_info.value.close()
     assert body == {
         "success": False,
         "status_code": 404,
@@ -341,6 +378,7 @@ def test_http_rag_search_applies_deadline_and_reranker_capability_gate(
 
     monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
     monkeypatch.setattr(app.rag, "search", search)
+    monkeypatch.setattr(app.services, "recommend_direct_rag_strategy", lambda *_args, **_kwargs: None)
     monkeypatch.setitem(
         app.config,
         "features",
@@ -373,12 +411,108 @@ def test_http_rag_search_applies_deadline_and_reranker_capability_gate(
     assert len(calls) == 1
     query, options, handled_at = calls[0]
     deadline = options.pop("deadline")
-    timeout = 10.0 if configured_timeout is None else configured_timeout
+    timeout = (
+        float(app.config["resilience"].get("repository_search_timeout_seconds", 10.0))
+        if configured_timeout is None else configured_timeout
+    )
     assert started + timeout <= deadline <= handled_at + timeout
     assert (query, options) == (
         "needle",
         {"workspace": "project:test", "top_k": 6, "use_reranker": False, "semantic_only": True},
     )
+
+
+def test_http_rag_search_falls_back_to_lexical_when_embedding_backend_unavailable(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+
+    def search(query, **kwargs):
+        calls.append((query, kwargs))
+        if kwargs.get("semantic_only") is True:
+            return {
+                "success": True,
+                "degraded": True,
+                "fallback": "embedding_backend",
+                "reason": "GPU admission is unavailable",
+                "results": [],
+            }
+        return {
+            "success": True,
+            "degraded": True,
+            "fallback": "bm25_fts",
+            "retrieval_mode": "lexical_fallback",
+            "lexical_backend": "fts5",
+            "results": [{"path": "src/auth.py", "chunk_no": 0, "text": "authenticate"}],
+        }
+
+    monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
+    monkeypatch.setattr(app.rag, "search", search)
+    monkeypatch.setattr(app.services, "recommend_direct_rag_strategy", lambda *_args, **_kwargs: None)
+    request = urllib_request.Request(
+        f"{base_url}/api/rag/search",
+        data=json.dumps({
+            "root": str(tmp_path.resolve()), "workspace": "project:test",
+            "query": "authenticate", "top_k": 3,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert len(calls) == 2
+    assert calls[0][1]["semantic_only"] is True
+    assert calls[1][1]["lexical_only"] is True
+    assert calls[1][1]["semantic_only"] is False
+    assert result["success"] is True
+    assert result["degraded"] is True
+    assert result["semantic_fallback_used"] is True
+    assert result["semantic_fallback_reason"] == "GPU admission is unavailable"
+    assert result["retrieval_mode"] == "lexical_fallback"
+    assert result["results"][0]["path"] == "src/auth.py"
+
+
+def test_http_rag_search_applies_laya_lexical_strategy_and_semantic_fallback(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+
+    def search(query, **kwargs):
+        calls.append((query, kwargs))
+        if kwargs.get("lexical_only") is True:
+            return {"success": True, "results": []}
+        return {"success": True, "results": [{"path": "src/auth.py", "text": "authenticate"}]}
+
+    monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
+    monkeypatch.setattr(app.rag, "search", search)
+    monkeypatch.setattr(
+        app.services,
+        "recommend_direct_rag_strategy",
+        lambda *_args, **_kwargs: "lexical_bm25",
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/rag/search",
+        data=json.dumps({
+            "root": str(tmp_path.resolve()), "workspace": "project:test",
+            "query": "authenticate", "top_k": 3,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert len(calls) == 2
+    assert calls[0][1]["lexical_only"] is True
+    assert calls[1][1]["semantic_only"] is True
+    assert result["success"] is True
+    assert result["laya_retrieval_strategy"] == "lexical_bm25"
+    assert result["laya_retrieval_fallback"] == "lexical_no_results_or_error"
 
 
 def test_http_rag_search_observes_client_disconnect_and_retains_unknown_outcome(
@@ -404,6 +538,7 @@ def test_http_rag_search_observes_client_disconnect_and_retains_unknown_outcome(
 
     monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
     monkeypatch.setattr(app.rag, "search", search)
+    monkeypatch.setattr(app.services, "recommend_direct_rag_strategy", lambda *_args, **_kwargs: None)
     path = "/api/rag/search"
     payload = {"root": str(tmp_path.resolve()), "workspace": "project:test", "query": "cancel this search"}
     cancel = threading.Event()
@@ -566,7 +701,14 @@ def test_scoped_task_list_reuses_the_validated_request_root(running_http_hub, mo
 
     rows = [make_row(index, other if index < 20 else root) for index in range(23)]
     monkeypatch.setattr(http_server, "_strict_root_path", checked_path)
-    monkeypatch.setattr(app.agent_tasks, "list_tasks", lambda *, offset, limit, **_kwargs: TaskPage(tuple(rows[offset:offset + limit])))
+    def list_scoped_tasks(*, offset, limit, repo_root=None, **_kwargs):
+        selected = rows if repo_root is None else [
+            task for task in rows
+            if task.checkpoint.state_data["_agent_task_scope"]["repo_root"] == repo_root
+        ]
+        return TaskPage(tuple(selected[offset:offset + limit]))
+
+    monkeypatch.setattr(app.agent_tasks, "list_tasks", list_scoped_tasks)
     url = f"{base_url}/api/agent-state/tasks?limit=2&root={quote(str(root))}"
     if root_changes:
         with pytest.raises(HTTPError) as exc:
@@ -996,7 +1138,7 @@ def test_http_diagnostics_export_download_restores_sqlite_snapshot(running_http_
             data=b"{}",
             headers={"Content-Type": "application/json", "Accept": "application/zip"},
         )
-        with urllib_request.urlopen(request, timeout=30) as response:
+        with _urlopen_with_error_body(request) as response:
             assert response.status == 200
             assert response.headers.get_content_type() == "application/zip"
             assert response.headers["Cache-Control"] == "no-store"
@@ -1572,3 +1714,59 @@ def test_http_post_rag_ingest_acceptance(running_http_hub, monkeypatch, tmp_path
     with urllib_request.urlopen(req_dia) as resp:
         assert resp.status == 200
         assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+
+def test_http_proxy_binds_authorized_repository_root_without_forwarding_it(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+
+    def proxy_request(endpoint, payload, *, source, repository_root=None):
+        calls.append((endpoint, payload, source, repository_root))
+        return {"success": True}
+
+    monkeypatch.setattr(app.services, "proxy_request", proxy_request)
+    request = urllib_request.Request(
+        f"{base_url}/api/chat",
+        data=json.dumps({
+            "root": str(tmp_path),
+            "messages": [{"role": "user", "content": "Explain this repository module"}],
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert result["success"] is True
+    assert calls[0][0] == "/api/chat"
+    assert "root" not in calls[0][1]
+    assert calls[0][2] == "proxy:/api/chat"
+    assert calls[0][3] == str(tmp_path.resolve())
+
+
+def test_http_proxy_rejects_unauthorized_repository_root_before_proxying(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+    monkeypatch.setattr(
+        app.services,
+        "proxy_request",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True},
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/generate",
+        data=json.dumps({"root": str(tmp_path.parent), "prompt": "Explain this repository module"}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(request)
+    exc.value.close()
+
+    assert exc.value.code in (400, 403)
+    assert calls == []
