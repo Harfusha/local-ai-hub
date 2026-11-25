@@ -36,13 +36,19 @@ def project_dependency_freshness(records: list[dict[str, Any]]) -> tuple[list[di
             if status == "not_applicable":
                 status = "matching_sources"
             target_row = items.get(target)
+            subject = {
+                "kind": key[0], "id": key[1], "relation": ref["type"],
+                "target_kind": target[0], "target_id": target[1],
+                "expected_revision": ref.get("target_revision", ""),
+                "actual_revision": target_row["revision"] if target_row is not None else "",
+            }
             if target_row is None or not ref.get("target_revision"):
                 if status != "stale":
                     status = "unknown"
-                issues.append({"kind": key[0], "id": key[1], "code": "dependency_missing_or_unpinned"})
+                issues.append({**subject, "code": "dependency_missing_or_unpinned"})
             elif target_row["revision"] != ref["target_revision"]:
                 status = "stale"
-                issues.append({"kind": key[0], "id": key[1], "code": "dependency_revision_changed"})
+                issues.append({**subject, "code": "dependency_revision_changed"})
             if target_row is not None:
                 targets.append(target)
         if status != "not_applicable":
@@ -66,7 +72,9 @@ def project_dependency_freshness(records: list[dict[str, Any]]) -> tuple[list[di
             row["dependency_status"] = dependency_status
             row["freshness"] = states[key]
         result.append(row)
-    return result, issues[:128]
+    # Input is already bounded by the record/relations schema. The catalog
+    # applies its response cap and explicitly reports incomplete coverage.
+    return result, issues
 
 
 def validate_process_flow(flow: Any) -> None:
