@@ -310,10 +310,16 @@ def preflight_task_handoffs(
                         seen.add(task_id)
                         continue
                     if existing is not None:
-                        row["state"] = (
-                            "already_published" if existing["record"] == record
-                            else "blocked_existing_record_differs"
-                        )
+                        existing_record = existing["record"]
+                        if existing_record == record:
+                            row["state"] = "already_published"
+                        elif existing_record["payload"].get("historical_verification"):
+                            # Do not classify a receipt-bearing handoff as a
+                            # safe overwrite merely because legacy intent matches.
+                            row["state"] = "blocked_existing_record_differs"
+                            row["historical_verification_present"] = True
+                        else:
+                            row["state"] = "blocked_existing_record_differs"
                         row["revision"] = existing["revision"]
                     elif manifest["mode"] == "read_only":
                         row["state"] = "blocked_read_only"
