@@ -138,3 +138,49 @@ def handoff_resume_contract(record: Mapping[str, Any]) -> dict[str, Any]:
     contract["constraints"] = [*contract["constraints"],
         "Revalidate current source, requirements and all acceptance criteria; no historical receipt is valid for this attempt."]
     return GoalContract.from_dict(contract).to_dict()
+
+
+def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[str, Any]:
+    """Discover shared handoffs in this checkout without importing task state."""
+    from itertools import islice
+
+    from .evidence import _evidence_path_under_root
+
+    if type(limit) is not int or not 1 <= limit <= 64:
+        raise _reject("Handoff limit must be between 1 and 64")
+    manifest, manifest_revision = store.manifest()
+    relative = ".local-ai-hub/agent-os/handoffs"
+    parent = store.root / relative
+    result: dict[str, Any] = {
+        "project_id": manifest["project_id"], "complete": True,
+        "handoffs": [], "issues": [], "authority": "historical_declaration",
+    }
+    if not parent.exists() and not parent.is_symlink():
+        return result
+    if _evidence_path_under_root(str(store.root), relative, strict=True) != parent or not parent.is_dir():
+        raise _reject("Unsafe handoff directory")
+    entries = list(islice(parent.iterdir(), limit + 1))
+    if len(entries) > limit:
+        result["complete"] = False
+        result["issues"].append("inventory_limit")
+    for entry in sorted(entries[:limit]):
+        if entry.suffix != ".json" or not _identifier(entry.stem):
+            result["complete"] = False
+            result["issues"].append("unexpected_entry")
+            continue
+        try:
+            item = store.get("handoff", entry.stem, verify_sources=False)
+        except (OSError, RepoPlanValidationError):
+            result["complete"] = False
+            result["issues"].append("invalid_or_unavailable_handoff")
+            continue
+        payload = item["record"]["payload"]
+        result["handoffs"].append({
+            "id": entry.stem, "revision": item["revision"],
+            "goal": payload["contract"]["goal"][:160],
+            "historical_status": payload["historical_status"],
+            "requires_revalidation": True,
+        })
+    if store.manifest()[1] != manifest_revision:
+        raise _reject("Project changed during handoff inventory")
+    return result
