@@ -59,6 +59,7 @@ def preview_legacy_task_batch(
     snapshot = _digest_value(list(before))
     if expected_snapshot and snapshot != expected_snapshot:
         raise RepoPlanValidationError("Offline database snapshot changed; restart migration inventory")
+    epoch = store.read_epoch()
     manifest, manifest_revision = store.manifest()
     deadline = time.monotonic() + 3.0
     try:
@@ -138,6 +139,7 @@ def preview_legacy_task_batch(
     if store.manifest()[1] != manifest_revision:
         raise RepoPlanValidationError("Project manifest changed during migration preview")
     preview = preview_knowledge_batch(store, records) if records else None
+    store.require_read_epoch(epoch)
     return {
         "success": True, "snapshot": snapshot, "project_id": manifest["project_id"],
         "page_complete": len(rows) <= limit, "inventory_complete": len(rows) <= limit and not after_task_id and not unscoped,
