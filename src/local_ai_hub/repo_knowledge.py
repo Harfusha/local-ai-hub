@@ -134,8 +134,16 @@ def validate_knowledge_file(rel_path: str, data: bytes) -> dict[str, Any]:
         not _identifier(payload["claim_key"]) or type(payload["claim_value"]) is not bool
     ):
         raise _invalid()
-    if not isinstance(provenance, dict) or set(provenance) - {"origin_kind", "review_ref"}:
+    if not isinstance(provenance, dict) or set(provenance) - {"origin_kind", "review_ref", "generator", "generated_digest"}:
         raise _invalid()
+    if "generator" in provenance or "generated_digest" in provenance:
+        if (
+            record["kind"] != "observation" or payload["layer"] != "interpretation"
+            or provenance.get("generator") != "preprocess-card-v1"
+            or not isinstance(provenance.get("generated_digest"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", provenance["generated_digest"]) is None
+        ):
+            raise _invalid()
     if provenance.get("origin_kind") not in ("human_review", "manual", "deterministic", "model"):
         raise _invalid()
     if "review_ref" in provenance and not _identifier(provenance["review_ref"]):

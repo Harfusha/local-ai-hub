@@ -320,6 +320,21 @@ class PreprocessCardsMixin:
 
             # 1. Instant global content-addressed cache hit across all branches & worktrees
             if cached_cards.get(content_hash):
+                from .repo_knowledge_discovery import auto_publish_authorized
+
+                if auto_publish_authorized(self.config, root):
+                    with self._db_lock, services_module.closing(self._connect()) as con:
+                        cached = con.execute(
+                            "SELECT card_json,model FROM content_cards WHERE card_key=? AND content_hash=?",
+                            (cached_cards[content_hash], content_hash),
+                        ).fetchone()
+                    if cached is not None:
+                        try:
+                            card = services_module.json.loads(cached["card_json"])
+                            if isinstance(card, dict):
+                                self._publish_knowledge_card_candidate(root, str(item["path"]), content_hash, card, str(cached["model"]))
+                        except (TypeError, ValueError):
+                            pass
                 continue
 
             if enrich_cards and item["card_key"] is not None:

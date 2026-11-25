@@ -353,3 +353,19 @@ not evidence of neural-model quality). The existing active, evidence-gated
 Laya next-step recommendation can see a bounded revalidation signal; its
 baseline requests more evidence for stale or unknown knowledge. No background
 Laya evaluation, training or approval authority is added.
+
+### Opt-in preprocessing candidate publication
+
+Machine configuration `[security].knowledge_auto_publish_roots` is an exact
+absolute checkout allowlist, empty by default. It does not replace repository
+read authorization, and a Git project manifest alone cannot authorize it.
+The project must be initialized in shared mode and the local journal ignored.
+Existing file-card creation and cache-hit linking can publish at most one
+source-card business interpretation per file using exact unique source quotes
+in a bounded source slice. The record stores only candidate summaries and
+portable locators, not raw quotes, prompts, or receipts. It remains unreviewed
+interpretation, never a verified rule. Untouched generated records may refresh
+through CAS; edits or review references are preserved. Publication failure
+does not block technical indexing, and status counts use preprocessing stats.
+This is initial bounded card-based discovery, not full semantic process
+inference. Previously indexed files need a normal card refresh to participate.
