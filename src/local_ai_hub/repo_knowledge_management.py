@@ -22,6 +22,9 @@ _FIELDS = {
     "handoff_list": {"action", "root", "limit"},
     "preview_handoff_resume": {"action", "root", "handoff_id", "expected_revision"},
     "impact": {"action", "root", "changed_paths"},
+    "preview_batch": {"action", "root", "records"},
+    "save_batch": {"action", "root", "records", "preview_digest", "operation_id", "apply"},
+    "save_batch_recovery": {"action", "root", "records", "preview_digest", "operation_id", "apply"},
     "preview_edit": {"action", "root", "record", "expected_revision"},
     "save_edit": {"action", "root", "record", "expected_revision", "preview_digest", "operation_id", "apply"},
     "preview_review": {"action", "root", "finding_id", "subject_digest", "decision", "note"},
@@ -68,6 +71,16 @@ def manage_repository_knowledge(
             from .repo_task_handoff import list_task_handoffs
 
             return {"success": True, **list_task_handoffs(store, limit=payload["limit"])}
+        if action in {"preview_batch", "save_batch", "save_batch_recovery"}:
+            from .repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+
+            if action == "preview_batch":
+                return preview_knowledge_batch(store, payload["records"])
+            return apply_knowledge_batch(
+                store, payload["records"], preview_digest=payload["preview_digest"],
+                operation_id=payload["operation_id"], authorize_write=authorize_operator_write,
+                recover=action == "save_batch_recovery",
+            )
         manifest, manifest_revision = store.manifest()
         if action == "preview_handoff_resume":
             from .repo_task_handoff import preview_handoff_resume
