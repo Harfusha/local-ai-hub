@@ -272,7 +272,8 @@ def main() -> int:
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
     parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
-    parser.add_argument("--finding-id", default="", help="Knowledge conflict ID")
+    parser.add_argument("--changed-path", action="append", default=[], help="Repository-relative path for knowledge impact (repeatable)")
+    parser.add_argument("--finding-id", default="", help="Knowledge quality finding ID")
     parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
     parser.add_argument("--decision", choices=["acceptable", "expected", "confirmed_issue", "false_positive", "deferred"])
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
@@ -291,14 +292,20 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "init", "save", "review", "handoff-export", "handoff-resume"}:
-            parser.error("knowledge requires catalog, query, validate, init, save, review, handoff-export or handoff-resume")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume"}:
+            parser.error("knowledge requires catalog, query, validate, audit, impact, remediate, init, save, review, handoff-export or handoff-resume")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
             parser.error("knowledge mutations require explicit --apply (review content first)")
         if args.sub_arg == "init" and args.operation_id and not args.project_id:
             parser.error("knowledge init with --operation-id requires --project-id for deterministic retry")
+        if args.sub_arg == "impact" and not args.changed_path:
+            parser.error("knowledge impact requires --changed-path")
+        if args.sub_arg == "remediate" and not all((args.finding_id, args.subject_digest)):
+            parser.error("knowledge remediate requires --finding-id and --subject-digest")
+        if args.sub_arg == "remediate" and args.apply and (args.dry_run or not args.task_id):
+            parser.error("knowledge remediate --apply requires explicit new --task-id and no --dry-run")
         if args.sub_arg == "handoff-export" and not args.task_id:
             parser.error("handoff-export requires --task-id")
         if args.sub_arg == "handoff-export" and args.apply and (args.dry_run or args.expected_revision is None):
@@ -399,7 +406,27 @@ def main() -> int:
                 print(json.dumps({**result, "operation_id": operation_id}, indent=2, ensure_ascii=False))
                 return 0 if result.get("success") is True else 1
             catalog = store.catalog()
-            if args.sub_arg == "query":
+            if args.sub_arg == "audit":
+                from local_ai_hub.repo_knowledge_quality import quality_report
+
+                result = quality_report(catalog)
+            elif args.sub_arg == "impact":
+                from local_ai_hub.repo_knowledge_quality import knowledge_impact
+
+                result = knowledge_impact(catalog, args.changed_path)
+            elif args.sub_arg == "remediate":
+                from local_ai_hub.repo_knowledge_quality import build_remediation_contract
+
+                contract = build_remediation_contract(catalog, args.finding_id, args.subject_digest)
+                if not args.apply:
+                    print(json.dumps({"preview": True, "contract": contract}, indent=2, ensure_ascii=False))
+                    return 0
+                result = HubClient(config_path=_config_arg(args.config)).create_task(
+                    contract, task_id=args.task_id, root=str(store.root),
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
+            elif args.sub_arg == "query":
                 result = query_declared_knowledge(catalog, args.query, limit=min(args.limit, 32))
             elif args.sub_arg == "validate":
                 from local_ai_hub.repo_knowledge_graph import process_flow_findings

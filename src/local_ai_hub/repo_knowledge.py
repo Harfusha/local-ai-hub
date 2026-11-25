@@ -393,17 +393,18 @@ def build_finding_review(
     catalog: Mapping[str, Any], finding_id: str, subject_digest: str, decision: str, note: str,
 ) -> dict[str, Any]:
     """Build a review of exactly the currently displayed conflict revision."""
-    if not catalog["complete"] or decision not in _REVIEW_DECISIONS or not _text(note, 2000):
+    from .repo_knowledge_quality import finding_subjects, quality_report
+
+    report = quality_report(catalog)
+    if not report["complete"] or decision not in _REVIEW_DECISIONS or not _text(note, 2000):
         raise _invalid()
-    finding = next((item for item in detect_declared_claim_conflicts(catalog) if item["id"] == finding_id), None)
+    finding = next((item for item in report["findings"] if item["id"] == finding_id), None)
     if finding is None or finding["subject_digest"] != subject_digest:
         raise RepoPlanValidationError("Finding changed; refresh before review")
     sources: list[dict[str, Any]] = []
     relations: list[dict[str, str]] = []
-    for layer in ("intended", "observed"):
-        kind, record_id = finding[layer + "_kind"], finding[layer + "_id"]
-        item = next(item for item in catalog["records"]
-                    if item["record"]["kind"] == kind and item["record"]["id"] == record_id)
+    for item in finding_subjects(catalog, finding):
+        kind, record_id = item["record"]["kind"], item["record"]["id"]
         for ref in item["record"]["evidence"]:
             if ref not in sources:
                 sources.append(ref)
@@ -413,7 +414,7 @@ def build_finding_review(
     return {
         "schema_version": 1, "project_id": catalog["project_id"], "kind": "review",
         "id": "review-" + finding_id,
-        "payload": {"title": "Conflict review", "statement": note, "layer": "interpretation",
+        "payload": {"title": "Quality finding review", "statement": note, "layer": "interpretation",
                     "finding_id": finding_id, "subject_digest": subject_digest, "decision": decision},
         "provenance": {"origin_kind": "manual"}, "evidence": sources, "relations": relations,
     }

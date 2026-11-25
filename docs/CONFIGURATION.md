@@ -330,3 +330,17 @@ and `verified_by` relations; pin each target's record revision using
 changed pins and stale source dependencies propagate stale. Other relations
 support one-hop query navigation. The bounded online query intentionally
 does not claim full dependency source verification.
+
+### Quality report, business impact and remediation
+
+`hubctl knowledge audit --root ROOT` combines revision-bound claim conflicts,
+stale/unverified knowledge, dependency issues and process topology candidates.
+`hubctl knowledge impact --root ROOT --changed-path src/order.py` separates
+direct source references, reverse dependency chains and related candidates;
+unmapped paths remain explicit, not a promise of no business impact.
+The existing knowledge review command accepts these finding IDs and subject
+digests. Stale subjects never create current waivers. To prepare a corrective
+Agent OS task, preview with `knowledge remediate --root ROOT --finding-id ID
+--subject-digest DIGEST`. Add `--apply --task-id NEW_ID` to create a task
+through the existing scoped client. This does not execute or complete the
+task; current evidence and fresh verification remain mandatory.
