@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,10 @@ def validate_handoff_payload(record: Mapping[str, Any]) -> None:
     payload = record.get("payload")
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"origin_task_id", "historical_status", "contract", "checkpoint"}
+        or set(payload) not in (
+            {"origin_task_id", "historical_status", "contract", "checkpoint"},
+            {"origin_task_id", "historical_status", "contract", "checkpoint", "historical_verification"},
+        )
         or not _identifier(payload["origin_task_id"])
         or payload["historical_status"] not in tuple(status.value for status in TaskStatus)
         or record.get("id") != "handoff-" + hashlib.sha256(
@@ -77,6 +81,28 @@ def validate_handoff_payload(record: Mapping[str, Any]) -> None:
         raise _reject()
     if not isinstance(paths, list) or len(paths) > 32 or any(not _safe_relative_path(path) for path in paths):
         raise _reject("Handoff affected paths must be portable relative paths")
+    if "historical_verification" in payload:
+        summaries = payload["historical_verification"]
+        if not isinstance(summaries, list) or not 1 <= len(summaries) <= 8:
+            raise _reject("Invalid historical verification summaries")
+        seen: set[str] = set()
+        for summary in summaries:
+            if (
+                not isinstance(summary, dict)
+                or set(summary) != {"criterion_digest", "evidence_type", "reported_pass", "revision_digest"}
+                or any(not isinstance(summary[key], str) or not re.fullmatch(r"[0-9a-f]{64}", summary[key])
+                       for key in ("criterion_digest", "revision_digest"))
+                or summary["evidence_type"] not in {"test", "benchmark", "source_review"}
+                or type(summary["reported_pass"]) is not bool
+                or summary["criterion_digest"] in seen
+            ):
+                raise _reject("Invalid historical verification summary")
+            if summary["criterion_digest"] not in {
+                hashlib.sha256(criterion.encode("utf-8")).hexdigest()
+                for criterion in contract["acceptance_criteria"]
+            }:
+                raise _reject("Historical summary is not linked to a contract criterion")
+            seen.add(summary["criterion_digest"])
     # Recognized secret patterns are rejected; operator privacy review remains
     # essential because a regex cannot establish that arbitrary text is public.
     text = json.dumps(record, ensure_ascii=False)
@@ -120,6 +146,58 @@ def build_task_handoff(store: RepoKnowledgeStore, task: Mapping[str, Any]) -> di
     return record
 
 
+def attach_historical_verification(
+    record: Mapping[str, Any], task: Mapping[str, Any], receipts: list[Any],
+) -> dict[str, Any]:
+    """Project only linked receipt observations, never fresh or trusted proof.
+
+    No raw receipt/evidence/command IDs, text, details, credentials, or host
+    paths are published. Callers obtain receipts through the scoped Hub API.
+    """
+    validate_handoff_payload(record)
+    payload = record["payload"]
+    if task.get("task_id") != payload["origin_task_id"]:
+        raise _reject("Receipt task scope mismatch")
+    links = task.get("verification_receipts")
+    if not isinstance(links, dict) or not isinstance(receipts, list) or len(receipts) > 64:
+        raise _reject("Unavailable or oversized verification inventory")
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for receipt in receipts:
+        if not isinstance(receipt, Mapping) or receipt.get("task_id") != task["task_id"]:
+            raise _reject("Receipt task scope mismatch")
+        ident = receipt.get("receipt_id")
+        if not isinstance(ident, str) or not ident or ident in indexed:
+            raise _reject("Invalid or duplicate receipt identity")
+        indexed[ident] = receipt
+    summaries = []
+    for criterion in payload["contract"]["acceptance_criteria"]:
+        if criterion not in links:
+            continue
+        ident = links[criterion]
+        if not isinstance(ident, str):
+            raise _reject("Invalid task receipt link")
+        receipt = indexed.get(ident)
+        if receipt is None or receipt.get("criterion") != criterion:
+            raise _reject("Linked receipt unavailable or mismatched")
+        revision = receipt.get("repository_revision")
+        if not isinstance(revision, str) or not revision.strip():
+            raise _reject("Linked receipt has no repository revision")
+        summaries.append({
+            "criterion_digest": hashlib.sha256(criterion.encode("utf-8")).hexdigest(),
+            "revision_digest": hashlib.sha256(revision.encode("utf-8")).hexdigest(),
+            "evidence_type": receipt.get("evidence_type"),
+            "reported_pass": receipt.get("passed"),
+        })
+    if len(summaries) > 8:
+        raise _reject("Historical verification summary exceeds publication bound")
+    updated = {**record, "payload": dict(payload)}
+    updated["payload"].pop("historical_verification", None)
+    if summaries:
+        updated["payload"]["historical_verification"] = summaries
+    validate_handoff_payload(updated)
+    return updated
+
+
 def handoff_resume_contract(record: Mapping[str, Any]) -> dict[str, Any]:
     """Derive a fresh planned task contract. Never import historical success."""
     validate_handoff_payload(record)
@@ -128,6 +206,8 @@ def handoff_resume_contract(record: Mapping[str, Any]) -> dict[str, Any]:
     checkpoint = payload["checkpoint"]
     guidance = "\n\nHistorical handoff (unverified; inspect current checkout before use):"
     guidance += "\nPrevious status: " + payload["historical_status"]
+    if payload.get("historical_verification"):
+        guidance += "\nHistorical receipt summaries exist; none are valid verification for this attempt."
     if checkpoint["next_action"]:
         guidance += "\nSuggested next action: " + checkpoint["next_action"]
     if checkpoint["affected_paths"]:
