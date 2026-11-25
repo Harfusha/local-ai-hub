@@ -318,3 +318,15 @@ requires current revalidation. Handoffs are excluded from generic knowledge
 retrieval and require explicit selection. Custom SLO profiles and non-task
 scopes are rejected pending a lossless migration contract. Git still owns
 reviewed portable handoff history, not live execution coordination.
+
+Structured process declarations may optionally include `payload.flow` with
+an entry step, a list of uniquely identified action/decision/terminal/external
+steps and transitions with explicit conditions. Validation checks the graph
+contract and reports unreachable steps, terminal successors and nonterminal
+dead ends as advisory candidates. It does not infer production behavior.
+The catalog projects transitive freshness for `depends_on`, `derived_from`
+and `verified_by` relations; pin each target's record revision using
+`target_revision`. Missing/unpinned or unverified dependencies are unknown,
+changed pins and stale source dependencies propagate stale. Other relations
+support one-hop query navigation. The bounded online query intentionally
+does not claim full dependency source verification.
