@@ -255,7 +255,7 @@ def _migrate_preprocess_schema_6_to_7(state: Path) -> None:
         # while the update owns the state. Startup refuses to perform this work.
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='source_fts'").fetchone() is None:
             initialize_fts_rows(con)
-        while advance_fts_migration(con):
+        while advance_fts_migration(con, write_timeout_seconds=30.0):
             pass
         if fts_layout(con) != SHARED_FTS_ROWS or not has_canonical_shared_fts(con):
             raise RuntimeError("preprocess FTS migration did not reach the canonical schema")
