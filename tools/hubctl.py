@@ -448,8 +448,15 @@ def main() -> int:
                 if preview["revision"] != args.expected_revision or preview["preview_digest"] != args.preview_digest:
                     print(json.dumps({"success": False, "error": "Handoff or dependencies changed; review again"}))
                     return 1
-                result = HubClient(config_path=_config_arg(args.config)).create_task(
-                    preview["contract"], task_id=args.task_id, root=target_root,
+                result = HubClient(config_path=_config_arg(args.config)).post(
+                    "/api/agent-state/tasks", {
+                        "action": "create", "root": target_root, "task_id": args.task_id,
+                        "contract": preview["contract"],
+                        "handoff_resume": {
+                            "handoff_id": args.handoff_id, "revision": preview["revision"],
+                            "preview_digest": preview["preview_digest"],
+                        },
+                    },
                 )
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result.get("success") is True else 1
