@@ -58,6 +58,7 @@ def _prepare(
 
 
 def preview_knowledge_batch(store: RepoKnowledgeStore, records: Any) -> dict[str, Any]:
+    epoch = store.read_epoch()
     candidates, preview = _prepare(store, records)
     for path, _, expected in candidates[1:]:
         try:
@@ -70,6 +71,7 @@ def preview_knowledge_batch(store: RepoKnowledgeStore, records: Any) -> dict[str
             raise RepoPlanConflictError("Knowledge batch target revision changed")
     if store.manifest()[1] != preview["manifest_revision"]:
         raise RepoPlanConflictError("Knowledge batch manifest changed")
+    store.require_read_epoch(epoch)
     return {"success": True, "preview": True, **preview}
 
 
