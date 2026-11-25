@@ -57,6 +57,28 @@ def _evidence_path_under_root(root: str, relative_path: str, *, strict: bool) ->
         return None
 
 
+def _valid_portable_locator(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version", "path", "content_digest", "start_line", "end_line"
+    }:
+        return False
+    version = value["schema_version"]
+    path = value["path"]
+    digest = value["content_digest"]
+    start, end = value["start_line"], value["end_line"]
+    return (
+        type(version) is int and version == 1
+        and isinstance(path, str) and 0 < len(path) <= 1024
+        and not any(char in path for char in ("\\", ":"))
+        and not any(ord(char) < 32 or ord(char) == 127 for char in path)
+        and all(part not in {"", ".", ".."} and part.casefold() != ".git" for part in path.split("/"))
+        and isinstance(digest, str) and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+        and type(start) is int and type(end) is int
+        and 1 <= start <= end <= MAX_SOURCE_BYTES + 1
+    )
+
+
 def is_evidence_id(value: Any) -> bool:
     """Check the syntactic shape of a content-addressed evidence reference."""
     if isinstance(value, bool) or value is None:
@@ -139,7 +161,11 @@ class EvidenceStore:
                 info.st_ctime_ns,
             )
 
-        if identity(path_before) != identity(current) or identity(before) != identity(after):
+        if (
+            identity(path_before) != identity(current)
+            or identity(before) != identity(after)
+            or identity(path_before) != identity(before)
+        ):
             raise ValueError("source file changed during hashing")
         if size != before.st_size:
             raise ValueError("source file changed during hashing")
@@ -636,6 +662,57 @@ class EvidenceStore:
                             "stale": stale_by_id.get(eid, False),
                             "source_verified": bool(verify and not stale_by_id.get(eid, False))})
         return results
+
+    def export_portable_locator(self, evidence_id: str, *, root: str) -> dict[str, Any] | None:
+        """Export only a current, root-scoped source locator, never a live receipt.
+
+        The caller must authorize the repository root. A portable locator is
+        evidence metadata, not an authorization credential or an Agent OS receipt.
+        """
+        if not is_evidence_id(evidence_id) or not isinstance(root, str) or not Path(root).is_absolute():
+            return None
+        item = self.get(evidence_id, verify=True, root=root)
+        if (
+            item.get("success") is not True
+            or item.get("source_verified") is not True
+            or item.get("stale") is not False
+        ):
+            return None
+        relative = Path(str(item["path"])).as_posix()
+        locator = {
+            "schema_version": 1,
+            "path": relative,
+            "content_digest": str(item["file_sha256"]),
+            "start_line": int(item["start_line"]),
+            "end_line": int(item["end_line"]),
+        }
+        return locator if _valid_portable_locator(locator) else None
+
+    @classmethod
+    def portable_source_status(cls, locator: Mapping[str, Any], *, root: str) -> str:
+        """Compare a locator to source bytes in an authorized checkout.
+
+        A matching file does not authenticate its author, prove the locator's
+        semantic claims, or create a current execution verification receipt.
+        No SQLite row, original absolute path or previous evidence ID is needed.
+        """
+        if (
+            not _valid_portable_locator(locator)
+            or not isinstance(root, str)
+            or not Path(root).is_absolute()
+        ):
+            return "invalid"
+        relative = str(locator["path"])
+        source = _evidence_path_under_root(root, relative, strict=True)
+        if source is None:
+            return "unavailable"
+        try:
+            actual = cls._hash_source_file(source)
+            if _evidence_path_under_root(root, relative, strict=True) != source:
+                return "unavailable"
+        except (OSError, RuntimeError, ValueError):
+            return "unavailable"
+        return "matching_file" if actual == locator["content_digest"] else "stale"
 
     def validate_current(self, evidence_id: str) -> bool:
         """Prove an evidence ID still matches its stored row and current source."""
