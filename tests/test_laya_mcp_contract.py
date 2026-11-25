@@ -111,6 +111,9 @@ def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None
         def _agent(self):
             return "wire-test"
 
+        def _handle_post_agent_state_tasks(self, value):
+            return http_server.Handler._handle_post_agent_state_tasks(self, value)
+
         def _bind_task_payload(self, value):
             if value.get("root") == self._authorization_root:
                 return True
