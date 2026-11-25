@@ -215,6 +215,10 @@ class RepoKnowledgeStore:
         self.storage = RepoPlanStorage(self.root, intents_dir=settings.intents_dir)
 
     def _read(self, rel: str) -> tuple[dict[str, Any], str]:
+        raw, revision = self._read_raw(rel)
+        return validate_knowledge_file(rel, raw), revision
+
+    def _read_raw(self, rel: str) -> tuple[bytes, str]:
         path = _evidence_path_under_root(str(self.root), rel, strict=True)
         if path is None:
             raise FileNotFoundError("Knowledge file unavailable")
@@ -230,7 +234,7 @@ class RepoKnowledgeStore:
         raw = result["text"].encode("utf-8")
         if hashlib.sha256(raw).hexdigest() != result["file_sha256"]:
             raise _invalid()
-        return validate_knowledge_file(rel, raw), result["file_sha256"]
+        return raw, result["file_sha256"]
 
     def manifest(self) -> tuple[dict[str, Any], str]:
         return self._read(_MANIFEST)
