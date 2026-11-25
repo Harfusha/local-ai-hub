@@ -32,7 +32,6 @@ def resolve_hub_install() -> Path | None:
     if configured:
         return valid_install(Path(configured).expanduser())
     candidates.append(Path.home() / ".local-ai-hub")
-    candidates.append(Path("C:/Users/Adam/.local-ai-hub"))
     candidates.append(Path.cwd())
     user_home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
     candidates.append(user_home / ".local-ai-hub")
