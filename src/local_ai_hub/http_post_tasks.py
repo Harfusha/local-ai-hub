@@ -167,11 +167,11 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
     if action == "create":
         if "handoff_resume" in payload:
             from .repo_task_handoff import validate_resume_creation
-            from .repo_plan.schema_validation import RepoPlanValidationError
+            from .repo_plan.schema_validation import RepoPlanError
 
             try:
                 validate_resume_creation(payload)
-            except (OSError, ValueError, RepoPlanValidationError):
+            except (OSError, ValueError, RepoPlanError):
                 self._send(409, {"success": False, "error": "Handoff preview invalid or source dependencies changed",
                                  "terminal": True, "retryable": False, "mutation_applied": False,
                                  "operation_not_started": True}); return
