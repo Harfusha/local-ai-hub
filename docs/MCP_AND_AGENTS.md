@@ -152,3 +152,12 @@ The installed user hook at `.cursor/hooks.json` blocks broad native `cat`/`type`
 ## LLM card synthesis scope
 
 `disable_llm_card_synthesis` controls file-card model enrichment after deterministic card creation. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background synthesis may still run when deterministic card generation does not satisfy their acceptance conditions.
+
+### Git-native knowledge query (V4 initial slice)
+
+Use `local_ai_repo(action="knowledge_query", root="/absolute/project", query="order rescheduling", limit=4)`
+for bounded discovery of shared business declarations. Returned records retain
+their intended/observed/interpretation layer, source freshness and repository
+declaration authority. This read-only action does not mint evidence IDs, run a
+model, execute commands, or grant approval. Use current source evidence for
+implementation claims. A missing or incomplete catalog is explicit.

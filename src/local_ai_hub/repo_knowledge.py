@@ -521,3 +521,51 @@ def attach_knowledge_context(packed: dict[str, Any], knowledge: Mapping[str, Any
     retrieval["knowledge_context_status"] = status
     result["retrieval"] = retrieval
     return result
+
+
+def query_repository_knowledge(config: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Read-only service for the canonical MCP/HTTP query operation.
+
+    Retrieve declarations first, verify only selected records, and expose
+    incomplete inventory explicitly. No model or index is needed.
+    """
+    from .repository_scope import RepositoryScopeError, authorized_repository_root
+
+    if set(payload) - {"root", "query", "limit"}:
+        return {"success": False, "status_code": 400, "error": "Unknown knowledge query field",
+                "terminal": True, "retryable": False}
+    query = payload.get("query")
+    limit = payload.get("limit", 4)
+    if not isinstance(query, str) or not query.strip() or len(query) > 2000 or type(limit) is not int or not 1 <= limit <= 8:
+        return {"success": False, "status_code": 400, "error": "Knowledge query requires text and limit 1 through 8",
+                "terminal": True, "retryable": False}
+    try:
+        root = authorized_repository_root(config, payload.get("root"))
+        store = RepoKnowledgeStore(root)
+        catalog = store.catalog(verify_sources=False)
+        found = query_declared_knowledge(catalog, query, limit=limit)
+        selected = []
+        for item in found["records"]:
+            record = item["record"]
+            current = store.get(record["kind"], record["id"], verify_sources=False)
+            if current["revision"] != item["revision"]:
+                return {"success": False, "status_code": 409, "error": "Knowledge changed during query",
+                        "terminal": True, "retryable": True}
+            refs = record["evidence"]
+            checked = [EvidenceStore.portable_source_status(ref, root=root) for ref in refs[:2]]
+            freshness = ("stale" if "stale" in checked else
+                         "matching_sources" if checked and len(checked) == len(refs)
+                         and all(state == "matching_file" for state in checked) else "unknown")
+            selected.append({**current, "freshness": freshness, "evidence_statuses": checked,
+                             "source_checks_complete": len(checked) == len(refs)})
+        return {"success": True, **found, "records": selected, "degraded": not found["complete"],
+                "evidence_ids": []}
+    except RepositoryScopeError as exc:
+        return {"success": False, "status_code": exc.status_code, "error": str(exc),
+                "terminal": True, "retryable": False}
+    except FileNotFoundError:
+        return {"success": False, "status_code": 404, "error": "Knowledge project is uninitialized or unavailable",
+                "terminal": True, "retryable": False}
+    except (OSError, RepoPlanValidationError, ValueError, RuntimeError):
+        return {"success": False, "status_code": 409, "error": "Knowledge inventory unavailable",
+                "terminal": True, "retryable": False}

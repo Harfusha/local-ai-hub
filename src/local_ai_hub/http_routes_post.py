@@ -717,6 +717,11 @@ class HTTPPostRoutesMixin:
                 self._send(200, services_module.APP.services.benchmark()); return
             if 'post_evaluation_1' in post_route_ids:
                 self._send(200, services_module.APP.services.evaluation(payload)); return
+            if 'post_repo_knowledge_query_1' in post_route_ids:
+                from .repo_knowledge import query_repository_knowledge
+                result = query_repository_knowledge(services_module.APP.config, payload)
+                self._send(int(result.pop("status_code", 200)), result)
+                return
             if 'post_search_1' in post_route_ids:
                 if "exact_count" in payload and type(payload["exact_count"]) is not bool:
                     self._send(400, {

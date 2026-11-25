@@ -776,48 +776,6 @@
         "action_literals": []
       }
     },
-    "GET /api/updates": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Local dashboard reads verified release availability and installation results.",
-      "response_policy": "Preserve release identity, status and errors for the local operator.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "controller.install",
-          "controller.status",
-          "local:result",
-          "self._handle_dashboard_updates"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/updates": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "The local dashboard can refresh release availability or confirm an exact update and restart.",
-      "response_policy": "Preserve the launch result and errors. Release and target are confined by the managed updater.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_updates_1",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "controller.install",
-          "controller.status",
-          "local:result",
-          "self._handle_dashboard_updates"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/mode": {
       "decision": "retain",
       "role": "readiness_or_control",
@@ -1198,6 +1156,27 @@
         ],
         "response_producers": [
           "APP.services.test_matrix"
+        ],
+        "action_literals": []
+      }
+    },
+    "GET /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Local dashboard reads verified release availability and installation results.",
+      "response_policy": "Preserve release identity, status and errors for the local operator.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "controller.install",
+          "controller.status",
+          "local:result",
+          "self._handle_dashboard_updates"
         ],
         "action_literals": []
       }
@@ -4242,6 +4221,28 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Deterministic/indexed repository analysis or source navigation; returns actionable symbols, code relationships, findings, provenance or change evidence.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_repo.knowledge_query": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Read-only repository knowledge discovery; returns declared business records and source freshness, not proof or runtime receipts.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",
@@ -8612,6 +8613,22 @@
         "action_literals": []
       }
     },
+    "POST /api/repo/knowledge/query": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Bounded root-authorized repository knowledge query with explicit completeness and advisory provenance; no writes or inference.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_repo_knowledge_query_1",
+        "literal_response_fields": [],
+        "response_producers": [
+          "local:result",
+          "query_repository_knowledge"
+        ],
+        "action_literals": []
+      }
+    },
     "POST /api/repo/map": {
       "decision": "retain",
       "role": "agent",
@@ -9378,6 +9395,27 @@
           "dict",
           "local:result",
           "tracker.fingerprint"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "The local dashboard can refresh release availability or confirm an exact update and restart.",
+      "response_policy": "Preserve the launch result and errors. Release and target are confined by the managed updater.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_updates_1",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "controller.install",
+          "controller.status",
+          "local:result",
+          "self._handle_dashboard_updates"
         ],
         "action_literals": []
       }

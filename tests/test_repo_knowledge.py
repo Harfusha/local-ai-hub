@@ -262,3 +262,22 @@ def test_common_knowledge_budget_and_attachment_does_not_mint_evidence(tmp_path)
     )
     assert denied["status"] == "unavailable"
     assert unchanged == 2000
+
+
+def test_native_query_reuses_authorized_root_and_preserves_declaration(tmp_path):
+    from local_ai_hub.repo_knowledge import query_repository_knowledge
+
+    root = tmp_path / "repo"
+    _setup(root)
+    _save(RepoKnowledgeStore(root), _rule(root))
+    payload = {"root": str(root), "query": "paid order", "limit": 4}
+    result = query_repository_knowledge({}, payload)
+    assert result["success"]
+    assert result["records"][0]["freshness"] == "matching_sources"
+    assert result["records"][0]["authority"] == "repository_declaration"
+    assert not result["evidence_ids"]
+    assert query_repository_knowledge({"security": {"allowed_roots": []}}, payload)["status_code"] == 403
+    assert query_repository_knowledge({}, {**payload, "limit": True})["status_code"] == 400
+    assert query_repository_knowledge({}, {**payload, "unexpected": 1})["status_code"] == 400
+    (root / "order.py").write_bytes(b"paid = False\n")
+    assert query_repository_knowledge({}, payload)["records"][0]["freshness"] == "stale"

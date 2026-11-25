@@ -180,7 +180,7 @@ def _local_ai_repo_impl(
     until = "" if until is None else until
     days = 30 if days is None else days
     explicit_limit = limit is not None
-    default_limit = 100 if action == "reachability_dead_code" else 20 if action == "hotspots" else 24
+    default_limit = 4 if action == "knowledge_query" else 100 if action == "reachability_dead_code" else 20 if action == "hotspots" else 24
     limit = default_limit if limit is None else limit
     for numeric_name, numeric_value in (
         ("max_tokens", max_tokens),
@@ -286,6 +286,13 @@ def _local_ai_repo_impl(
         return services_module._compact(services_module.CLIENT.post("/api/repo/diagnose", {
             "root": root, "text": query,
         }, timeout=services_module._timeout("quick")), "verify")
+    if action == "knowledge_query":
+        if type(limit) is not int or not 1 <= limit <= 8:
+            return services_module.contract_error("knowledge_query limit must be between 1 and 8")
+        return services_module._compact(services_module.CLIENT.post("/api/repo/knowledge/query", {
+            "root": root, "query": query, "limit": limit,
+        }, timeout=services_module._timeout("quick")), "architecture",
+            extra_fields=["records", "complete", "issues", "answer_status", "match_count", "truncated", "project_id"])
     if action == "briefing":
         return services_module._compact(services_module.CLIENT.post("/api/repo/briefing", {
             "root": root,

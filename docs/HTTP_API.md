@@ -176,3 +176,13 @@ counters remain unchanged. The broker verifies persisted task scope and records
 the actual transport actor plus before/after values atomically with the update.
 Caller-supplied owner or authorization overrides reject. Increasing a failed
 task's limits preserves its status and owner; resume is a separate action.
+
+### Repository knowledge query
+
+`POST /api/repo/knowledge/query` accepts an explicit authorized absolute
+`root`, nonempty `query` (up to 2000 characters) and optional integer
+`limit` (1–8, default 4). It returns matching shared declarations with
+their record revisions, source freshness, and inventory completeness.
+Only two source locators per returned record are checked in this bounded
+query; additional locators mean freshness is unknown, not verified.
+No repository writes or model inference are performed.
