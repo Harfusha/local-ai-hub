@@ -345,3 +345,54 @@ def test_czech_query_and_changed_paths_select_business_context(tmp_path):
     assert build_knowledge_context(str(root), "unrelated", token_budget=400, changed_paths=("order.py",))["records"] == 1
     (root / "order.py").write_bytes(b"paid = False\n")
     assert build_knowledge_context(str(root), "unrelated", token_budget=400, changed_paths=("order.py",))["needs_revalidation"]
+
+
+def test_bounded_catalog_retains_records_and_reports_unknown_coverage(tmp_path):
+    root = tmp_path / "repo"
+    _setup(root)
+    folder = root / ".local-ai-hub/knowledge/rules"
+    folder.mkdir(parents=True)
+    for i in range(60):
+        record = _rule(root)
+        record["id"] = f"order-{i:03d}"
+        (folder / (record["id"] + ".json")).write_text(json.dumps(record), encoding="utf-8")
+    store = RepoKnowledgeStore(root)
+    catalog = store.catalog(verify_sources=False, max_records=2)
+    assert len(catalog["records"]) == 2
+    assert not catalog["complete"]
+    assert {"kind": "business_rule", "code": "inventory_limit"} in catalog["issues"]
+    context = build_knowledge_context(str(root), "paid order", token_budget=400)
+    assert context["records"] >= 1
+    assert context["status"] == "partial"
+    assert context["needs_revalidation"] is True
+    missing = build_knowledge_context(str(root), "irrelevant keyword", token_budget=400)
+    assert missing["status"] == "partial"
+    assert missing["needs_revalidation"] is True
+
+
+def test_context_rechecks_selected_revision_after_source_read(tmp_path, monkeypatch):
+    from local_ai_hub.evidence import EvidenceStore
+    from local_ai_hub.repo_knowledge import query_repository_knowledge
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    _save(store, _rule(root))
+    path = root / ".local-ai-hub/knowledge/rules/order-paid.json"
+    original = EvidenceStore.portable_source_status
+
+    def edit_during_read(ref, *, root):
+        result = original(ref, root=root)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["payload"]["statement"] += " Changed."
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(EvidenceStore, "portable_source_status", staticmethod(edit_during_read))
+    context = build_knowledge_context(str(root), "paid order", token_budget=400)
+    assert context["status"] == "changed_during_read"
+    assert not context["text"]
+    assert context["needs_revalidation"] is True
+    result = query_repository_knowledge({}, {"root": str(root), "query": "paid order"})
+    assert result["status_code"] == 409
+    assert result["retryable"] is True
