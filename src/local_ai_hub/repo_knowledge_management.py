@@ -70,18 +70,12 @@ def manage_repository_knowledge(
             return {"success": True, **list_task_handoffs(store, limit=payload["limit"])}
         manifest, manifest_revision = store.manifest()
         if action == "preview_handoff_resume":
-            from .repo_task_handoff import handoff_resume_contract
+            from .repo_task_handoff import preview_handoff_resume
 
-            item = store.get("handoff", payload["handoff_id"], verify_sources=False)
-            if not _revision(payload["expected_revision"]) or item["revision"] != payload["expected_revision"]:
+            preview = preview_handoff_resume(store, payload["handoff_id"])
+            if not _revision(payload["expected_revision"]) or preview["revision"] != payload["expected_revision"]:
                 return _error(409, "Handoff revision changed; refresh before resuming")
-            return {
-                "success": True, "preview": True, "revision": item["revision"],
-                "contract": handoff_resume_contract(item["record"]),
-                "historical_verification": item["record"]["payload"].get("historical_verification", []),
-                "preview_digest": _digest_value([manifest_revision, item["revision"]]),
-                "requires_revalidation": True,
-            }
+            return {"success": True, **preview}
         if action == "audit":
             return {"success": True, **quality_report(store.catalog())}
         if action == "impact":
