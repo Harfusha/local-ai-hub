@@ -200,14 +200,21 @@ integer `limit` (1–64). It returns validated handoff IDs, record revisions,
 short goals, historical status, and explicit inventory completeness. A handoff
 is never current verification or authorization. The `preview_handoff_resume`
 action accepts `root`, `handoff_id` and `expected_revision` and returns the
-fresh-task contract, historical summaries (if present), and a preview digest
-bound to the manifest and handoff revision. A mismatched revision returns
-409. The existing Projects dashboard rechecks this preview before explicit
-creation via the existing Agent OS task endpoint; it does not import a lease,
-completion status or verification receipt. The CLI equivalent is
+fresh-task contract, historical summaries (if present), declared dependency
+status, `resume_allowed`, and a preview digest bound to the manifest, handoff
+revision, contract and current affected-source fingerprints. A mismatched
+revision returns 409. The existing Projects dashboard and CLI submit
+`handoff_resume: {handoff_id, revision, preview_digest}` with the exact
+reviewed contract, explicit new task ID and bound root to the existing
+`POST /api/agent-state/tasks` action `create`. The server repeats the
+preview and rejects a changed contract or dependency before TaskStore
+mutation (409, operation_not_started). This precondition is only for handoff
+creation, does not grant permissions, and does not import a lease, completion
+status or verification receipt. Arbitrary ordinary task creation remains
+a separate supported operation. The CLI equivalent is
 `hubctl knowledge handoff-list --root <path> --limit 32`; use
 `handoff-resume --handoff-id <id> --root <path>` for a preview, then add
-`--apply --expected-revision <reviewed-revision> --task-id <new-task-id>`
+`--apply --expected-revision <reviewed-revision> --preview-digest <digest> --task-id <new-task-id>`
 to create a fresh local attempt with a stable identity.
 
 For a read-only assessment of existing repository-scoped Agent OS tasks,
