@@ -4,6 +4,28 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+def _installed_distribution_version(package_name: str) -> str | None:
+    """Read the active environment's package metadata, excluding source-tree egg-info."""
+    try:
+        import importlib.metadata
+        import sysconfig
+
+        site_packages = sysconfig.get_path("purelib")
+        if not site_packages:
+            return None
+        matches = [
+            distribution
+            for distribution in importlib.metadata.distributions(path=[site_packages])
+            if str(distribution.metadata.get("Name", "")).strip().casefold() == package_name.casefold()
+        ]
+        if len(matches) != 1:
+            return None
+        version = str(matches[0].version).strip()
+        return version or None
+    except Exception:
+        return None
+
+
 class HTTPAdminMixin:
     def _handle_post_config_update(self, payload: dict[str, Any]) -> None:
         from . import http_server as services_module
@@ -127,13 +149,7 @@ class HTTPAdminMixin:
     def _handle_health_route(self, path: str) -> bool:
         from . import http_server as services_module
         if path == "/health":
-            installed_version = None
-            try:
-                import importlib.metadata
-
-                installed_version = importlib.metadata.version("local-ai-hub")
-            except Exception:
-                installed_version = None
+            installed_version = _installed_distribution_version("local-ai-hub")
             self._send(
                 200,
                 {

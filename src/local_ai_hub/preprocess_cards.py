@@ -86,6 +86,7 @@ class PreprocessCardsMixin:
                 raise services_module._RetryablePreprocessingError(
                     f"preprocessing model circuit is open: {model}",
                     retry_after_seconds=float(retry_after),
+                    error_code="model_circuit_open",
                 )
             if not result.get("success"):
                 self._record_model_failure_trace(model, prompt, system, schema, max_tokens, source, result)
@@ -546,19 +547,30 @@ class PreprocessCardsMixin:
                 )
 
         def invalid_scheduled_card(result: dict[str, services_module.Any], model: str) -> bool:
-            repetition_loop = (
-                result.get("_lah_repetition_loop_detected") is True
-                and result.get("_lah_backend_completed") is True
+            backend_repeat_limit = any(
+                "prediction aborted, token repeat limit reached" in str(result.get(key) or "").casefold()
+                for key in ("error", "error_message", "message")
             )
+            repetition_loop = (
+                (
+                    result.get("_lah_repetition_loop_detected") is True
+                    and result.get("_lah_backend_completed") is True
+                )
+                or backend_repeat_limit
+            )
+            model_circuit_open = result.get("error_code") == "model_circuit_open"
             if (model not in accepted_models or result.get("stop_reason") == "length"
-                    or self._file_card_deferral_delay(result) is not None
+                    or (
+                        self._file_card_deferral_delay(result) is not None
+                        and not (model_circuit_open or repetition_loop)
+                    )
                     or (result.get("terminal") and not repetition_loop)
                     or any(result.get(key) for key in (
                         "outcome_unknown", "cleanup_unconfirmed", "in_progress",
                         "cancelled", "output_truncated",
                     ))):
                 return False
-            if repetition_loop:
+            if repetition_loop or model_circuit_open:
                 return True
             if result.get("success") is True:
                 return not self._valid_enriched_file_card(result.get("data"))
@@ -581,7 +593,22 @@ class PreprocessCardsMixin:
                     break
                 attempted.add(candidate)
                 remaining -= 1
-                generated = self._run_background_generate(candidate, *args, allow_model_fallback=False)
+                try:
+                    generated = self._run_background_generate(candidate, *args, allow_model_fallback=False)
+                except services_module._RetryablePreprocessingError as exc:
+                    if exc.error_code != "model_circuit_open":
+                        raise
+                    # An open breaker rejected this candidate before dispatch.
+                    # Continue with the next distinct model instead of deferring
+                    # the whole card while a healthy fallback remains available.
+                    generated = {
+                        "success": False,
+                        "model": candidate,
+                        "error": str(exc),
+                        "error_code": exc.error_code,
+                        "retryable": True,
+                        "retry_after_seconds": exc.retry_after_seconds,
+                    }
             return generated
 
         def scheduled_results():

@@ -576,7 +576,7 @@ def test_gemini_cli_extension_updates_stale_local_install(tmp_path, monkeypatch)
     def fake_run(args, *, cwd, check, **kwargs):
         calls.append((args, Path(cwd), check))
         if args[1:3] == ["extensions", "list"]:
-            return subprocess.CompletedProcess(args, 0, stdout=f"Source: {source} (Type: local)", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr=f"Source: {source} (Type: local)")
         (installed / "gemini-extension.json").write_text(json.dumps(current_manifest), encoding="utf-8")
         return subprocess.CompletedProcess(args, 0)
 
@@ -590,6 +590,36 @@ def test_gemini_cli_extension_updates_stale_local_install(tmp_path, monkeypatch)
         (["gemini.cmd", "extensions", "update", "local-ai-hub"], source, False),
     ]
     assert actions == []
+
+
+def test_gemini_cli_extension_does_not_accept_same_version_with_stale_files(tmp_path, monkeypatch):
+    install = tmp_path / "hub"
+    source = install / "plugins" / "gemini" / "local-ai-hub"
+    source.mkdir(parents=True)
+    (source / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.2.1"}), encoding="utf-8",
+    )
+    (source / "GEMINI.md").write_text("current instructions\n", encoding="utf-8")
+    gemini = tmp_path / "home" / ".gemini"
+    installed = gemini / "extensions" / "local-ai-hub"
+    installed.mkdir(parents=True)
+    (installed / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.2.1"}), encoding="utf-8",
+    )
+    (installed / ".gemini-extension-install.json").write_text(
+        json.dumps({"source": str(source), "type": "local"}), encoding="utf-8",
+    )
+    (installed / "GEMINI.md").write_text("stale instructions\n", encoding="utf-8")
+    actions = []
+    monkeypatch.setattr(setup, "SOURCE_ROOT", install)
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: pytest.fail("must not run a CLI update at equal version"))
+
+    assert setup.ensure_gemini_cli_extension(
+        gemini, install, interactive=True, manual_actions=actions,
+    ) is False
+    assert len(actions) == 1
+    assert "same version" in actions[0]
+    assert "increase the source version" in actions[0]
 
 
 def test_gemini_mcp_route_omits_blocked_pythonpath(tmp_path):
@@ -1575,9 +1605,7 @@ def test_codex_hub_plugin_refreshes_cache_from_its_selected_local_marketplace(tm
                 {"name": "local-ai-hub", "root": str(tmp_path)},
             ]}), "")
         if command[1:3] == ["plugin", "list"]:
-            return subprocess.CompletedProcess(command, 0, json.dumps({"installed": [
-                {"pluginId": "local-ai-hub@local-ai-hub", "version": "6.1.0", "installed": True},
-            ]}), "")
+            raise AssertionError("refresh must not enumerate every installed Codex plugin")
         if command[1:3] == ["plugin", "add"]:
             return subprocess.CompletedProcess(command, 0, json.dumps({"version": "8.1.0"}), "")
         raise AssertionError(command)
@@ -1589,7 +1617,7 @@ def test_codex_hub_plugin_refreshes_cache_from_its_selected_local_marketplace(tm
 
     assert success is True
     assert "8.1.0" in detail
-    assert calls[2][1:] == ["plugin", "add", "local-ai-hub@local-ai-hub", "--json"]
+    assert calls[1][1:] == ["plugin", "add", "local-ai-hub@local-ai-hub", "--json"]
 
 
 def test_codex_hub_plugin_refresh_does_not_replace_foreign_marketplace_source(tmp_path, monkeypatch):
@@ -1640,6 +1668,9 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
     manifest = tmp_path / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    cached_manifest = codex_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.1.0" / "plugin.json"
+    cached_manifest.parent.mkdir(parents=True)
+    cached_manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
     calls = []
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr(setup.shutil, "which", lambda name: "codex.exe" if name == "codex" else None)
@@ -1650,11 +1681,7 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
             return subprocess.CompletedProcess(command, 0, json.dumps({"marketplaces": [
                 {"name": "local-ai-hub", "root": str(tmp_path)},
             ]}), "")
-        if command[1:3] == ["plugin", "list"]:
-            return subprocess.CompletedProcess(command, 0, json.dumps({"installed": [
-                {"pluginId": "local-ai-hub@local-ai-hub", "version": "8.1.0", "installed": True},
-            ]}), "")
-        raise AssertionError(f"unexpected Codex CLI mutation: {command}")
+        raise AssertionError(f"unexpected Codex CLI command: {command}")
 
     monkeypatch.setattr(setup, "run", fake_run)
 
@@ -1662,7 +1689,7 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
 
     assert success is True
     assert "already current" in detail.lower()
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_codex_unowned_files_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):

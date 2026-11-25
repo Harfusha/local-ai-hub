@@ -259,6 +259,26 @@ def test_gemini_cli_extension_manifest_is_reported_without_claiming_runtime(tmp_
     assert "Hub readiness probe skipped" in output
 
 
+def test_gemini_extension_route_is_not_reported_missing_from_settings(tmp_path, monkeypatch, capsys):
+    gemini = tmp_path / ".gemini"
+    (gemini / "extensions" / "local-ai-hub").mkdir(parents=True)
+    (gemini / "settings.json").write_text(
+        '{"mcpServers":{"browser-mcp":{"command":"browser"}}}', encoding="utf-8"
+    )
+    (gemini / "extensions" / "local-ai-hub" / "gemini-extension.json").write_text(
+        '{"name":"local-ai-hub","version":"8.2.0",'
+        '"mcpServers":{"local-ai":{"command":"python"}}}', encoding="utf-8"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["verify_agent_handshake.py"])
+
+    assert verify_agent_handshake.main() == 0
+    output = capsys.readouterr().out
+    settings_line = next(line for line in output.splitlines() if "Gemini CLI (settings.json)" in line)
+    assert "EXTENSION_ROUTE_CONFIGURED" in settings_line
+    assert "standalone mcpservers.local-ai route is not required" in settings_line.casefold()
+
+
 def test_cursor_native_plugin_manifest_is_not_misreported_as_missing_mcp(tmp_path):
     manifest = tmp_path / ".cursor-plugin" / "plugin.json"
     manifest.parent.mkdir(parents=True)
@@ -283,4 +303,4 @@ def test_cursor_native_plugin_stale_version_is_reported(tmp_path):
 
     assert status == "STALE_PLUGIN_VERSION"
     assert "6.1.0" in detail
-    assert "8.1.0" in detail
+    assert verify_agent_handshake.source_hub_version() in detail

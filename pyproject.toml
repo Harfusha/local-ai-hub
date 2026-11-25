@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-ai-hub"
-version = "8.1.0"
+version = "8.2.0"
 description = "Deterministic-first local tooling and inference hub for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -117,7 +117,7 @@ source = ["local_ai_hub"]
 show_missing = true
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "8.2.0"
 mypy_path = "src"
 strict = true
 warn_unused_configs = true
@@ -149,7 +149,7 @@ files = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "8.2.0"
 line-length = 120
 
 [tool.ruff.lint]

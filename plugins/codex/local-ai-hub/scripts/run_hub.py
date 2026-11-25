@@ -1,6 +1,7 @@
 """Resolve the user's Local AI Hub install and launch one approved module."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -19,7 +20,7 @@ def resolve_hub_install() -> Path | None:
     def valid_install(path: Path) -> Path | None:
         try:
             root = path.resolve(strict=True)
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             return None
         if (root / "config.toml").is_file() and (
             root / "src" / "local_ai_hub" / "mcp_server.py"
@@ -30,7 +31,28 @@ def resolve_hub_install() -> Path | None:
     candidates: list[Path] = []
     configured = os.environ.get("LOCAL_AI_HUB_DIR", "").strip()
     if configured:
-        return valid_install(Path(configured).expanduser())
+        explicit = valid_install(Path(configured).expanduser())
+        if explicit is not None:
+            return explicit
+
+    # Host hooks run outside the MCP server process, so they do not inherit its
+    # environment. Setup writes the canonical install path into the adjacent
+    # plugin MCP config; use it for hooks and MCP launches alike.
+    plugin_root = Path(__file__).resolve().parent.parent
+    for config_name in ("mcp_config.json", "mcp.json", ".mcp.json", "gemini-extension.json"):
+        try:
+            config = json.loads((plugin_root / config_name).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        servers = config.get("mcpServers") if isinstance(config, dict) else None
+        server = servers.get("local-ai") if isinstance(servers, dict) else None
+        env = server.get("env") if isinstance(server, dict) else None
+        install_dir = env.get("LOCAL_AI_HUB_DIR") if isinstance(env, dict) else None
+        if isinstance(install_dir, str) and install_dir.strip():
+            configured_install = valid_install(Path(install_dir).expanduser())
+            if configured_install is not None:
+                return configured_install
+
     candidates.append(Path.home() / ".local-ai-hub")
     candidates.append(Path.cwd())
     user_home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))

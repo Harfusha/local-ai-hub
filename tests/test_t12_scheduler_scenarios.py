@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,23 @@ def _scheduler(runtime: Any) -> AffinityScheduler:
     scheduler = object.__new__(AffinityScheduler)
     scheduler.runtime = runtime
     return scheduler
+
+
+def test_default_scheduler_has_conservative_vram_estimates_for_preprocessing_finetunes() -> None:
+    defaults_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "defaults.toml"
+    config = tomllib.loads(defaults_path.read_text(encoding="utf-8"))
+    scheduler = _scheduler(object())
+    scheduler.config = config
+
+    expected = {
+        "qwen2.5-coder-prep-v3:0.5b": 1266606406,
+        "qwen2.5-coder-prep-v3:1.5b": 1266606406,
+        "qwen2.5-coder-prep-v4:3b": 3075452435,
+    }
+    assert {
+        model: scheduler._configured_model_vram_estimate(model)
+        for model in expected
+    } == expected
 
 
 def test_t12_cross_model_admission_defers_to_post_unload_check() -> None:
@@ -189,6 +207,8 @@ def test_app_connects_vram_balancer_to_scheduler(tmp_path: Path, monkeypatch: An
     monkeypatch.setattr(app_module, "VRAMBalancer", StubVRAMBalancer)
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\n"
+        "config_schema_version = 1\n\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         "port = 11497\n"

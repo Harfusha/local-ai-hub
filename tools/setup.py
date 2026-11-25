@@ -1465,6 +1465,41 @@ def ensure_gemini_cli_extension(
         except (OSError, UnicodeError, json.JSONDecodeError):
             installed_version = None
         if gemini_cli_extension_installed(gemini_dir) and installed_version == source_version:
+            installed_dir = installed_manifest_path.parent
+            install_record_path = installed_dir / ".gemini-extension-install.json"
+            try:
+                install_record = json.loads(install_record_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                install_record = None
+            recorded_source = install_record.get("source") if isinstance(install_record, dict) else None
+            recorded_type = install_record.get("type") if isinstance(install_record, dict) else None
+            same_local_source = (
+                recorded_type == "local"
+                and isinstance(recorded_source, str)
+                and os.path.normcase(os.path.normpath(str(Path(recorded_source).resolve())))
+                == os.path.normcase(os.path.normpath(str(source.resolve())))
+            )
+            if same_local_source:
+                stale_files = []
+                for source_file in sorted(source.rglob("*")):
+                    if not source_file.is_file() or "__pycache__" in source_file.parts:
+                        continue
+                    installed_file = installed_dir / source_file.relative_to(source)
+                    try:
+                        matches = installed_file.is_file() and installed_file.read_bytes() == source_file.read_bytes()
+                    except OSError:
+                        matches = False
+                    if not matches:
+                        stale_files.append(source_file.relative_to(source).as_posix())
+                if stale_files:
+                    action = (
+                        "Gemini CLI extension has stale files despite claiming the same version "
+                        f"({', '.join(stale_files[:4])}); increase the source version to force a trusted CLI update"
+                    )
+                    if manual_actions is not None:
+                        manual_actions.append(action)
+                    log(f"Manual agent setup required: {action}")
+                    return False
             return True
         command = shutil.which("gemini.cmd") or shutil.which("gemini")
         updating = gemini_cli_extension_installed(gemini_dir)
@@ -1484,7 +1519,8 @@ def ensure_gemini_cli_extension(
                         capture_output=True, text=True,
                     )
                     source_record = f"Source: {source} (Type: local)"
-                    if listed.returncode != 0 or source_record.casefold() not in (listed.stdout or "").casefold():
+                    listing_output = "\n".join((listed.stdout or "", listed.stderr or ""))
+                    if listed.returncode != 0 or source_record.casefold() not in listing_output.casefold():
                         action = (
                             "Gemini CLI extension has a different or unverifiable source; "
                             f"preserved it. Review/update it manually: {install_command}"
@@ -1736,6 +1772,42 @@ def generate_provider_plugin_skills() -> None:
             encoding="utf-8",
         )
     log(f"Generated shared provider plugin skills and synchronized manifest versions to {version}.")
+
+
+def sync_packaged_defaults(root: Path | None = None) -> bool:
+    """Copy the repository defaults into the package, which ships that file at runtime."""
+    source_root = (root or SOURCE_ROOT).resolve()
+    repository_defaults = source_root / "defaults.toml"
+    packaged_defaults = source_root / "src" / "local_ai_hub" / "defaults.toml"
+    if repository_defaults.is_symlink() or packaged_defaults.is_symlink():
+        raise RuntimeError("Refusing to synchronize defaults through a symbolic link")
+    try:
+        content = repository_defaults.read_bytes()
+        tomllib.loads(content.decode("utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely read canonical repository defaults: {exc}") from exc
+    if not packaged_defaults.parent.is_dir():
+        raise RuntimeError(f"Packaged defaults directory is unavailable: {packaged_defaults.parent}")
+    try:
+        if packaged_defaults.read_bytes() == content:
+            return False
+    except FileNotFoundError:
+        pass
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=packaged_defaults.parent, prefix=".defaults.", suffix=".tmp", delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, packaged_defaults)
+        log(f"Packaged defaults synchronized from repository source: {packaged_defaults}")
+        return True
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def sync_generated_prompt_policies(root: Path | None = None) -> None:
@@ -3038,25 +3110,19 @@ def refresh_codex_hub_plugin_cache(codex_config: Path, install_dir: Path) -> tup
     if len(selected_roots) != 1 or os.path.normcase(os.path.normpath(str(Path(selected_roots[0]).resolve()))) != expected_root:
         return False, "Codex local-ai-hub marketplace does not uniquely point to this install; plugin cache was not changed"
 
-    try:
-        inventory = run(
-            [codex, "plugin", "list", "--json"],
-            check=False, timeout=30, capture=True,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"Codex plugin inventory failed: {type(exc).__name__}"
-    if inventory.returncode != 0:
-        return False, "Codex plugin inventory failed; plugin cache was not changed"
-    try:
-        plugins = json.loads(inventory.stdout).get("installed", [])
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        return False, "Codex plugin inventory returned invalid JSON; plugin cache was not changed"
-    installed_plugins = [
-        entry for entry in plugins
-        if isinstance(entry, dict) and entry.get("pluginId") == "local-ai-hub@local-ai-hub"
-        and entry.get("installed") is True
-    ]
-    if len(installed_plugins) == 1 and installed_plugins[0].get("version") == expected_version:
+    cache_root = active_codex_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub"
+    cached_versions: set[str] = set()
+    for cached_manifest_path in cache_root.glob("*/plugin.json"):
+        try:
+            cached_manifest = json.loads(cached_manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(cached_manifest, dict) or cached_manifest.get("name") != "local-ai-hub":
+            continue
+        cached_version = cached_manifest.get("version")
+        if isinstance(cached_version, str) and cached_version.strip():
+            cached_versions.add(cached_version.strip())
+    if expected_version in cached_versions:
         return True, f"Codex plugin cache already current ({expected_version})"
 
     try:
@@ -3564,6 +3630,9 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
+    sync_packaged_defaults()
+    if install_dir.resolve() != SOURCE_ROOT.resolve():
+        sync_packaged_defaults(install_dir)
     write_all_generated(cfg, install_dir, hub_python, serena)
     sync_generated_prompt_policies()
     if install_dir.resolve() == SOURCE_ROOT.resolve():
@@ -4366,6 +4435,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         hub_python = venv_python(install_dir / ".venv")
         if not hub_python.exists():
             hub_python = Path(sys.executable)
+        sync_packaged_defaults()
         write_all_generated(cfg, SOURCE_ROOT, hub_python)
         try:
             generate_provider_plugin_skills()
@@ -4375,6 +4445,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             return 1
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
+            sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
             for manual_action in configure_agents(
                 install_dir, hub_python, None, cfg,

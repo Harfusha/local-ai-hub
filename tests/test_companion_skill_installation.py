@@ -23,6 +23,15 @@ def test_companion_skill_frontmatter_and_declaration(name):
     assert f"name: {name}" in content.split("\n---\n", 1)[0], name
 
 
+def test_orchestrator_scopes_file_inventory_and_recovers_from_time_limit() -> None:
+    source = REPO_ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    content = source.read_text(encoding="utf-8")
+
+    assert "Use the trusted repository root for `local_ai_repo(action=\"find_files\")`" in content
+    assert "`repository_inventory_incomplete` or `time_limit`" in content
+    assert "never repeat the same broad root" in content
+
+
 def test_idempotent_companion_install_retains_modified_owned_skill(tmp_path):
     install_dir = tmp_path / "install"
     skills = install_dir / "skills"

@@ -48,6 +48,8 @@ def live_api(tmp_path, monkeypatch):
 
 def test_health_reports_running_and_installed_versions_separately(live_api, monkeypatch):
     import importlib.metadata
+    import sysconfig
+    from types import SimpleNamespace
     from local_ai_hub import __version__
 
     _app, client = live_api
@@ -56,14 +58,15 @@ def test_health_reports_running_and_installed_versions_separately(live_api, monk
     assert res.get("version") == __version__
     assert "installed_version" in res
 
-    monkeypatch.setattr(importlib.metadata, "version", lambda pkg: "6.0.0" if pkg == "local-ai-hub" else None)
+    active_site_packages = "test-active-site-packages"
+    active_distribution = SimpleNamespace(metadata={"Name": "local-ai-hub"}, version="8.2.0")
+    monkeypatch.setattr(sysconfig, "get_path", lambda key: active_site_packages if key == "purelib" else "")
+    monkeypatch.setattr(importlib.metadata, "version", lambda pkg: "8.1.0" if pkg == "local-ai-hub" else None)
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda path=None: [active_distribution])
     res_mocked = client.get("/health")
-    assert res_mocked.get("installed_version") == "6.0.0"
+    assert res_mocked.get("installed_version") == "8.2.0"
 
-    def _raise(pkg):
-        raise importlib.metadata.PackageNotFoundError(pkg)
-
-    monkeypatch.setattr(importlib.metadata, "version", _raise)
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda path=None: [])
     res_none = client.get("/health")
     assert res_none.get("installed_version") is None
 
@@ -318,10 +321,10 @@ def test_lean_work_description_lists_continuation_and_response_controls(monkeypa
 def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
 
-    captured = {}
+    captured = []
 
     def fake_post(path, payload, **kwargs):
-        captured.update(path=path, payload=payload)
+        captured.append({"path": path, "payload": payload})
         return {"success": True, "changes": []}
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
@@ -334,9 +337,9 @@ def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch, tmp
     )
 
     assert result.get("success") is True, result
-    assert captured["path"] == "/api/repo/call_graph_diff"
-    assert captured["payload"]["root"].endswith("repo")
-    assert captured["payload"]["diff"] == "diff --git a/a.cs b/a.cs"
+    route_call = next(call for call in captured if call["path"] == "/api/repo/call_graph_diff")
+    assert route_call["payload"]["root"].endswith("repo")
+    assert route_call["payload"]["diff"] == "diff --git a/a.cs b/a.cs"
 
 
 def test_artifact_list_is_bounded_shared_metadata_and_needs_no_id(live_api, monkeypatch):

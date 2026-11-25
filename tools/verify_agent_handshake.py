@@ -284,6 +284,26 @@ def check_gemini_cli_extension(extension_dir: Path) -> tuple[str, str]:
         return "INVALID_CONFIG", "Gemini CLI extension manifest does not identify local-ai-hub"
     return "EXTENSION_MANIFEST_PRESENT", f"Gemini CLI Hub extension manifest present: {manifest_path}"
 
+
+def check_gemini_cli_mcp_route(settings_path: Path, extension_dir: Path) -> tuple[str, str]:
+    """Accept either a settings MCP route or the Hub route declared by its extension."""
+    status, detail = check_mcp_json_file(settings_path)
+    if status != "CONFIG_PRESENT_NO_HUB_ROUTE":
+        return status, detail
+    manifest_path = extension_dir / "gemini-extension.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return status, detail
+    servers = manifest.get("mcpServers") if isinstance(manifest, dict) else None
+    route = servers.get("local-ai") if isinstance(servers, dict) else None
+    if isinstance(route, dict) and route.get("command"):
+        return (
+            "EXTENSION_ROUTE_CONFIGURED",
+            "Standalone mcpServers.local-ai route is not required; Gemini extension declares the Hub MCP server",
+        )
+    return status, detail
+
 def opencode_config_dirs() -> list[Path]:
     """Use OpenCode's canonical global root or its explicit override."""
     configured = os.environ.get("OPENCODE_HOME", "").strip()
@@ -427,11 +447,12 @@ def main() -> int:
             "detail": profile_detail,
         })
     gemini_settings = g_dir / "settings.json"
-    gemini_status, gemini_detail = check_mcp_json_file(gemini_settings)
-    results.append({"agent": "Gemini CLI (settings.json)", "status": gemini_status, "detail": gemini_detail})
-    extension_status, extension_detail = check_gemini_cli_extension(
-        g_dir / "extensions" / "local-ai-hub"
+    gemini_extension_dir = g_dir / "extensions" / "local-ai-hub"
+    gemini_status, gemini_detail = check_gemini_cli_mcp_route(
+        gemini_settings, gemini_extension_dir
     )
+    results.append({"agent": "Gemini CLI (settings.json)", "status": gemini_status, "detail": gemini_detail})
+    extension_status, extension_detail = check_gemini_cli_extension(gemini_extension_dir)
     results.append({"agent": "Gemini CLI extension", "status": extension_status, "detail": extension_detail})
 
     # 2. Codex
@@ -502,7 +523,7 @@ def main() -> int:
 
     # Print table: file presence and syntax do not prove host trust or a live MCP connection.
     for r in results:
-        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT"} else "[-]"
+        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT", "EXTENSION_ROUTE_CONFIGURED"} else "[-]"
         print(f"{status_sym} {r['agent']:<32} | {r['status']:<32} | {r['detail']}")
 
     print("-" * 60)

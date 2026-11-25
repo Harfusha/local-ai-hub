@@ -727,7 +727,11 @@ def test_antigravity_plugin_is_native_portable_bundle(tmp_path, monkeypatch):
                 )
                 assert packaged_file.read_bytes() == source_file.read_bytes(), packaged_file
 
-    runner_path = plugin / "scripts" / "run_hub.py"
+    isolated_plugin = tmp_path / "installed-plugin"
+    (isolated_plugin / "scripts").mkdir(parents=True)
+    runner_path = isolated_plugin / "scripts" / "run_hub.py"
+    runner_path.write_bytes((plugin / "scripts" / "run_hub.py").read_bytes())
+    (isolated_plugin / "mcp_config.json").write_bytes((plugin / "mcp_config.json").read_bytes())
     spec = importlib.util.spec_from_file_location("antigravity_plugin_runner", runner_path)
     assert spec and spec.loader
     runner = importlib.util.module_from_spec(spec)
@@ -739,6 +743,11 @@ def test_antigravity_plugin_is_native_portable_bundle(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_AI_HUB_DIR", str(install))
     assert runner.resolve_hub_install() == install.resolve()
     monkeypatch.setenv("LOCAL_AI_HUB_DIR", str(tmp_path / "missing-hub"))
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.chdir(isolated_home)
     assert runner.resolve_hub_install() is None
 
 

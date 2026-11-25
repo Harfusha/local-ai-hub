@@ -98,6 +98,8 @@ Reuse fresh sufficient repository evidence. For exact facts, use bounded indexed
 
 For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
+Use the trusted repository root for `local_ai_repo(action="find_files")`; do not search a home/profile root or another broad parent. If the result reports `repository_inventory_incomplete` or `time_limit`, treat it as incomplete, narrow the root or query, and never repeat the same broad root. Do not infer that omitted files are absent from a partial inventory.
+
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
 ## Context economy contract
