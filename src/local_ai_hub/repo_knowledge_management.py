@@ -20,6 +20,7 @@ _FIELDS = {
     "sync_status": {"action", "root"},
     "diff": {"action", "root", "base", "head"},
     "handoff_list": {"action", "root", "limit"},
+    "preview_handoff_resume": {"action", "root", "handoff_id", "expected_revision"},
     "impact": {"action", "root", "changed_paths"},
     "preview_edit": {"action", "root", "record", "expected_revision"},
     "save_edit": {"action", "root", "record", "expected_revision", "preview_digest", "operation_id", "apply"},
@@ -68,6 +69,19 @@ def manage_repository_knowledge(
 
             return {"success": True, **list_task_handoffs(store, limit=payload["limit"])}
         manifest, manifest_revision = store.manifest()
+        if action == "preview_handoff_resume":
+            from .repo_task_handoff import handoff_resume_contract
+
+            item = store.get("handoff", payload["handoff_id"], verify_sources=False)
+            if not _revision(payload["expected_revision"]) or item["revision"] != payload["expected_revision"]:
+                return _error(409, "Handoff revision changed; refresh before resuming")
+            return {
+                "success": True, "preview": True, "revision": item["revision"],
+                "contract": handoff_resume_contract(item["record"]),
+                "historical_verification": item["record"]["payload"].get("historical_verification", []),
+                "preview_digest": _digest_value([manifest_revision, item["revision"]]),
+                "requires_revalidation": True,
+            }
         if action == "audit":
             return {"success": True, **quality_report(store.catalog())}
         if action == "impact":
