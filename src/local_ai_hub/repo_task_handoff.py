@@ -395,6 +395,8 @@ def preview_handoff_resume(store: RepoKnowledgeStore, handoff_id: str) -> dict[s
     store.require_read_epoch(epoch)
     return {
         "preview": True, "revision": item["revision"], "contract": contract,
+        "origin_task_id": item["record"]["payload"]["origin_task_id"],
+        "previous_attempt": item["record"]["payload"].get("previous_attempt"),
         "historical_verification": item["record"]["payload"].get("historical_verification", []),
         "dependencies": dependencies,
         "resume_allowed": dependencies["resume_allowed"],
@@ -494,6 +496,8 @@ def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[st
             "id": entry.stem, "revision": item["revision"],
             "goal": payload["contract"]["goal"][:160],
             "historical_status": payload["historical_status"],
+            "origin_task_id": payload["origin_task_id"],
+            "previous_attempt": payload.get("previous_attempt"),
             "requires_revalidation": True,
         })
     if store.manifest()[1] != manifest_revision:
