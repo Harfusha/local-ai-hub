@@ -267,7 +267,12 @@ The manifest is a read-only fence, not a mutable batch target. Preview returns
 a digest of the exact candidates and prior revisions. Save/recovery require
 the existing trusted local dashboard operator authorization. Recovery requires
 the original operation ID and exact reviewed input; ordinary plan recovery
-does not authorize the batch. Partial publication is recoverable, not an
-atomic multi-file snapshot. No live tasks, leases or fresh receipts are
-imported. Generic review/finding records must use their existing dedicated
+does not authorize the batch. While a batch is pending, cooperative knowledge
+and handoff reads fail closed (HTTP 409); adaptive context omits knowledge
+and requires revalidation. The sync status reports
+`publication_pending_or_unavailable` rather than a clean checkout.
+An exact retry of an already completed batch acknowledges its remaining
+local publication fence. The fence is local and does not prevent external
+Git operations or guarantee atomic visibility in a second clone.
+No live tasks, leases or fresh receipts are imported. Generic review/finding records must use their existing dedicated
 review workflow.
