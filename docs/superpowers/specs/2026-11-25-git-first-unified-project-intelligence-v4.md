@@ -1473,22 +1473,22 @@ Revize 3 nemění závaznost KI-001 až KI-210 z §19; doplňuje povinné prereq
 
 ### 26.1 Povinné E2E scénáře (skutečné soubory, dva independent local state dirs, ne pouze mocks)
 
-| ID | Scénář | Povinný výsledek |
-|---|---|---|
-| E2E-UPS-01 | Developer A bootstrap legacy fixture, vytvoří Process Card, intended rule, finding, task/plan; commit v test fixture. Developer B provede skutečný clone/pull bez bundle importu | B vidí stejné logical IDs, rules, pending tasks, decisions a findings; source locators resolve, žádné autoritativní staré local E-ID |
-| E2E-UPS-02 | A upraví termín zaplacené objednávky, uloží safe checkpoint; B získá commit/patch a resume | B vytvoří nový attempt, scope revalidation, získá stejný business context, doplní testy; bez přenosu patch explicitně blocked |
-| E2E-UPS-03 | A má green receipt na branch X, B checkout Y s relevantní změnou; unrelated edit jako kontrola | Relevantní receipt stale, historical visible; nelze forged fresh pass; unrelated change nepřegeneruje celý KB |
-| E2E-UPS-04 | A/B offline mění disjoint records, pak stejnou invariant; delete-vs-edit a divergent task checkpoint | Disjoint merge bez zbytečných konfliktů, divergent explicit conflict, no silent overwrite, stale approval invalid |
-| E2E-UPS-05 | Docs říkají A, kód B, člověk schválí intended A; agent navrhne opravu B -> A, test selže/pak projde | finding se neuzavře po editaci metadata, pouze po relevantním detector rerun + evidence; linked task, process, receipt, review a source snapshot |
-| E2E-UPS-06 | Člověk označí výjimku expected, následně změní relevantní guard; změní také irelevantní CSS | Relevantní change reopen/revalidate, irelevantní change nezruší waiver; occurrence fingerprints rozlišují |
-| E2E-UPS-07 | Branch/worktree switch uprostřed indexing, old job dokončí později; dirty docs a symlink attack | Fenced old publication, isolation, no old current claims, fail-closed paths |
-| E2E-UPS-08 | Delete local derived DB, restart, rebuild; invalid shared JSON, schema mismatch, disk full při multi-record write | Shared facts/handoffs survive, transparent degraded/conflict, atomic recovery, žádná silent DB fallback authority |
-| E2E-UPS-09 | Migration se starými memories/tasks/incidents/receipts pro dva repo roots a global/session secrets, crash v každé fázi | Dry-run report, exact scope, no private leaks, idempotency, recoverable cutover/rollback a stable mapping |
-| E2E-UPS-10 | Člověk CZ otázkou otevře source, upraví intended, agent EN task získá delta, CI ověří stejná records | Same canonical truth; no extra mandatory agent call, no duplicate memory, CLI offline without model |
-| E2E-UPS-11 | Vypnout Laya, RAG, inference nebo backend; zkusit malicious approved metadata/command, root from another clone | deterministic useful partial with warnings; auth unaffected; no arbitrary execution or cross-root reads |
-| E2E-UPS-12 | Jednoduchý CSS task, komplexní billing change, task měnící intended business pravidlo, ruční změna mimo Hub | Cheap path, targeted rich context, intentional vs regression, external edit update without fake task |
-| E2E-UPS-13 | Dva machines offline oba prohlásí owner a startují execution | No fake cross-machine exclusivity; later detect competing attempts, no inherited lease, deterministic local safety |
-| E2E-UPS-14 | Public repo publishing dry-run obsahující PII, absolute paths, secret, training raw log, private session notes | Publication rejected/redacted as policy, no data leak; reviewed safe metadata portable |
+| ID | Scénář | Povinný výsledek | Stav acceptance (viz §40.4) |
+|---|---|---|---|
+| E2E-UPS-01 | Developer A bootstrap legacy fixture, vytvoří Process Card, intended rule, finding, task/plan; commit v test fixture. Developer B provede skutečný clone/pull bez bundle importu | B vidí stejné logical IDs, rules, pending tasks, decisions a findings; source locators resolve, žádné autoritativní staré local E-ID | NEHOTOVO |
+| E2E-UPS-02 | A upraví termín zaplacené objednávky, uloží safe checkpoint; B získá commit/patch a resume | B vytvoří nový attempt, scope revalidation, získá stejný business context, doplní testy; bez přenosu patch explicitně blocked | ČÁSTEČNĚ |
+| E2E-UPS-03 | A má green receipt na branch X, B checkout Y s relevantní změnou; unrelated edit jako kontrola | Relevantní receipt stale, historical visible; nelze forged fresh pass; unrelated change nepřegeneruje celý KB | ČÁSTEČNĚ |
+| E2E-UPS-04 | A/B offline mění disjoint records, pak stejnou invariant; delete-vs-edit a divergent task checkpoint | Disjoint merge bez zbytečných konfliktů, divergent explicit conflict, no silent overwrite, stale approval invalid | ČÁSTEČNĚ |
+| E2E-UPS-05 | Docs říkají A, kód B, člověk schválí intended A; agent navrhne opravu B -> A, test selže/pak projde | finding se neuzavře po editaci metadata, pouze po relevantním detector rerun + evidence; linked task, process, receipt, review a source snapshot | NEHOTOVO |
+| E2E-UPS-06 | Člověk označí výjimku expected, následně změní relevantní guard; změní také irelevantní CSS | Relevantní change reopen/revalidate, irelevantní change nezruší waiver; occurrence fingerprints rozlišují | ČÁSTEČNĚ |
+| E2E-UPS-07 | Branch/worktree switch uprostřed indexing, old job dokončí později; dirty docs a symlink attack | Fenced old publication, isolation, no old current claims, fail-closed paths | ČÁSTEČNĚ |
+| E2E-UPS-08 | Delete local derived DB, restart, rebuild; invalid shared JSON, schema mismatch, disk full při multi-record write | Shared facts/handoffs survive, transparent degraded/conflict, atomic recovery, žádná silent DB fallback authority | ČÁSTEČNĚ |
+| E2E-UPS-09 | Migration se starými memories/tasks/incidents/receipts pro dva repo roots a global/session secrets, crash v každé fázi | Dry-run report, exact scope, no private leaks, idempotency, recoverable cutover/rollback a stable mapping | ČÁSTEČNĚ |
+| E2E-UPS-10 | Člověk CZ otázkou otevře source, upraví intended, agent EN task získá delta, CI ověří stejná records | Same canonical truth; no extra mandatory agent call, no duplicate memory, CLI offline without model | ČÁSTEČNĚ |
+| E2E-UPS-11 | Vypnout Laya, RAG, inference nebo backend; zkusit malicious approved metadata/command, root from another clone | deterministic useful partial with warnings; auth unaffected; no arbitrary execution or cross-root reads | ČÁSTEČNĚ |
+| E2E-UPS-12 | Jednoduchý CSS task, komplexní billing change, task měnící intended business pravidlo, ruční změna mimo Hub | Cheap path, targeted rich context, intentional vs regression, external edit update without fake task | ČÁSTEČNĚ |
+| E2E-UPS-13 | Dva machines offline oba prohlásí owner a startují execution | No fake cross-machine exclusivity; later detect competing attempts, no inherited lease, deterministic local safety | NEHOTOVO |
+| E2E-UPS-14 | Public repo publishing dry-run obsahující PII, absolute paths, secret, training raw log, private session notes | Publication rejected/redacted as policy, no data leak; reviewed safe metadata portable | ČÁSTEČNĚ |
 
 ### 26.2 Release gates, quantitative quality a integration proof
 
@@ -1833,26 +1833,26 @@ Mapovat GIT položky na již existující KI/UPS ID, aby se neimplementovala jed
 
 Použít reálné Git repozitáře, nejméně dva independent clones s odlišnými local state dirs a autorizacemi, linked worktrees, skutečné soubory a relevantní HTTP/MCP/CLI paths; browser testy pro dashboard. Testy musí fungovat bez remote serveru a bez mandatory cloud model. Model-backed scenarios ověřit navíc na dostupném lokálním runtime, se skutečnými výsledky, nikoliv mocked latency claim.
 
-| ID | Scénář | Povinný výsledek |
-|---|---|---|
-| V4-E01 | Bootstrap shared, ordinary task, process extraction, new finding, verification | Všechny safe durable records jsou v working tree automaticky, bez ručního exportu; Git index/HEAD zůstaly beze změny |
-| V4-E02 | Commit/přenesení do jiného klonu bez původního state_dir | Projektová identita, tasky, plan links, memory, decisions, findings, evidence, relevant hints a safe handoff dostupné bez bundle/importu |
-| V4-E03 | Nový clone, missing patch/local artifact, shallow history | Přesně označené missing dependencies, žádný falešně ready resume, lokální permission znovu získána |
-| V4-E04 | Two independent offline developers edit same intended rule, disjoint rules a competing task attempts | No silent overwrite; disjoint merge, conflict review, same IDs, no cross-machine lock claim |
-| V4-E05 | Relevant source edit, unrelated source edit, human rule correction, same receipt committed | Correct affected stale set, unrelated no-op, receipt se neinvaliduje vlastním zápisem, intended zůstává intended |
-| V4-E06 | Rebuild/wipe projection, rename/delete source and records, rejected candidate | Ruční korekce/review přežijí; deleted record se neobnoví ze SQLite; rejected fingerprint se neopakuje bez změny |
-| V4-E07 | Git branch/worktree checkout během old asynchronous job, external IDE write, direct JSON edit | Snapshot fence, correct reload, no old state overwrite, unauthorized root inaccessible |
-| V4-E08 | Crash po částečném write setu a před DB projection, disk full/readonly | Recover/reload nebo explicit pending, žádný phantom success ani shadow DB authority |
-| V4-E09 | Legacy migration s repository, branch, task, global, session a secret records; interrupted migration | Eligible records portable, private data excluded, mapping stable, retry idempotent, no cross-root leak |
-| V4-E10 | Imported historic pass, stale waiver, forged approved/receipt JSON | No fabricated proof, no authority escalation, current validation based on evidence/policy; unrelated waiver preserved |
-| V4-E11 | Docs/code discrepancy, expected waiver, relevant change, agent fix | Same finding, review revalidation, linked task, actual detector rerun and tests before fixed |
-| V4-E12 | CSS-only task versus payment/order logic change | Compact cheap path versus evidence-backed business context, no mandatory new tool call, no critical omitted rule on fixture |
-| V4-E13 | Public/unknown visibility, malicious config/record, raw prompt/PII/credentials, ignored canonical file | No unsafe publication or exec grant, explicit blocked reason; doctor identifies unsynced state |
-| V4-E14 | KB question CZ/EN, intended edit by analyst, code update by agent, headless review by developer | Same IDs/truth across interfaces, relevant context delta, reproducible semantic diff and verification |
-| V4-E15 | No model, no Laya, RAG degraded, no network | Deterministic exact results where possible, honest partial/unknown, canonical records still accessible |
-| V4-E16 | Repeated no-op preprocessing, repeated identical finding, thousands of records | Stable bytes, dedup, bounded latency/size; no per-tick Git churn or global manifest hotspot |
-| V4-E17 | Repository trusted vs untrusted/fork/copy/nested repo, local owner change | Logical lineage separate from authorization; no import/execution by manifest alone |
-| V4-E18 | Shared curated evaluation fixture, private runtime training sample | Safe curated schema/labels accessible; private raw input and outputs absent from tracked files |
+| ID | Scénář | Povinný výsledek | Stav acceptance (viz §40.4) |
+|---|---|---|---|
+| V4-E01 | Bootstrap shared, ordinary task, process extraction, new finding, verification | Všechny safe durable records jsou v working tree automaticky, bez ručního exportu; Git index/HEAD zůstaly beze změny | NEHOTOVO |
+| V4-E02 | Commit/přenesení do jiného klonu bez původního state_dir | Projektová identita, tasky, plan links, memory, decisions, findings, evidence, relevant hints a safe handoff dostupné bez bundle/importu | ČÁSTEČNĚ |
+| V4-E03 | Nový clone, missing patch/local artifact, shallow history | Přesně označené missing dependencies, žádný falešně ready resume, lokální permission znovu získána | ČÁSTEČNĚ |
+| V4-E04 | Two independent offline developers edit same intended rule, disjoint rules a competing task attempts | No silent overwrite; disjoint merge, conflict review, same IDs, no cross-machine lock claim | ČÁSTEČNĚ |
+| V4-E05 | Relevant source edit, unrelated source edit, human rule correction, same receipt committed | Correct affected stale set, unrelated no-op, receipt se neinvaliduje vlastním zápisem, intended zůstává intended | ČÁSTEČNĚ |
+| V4-E06 | Rebuild/wipe projection, rename/delete source and records, rejected candidate | Ruční korekce/review přežijí; deleted record se neobnoví ze SQLite; rejected fingerprint se neopakuje bez změny | NEHOTOVO |
+| V4-E07 | Git branch/worktree checkout během old asynchronous job, external IDE write, direct JSON edit | Snapshot fence, correct reload, no old state overwrite, unauthorized root inaccessible | ČÁSTEČNĚ |
+| V4-E08 | Crash po částečném write setu a před DB projection, disk full/readonly | Recover/reload nebo explicit pending, žádný phantom success ani shadow DB authority | ČÁSTEČNĚ |
+| V4-E09 | Legacy migration s repository, branch, task, global, session a secret records; interrupted migration | Eligible records portable, private data excluded, mapping stable, retry idempotent, no cross-root leak | ČÁSTEČNĚ |
+| V4-E10 | Imported historic pass, stale waiver, forged approved/receipt JSON | No fabricated proof, no authority escalation, current validation based on evidence/policy; unrelated waiver preserved | ČÁSTEČNĚ |
+| V4-E11 | Docs/code discrepancy, expected waiver, relevant change, agent fix | Same finding, review revalidation, linked task, actual detector rerun and tests before fixed | ČÁSTEČNĚ |
+| V4-E12 | CSS-only task versus payment/order logic change | Compact cheap path versus evidence-backed business context, no mandatory new tool call, no critical omitted rule on fixture | ČÁSTEČNĚ |
+| V4-E13 | Public/unknown visibility, malicious config/record, raw prompt/PII/credentials, ignored canonical file | No unsafe publication or exec grant, explicit blocked reason; doctor identifies unsynced state | ČÁSTEČNĚ |
+| V4-E14 | KB question CZ/EN, intended edit by analyst, code update by agent, headless review by developer | Same IDs/truth across interfaces, relevant context delta, reproducible semantic diff and verification | ČÁSTEČNĚ |
+| V4-E15 | No model, no Laya, RAG degraded, no network | Deterministic exact results where possible, honest partial/unknown, canonical records still accessible | ČÁSTEČNĚ |
+| V4-E16 | Repeated no-op preprocessing, repeated identical finding, thousands of records | Stable bytes, dedup, bounded latency/size; no per-tick Git churn or global manifest hotspot | NEHOTOVO |
+| V4-E17 | Repository trusted vs untrusted/fork/copy/nested repo, local owner change | Logical lineage separate from authorization; no import/execution by manifest alone | ČÁSTEČNĚ |
+| V4-E18 | Shared curated evaluation fixture, private runtime training sample | Safe curated schema/labels accessible; private raw input and outputs absent from tracked files | NEHOTOVO |
 
 ### 38.2 Mandatory release evidence
 
@@ -1995,3 +1995,11 @@ Toto není vyčerpávající inventář polí/tabulek. Před cutover ověřit v�
 3. P0: canonical task contract + scope mapping + restartable migration, no dual owner; dva klony a rollback. Poté memory/incident/decision/question/work/receipt coverage.
 4. P0: odstranit bounded inventory false negatives, explicit partial/stale flags, watcher/recovery and safe publication policy. Ověřit large fixture a no-op.
 5. P1/P2: semantic query/chat, process extraction, verification mapping to actual Agent OS receipts, complete human lifecycle; typed Laya and measured provider acceptance. Všechny původní ID zůstávají závazné.
+
+### 40.6 Změny po referenčním auditu (2026-11-25)
+
+- KI-005/006/012, UPS-003, GIT-008/014: [85e4386](https://github.com/Harfusha/local-ai-hub/commit/85e4386b67bf1f9fdb59cd549cbb120a2590e1a2), [998a8d3](https://github.com/Harfusha/local-ai-hub/commit/998a8d35dc7f4a1108ad6e286a3f3ffa9470a789). Bounded catalog zachová načtené records při limitu, označí inventory_limit, partial/omitted context vyžaduje revalidation; recheck manifestu a vybraných record revisions po ověření zdrojů. Testy oversize a concurrent edit. Kompletní index/projection a watcher nadále chybí.
+- KI-003/110, UPS-003/017: [375ce0a](https://github.com/Harfusha/local-ai-hub/commit/375ce0af618a5294e27a5ee05b2c80a6102803e0), [9029a24](https://github.com/Harfusha/local-ai-hub/commit/9029a24bff6d188876fec42117e538a48fc5b0d5), [737572e](https://github.com/Harfusha/local-ai-hub/commit/737572ef62ccc4829a3c525fa9328e61aedaea7b), [1cca92c](https://github.com/Harfusha/local-ai-hub/commit/1cca92c0ba87abb265a5516f540812196d474bfa), [51380d0](https://github.com/Harfusha/local-ai-hub/commit/51380d01ffb66e5079fc433d9e6ff1cbd4be2024), [2253bf3](https://github.com/Harfusha/local-ai-hub/commit/2253bf314a82303c7e10fdacddd5b3fc6a833903). Additive idempotent migration centrality_score v derived preprocess SQLite inventáři; zachová rows a existing scores. Čtyři ručně konstruované staré test schemas sjednoceny s novým queue kontraktem; žádný test odstraněn. Dedicated migration test. Nelze zatím tvrdit, že všechny související full-suite failures zmizely.
+- KI-011/012/107/112, UPS-013, GIT-008/013: [fc837eb](https://github.com/Harfusha/local-ai-hub/commit/fc837eb40aee9d33d81244b132e40e873c7ec276), [b1de487](https://github.com/Harfusha/local-ai-hub/commit/b1de487d2769f5d34738c10ef85b8a651c2773fa), [32b29fc](https://github.com/Harfusha/local-ai-hub/commit/32b29fcf69e403d5e7401437d8631c2474f7d31d), [3dacfcce](https://github.com/Harfusha/local-ai-hub/commit/3dacfcce0285fed51fe15e37794e91e04cc07410). Graph quality findings mají identity jednotlivých dependency edges a subject digest zahrnující aktuální target revision. Truncation >128 graph issues explicitně invaliduje úplnost katalogu. Staré generic dependency finding IDs nejsou automaticky přenášeny na nové per-edge finding IDs; stará review zůstávají v Git, vyžaduje se nové posouzení. Test ověřuje nezávislé findings a změnu digestu při dalším target edit.
+
+Implementační HEAD pro tento doplněk: `3dacfcce0285fed51fe15e37794e91e04cc07410`. Změny jsou commitnuté, ale nový CI výsledek není ověřený. Stav backlogových ID z §40.1 zůstává konzervativně beze změny; ani nový kód nepředstavuje kompletní akceptaci. Release BLOCKED do doložení výsledků a uzavření zbývajících kontraktů.
