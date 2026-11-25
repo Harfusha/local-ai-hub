@@ -234,7 +234,11 @@ $('projectKnowledgeHandoffs')?.addEventListener('click',async()=>{
           const candidate=await post('/api/repo/knowledge/manage',request);
           if(!current())return;
           if(candidate?.success!==true)throw new Error(candidate?.error||'Handoff preview unavailable');
-          details.textContent=JSON.stringify({contract:candidate.contract,historical_verification:candidate.historical_verification,requires_revalidation:true},null,2);
+          details.textContent=JSON.stringify({contract:candidate.contract,historical_verification:candidate.historical_verification,dependencies:candidate.dependencies,requires_revalidation:true},null,2);
+          if(candidate.resume_allowed!==true){
+            details.textContent+='\nResume blocked: restore the recorded affected files or republish the handoff from its original checkout.';
+            return;
+          }
           const create=document.createElement('button');create.type='button';create.className='btn primary';create.dataset.handoffCreate='true';create.textContent='Create reviewed new task';card.appendChild(create);
           const taskId='task_'+crypto.randomUUID().replace(/-/g,'').slice(0,20);
           create.addEventListener('click',async()=>{
@@ -243,7 +247,7 @@ $('projectKnowledgeHandoffs')?.addEventListener('click',async()=>{
             try{
               const checked=await post('/api/repo/knowledge/manage',request);
               if(!current())return;
-              if(checked?.success!==true||checked.preview_digest!==candidate.preview_digest||JSON.stringify(checked.contract)!==JSON.stringify(candidate.contract))throw new Error('Handoff changed; refresh before resuming');
+              if(checked?.success!==true||checked.resume_allowed!==true||checked.preview_digest!==candidate.preview_digest||JSON.stringify(checked.contract)!==JSON.stringify(candidate.contract))throw new Error('Handoff or dependencies changed; refresh before resuming');
               const created=await post('/api/agent-state/tasks',{action:'create',root,task_id:taskId,contract:checked.contract});
               if(!current())return;
               if(created?.success!==true||!created.task)throw new Error(created?.error||'Task creation not confirmed');
