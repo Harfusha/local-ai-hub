@@ -82,6 +82,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertTrue(stopped, detail)
         self.assertEqual(captured["env"]["LOCAL_AI_CONFIG"], str(self.install / "config.toml"))
         self.assertEqual(captured["env"]["F31_KEEP"], "keep-me")
+        self.assertEqual(captured["timeout"], 45)
 
     def test_stop_requires_regular_installed_config(self) -> None:
         python = self.install / ".venv" / "python.exe"
