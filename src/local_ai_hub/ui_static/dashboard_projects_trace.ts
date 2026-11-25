@@ -224,7 +224,7 @@ $('projectKnowledgeHandoffs')?.addEventListener('click',async()=>{
     for(const item of items){
       const card=document.createElement('section');card.className='section';
       const title=document.createElement('h3');title.textContent=String(item.goal||item.id);card.appendChild(title);
-      const meta=document.createElement('p');meta.className='tiny muted';meta.textContent=String(item.historical_status)+' · requires current revalidation';card.appendChild(meta);
+      const meta=document.createElement('p');meta.className='tiny muted';meta.textContent=String(item.historical_status)+' · origin '+String(item.origin_task_id||item.id)+(item.previous_attempt?.attempt_id?' · previous attempt '+String(item.previous_attempt.attempt_id):'')+' · requires current revalidation';card.appendChild(meta);
       const preview=document.createElement('button');preview.type='button';preview.className='btn';preview.textContent='Preview new task';card.appendChild(preview);
       const details=document.createElement('pre');details.className='human-pre';card.appendChild(details);
       preview.addEventListener('click',async()=>{
@@ -234,7 +234,7 @@ $('projectKnowledgeHandoffs')?.addEventListener('click',async()=>{
           const candidate=await post('/api/repo/knowledge/manage',request);
           if(!current())return;
           if(candidate?.success!==true)throw new Error(candidate?.error||'Handoff preview unavailable');
-          details.textContent=JSON.stringify({contract:candidate.contract,historical_verification:candidate.historical_verification,dependencies:candidate.dependencies,requires_revalidation:true},null,2);
+          details.textContent=JSON.stringify({origin_task_id:candidate.origin_task_id,previous_attempt:candidate.previous_attempt,contract:candidate.contract,historical_verification:candidate.historical_verification,dependencies:candidate.dependencies,requires_revalidation:true},null,2);
           if(candidate.resume_allowed!==true){
             details.textContent+='\nResume blocked: restore the recorded affected files or republish the handoff from its original checkout.';
             return;
