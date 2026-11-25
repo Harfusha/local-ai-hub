@@ -164,12 +164,33 @@ $('projectKnowledgeAudit')?.addEventListener('click',async()=>{
       const review=document.createElement('pre');review.className='human-pre';card.appendChild(review);
       preview.addEventListener('click',()=>previewKnowledgeWrite(card,review,preview,{action:'preview_review',finding_id:finding.id,subject_digest:finding.subject_digest,decision:choice.value,note:note.value},'save_review'));
       remediation.addEventListener('click',async()=>{
+        remediation.disabled=true;
+        card.querySelector('[data-knowledge-create-task]')?.remove();
         try{
-          const result=await post('/api/repo/knowledge/manage',{root,action:'preview_remediation',finding_id:finding.id,subject_digest:finding.subject_digest});
+          const request={root,action:'preview_remediation',finding_id:finding.id,subject_digest:finding.subject_digest};
+          const result=await post('/api/repo/knowledge/manage',request);
           if(generation!==projectKnowledgeGeneration)return;
           if(result?.success!==true)throw new Error(result?.error||'Remediation unavailable');
-          review.textContent=JSON.stringify(result.contract,null,2)+'\nCreate the reviewed task through existing Agent OS or hubctl knowledge remediate.';
+          review.textContent=JSON.stringify(result.contract,null,2);
+          const create=document.createElement('button');create.type='button';create.className='btn primary';create.dataset.knowledgeCreateTask='true';create.textContent='Create reviewed Agent OS task';card.appendChild(create);
+          const taskId='task_'+crypto.randomUUID().replace(/-/g,'').slice(0,20);
+          create.addEventListener('click',async()=>{
+            if(generation!==projectKnowledgeGeneration||$('projectKnowledgeRoot')?.value!==root)return;
+            create.disabled=true;remediation.disabled=true;
+            try{
+              const current=await post('/api/repo/knowledge/manage',request);
+              if(generation!==projectKnowledgeGeneration||$('projectKnowledgeRoot')?.value!==root)return;
+              if(current?.success!==true||JSON.stringify(current.contract)!==JSON.stringify(result.contract))throw new Error('Finding changed; refresh and preview again');
+              const created=await post('/api/agent-state/tasks',{action:'create',root,task_id:taskId,contract:current.contract});
+              if(generation!==projectKnowledgeGeneration)return;
+              if(created?.success!==true||!created.task)throw new Error(created?.error||'Task creation not confirmed');
+              review.textContent='Created Agent OS task '+String(created.task.task_id||taskId)+'. It is not executed or completed.';
+            }catch(error){
+              if(generation===projectKnowledgeGeneration)review.textContent=String(error?.message||error)+' · Inspect Agent OS for task '+taskId+' before retry.';
+            }finally{if(generation===projectKnowledgeGeneration)remediation.disabled=false}
+          });
         }catch(error){if(generation===projectKnowledgeGeneration)review.textContent=String(error?.message||error)}
+        finally{if(generation===projectKnowledgeGeneration)remediation.disabled=false}
       });
       output?.appendChild(card);
     }

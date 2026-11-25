@@ -102,7 +102,7 @@ def candidate_from_file_card(
     if not statements:
         return None
     manifest, _ = store.manifest()
-    record = {
+    record: dict[str, Any] = {
         "schema_version": 1, "project_id": manifest["project_id"], "kind": "observation",
         "id": "auto-" + _digest_value([_GENERATOR, path])[:24],
         "payload": {
