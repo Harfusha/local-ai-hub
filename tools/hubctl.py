@@ -272,6 +272,8 @@ def main() -> int:
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
     parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
+    parser.add_argument("--base", default="", help="Base Git commit/ref for committed knowledge diff")
+    parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
     parser.add_argument("--changed-path", action="append", default=[], help="Repository-relative path for knowledge impact (repeatable)")
     parser.add_argument("--finding-id", default="", help="Knowledge quality finding ID")
     parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
@@ -292,8 +294,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list or handoff-preflight")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight or diff")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -346,6 +348,14 @@ def main() -> int:
 
         try:
             store = RepoKnowledgeStore(args.root)
+            if args.sub_arg == "diff":
+                from local_ai_hub.repo_knowledge_sync import compare_knowledge_revisions
+
+                if args.apply or not args.base:
+                    parser.error("knowledge diff is read-only and requires --base")
+                result = compare_knowledge_revisions(store.root, args.base, args.head)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] else 1
             if args.sub_arg == "sync-status":
                 from local_ai_hub.repo_knowledge_sync import checkout_sync_status
 
