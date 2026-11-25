@@ -314,7 +314,7 @@ can satisfy the existing verification gate.
 python tools/hubctl.py knowledge handoff-export --root /path/to/project --task-id task_123
 python tools/hubctl.py knowledge handoff-export --root /path/to/project --task-id task_123 --expected-revision "" --preview-digest PREVIEW_DIGEST --apply
 python tools/hubctl.py knowledge handoff-resume --root /path/to/clone --handoff-id HANDOFF_ID
-python tools/hubctl.py knowledge handoff-resume --root /path/to/clone --handoff-id HANDOFF_ID --expected-revision REVIEWED_DIGEST --task-id task_new --apply
+python tools/hubctl.py knowledge handoff-resume --root /path/to/clone --handoff-id HANDOFF_ID --expected-revision REVIEWED_DIGEST --preview-digest PREVIEW_DIGEST --task-id task_new --apply
 ```
 
 Publication binds the reviewed manifest revision, previous file revision and
@@ -325,6 +325,31 @@ requires current revalidation. Handoffs are excluded from generic knowledge
 retrieval and require explicit selection. Custom SLO profiles and non-task
 scopes are rejected pending a lossless migration contract. Git still owns
 reviewed portable handoff history, not live execution coordination.
+
+Exports now capture exact SHA-256 fingerprints of declared affected paths that
+are tracked, unconflicted regular files within the selected checkout, including
+dirty working-tree bytes. Missing, untracked, private, unsafe or oversized
+files are recorded as unavailable. A legacy handoff with nonempty affected
+paths but no fingerprints requires republication. Resume preview and the
+server-side task create precondition block mismatching or unavailable declared
+paths; restore the relevant changes or republish the handoff. Empty affected
+paths permit a fresh planned task, but do not establish complete dependency
+coverage. No patch bytes or raw file content are copied, and equality of these
+fingerprints is not proof of full patch coverage, execution or verification.
+
+### Agent OS storage inventory (offline migration prerequisite)
+
+With the Hub stopped or a clean offline state backup configured, run
+`python tools/hubctl.py agent-state storage-inventory --config /path/to/config.toml`.
+This inspects only the schema of the configured `agent_state.sqlite`, not
+row values, and returns the actual observed tables and fields, source owner,
+consumers, and proposed migration classifications (G+L, C, L or R).
+Unclassified/missing fields and unknown tables make the inventory incomplete.
+The command refuses existing SQLite journal/WAL/SHM sidecars instead of
+silently ignoring pending data. It creates no database, exports no rows,
+and never activates Git authority. Other databases, file stores, nested
+JSON field projection, authorization and migration/recovery parity remain
+separate required acceptance work.
 
 Structured process declarations may optionally include `payload.flow` with
 an entry step, a list of uniquely identified action/decision/terminal/external
