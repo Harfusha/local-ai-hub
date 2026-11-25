@@ -184,6 +184,16 @@ def _iter_release_hygiene_violations(
                 continue
             if path.is_file() and path.name.startswith(".coverage"):
                 continue
+        # The tracked Codex marketplace descriptor is source, not an installed
+        # agent workspace. Allow only its exact real directory/file hierarchy.
+        if rel in {".agents", ".agents/plugins", ".agents/plugins/marketplace.json"}:
+            expected_file = rel.endswith(".json")
+            if (not path.is_symlink() and not getattr(path, "is_junction", lambda: False)()
+                    and (path.is_file() if expected_file else path.is_dir())):
+                continue
+        if parts and parts[0] == ".agents" and len(parts) > 1:
+            yield f"forbidden agent workspace payload: {rel}"
+            continue
         if parts and parts[0] in _TOP_LEVEL_FORBIDDEN_DIRS:
             if len(parts) == 1:
                 yield f"forbidden directory: {rel}/"

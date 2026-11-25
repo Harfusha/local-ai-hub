@@ -40,7 +40,11 @@ def _invalid() -> RepoPlanValidationError:
 
 
 def _identifier(value: Any) -> bool:
-    return isinstance(value, str) and _ID.fullmatch(value) is not None and not value.endswith(".")
+    return (
+        isinstance(value, str) and _ID.fullmatch(value) is not None
+        and not value.endswith(".")
+        and value.split(".", 1)[0] not in {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+    )
 
 
 def _project_id(value: Any) -> bool:

@@ -82,3 +82,15 @@ def test_allow_installed_preserves_local_merge_check_fixtures(tmp_path):
 def test_strict_release_tree_cannot_allow_workspace_payloads(tmp_path, options):
     with pytest.raises(ValueError, match="strict_tree cannot allow"):
         list(_iter_release_hygiene_violations(tmp_path, strict_tree=True, **options))
+
+
+def test_tracked_marketplace_descriptor_allowed_but_local_agent_payload_rejected(tmp_path):
+    descriptor = tmp_path / ".agents" / "plugins" / "marketplace.json"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_text("{}", encoding="utf-8")
+    assert list(_iter_release_hygiene_violations(tmp_path, strict_tree=True)) == []
+    extra = descriptor.parent / "local-cache.json"
+    extra.write_text("{}", encoding="utf-8")
+    assert list(_iter_release_hygiene_violations(tmp_path, strict_tree=True)) == [
+        "forbidden agent workspace payload: .agents/plugins/local-cache.json"
+    ]
