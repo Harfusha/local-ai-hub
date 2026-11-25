@@ -350,6 +350,40 @@ def preview_handoff_resume(store: RepoKnowledgeStore, handoff_id: str) -> dict[s
     }
 
 
+def validate_resume_creation(payload: Mapping[str, Any]) -> None:
+    """Recheck reviewed handoff at the existing scoped task-create boundary.
+
+    Root and repository identity have already been bound by the HTTP task
+    route. This check is a freshness precondition, never execution authority.
+    """
+    selection = payload.get("handoff_resume")
+    if (
+        not isinstance(selection, Mapping)
+        or set(selection) != {"handoff_id", "revision", "preview_digest"}
+        or not _identifier(selection["handoff_id"])
+        or any(not isinstance(selection[key], str) or not re.fullmatch(r"[0-9a-f]{64}", selection[key])
+               for key in ("revision", "preview_digest"))
+        or not _identifier(payload.get("task_id"))
+        or payload.get("auto_worktree", False) is not False
+        or not isinstance(payload.get("repo_root"), str)
+        or not payload["repo_root"]
+        or payload.get("root") != payload["repo_root"]
+    ):
+        raise _reject("Invalid scoped handoff creation")
+    store = RepoKnowledgeStore(payload["repo_root"])
+    checked = preview_handoff_resume(store, selection["handoff_id"])
+    if (
+        checked["resume_allowed"] is not True
+        or checked["revision"] != selection["revision"]
+        or checked["preview_digest"] != selection["preview_digest"]
+        or payload.get("contract") != checked["contract"]
+    ):
+        raise _reject("Handoff or dependencies changed; preview again")
+    item = store.get("handoff", selection["handoff_id"], verify_sources=False)
+    if item["revision"] != checked["revision"] or item["record"]["payload"]["origin_task_id"] == payload["task_id"]:
+        raise _reject("Handoff must create a new local task identity")
+
+
 def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[str, Any]:
     """Discover shared handoffs in this checkout without importing task state."""
     from itertools import islice
