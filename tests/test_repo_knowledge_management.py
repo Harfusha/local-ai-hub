@@ -183,3 +183,101 @@ def test_portable_handoff_receipt_summary_never_grants_current_verification(tmp_
             attach_historical_verification(record, task, [bad])
     with pytest.raises(RepoPlanValidationError):
         attach_historical_verification(record, task, [])
+
+
+def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path):
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from local_ai_hub.repo_task_handoff import attach_source_dependencies, build_task_handoff, inspect_handoff_dependencies
+    from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
+
+    if shutil.which("git") is None:
+        pytest.skip("Git unavailable")
+
+    def git(root, *args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True,
+                              capture_output=True, timeout=15).stdout
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git(origin, "init")
+    git(origin, "config", "user.name", "Fixture")
+    git(origin, "config", "user.email", "fixture@example.invalid")
+    (origin / ".local-ai-hub").mkdir()
+    (origin / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "mode": "shared",
+    }), encoding="utf-8")
+    (origin / ".local-ai-hub/.gitignore").write_text("local/\n", encoding="utf-8")
+    (origin / "order.py").write_bytes(b"paid = False\n")
+    git(origin, "add", ".")
+    git(origin, "commit", "-m", "base")
+    (origin / "order.py").write_bytes(b"paid = True\n")
+    before = git(origin, "status", "--porcelain")
+    store = RepoKnowledgeStore(origin)
+    task = {"task_id": "task-1", "repo_root": str(origin), "status": "blocked",
+            "contract": {"goal": "Fix order"}, "checkpoint": {"affected_paths": ["order.py"]}}
+    legacy = build_task_handoff(store, task)
+    assert inspect_handoff_dependencies(store, legacy)["resume_allowed"] is False
+    record = attach_source_dependencies(store, legacy)
+    assert inspect_handoff_dependencies(store, record)["resume_allowed"] is True
+    assert before == git(origin, "status", "--porcelain")
+    store.save(record, expected_revision="", owner="operator",
+               idempotency_key="handoff", authorize_write=lambda: True)
+    git(origin, "add", ".local-ai-hub/agent-os/handoffs")
+    git(origin, "commit", "-m", "handoff only")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", str(origin), str(clone))
+    copy = RepoKnowledgeStore(clone)
+    item = copy.get("handoff", record["id"], verify_sources=False)
+    request = {"root": str(clone), "action": "preview_handoff_resume",
+               "handoff_id": record["id"], "expected_revision": item["revision"]}
+    blocked = manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)
+    assert blocked["success"] is True
+    assert blocked["resume_allowed"] is False
+    assert blocked["dependencies"]["paths"][0]["status"] == "different"
+    assert blocked["dependencies"]["runtime_verified"] is False
+    (clone / "order.py").write_bytes(b"paid = True\n")
+    allowed = manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)
+    assert allowed["resume_allowed"] is True
+    assert allowed["preview_digest"] != blocked["preview_digest"]
+    assert allowed["dependencies"]["coverage"] == "declared_affected_paths_only"
+    (clone / "order.py").unlink()
+    assert manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)["resume_allowed"] is False
+    assert not (clone / ".local-ai-hub/local").exists()
+    assert "paid = True" not in str(record)
+    bad = {**record, "payload": {**record["payload"], "source_dependencies": []}}
+    with pytest.raises(RepoPlanValidationError):
+        inspect_handoff_dependencies(store, bad)
+
+
+def test_handoff_untracked_private_and_unsafe_dependency_is_not_hashed(tmp_path):
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from local_ai_hub.repo_task_handoff import attach_source_dependencies, build_task_handoff, inspect_handoff_dependencies
+
+    if shutil.which("git") is None:
+        pytest.skip("Git unavailable")
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True, timeout=15)
+    (root / ".local-ai-hub").mkdir()
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "mode": "shared",
+    }), encoding="utf-8")
+    (root / "untracked.py").write_bytes(b"data")
+    (root / ".env").write_bytes(b"example")
+    subprocess.run(["git", "-C", str(root), "add", ".env"], check=True, capture_output=True, timeout=15)
+    store = RepoKnowledgeStore(root)
+    task = {"task_id": "task-private", "repo_root": str(root), "status": "planned",
+            "contract": {"goal": "Review source"}, "checkpoint": {"affected_paths": ["untracked.py", ".env"]}}
+    record = attach_source_dependencies(store, build_task_handoff(store, task))
+    assert record["payload"]["source_dependencies"] == [
+        {"path": ".env", "content_digest": ""}, {"path": "untracked.py", "content_digest": ""},
+    ]
+    assert inspect_handoff_dependencies(store, record)["resume_allowed"] is False
