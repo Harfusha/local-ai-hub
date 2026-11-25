@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.2.0 — 2026-11-25
+
+- [Changes in v8.2.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.2.0)
+- Complete stabilization, verification, and end-to-end audit remediation (LAH-001–LAH-048, A01–A21, NEW-001–NEW-003).
+- Unified resource arbiter for VRAM, scheduler, background GPU, and prompt cache with a 12 GB VRAM cap.
+- Intelligent context planner and token economy with deterministic tool-first symbol routing.
+- Incremental AST dependency preprocessing with PHP/CakePHP, Python, TypeScript, and JavaScript support.
+- Fully offline-first Model Registry and calibrated Laya decision cycle (7 decision actions).
+- Expanded strict typing to 24 core modules and pinned TypeScript 5.7.2 dashboard.
+- Zero-drift API surface with 677 operations and proactive host lifecycle hooks.
+- Regenerate shared repository skill deterministically and reconcile provider bundles during installation.
+- Fix circuit breaker fallback in background preprocessing cards.
+
 ## 8.1.0 — 2026-11-24
 
 - [Changes in v8.1.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.1.0)

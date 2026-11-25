@@ -17,7 +17,7 @@ class TelemetryQueryMixin:
         with closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT id,created_at,event_type,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
-                          avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint
+                          avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint,route
                    FROM events ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return [
@@ -27,6 +27,7 @@ class TelemetryQueryMixin:
                 "input_tokens": r[10], "cache_read_tokens": r[11], "output_tokens": r[12], "net_cloud_token_delta_est": r[13], "duration_ms": r[14],
                 "queue_wait_ms": r[15], "wait_count": r[16], "wait_duration_ms": r[17], "success": bool(r[18]), "status_code": r[19], "cache_layer": r[20],
                 "fallback_used": bool(r[21]), "degraded": bool(r[22]), "error_type": r[23], "error_fingerprint": r[24],
+                "route": r[25],
             }
             for r in rows
         ]
@@ -140,7 +141,7 @@ class TelemetryQueryMixin:
             cursor = None
         with closing(self._connect()) as con:
             sql = """SELECT id, created_at, event_type, agent, action, duration_ms, success,
-                          avoided_cloud_tokens, error_type
+                          avoided_cloud_tokens, error_type, route, stage, status_code
                    FROM events"""
             values: tuple[Any, ...] = ()
             if cursor is not None:
@@ -163,6 +164,9 @@ class TelemetryQueryMixin:
                 "success": bool(row[6]),
                 "net_tokens_saved": int(row[7] or 0),
                 "error_type": str(row[8] or ""),
+                "route": str(row[9] or ""),
+                "stage": str(row[10] or ""),
+                "status_code": int(row[11] or 0),
             }
             for row in page_rows
         ]

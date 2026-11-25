@@ -393,7 +393,7 @@ def test_exclusive_enriches_stub_without_removing_it_on_model_failure(tmp_path, 
 
 @pytest.mark.parametrize(
     "schema_fallback",
-    [None, "deferred", "preempted", "cached", "model-fallback", "disabled", "outcome-unknown", "truncated", "bounded"],
+    [None, "deferred", "preempted", "cached", "model-fallback", "model-circuit-open", "backend-repeat-limit", "disabled", "outcome-unknown", "truncated", "bounded"],
 )
 def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path, schema_fallback, monkeypatch):
     root = tmp_path / "project"
@@ -452,6 +452,29 @@ def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path, sc
                 if schema_fallback == "model-fallback":
                     if args[0] == "configured-model":
                         return {"success": False, "model": "schema-model", "error_code": "invalid_preprocess_json"}
+                    assert args[0] == "fast-model"
+                    return successful("fast-model")
+                if schema_fallback == "model-circuit-open":
+                    if args[0] == "configured-model":
+                        return {"success": False, "model": "configured-model", "error_code": "invalid_preprocess_json"}
+                    if args[0] == "schema-model":
+                        raise _RetryablePreprocessingError(
+                            "preprocessing model circuit is open: schema-model",
+                            retry_after_seconds=60,
+                            error_code="model_circuit_open",
+                        )
+                    assert args[0] == "fast-model"
+                    return successful("fast-model")
+                if schema_fallback == "backend-repeat-limit":
+                    if args[0] == "configured-model":
+                        return {"success": False, "model": "configured-model", "error_code": "invalid_preprocess_json"}
+                    if args[0] == "schema-model":
+                        return {
+                            "success": False,
+                            "model": "schema-model",
+                            "error": "HTTP 500: prediction aborted, token repeat limit reached",
+                            "retryable": True,
+                        }
                     assert args[0] == "fast-model"
                     return successful("fast-model")
                 if args[0] == "configured-model":
@@ -535,9 +558,14 @@ def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path, sc
                     "SELECT c.model FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key WHERE f.path='copy.md'"
                 ).fetchone()[0] == "configured-model"
             return
-        if schema_fallback == "model-fallback":
+        if schema_fallback in {"model-fallback", "model-circuit-open", "backend-repeat-limit"}:
             assert prep._step_file_card({"root": str(root), "phase": "files"}) is True
-            assert [call[0] for call in fallback_calls] == ["configured-model", "fast-model"]
+            expected = (
+                ["configured-model", "schema-model", "fast-model"]
+                if schema_fallback in {"model-circuit-open", "backend-repeat-limit"}
+                else ["configured-model", "fast-model"]
+            )
+            assert [call[0] for call in fallback_calls] == expected
             with closing(prep._connect()) as con:
                 row = con.execute(
                     "SELECT c.model FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key WHERE f.root=?",
@@ -1606,8 +1634,12 @@ def test_retryable_background_scheduler_rejection_yields_without_failing():
     else:
         raise AssertionError("terminal GPU admission must remain fail closed")
 
-    timed_out = make_preprocessor(TimeoutError())._run_background_generate(
-        "configured-model", "prompt", "system", {}, 32, "preprocess:file-card"
+
+def test_retryable_preprocessing_error_keeps_structured_error_code():
+    error = _RetryablePreprocessingError(
+        "GPU admission is unavailable", error_code="gpu_reserved",
     )
-    assert timed_out["preempted"] is True
-    assert timed_out["retry_after_seconds"] == 60
+
+    assert str(error) == "GPU admission is unavailable"
+    assert error.error_code == "gpu_reserved"
+    assert error.retryable is True

@@ -332,10 +332,16 @@ class PreprocessSchedulerMixin:
         if phase not in {"inventory", "files", "modules", "project", "hot_queries", "rag", "complete"}:
             phase = "step"
         try:
+            error_code = getattr(error, "error_code", "")
+            error_code_fields = (
+                {"error_code_override": error_code}
+                if isinstance(error_code, str) and error_code else {}
+            )
             self.telemetry.record_error(
                 "preprocess", phase, error,
                 retryable=getattr(error, "retryable", True) is not False,
                 recovered=False,
+                **error_code_fields,
             )
         except Exception as telemetry_exc:
             # Metadata only: no exception message, repository path or payload.

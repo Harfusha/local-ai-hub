@@ -117,7 +117,9 @@ class ServiceCoordinationMixin:
         task_store = getattr(self, "task_store", None)
         if "active_tasks" in selected and task_store is not None:
             active_items = []
-            for task in task_store.list_tasks(status=None, limit=100).tasks:
+            raw_batch = task_store.list_tasks(status=None, limit=100)
+            task_list = getattr(raw_batch, "tasks", raw_batch) if not isinstance(raw_batch, list) else raw_batch
+            for task in task_list:
                 if _task_scope_root(task) != str(ws.repo_root):
                     continue
                 if task.status.value not in {"planned", "active", "waiting", "verifying"}:

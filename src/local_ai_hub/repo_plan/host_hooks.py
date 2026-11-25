@@ -17,6 +17,8 @@ import os
 import re
 import shlex
 import sys
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +38,13 @@ HOSTS = {"codex": (".codex/hooks.json", "UserPromptSubmit", "PreToolUse"),
 HOOK_ONLY_HOSTS = {"opencode"}
 SUPERPOWERS_VERSION = "7.0.1"
 MAX_JSON_BYTES = 131072
+REPO_SOURCE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hh", ".hpp", ".java",
+    ".hcl", ".html", ".js", ".jsx", ".json", ".jsonc", ".kt", ".mjs",
+    ".cjs", ".php", ".py", ".pyi", ".rb", ".rs", ".sh", ".sql",
+    ".swift", ".ts", ".tsx", ".toml", ".vue", ".ps1", ".yaml", ".yml",
+    ".xml", ".css", ".scss", ".proto", ".tf", ".cmake",
+}
 
 
 def bounded_text(value: Any, name: str, limit: int, *, allow_empty: bool = False) -> str:
@@ -494,9 +503,66 @@ def _trigger_repo_warmup(root: Path) -> None:
         pass
 
 
+def _is_hub_online() -> bool:
+    """Use Hub-first navigation only while the local HTTP API is responsive."""
+    try:
+        request = urllib.request.Request(
+            "http://127.0.0.1:11435/health",
+            headers={"Accept": "application/json", "User-Agent": "HostHook"},
+        )
+        with urllib.request.urlopen(request, timeout=0.15) as response:
+            return 200 <= response.status < 300
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+        return False
+
+
+def _is_repository_source_path(path: Path) -> bool:
+    return path.suffix.lower() in REPO_SOURCE_SUFFIXES
+
+
+def _hub_navigation_denial(action: str) -> dict[str, str]:
+    if action == "read":
+        reason = (
+            "Local AI Hub is online. Locate source with local_ai_repo(action='search' or 'code_index'), "
+            "then fetch an exact bounded file slice with local_ai_artifact(action='source')."
+        )
+    else:
+        reason = (
+            "Local AI Hub is online. Route repository searches through "
+            "local_ai_repo(action='search' or 'code_index') for indexed, bounded evidence."
+        )
+    return {"decision": "deny", "reason": reason}
+
+
 def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     name = (tool_name or "").lower().strip()
     cmd = str(args.get("command") or args.get("CommandLine") or "").strip()
+
+    hub_online = _is_hub_online()
+
+    # Keep repository discovery on indexed Hub evidence while its API is ready.
+    # Offline behavior remains available so the hook cannot strand the agent.
+    if hub_online and cmd and re.search(
+        r"\b(?:rg|ripgrep|grep|findstr|find|fd|fdfind|Select-String|sls|git\s+(?:grep|ls-files))\b",
+        cmd,
+        re.IGNORECASE,
+    ):
+        if not re.search(r"\s(?:--help|--version|-[hV])(?:\s|$)", cmd, re.IGNORECASE):
+            return _hub_navigation_denial("search")
+    if hub_online and cmd and re.search(
+        r"\b(?:Get-ChildItem|gci)\b.*(?:-Recurse|-r)\b|\bdir\b.*(?:\/s|-Recurse)\b",
+        cmd,
+        re.IGNORECASE,
+    ):
+        return _hub_navigation_denial("search")
+
+    # Avoid shell aliases for direct source reads while preserving ordinary
+    # documentation/config reads and the offline native fallback.
+    if hub_online and cmd and re.search(r"\b(?:Get-Content|gc|cat|type)\b", cmd, re.IGNORECASE):
+        path_matches = re.findall(r"(?:['\"]([^'\"]+)['\"]|(?<!\w)([^\s|;&]+))", cmd)
+        candidates = [Path(a or b) for a, b in path_matches if (a or b)]
+        if any(_is_repository_source_path(path) for path in candidates):
+            return _hub_navigation_denial("read")
 
     # 1. Bare pytest check across 17,500+ tests
     if cmd and re.search(r"\b(?:python\s+(?:-m\s+)?pytest|pytest)\b", cmd, re.IGNORECASE):
@@ -538,6 +604,8 @@ def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any
     path_str = str(args.get("path") or args.get("file_path") or args.get("Path") or "")
     if name in ("view_file", "read_file", "read") and path_str:
         p = Path(path_str)
+        if hub_online and _is_repository_source_path(p):
+            return _hub_navigation_denial("read")
         if p.is_file() and p.name.lower() not in {"agents.md", "pyproject.toml", ".gitignore"}:
             start = args.get("start_line") or args.get("line_start")
             end = args.get("end_line") or args.get("line_end")

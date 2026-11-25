@@ -243,6 +243,11 @@ def test_loopback_routes_are_authorized_and_admin_actions_are_audited(monkeypatc
         ("admin.action.result", "trace.read", True),
         ("admin.action.result", "config.write", True),
     ]
+    results = [event for event in telemetry.events if event["action"] == "admin.action.result"]
+    assert [(event.get("route"), event.get("stage"), event.get("status_code")) for event in results] == [
+        ("/api/debug-traces", "trace.read", 200),
+        ("/api/config/update", "config.write", 200),
+    ]
 
 def test_token_headers_do_not_authorize_non_loopback_requests(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))

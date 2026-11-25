@@ -286,6 +286,8 @@ class ServiceReviewMixin:
             return {
                 "success": False,
                 "error": "The selected model's prompt budget is too small for a safe diff review.",
+                "error_code": "review_prompt_budget_too_small",
+                "status_code": 422,
                 "terminal": True,
                 "retryable": False,
                 "changed_files": diff.get("changed_files", []),
@@ -297,6 +299,8 @@ class ServiceReviewMixin:
         if largest_review_chunk_tokens > review_chunk_token_budget:
             return {
                 "success": False,
+                "error_code": "review_diff_fragment_exceeds_budget",
+                "status_code": 422,
                 "error": (
                     f"A diff fragment exceeds the {review_chunk_token_budget}-token review budget and cannot be split safely. "
                     "Narrow the diff or exclude generated/minified files."
@@ -322,6 +326,8 @@ class ServiceReviewMixin:
             )
             return {
                 "success": False,
+                "error_code": "review_diff_segment_limit_exceeded",
+                "status_code": 422,
                 "error": (
                     f"Review requires {len(review_chunks)} segments; the safe limit is "
                     f"{max_review_chunks}. {scope_guidance}"

@@ -181,6 +181,18 @@ def check_claude_settings(path: Path) -> tuple[str, str]:
         return "PLUGIN_ENABLED_CONFIGURED", "Hub plugin enabled in config: enabledPlugins.local-ai-hub@local-ai-hub"
     return "CONFIG_PRESENT_NO_HUB_ROUTE", "Valid Claude settings; Hub plugin is not enabled"
 
+def source_hub_version() -> str | None:
+    """Read the release version used to generate provider plugin bundles."""
+    project_file = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    try:
+        project = tomllib.loads(project_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return None
+    project_data = project.get("project")
+    version = project_data.get("version") if isinstance(project_data, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
 def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str, str]:
     if not manifest_path.is_file():
         return "MISSING", "Native Hub plugin manifest is not installed"
@@ -190,6 +202,17 @@ def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str,
         return "INVALID_CONFIG", f"Plugin manifest JSON error: {exc}"
     if not isinstance(data, dict) or data.get("name") != expected_name:
         return "INVALID_CONFIG", f"Plugin manifest does not identify {expected_name}"
+    expected_version = source_hub_version()
+    if expected_version is None:
+        return "SOURCE_VERSION_UNAVAILABLE", "Cannot verify plugin version without the Hub source version"
+    installed_version = data.get("version")
+    if not isinstance(installed_version, str) or not installed_version.strip():
+        return "INVALID_CONFIG", "Plugin manifest does not declare a version"
+    if installed_version.strip() != expected_version:
+        return (
+            "STALE_PLUGIN_VERSION",
+            f"Installed plugin version {installed_version.strip()} differs from Hub source {expected_version}; refresh the provider bundle",
+        )
     return "PLUGIN_MANIFEST_PRESENT", f"Native Hub plugin manifest present: {manifest_path}"
 
 def check_antigravity_plugin(plugin_dir: Path) -> tuple[str, str]:
@@ -260,6 +283,26 @@ def check_gemini_cli_extension(extension_dir: Path) -> tuple[str, str]:
     if not isinstance(data, dict) or data.get("name") != "local-ai-hub":
         return "INVALID_CONFIG", "Gemini CLI extension manifest does not identify local-ai-hub"
     return "EXTENSION_MANIFEST_PRESENT", f"Gemini CLI Hub extension manifest present: {manifest_path}"
+
+
+def check_gemini_cli_mcp_route(settings_path: Path, extension_dir: Path) -> tuple[str, str]:
+    """Accept either a settings MCP route or the Hub route declared by its extension."""
+    status, detail = check_mcp_json_file(settings_path)
+    if status != "CONFIG_PRESENT_NO_HUB_ROUTE":
+        return status, detail
+    manifest_path = extension_dir / "gemini-extension.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return status, detail
+    servers = manifest.get("mcpServers") if isinstance(manifest, dict) else None
+    route = servers.get("local-ai") if isinstance(servers, dict) else None
+    if isinstance(route, dict) and route.get("command"):
+        return (
+            "EXTENSION_ROUTE_CONFIGURED",
+            "Standalone mcpServers.local-ai route is not required; Gemini extension declares the Hub MCP server",
+        )
+    return status, detail
 
 def opencode_config_dirs() -> list[Path]:
     """Use OpenCode's canonical global root or its explicit override."""
@@ -389,7 +432,7 @@ def main() -> int:
     plugin_status, plugin_detail = check_antigravity_plugin_bundle(g_dir)
     if plugin_status == "PLUGIN_MANIFEST_PRESENT":
         status_mcp, msg_mcp = plugin_status, plugin_detail
-    elif plugin_status == "INVALID_CONFIG" and status_mcp != "HUB_ROUTE_CONFIGURED":
+    elif plugin_status in {"INVALID_CONFIG", "STALE_PLUGIN_VERSION", "SOURCE_VERSION_UNAVAILABLE"}:
         status_mcp, msg_mcp = plugin_status, plugin_detail
     results.append({"agent": "Antigravity", "status": status_mcp, "detail": msg_mcp})
     for profile_name, profile_gemini_dir in discover_multigravity_profile_homes(user_home):
@@ -404,11 +447,12 @@ def main() -> int:
             "detail": profile_detail,
         })
     gemini_settings = g_dir / "settings.json"
-    gemini_status, gemini_detail = check_mcp_json_file(gemini_settings)
-    results.append({"agent": "Gemini CLI (settings.json)", "status": gemini_status, "detail": gemini_detail})
-    extension_status, extension_detail = check_gemini_cli_extension(
-        g_dir / "extensions" / "local-ai-hub"
+    gemini_extension_dir = g_dir / "extensions" / "local-ai-hub"
+    gemini_status, gemini_detail = check_gemini_cli_mcp_route(
+        gemini_settings, gemini_extension_dir
     )
+    results.append({"agent": "Gemini CLI (settings.json)", "status": gemini_status, "detail": gemini_detail})
+    extension_status, extension_detail = check_gemini_cli_extension(gemini_extension_dir)
     results.append({"agent": "Gemini CLI extension", "status": extension_status, "detail": extension_detail})
 
     # 2. Codex
@@ -450,7 +494,7 @@ def main() -> int:
     )
     if cursor_plugin_status == "PLUGIN_MANIFEST_PRESENT":
         cursor_status, msg_cursor = cursor_plugin_status, cursor_plugin_detail
-    elif cursor_plugin_status == "INVALID_CONFIG" and cursor_status != "HUB_ROUTE_CONFIGURED":
+    elif cursor_plugin_status in {"INVALID_CONFIG", "STALE_PLUGIN_VERSION", "SOURCE_VERSION_UNAVAILABLE"}:
         cursor_status, msg_cursor = cursor_plugin_status, cursor_plugin_detail
     results.append({"agent": "Cursor", "status": cursor_status, "detail": msg_cursor})
 
@@ -479,7 +523,7 @@ def main() -> int:
 
     # Print table: file presence and syntax do not prove host trust or a live MCP connection.
     for r in results:
-        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT"} else "[-]"
+        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT", "EXTENSION_ROUTE_CONFIGURED"} else "[-]"
         print(f"{status_sym} {r['agent']:<32} | {r['status']:<32} | {r['detail']}")
 
     print("-" * 60)

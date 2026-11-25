@@ -91,6 +91,59 @@ def test_provider_plugin_generation_tracks_current_hub_release_version(tmp_path,
         assert json.loads(manifest.read_text(encoding="utf-8"))["version"] == "8.1.0"
 
 
+def test_cursor_setup_refreshes_recognized_plugin_bundle_and_backs_up_old_files(tmp_path, monkeypatch):
+    source_root = tmp_path / "hub-source"
+    source = source_root / "plugins" / "cursor" / "local-ai-hub"
+    (source / ".cursor-plugin").mkdir(parents=True)
+    (source / ".cursor-plugin" / "plugin.json").write_text(
+        '{"name":"local-ai-hub","version":"8.1.0"}\n', encoding="utf-8",
+    )
+    (source / "mcp.json").write_text('{"mcpServers":{"local-ai":{"command":"python"}}}\n', encoding="utf-8")
+    (source / "rules").mkdir()
+    (source / "rules" / "hub.mdc").write_text("current Hub rule\n", encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+
+    cursor_dir = tmp_path / ".cursor"
+    target = cursor_dir / "plugins" / "local" / "local-ai-hub"
+    (target / ".cursor-plugin").mkdir(parents=True)
+    (target / ".cursor-plugin" / "plugin.json").write_text(
+        '{"name":"local-ai-hub","version":"6.1.0"}\n', encoding="utf-8",
+    )
+    (target / "mcp.json").write_text('{"mcpServers":{}}\n', encoding="utf-8")
+    (target / "user-owned.txt").write_text("keep\n", encoding="utf-8")
+
+    assert setup.sync_cursor_plugin_bundle(cursor_dir, backup_enabled=True) is True
+
+    manifest = json.loads((target / ".cursor-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "8.1.0"
+    assert json.loads((target / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]["local-ai"]
+    assert (target / "rules" / "hub.mdc").read_text(encoding="utf-8") == "current Hub rule\n"
+    assert (target / "user-owned.txt").read_text(encoding="utf-8") == "keep\n"
+    backups = list(target.rglob("*.local-ai-hub-backup-*"))
+    assert len(backups) == 2
+    assert any(path.read_text(encoding="utf-8") == '{"name":"local-ai-hub","version":"6.1.0"}\n' for path in backups)
+
+    assert setup.sync_cursor_plugin_bundle(cursor_dir, backup_enabled=True) is True
+    assert len(list(target.rglob("*.local-ai-hub-backup-*"))) == 2
+
+
+def test_cursor_setup_refreshes_bundle_when_local_plugin_route_is_installed(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(setup, "cursor_hub_plugin_installed", lambda _cursor_dir: True)
+    monkeypatch.setattr(
+        setup, "sync_cursor_plugin_bundle",
+        lambda cursor_dir, backup_enabled: calls.append((cursor_dir, backup_enabled)) or True,
+        raising=False,
+    )
+
+    setup.configure_cursor_global_routes(
+        tmp_path / ".cursor", tmp_path / "install", Path("python"), None,
+        {}, False, None, [],
+    )
+
+    assert calls == [(tmp_path / ".cursor", False)]
+
+
 def test_setup_generation_refreshes_managed_policy_blocks_in_install_prompts(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -452,6 +505,177 @@ def test_gemini_extension_and_antigravity_plugin_paths_are_detected(tmp_path):
     assert setup.gemini_cli_extension_installed(gemini) is True
     assert setup.antigravity_plugin_installed(gemini) is True
     assert setup.gemini_cli_extension_active(gemini) is True
+
+
+def test_gemini_cli_extension_install_uses_scoped_source_directory(tmp_path, monkeypatch):
+    install = tmp_path / "hub"
+    source = install / "plugins" / "gemini" / "local-ai-hub"
+    source.mkdir(parents=True)
+    (source / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.1.0"}), encoding="utf-8",
+    )
+    gemini = tmp_path / "home" / ".gemini"
+    calls = []
+    actions = []
+    monkeypatch.setattr(setup, "SOURCE_ROOT", install)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "gemini.cmd" if name == "gemini.cmd" else None)
+
+    def fake_run(args, *, cwd, check, **kwargs):
+        calls.append((args, Path(cwd), check))
+        target = gemini / "extensions" / "local-ai-hub"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        setup.shutil.copytree(source, target)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+
+    assert setup.ensure_gemini_cli_extension(
+        gemini, install, interactive=True, manual_actions=actions,
+    ) is True
+    assert calls == [(["gemini.cmd", "extensions", "install", str(source)], source, False)]
+    assert actions == []
+
+
+def test_gemini_cli_extension_noninteractive_reports_trust_command(tmp_path, monkeypatch):
+    install = tmp_path / "hub"
+    source = install / "plugins" / "gemini" / "local-ai-hub"
+    source.mkdir(parents=True)
+    (source / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.1.0"}), encoding="utf-8",
+    )
+    actions = []
+    monkeypatch.setattr(setup, "SOURCE_ROOT", install)
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: "gemini.cmd")
+    monkeypatch.setattr(setup.subprocess, "run", lambda *_a, **_k: pytest.fail("noninteractive setup must not prompt"))
+
+    assert setup.ensure_gemini_cli_extension(
+        tmp_path / "home" / ".gemini", install, interactive=False, manual_actions=actions,
+    ) is False
+    assert len(actions) == 1
+    assert "gemini extensions install" in actions[0]
+    assert str(source) in actions[0]
+
+
+def test_gemini_cli_extension_updates_stale_local_install(tmp_path, monkeypatch):
+    install = tmp_path / "hub"
+    source = install / "plugins" / "gemini" / "local-ai-hub"
+    source.mkdir(parents=True)
+    current_manifest = {"name": "local-ai-hub", "version": "8.1.0"}
+    (source / "gemini-extension.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+    gemini = tmp_path / "home" / ".gemini"
+    installed = gemini / "extensions" / "local-ai-hub"
+    installed.mkdir(parents=True)
+    (installed / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.0.0"}), encoding="utf-8",
+    )
+    actions = []
+    calls = []
+    monkeypatch.setattr(setup, "SOURCE_ROOT", install)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "gemini.cmd" if name == "gemini.cmd" else None)
+
+    def fake_run(args, *, cwd, check, **kwargs):
+        calls.append((args, Path(cwd), check))
+        if args[1:3] == ["extensions", "list"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr=f"Source: {source} (Type: local)")
+        (installed / "gemini-extension.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+
+    assert setup.ensure_gemini_cli_extension(
+        gemini, install, interactive=True, manual_actions=actions,
+    ) is True
+    assert calls == [
+        (["gemini.cmd", "extensions", "list"], source, False),
+        (["gemini.cmd", "extensions", "update", "local-ai-hub"], source, False),
+    ]
+    assert actions == []
+
+
+def test_gemini_cli_extension_does_not_accept_same_version_with_stale_files(tmp_path, monkeypatch):
+    install = tmp_path / "hub"
+    source = install / "plugins" / "gemini" / "local-ai-hub"
+    source.mkdir(parents=True)
+    (source / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.2.1"}), encoding="utf-8",
+    )
+    (source / "GEMINI.md").write_text("current instructions\n", encoding="utf-8")
+    gemini = tmp_path / "home" / ".gemini"
+    installed = gemini / "extensions" / "local-ai-hub"
+    installed.mkdir(parents=True)
+    (installed / "gemini-extension.json").write_text(
+        json.dumps({"name": "local-ai-hub", "version": "8.2.1"}), encoding="utf-8",
+    )
+    (installed / ".gemini-extension-install.json").write_text(
+        json.dumps({"source": str(source), "type": "local"}), encoding="utf-8",
+    )
+    (installed / "GEMINI.md").write_text("stale instructions\n", encoding="utf-8")
+    actions = []
+    monkeypatch.setattr(setup, "SOURCE_ROOT", install)
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: pytest.fail("must not run a CLI update at equal version"))
+
+    assert setup.ensure_gemini_cli_extension(
+        gemini, install, interactive=True, manual_actions=actions,
+    ) is False
+    assert len(actions) == 1
+    assert "same version" in actions[0]
+    assert "increase the source version" in actions[0]
+
+
+def test_gemini_mcp_route_omits_blocked_pythonpath(tmp_path):
+    entries = setup.build_mcp_entries(tmp_path / "hub", tmp_path / "python.exe", None, "gemini", {})
+    assert "PYTHONPATH" not in entries["local-ai"]["env"]
+    assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "gemini"
+
+
+def test_gemini_extension_removes_only_owned_duplicate_routes_and_hooks(tmp_path):
+    install = tmp_path / "hub"
+    install.mkdir()
+    setup.write_install_manifest(install)
+    settings = tmp_path / ".gemini" / "settings.json"
+    settings.parent.mkdir()
+    mcp_entry = {"command": "hub-python", "args": ["-m", "local_ai_hub.mcp_server"]}
+    session = {"hooks": [{"name": "local-ai-hub-session-start", "type": "command",
+                          "command": 'python host_hooks.py --host gemini_cli'}]}
+    before = {"matcher": "read_file|run_shell_command", "hooks": [
+        {"name": "local-ai-hub-before-tool", "type": "command",
+         "command": 'python host_hooks.py --host gemini_cli'},
+        {"name": "user-hook", "type": "command", "command": "user-hook"},
+    ]}
+    after = {"matcher": "write_file|replace", "hooks": [
+        {"name": "local-ai-hub-after-tool", "type": "command",
+         "command": 'python host_hooks.py --host gemini_cli'},
+    ]}
+    data = {"mcpServers": {"local-ai": mcp_entry, "browser": {"command": "browser"}},
+            "hooks": {"SessionStart": [session], "BeforeTool": [before], "AfterTool": [after]}}
+    settings.write_text(json.dumps(data), encoding="utf-8")
+    setup.record_external_json_key(install, settings, container="mcpServers", key="local-ai",
+                                   preimage=None, postimage=mcp_entry)
+    for event, value in data["hooks"].items():
+        setup.record_external_json_key(install, settings, container="hooks", key=event,
+                                       preimage=None, postimage=value)
+
+    assert setup.remove_managed_gemini_mcp_route(settings, install, False) is True
+    assert setup.remove_managed_gemini_hooks(settings, install, False) is True
+    actual = json.loads(settings.read_text(encoding="utf-8"))
+    assert actual["mcpServers"] == {"browser": {"command": "browser"}}
+    assert "SessionStart" not in actual["hooks"]
+    assert "AfterTool" not in actual["hooks"]
+    assert actual["hooks"]["BeforeTool"][0]["hooks"] == [
+        {"name": "user-hook", "type": "command", "command": "user-hook"},
+    ]
+
+
+def test_gemini_extension_preserves_unowned_duplicate_mcp(tmp_path):
+    install = tmp_path / "hub"
+    install.mkdir()
+    setup.write_install_manifest(install)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"mcpServers": {"local-ai": {"command": "user"}}}), encoding="utf-8")
+    before = settings.read_bytes()
+
+    assert setup.remove_managed_gemini_mcp_route(settings, install, False) is False
+    assert settings.read_bytes() == before
 
 
 def test_cursor_local_plugin_path_detects_hub_plugin(tmp_path):
@@ -1381,9 +1605,7 @@ def test_codex_hub_plugin_refreshes_cache_from_its_selected_local_marketplace(tm
                 {"name": "local-ai-hub", "root": str(tmp_path)},
             ]}), "")
         if command[1:3] == ["plugin", "list"]:
-            return subprocess.CompletedProcess(command, 0, json.dumps({"installed": [
-                {"pluginId": "local-ai-hub@local-ai-hub", "version": "6.1.0", "installed": True},
-            ]}), "")
+            raise AssertionError("refresh must not enumerate every installed Codex plugin")
         if command[1:3] == ["plugin", "add"]:
             return subprocess.CompletedProcess(command, 0, json.dumps({"version": "8.1.0"}), "")
         raise AssertionError(command)
@@ -1395,7 +1617,7 @@ def test_codex_hub_plugin_refreshes_cache_from_its_selected_local_marketplace(tm
 
     assert success is True
     assert "8.1.0" in detail
-    assert calls[2][1:] == ["plugin", "add", "local-ai-hub@local-ai-hub", "--json"]
+    assert calls[1][1:] == ["plugin", "add", "local-ai-hub@local-ai-hub", "--json"]
 
 
 def test_codex_hub_plugin_refresh_does_not_replace_foreign_marketplace_source(tmp_path, monkeypatch):
@@ -1446,6 +1668,9 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
     manifest = tmp_path / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    cached_manifest = codex_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.1.0" / "plugin.json"
+    cached_manifest.parent.mkdir(parents=True)
+    cached_manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
     calls = []
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr(setup.shutil, "which", lambda name: "codex.exe" if name == "codex" else None)
@@ -1456,11 +1681,7 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
             return subprocess.CompletedProcess(command, 0, json.dumps({"marketplaces": [
                 {"name": "local-ai-hub", "root": str(tmp_path)},
             ]}), "")
-        if command[1:3] == ["plugin", "list"]:
-            return subprocess.CompletedProcess(command, 0, json.dumps({"installed": [
-                {"pluginId": "local-ai-hub@local-ai-hub", "version": "8.1.0", "installed": True},
-            ]}), "")
-        raise AssertionError(f"unexpected Codex CLI mutation: {command}")
+        raise AssertionError(f"unexpected Codex CLI command: {command}")
 
     monkeypatch.setattr(setup, "run", fake_run)
 
@@ -1468,7 +1689,7 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
 
     assert success is True
     assert "already current" in detail.lower()
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_codex_unowned_files_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):

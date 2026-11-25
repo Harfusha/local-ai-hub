@@ -56,6 +56,25 @@ WHITELIST_FILENAMES = {
     ".gitignore",
 }
 
+SOURCE_CODE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html",
+    ".java", ".js", ".jsx", ".kt", ".php", ".py", ".rb", ".rs", ".sh",
+    ".sql", ".swift", ".ts", ".tsx", ".vue", ".svelte", ".ps1",
+}
+
+
+def _is_hub_online() -> bool:
+    """Use Hub-first navigation only while the local Hub is actually reachable."""
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:11435/health",
+            headers={"User-Agent": "AntigravityHook"},
+        )
+        with urllib.request.urlopen(req, timeout=0.15) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 400
+    except Exception:
+        return False
+
 # Regex to detect unconstrained search commands
 UNCONSTRAINED_SEARCH_PATTERNS = [
     re.compile(r"\bdir\s+.*(?:\/s|\/S)", re.IGNORECASE),
@@ -220,6 +239,16 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
     if _is_path_whitelisted(path_str):
         return {"decision": "allow"}
 
+    source_path = Path(path_str)
+    if _is_hub_online() and source_path.suffix.lower() in SOURCE_CODE_SUFFIXES:
+        return {
+            "decision": "deny",
+            "reason": (
+                "Direct source reads are disabled while Local AI Hub is online. "
+                "Use local_ai_repo for discovery and local_ai_artifact for exact source."
+            ),
+        }
+
     start_line = args.get("StartLine")
     end_line = args.get("EndLine")
     max_lines = _get_max_direct_read_lines()
@@ -302,6 +331,20 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
 
+    if (
+        _is_hub_online()
+        and re.search(r"\b(?:rg|ripgrep|grep|findstr|find|select-string|sls)\b", cmd, re.IGNORECASE)
+        and not re.search(r"--(?:version|help)\b|(?:^|\s)/(?:\?|help)(?:\s|$)", cmd, re.IGNORECASE)
+    ):
+        return {
+            "decision": "deny",
+            "reason": (
+                "Repository searches must use Local AI Hub while it is online. "
+                'Call call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", '
+                'Arguments={"action":"search","query":"<task query>","root":"<absolute workspace root>"}).'
+            ),
+        }
+
     # ripgrep check
     if re.search(r"\b(?:rg|ripgrep)\b", cmd, re.IGNORECASE):
         if not RG_BOUNDED_PATTERN.search(cmd):
@@ -339,6 +382,18 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
             match = re.search(r"\b(?:Get-Content|gc|cat|type)\s+['\"]?([^'\"\s|;>]+)['\"]?", cmd, re.IGNORECASE)
             if match:
                 target_file = Path(match.group(1))
+                if (
+                    _is_hub_online()
+                    and target_file.suffix.lower() in SOURCE_CODE_SUFFIXES
+                    and not _is_path_whitelisted(str(target_file))
+                ):
+                    return {
+                        "decision": "deny",
+                        "reason": (
+                            "Direct source reads are disabled while Local AI Hub is online. "
+                            "Use local_ai_repo for discovery and local_ai_artifact for exact source."
+                        ),
+                    }
                 if target_file.is_file() and target_file.name.lower() not in WHITELIST_FILENAMES:
                     try:
                         with target_file.open("r", encoding="utf-8", errors="ignore") as f:

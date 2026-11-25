@@ -81,9 +81,9 @@ names do not establish cached-weight availability, transcription quality or WER.
 
 | Profile | `background_code` | `fast_code` | `heavy_code` | `reasoning` | `general` | `vision` |
 | --- | --- | --- | --- | --- | --- | --- |
-| `cpu` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
-| `integrated` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
-| `low` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
+| `cpu` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
+| `integrated` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
+| `low` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
 | `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `minicpm-v:8b` |
 | `medium` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
 | `high` | `qwen2.5-coder:3b-instruct-q4_K_M` | `qwen2.5-coder:7b-instruct-q4_K_M` | `qwen2.5-coder:14b-instruct-q4_K_M` | `qwen3.5:9b-q4_K_M` | `qwen3.5:9b-q4_K_M` | `minicpm-v:8b` |
@@ -93,7 +93,7 @@ These are profile routing targets from `hardware.py`. They do not prove a model
 is installed on a host, and profile selection does not pull models. Runtime
 availability must be checked separately.
 
-Preprocessing routes: `cpu=qwen2.5-coder-prep-v4:3b`; `integrated=qwen2.5-coder-prep-v4:3b`; `low=qwen2.5-coder-prep-v4:3b`; `balanced=qwen2.5-coder-prep-v4:3b`; `medium=qwen2.5-coder-prep-v4:3b`; `high=qwen2.5-coder-prep-v4:3b`; `max=qwen2.5-coder-prep-v4:3b`.
+Preprocessing routes: `cpu=qwen2.5-coder-prep-v3:1.5b`; `integrated=qwen2.5-coder-prep-v3:1.5b`; `low=qwen2.5-coder-prep-v4:3b`; `balanced=qwen2.5-coder-prep-v4:3b`; `medium=qwen2.5-coder-prep-v4:3b`; `high=qwen2.5-coder-prep-v4:3b`; `max=qwen2.5-coder-prep-v4:3b`.
 `high` and `max` use Q4_K_M weights for their pinned Qwen roles and Q4 KV cache,
 except eligible Qwen3.5 9B reasoning/general routes described above. Other FP4
 candidates remain on configured Q4. The `max`

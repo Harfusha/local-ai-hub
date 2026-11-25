@@ -246,6 +246,7 @@ def test_http_patch_validate_rejects_empty_patch_as_bad_request(
 
     assert exc_info.value.code == 400
     body = json.loads(exc_info.value.read().decode("utf-8"))
+    exc_info.value.close()
     assert body["success"] is False
     assert body["status_code"] == 400
     assert body["terminal"] is True
@@ -1069,6 +1070,7 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
         urllib_request.urlopen(denied_request)
     assert denied.value.code == 409
     denied_body = json.loads(denied.value.read().decode("utf-8"))
+    denied.value.close()
     assert denied_body["error_code"] == "detailed_diagnostics_disabled"
     assert app.laya_candidates.handle(
         {"action": "list", "task_id": "task-31"},
@@ -1098,6 +1100,7 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
         urllib_request.urlopen(request)
     assert denied_capture.value.code == 400
     body = json.loads(denied_capture.value.read().decode("utf-8"))
+    denied_capture.value.close()
     assert "actual Laya runtime callback" in body["error"]
     assert candidate_state not in json.dumps(body)
     assert app.laya_candidates.handle(
@@ -1215,6 +1218,7 @@ def test_http_diagnostics_export_rejects_retired_laya_consent_and_forwards_snaps
         urllib_request.urlopen(denied_request)
     assert denied.value.code == 400
     denied_body = json.loads(denied.value.read().decode("utf-8"))
+    denied.value.close()
     assert denied_body["error_code"] == "diagnostics_export_request_invalid"
     assert calls == []
 
@@ -1267,6 +1271,7 @@ def test_http_diagnostics_export_preserves_request_body_timeout_status(
 
     assert timeout.value.code == 408
     body = json.loads(timeout.value.read().decode("utf-8"))
+    timeout.value.close()
     assert body["success"] is False
     assert body["error"] == "request body timed out"
 
@@ -1419,6 +1424,7 @@ def test_http_structural_search_rejects_stale_inventory_revision(running_http_hu
         }))
     assert stale.value.code == 409
     payload = json.loads(stale.value.read().decode("utf-8"))
+    stale.value.close()
     assert payload["error_code"] == "stale_search_revision"
     assert payload["success"] is False
     assert "matches" not in payload
@@ -1626,6 +1632,7 @@ def test_http_post_coord_board_and_semaphore_acceptance(running_http_hub, monkey
         with pytest.raises(HTTPError) as rejected:
             urllib_request.urlopen(request)
         assert rejected.value.code == 404
+        rejected.value.close()
 
 
 def test_http_post_context_budget_acceptance(running_http_hub, monkeypatch, tmp_path):

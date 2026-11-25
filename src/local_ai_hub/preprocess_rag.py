@@ -379,6 +379,8 @@ class PreprocessRAGMixin:
             return False
         if not result.get("success"):
             message = str(result.get("error", "RAG preprocessing failed"))
+            error_code = result.get("error_code")
+            error_code = error_code if isinstance(error_code, str) else ""
             # NEW-001: Graceful auto-recovery for embedding_space_rebuild_required
             if result.get("rebuild_required") is True or message == "embedding_space_rebuild_required":
                 reindex_fn = getattr(self.rag, "_request_workspace_reindex", None)
@@ -408,10 +410,16 @@ class PreprocessRAGMixin:
                     retry_after = float(retry_after)
                 except (TypeError, ValueError):
                     retry_after = 60.0
-                raise services_module._RetryablePreprocessingError(message, retry_after)
+                raise services_module._RetryablePreprocessingError(
+                    message, retry_after, error_code=error_code,
+                )
             if result.get("retryable") is False:
-                raise services_module._NonRetryablePreprocessingError(message)
-            raise RuntimeError(message)
+                raise services_module._NonRetryablePreprocessingError(
+                    message, error_code=error_code,
+                )
+            error = RuntimeError(message)
+            error.error_code = error_code
+            raise error
         if result.get("skipped") is True and result.get("reason") == "project phase disabled":
             self._set_project(root, phase="files")
             return True

@@ -221,6 +221,13 @@ class TestSkillReferences:
 
 
 class TestGlobalPolicyGeneration:
+    def test_generated_skill_scopes_file_inventory_and_recovers_from_time_limit(self):
+        skill = generate_skill_markdown({})
+
+        assert 'Use the trusted repository root for `local_ai_repo(action="find_files")`' in skill
+        assert '`repository_inventory_incomplete` or `time_limit`' in skill
+        assert 'never repeat the same broad root' in skill
+
     def test_global_policy_references_single_owner_contract_in_installed_skill(self):
         assert "Single-owner and repository scope contract" in generate_global_policy({})
         assert SINGLE_OWNER_CONTRACT in generate_skill_markdown({})

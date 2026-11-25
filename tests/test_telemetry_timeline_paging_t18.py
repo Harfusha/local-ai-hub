@@ -20,6 +20,32 @@ def _record_operations(store: TelemetryStore) -> None:
     assert store.flush(10)
 
 
+def test_admin_action_context_survives_telemetry_projection(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record_system(
+            "admin.action.result",
+            success=False,
+            component="http_admin",
+            route="/api/config/update",
+            stage="config.write",
+            status_code=500,
+        )
+        assert store.flush(10)
+        tail = next(event for event in store.tail(10) if event["action"] == "admin.action.result")
+        timeline = next(
+            event for event in store.get_timeline_page(limit=10)["timeline"]
+            if event["action"] == "admin.action.result"
+        )
+    finally:
+        store.close()
+
+    for event in (tail, timeline):
+        assert event.get("route") == "/api/config/update"
+        assert event.get("stage") == "config.write"
+        assert event.get("status_code") == 500
+
+
 def test_telemetry_timeline_page_returns_recent_rows_before_cursor(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:

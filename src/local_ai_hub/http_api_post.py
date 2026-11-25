@@ -521,6 +521,16 @@ class HttpPostHelpersMixin:
                     telemetry_data = dict(data) if isinstance(data, dict) else data
                     reliability_success, outcome_error_type, record_operational_error = services_module._telemetry_http_outcome(status, telemetry_data, path)
                     err = str(data.get("error", "")) if isinstance(data, dict) else ""
+                    explicit_terminal = (
+                        data.get("terminal")
+                        if isinstance(data, dict) and type(data.get("terminal")) is bool
+                        else None
+                    )
+                    explicit_retryable = (
+                        data.get("retryable")
+                        if isinstance(data, dict) and type(data.get("retryable")) is bool
+                        else None
+                    )
                     evidence = data.get("evidence", []) if isinstance(data, dict) else []
                     canonical = data.get("canonical", {}) if isinstance(data, dict) and isinstance(data.get("canonical"), dict) else {}
                     canonical_route = canonical.get("route", {}) if isinstance(canonical.get("route"), dict) else {}
@@ -550,6 +560,8 @@ class HttpPostHelpersMixin:
                         complexity=str(canonical_route.get("complexity", ""))[:40],
                         evidence_count=(len(repo_evidence) if repo_evidence else (len(evidence) if isinstance(evidence, list) else 0)),
                         error_type=outcome_error_type,
+                        terminal=explicit_terminal,
+                        retryable=explicit_retryable,
                         queue_wait_ms=phase_latency.get("queue_wait_ms"),
                         service_ms=phase_latency.get("service_ms"),
                         db_wait_ms=phase_latency.get("db_wait_ms"),
@@ -562,7 +574,12 @@ class HttpPostHelpersMixin:
                         services_module.APP.telemetry.record_request_evaluation(request_evaluation, duration_ms=elapsed_ms)
                     if record_operational_error and err:
                         error_code = "application_error" if outcome_error_type == "application_error" else "http_request_failed"
-                        services_module.APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override=error_code, retryable=status in {429, 500, 502, 503, 504})
+                        error_retryable = (
+                            explicit_retryable
+                            if explicit_retryable is not None
+                            else status in {429, 500, 502, 503, 504}
+                        )
+                        services_module.APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override=error_code, retryable=error_retryable)
                     if services_module.APP is not None and getattr(services_module.APP, "endpoint_stats", None) is not None:
                         try:
                             services_module.APP.endpoint_stats.record_call(

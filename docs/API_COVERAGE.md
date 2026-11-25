@@ -187,6 +187,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | HTTP POST | /api/git/status | confirmed | src/local_ai_hub/http_route_registry.py | op-32774709009e |
 | HTTP POST | /api/git/synthesize_commit | confirmed | src/local_ai_hub/http_route_registry.py | op-99533a46fb0e |
 | HTTP POST | /api/gpu-reservation | confirmed | src/local_ai_hub/http_route_registry.py | op-ccefa6cfe07a |
+| HTTP POST | /api/laya/decision | confirmed | src/local_ai_hub/http_route_registry.py | op-97c1f90bf95a |
 | HTTP POST | /api/leases/claim_batch | confirmed | src/local_ai_hub/http_route_registry.py | op-cf5ba5179dc2 |
 | HTTP POST | /api/leases/release | confirmed | src/local_ai_hub/http_route_registry.py | op-4d2be6d29bd6 |
 | HTTP POST | /api/leases/renew | confirmed | src/local_ai_hub/http_route_registry.py | op-f15fb6fced56 |
@@ -305,6 +306,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | MCP action local_ai_coord | gpu_reservation_status | confirmed | src/local_ai_hub/generator.py | op-d5a8988b2135 |
 | MCP action local_ai_coord | gpu_scheduler_capacity_lease_release | confirmed | src/local_ai_hub/generator.py | op-5c57e519b527 |
 | MCP action local_ai_coord | incident_decision | confirmed | src/local_ai_hub/generator.py | op-0d8149da9907 |
+| MCP action local_ai_coord | laya_decision | confirmed | src/local_ai_hub/generator.py | op-13a23554b8bb |
 | MCP action local_ai_coord | leases | confirmed | src/local_ai_hub/generator.py | op-10fac56595f4 |
 | MCP action local_ai_coord | memory_delete | confirmed | src/local_ai_hub/generator.py | op-ffe070fa4b4c |
 | MCP action local_ai_coord | memory_find | confirmed | src/local_ai_hub/generator.py | op-0a673cc2e7e9 |
@@ -602,6 +604,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | HubClient target | POST /api/agent-state/verification | confirmed | src/local_ai_hub/client.py | op-8739b57533bb |
 | HubClient target | POST /api/agent-state/verification | confirmed | src/local_ai_hub/client.py | op-12dc510c404b |
 | HubClient target | POST /api/agent-state/verification | confirmed | src/local_ai_hub/client.py | op-f6c028a3851b |
+| HubClient target | POST /api/laya/decision | confirmed | src/local_ai_hub/client.py | op-8652b51fe3f3 |
 | HubClient target | POST /api/agent-state/incidents | confirmed | src/local_ai_hub/client.py | op-50bb1678de07 |
 | HubClient target | POST /api/agent-state/incidents | confirmed | src/local_ai_hub/client.py | op-90d40a71354f |
 | HubClient target | POST /api/leases/claim_batch | confirmed | src/local_ai_hub/client.py | op-c5b2e5d89db3 |

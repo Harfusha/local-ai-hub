@@ -1247,6 +1247,125 @@ def global_hub_mcp_configured(mcp_path: Path) -> bool:
     return isinstance(servers, dict) and "local-ai" in servers
 
 
+def remove_managed_gemini_mcp_route(settings_path: Path, install_dir: Path, backup_enabled: bool) -> bool:
+    """Remove the standalone Gemini route only when the install ledger owns it unchanged."""
+    if settings_path.is_symlink() or not settings_path.is_file():
+        return True
+    original_bytes = settings_path.read_bytes()
+    try:
+        data = json.loads(original_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect Gemini settings {settings_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Gemini settings must be an object: {settings_path}")
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict) or "local-ai" not in servers:
+        return True
+    current = servers["local-ai"]
+    try:
+        assert_external_json_key_writable(
+            install_dir, settings_path, container="mcpServers", key="local-ai", current_value=current,
+        )
+    except ValueError:
+        return False
+    if settings_path.read_bytes() != original_bytes:
+        return False
+    backup(settings_path, backup_enabled)
+    del servers["local-ai"]
+    settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    forget_external_record(
+        install_dir, settings_path, kind="json_key",
+        owner_marker={"container": "mcpServers", "key": "local-ai"},
+    )
+    if original_bytes == settings_path.read_bytes():
+        return False
+    log(f"Removed unchanged Hub Gemini MCP route now supplied by the extension: {settings_path}")
+    return True
+
+
+def _is_managed_gemini_cli_hook(hook: Any) -> bool:
+    if not isinstance(hook, dict):
+        return False
+    name = hook.get("name")
+    command = hook.get("command")
+    return (
+        name in {"local-ai-hub-session-start", "local-ai-hub-before-tool", "local-ai-hub-after-tool"}
+        and isinstance(command, str)
+        and "host_hooks.py" in command
+        and "--host gemini_cli" in command
+    )
+
+
+def remove_managed_gemini_hooks(settings_path: Path, install_dir: Path, backup_enabled: bool) -> bool:
+    """Remove unchanged Hub CLI hooks while retaining every unrelated hook entry."""
+    if settings_path.is_symlink() or not settings_path.is_file():
+        return True
+    original_bytes = settings_path.read_bytes()
+    try:
+        data = json.loads(original_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely inspect Gemini settings {settings_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Gemini settings must be an object: {settings_path}")
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return True
+    changed_events: dict[str, list[Any]] = {}
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
+        if not any(
+            _is_managed_gemini_cli_hook(hook)
+            for group in groups if isinstance(group, dict)
+            for hook in group.get("hooks", []) if isinstance(group.get("hooks"), list)
+        ):
+            continue
+        try:
+            assert_external_json_key_writable(
+                install_dir, settings_path, container="hooks", key=event, current_value=groups,
+            )
+        except ValueError:
+            return False
+        changed_events[event] = groups
+    if not changed_events:
+        return True
+
+    if settings_path.read_bytes() != original_bytes:
+        return False
+    updated_hooks = dict(hooks)
+    for event, groups in changed_events.items():
+        kept_groups: list[Any] = []
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                kept_groups.append(group)
+                continue
+            remaining = [hook for hook in group["hooks"] if not _is_managed_gemini_cli_hook(hook)]
+            if remaining:
+                replacement = dict(group)
+                replacement["hooks"] = remaining
+                kept_groups.append(replacement)
+            elif set(group) - {"matcher", "hooks"}:
+                kept_groups.append({**group, "hooks": []})
+        if kept_groups:
+            updated_hooks[event] = kept_groups
+        else:
+            updated_hooks.pop(event, None)
+    data["hooks"] = updated_hooks
+    if not updated_hooks:
+        data.pop("hooks", None)
+    backup(settings_path, backup_enabled)
+    settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    for event in changed_events:
+        forget_external_record(
+            install_dir, settings_path, kind="json_key",
+            owner_marker={"container": "hooks", "key": event},
+        )
+    if original_bytes == settings_path.read_bytes():
+        return False
+    log(f"Removed unchanged duplicate Hub Gemini CLI hooks: {settings_path}")
+    return True
+
+
 def claude_global_hub_mcp_configured(mcp_path: Path) -> bool:
     """Detect a standalone Claude Hub MCP entry that duplicates the plugin."""
     return global_hub_mcp_configured(mcp_path)
@@ -1315,6 +1434,129 @@ def gemini_cli_extension_installed(gemini_dir: Path) -> bool:
     return _provider_manifest_named(manifest_path, "local-ai-hub")
 
 
+def ensure_gemini_cli_extension(
+    gemini_dir: Path,
+    install_dir: Path,
+    *,
+    interactive: bool,
+    manual_actions: list[str] | None = None,
+) -> bool:
+    """Install the local Gemini extension only through Gemini CLI's trust flow."""
+    source = SOURCE_ROOT / "plugins" / "gemini" / "local-ai-hub"
+    manifest_path = source / "gemini-extension.json"
+    if not _provider_manifest_named(manifest_path, "local-ai-hub"):
+        action = f"Gemini CLI extension source is missing or invalid: {manifest_path}"
+    else:
+        try:
+            source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            source_version = source_manifest.get("version") if isinstance(source_manifest, dict) else None
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            source_version = None
+        if not isinstance(source_version, str) or not source_version.strip():
+            action = f"Gemini CLI extension source has no valid version: {manifest_path}"
+            if manual_actions is not None:
+                manual_actions.append(action)
+            log(f"Manual agent setup required: {action}")
+            return False
+        installed_manifest_path = gemini_dir / "extensions" / "local-ai-hub" / "gemini-extension.json"
+        try:
+            installed_manifest = json.loads(installed_manifest_path.read_text(encoding="utf-8"))
+            installed_version = installed_manifest.get("version") if isinstance(installed_manifest, dict) else None
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            installed_version = None
+        if gemini_cli_extension_installed(gemini_dir) and installed_version == source_version:
+            installed_dir = installed_manifest_path.parent
+            install_record_path = installed_dir / ".gemini-extension-install.json"
+            try:
+                install_record = json.loads(install_record_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                install_record = None
+            recorded_source = install_record.get("source") if isinstance(install_record, dict) else None
+            recorded_type = install_record.get("type") if isinstance(install_record, dict) else None
+            same_local_source = (
+                recorded_type == "local"
+                and isinstance(recorded_source, str)
+                and os.path.normcase(os.path.normpath(str(Path(recorded_source).resolve())))
+                == os.path.normcase(os.path.normpath(str(source.resolve())))
+            )
+            if same_local_source:
+                stale_files = []
+                for source_file in sorted(source.rglob("*")):
+                    if not source_file.is_file() or "__pycache__" in source_file.parts:
+                        continue
+                    installed_file = installed_dir / source_file.relative_to(source)
+                    try:
+                        matches = installed_file.is_file() and installed_file.read_bytes() == source_file.read_bytes()
+                    except OSError:
+                        matches = False
+                    if not matches:
+                        stale_files.append(source_file.relative_to(source).as_posix())
+                if stale_files:
+                    action = (
+                        "Gemini CLI extension has stale files despite claiming the same version "
+                        f"({', '.join(stale_files[:4])}); increase the source version to force a trusted CLI update"
+                    )
+                    if manual_actions is not None:
+                        manual_actions.append(action)
+                    log(f"Manual agent setup required: {action}")
+                    return False
+            return True
+        command = shutil.which("gemini.cmd") or shutil.which("gemini")
+        updating = gemini_cli_extension_installed(gemini_dir)
+        install_command = (
+            "gemini extensions update local-ai-hub"
+            if updating else f"gemini extensions install '{source}'"
+        )
+        if not command:
+            action = f"Update the Local AI Hub Gemini extension after installing Gemini CLI: {install_command}"
+        elif not interactive:
+            action = f"Install or update the Local AI Hub extension when interactive: {install_command}"
+        else:
+            try:
+                if updating:
+                    listed = subprocess.run(
+                        [command, "extensions", "list"], cwd=str(source), check=False,
+                        capture_output=True, text=True,
+                    )
+                    source_record = f"Source: {source} (Type: local)"
+                    listing_output = "\n".join((listed.stdout or "", listed.stderr or ""))
+                    if listed.returncode != 0 or source_record.casefold() not in listing_output.casefold():
+                        action = (
+                            "Gemini CLI extension has a different or unverifiable source; "
+                            f"preserved it. Review/update it manually: {install_command}"
+                        )
+                        if manual_actions is not None:
+                            manual_actions.append(action)
+                        log(f"Manual agent setup required: {action}")
+                        return False
+                result = subprocess.run(
+                    [command, "extensions", "update", "local-ai-hub"]
+                    if updating else [command, "extensions", "install", str(source)],
+                    cwd=str(source),
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                result = None
+                log(f"Gemini CLI extension installation could not start: {type(exc).__name__}")
+            try:
+                final_manifest = json.loads(installed_manifest_path.read_text(encoding="utf-8"))
+                final_version = final_manifest.get("version") if isinstance(final_manifest, dict) else None
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                final_version = None
+            if result is not None and result.returncode == 0 and final_version == source_version:
+                verb = "updated" if updating else "installed"
+                log(f"Gemini CLI Local AI Hub extension {verb} through Gemini CLI.")
+                return True
+            action = (
+                f"Gemini CLI extension is not current; review the CLI trust prompt and run "
+                f"{install_command} from its source folder"
+            )
+    if manual_actions is not None:
+        manual_actions.append(action)
+    log(f"Manual agent setup required: {action}")
+    return False
+
+
 def cursor_hub_plugin_installed(cursor_dir: Path) -> bool:
     """Detect Cursor's documented local plugin import path for Local AI Hub."""
     manifest_path = (
@@ -1322,6 +1564,43 @@ def cursor_hub_plugin_installed(cursor_dir: Path) -> bool:
         / ".cursor-plugin" / "plugin.json"
     )
     return _provider_manifest_named(manifest_path, "local-ai-hub")
+
+
+def sync_cursor_plugin_bundle(cursor_dir: Path, backup_enabled: bool) -> bool:
+    """Refresh a recognized local Cursor plugin from the canonical Hub bundle."""
+    source = SOURCE_ROOT / "plugins" / "cursor" / "local-ai-hub"
+    target = cursor_dir / "plugins" / "local" / "local-ai-hub"
+    source_manifest = source / ".cursor-plugin" / "plugin.json"
+    target_manifest = target / ".cursor-plugin" / "plugin.json"
+    if not source.is_dir() or not _provider_manifest_named(source_manifest, "local-ai-hub"):
+        raise RuntimeError(f"Canonical Cursor Hub plugin bundle is missing or invalid: {source}")
+    if target.is_symlink():
+        log(f"WARNING: preserving linked Cursor plugin directory: {target}")
+        return False
+    if not target.exists():
+        return False
+    if not _provider_manifest_named(target_manifest, "local-ai-hub"):
+        log(f"WARNING: preserving unrecognized Cursor plugin directory: {target}")
+        return False
+
+    for source_file in sorted(source.rglob("*")):
+        if not source_file.is_file():
+            continue
+        relative = source_file.relative_to(source)
+        if "__pycache__" in relative.parts or source_file.suffix in {".pyc", ".pyo"}:
+            continue
+        target_file = target / relative
+        if target_file.is_symlink():
+            log(f"WARNING: preserving linked Cursor plugin file: {target_file}")
+            continue
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        content = source_file.read_bytes()
+        if target_file.is_file() and target_file.read_bytes() == content:
+            continue
+        backup(target_file, backup_enabled)
+        shutil.copy2(source_file, target_file)
+    log(f"Cursor plugin bundle refreshed from source: {target}")
+    return True
 
 
 def copilot_hub_plugin_enabled(copilot_dir: Path, project_root: Path | None = None) -> bool:
@@ -1493,6 +1772,42 @@ def generate_provider_plugin_skills() -> None:
             encoding="utf-8",
         )
     log(f"Generated shared provider plugin skills and synchronized manifest versions to {version}.")
+
+
+def sync_packaged_defaults(root: Path | None = None) -> bool:
+    """Copy the repository defaults into the package, which ships that file at runtime."""
+    source_root = (root or SOURCE_ROOT).resolve()
+    repository_defaults = source_root / "defaults.toml"
+    packaged_defaults = source_root / "src" / "local_ai_hub" / "defaults.toml"
+    if repository_defaults.is_symlink() or packaged_defaults.is_symlink():
+        raise RuntimeError("Refusing to synchronize defaults through a symbolic link")
+    try:
+        content = repository_defaults.read_bytes()
+        tomllib.loads(content.decode("utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Cannot safely read canonical repository defaults: {exc}") from exc
+    if not packaged_defaults.parent.is_dir():
+        raise RuntimeError(f"Packaged defaults directory is unavailable: {packaged_defaults.parent}")
+    try:
+        if packaged_defaults.read_bytes() == content:
+            return False
+    except FileNotFoundError:
+        pass
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=packaged_defaults.parent, prefix=".defaults.", suffix=".tmp", delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, packaged_defaults)
+        log(f"Packaged defaults synchronized from repository source: {packaged_defaults}")
+        return True
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def sync_generated_prompt_policies(root: Path | None = None) -> None:
@@ -2445,9 +2760,17 @@ def _configure_gemini_instance_impl(
     project_root: Path | None = None,
     agent_components: dict[str, Any] | None = None,
     manual_actions: list[str] | None = None,
+    interactive: bool = False,
 ) -> None:
     """Configure a single .gemini root (skills, instructions, MCP configs, permissions, schemas)."""
     gemini_dir.mkdir(parents=True, exist_ok=True)
+    if (
+        Path(gemini_dir).resolve() == (Path.home() / ".gemini").resolve()
+        and _agent_component_enabled(agent_components, "gemini", "mcp")
+    ):
+        ensure_gemini_cli_extension(
+            gemini_dir, install_dir, interactive=interactive, manual_actions=manual_actions,
+        )
     gemini_extension_enabled = gemini_cli_extension_active(gemini_dir, project_root)
     antigravity_plugin_present = antigravity_plugin_installed(gemini_dir)
     antigravity_plugin_selected = _agent_component_enabled(agent_components, "antigravity", "plugin")
@@ -2520,10 +2843,11 @@ def _configure_gemini_instance_impl(
         gemini_settings = gemini_dir / "settings.json"
         if gemini_extension_enabled:
             if global_hub_mcp_configured(gemini_settings):
-                action = f"Gemini CLI extension and standalone MCP both configured in {gemini_settings}; remove one route"
-                if manual_actions is not None:
-                    manual_actions.append(action)
-                log(f"Manual agent setup required: {action}")
+                if not remove_managed_gemini_mcp_route(gemini_settings, install_dir, backup_enabled):
+                    action = f"Gemini CLI extension and standalone MCP both configured in {gemini_settings}; review the unowned route manually"
+                    if manual_actions is not None:
+                        manual_actions.append(action)
+                    log(f"Manual agent setup required: {action}")
         else:
             json_mcp_merge(
                 gemini_settings,
@@ -2552,10 +2876,11 @@ def _configure_gemini_instance_impl(
         gemini_settings = gemini_dir / "settings.json"
         if gemini_extension_enabled:
             if global_hub_hooks_configured(gemini_settings, "gemini_cli"):
-                action = f"Gemini CLI extension and standalone hooks both configured in {gemini_settings}; remove one route"
-                if manual_actions is not None:
-                    manual_actions.append(action)
-                log(f"Manual agent setup required: {action}")
+                if not remove_managed_gemini_hooks(gemini_settings, install_dir, backup_enabled):
+                    action = f"Gemini CLI extension and standalone hooks both configured in {gemini_settings}; review the unowned hooks manually"
+                    if manual_actions is not None:
+                        manual_actions.append(action)
+                    log(f"Manual agent setup required: {action}")
         elif not sync_gemini_cli_hooks(gemini_settings, install_dir, hub_python, backup_enabled):
             action = f"Merge Gemini CLI lifecycle hooks manually in {gemini_settings}"
             if manual_actions is not None:
@@ -2575,6 +2900,7 @@ def configure_gemini_instance(
     project_root: Path | None = None,
     agent_components: dict[str, Any] | None = None,
     manual_actions: list[str] | None = None,
+    interactive: bool = False,
 ) -> None:
     global _ACTIVE_INSTALL_ROOT
     previous_root = _ACTIVE_INSTALL_ROOT
@@ -2586,7 +2912,7 @@ def configure_gemini_instance(
         _configure_gemini_instance_impl(
             gemini_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion,
             project_root=project_root, agent_components=agent_components,
-            manual_actions=manual_actions,
+            manual_actions=manual_actions, interactive=interactive,
         )
     finally:
         _ACTIVE_INSTALL_ROOT = previous_root
@@ -2784,25 +3110,19 @@ def refresh_codex_hub_plugin_cache(codex_config: Path, install_dir: Path) -> tup
     if len(selected_roots) != 1 or os.path.normcase(os.path.normpath(str(Path(selected_roots[0]).resolve()))) != expected_root:
         return False, "Codex local-ai-hub marketplace does not uniquely point to this install; plugin cache was not changed"
 
-    try:
-        inventory = run(
-            [codex, "plugin", "list", "--json"],
-            check=False, timeout=30, capture=True,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"Codex plugin inventory failed: {type(exc).__name__}"
-    if inventory.returncode != 0:
-        return False, "Codex plugin inventory failed; plugin cache was not changed"
-    try:
-        plugins = json.loads(inventory.stdout).get("installed", [])
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        return False, "Codex plugin inventory returned invalid JSON; plugin cache was not changed"
-    installed_plugins = [
-        entry for entry in plugins
-        if isinstance(entry, dict) and entry.get("pluginId") == "local-ai-hub@local-ai-hub"
-        and entry.get("installed") is True
-    ]
-    if len(installed_plugins) == 1 and installed_plugins[0].get("version") == expected_version:
+    cache_root = active_codex_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub"
+    cached_versions: set[str] = set()
+    for cached_manifest_path in cache_root.glob("*/plugin.json"):
+        try:
+            cached_manifest = json.loads(cached_manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(cached_manifest, dict) or cached_manifest.get("name") != "local-ai-hub":
+            continue
+        cached_version = cached_manifest.get("version")
+        if isinstance(cached_version, str) and cached_version.strip():
+            cached_versions.add(cached_version.strip())
+    if expected_version in cached_versions:
         return True, f"Codex plugin cache already current ({expected_version})"
 
     try:
@@ -3148,7 +3468,7 @@ def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, 
                 "LOCAL_AI_AGENT": agent,
                 "LOCAL_AI_AGENT_PROFILE": agent,
                 "LOCAL_AI_CONFIG": str(install_dir / "config.toml"),
-                "PYTHONPATH": str(install_dir / "src"),
+                **({} if agent == "gemini" else {"PYTHONPATH": str(install_dir / "src")}),
             },
         }
     }
@@ -3310,6 +3630,9 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
+    sync_packaged_defaults()
+    if install_dir.resolve() != SOURCE_ROOT.resolve():
+        sync_packaged_defaults(install_dir)
     write_all_generated(cfg, install_dir, hub_python, serena)
     sync_generated_prompt_policies()
     if install_dir.resolve() == SOURCE_ROOT.resolve():
@@ -3390,6 +3713,10 @@ def configure_cursor_global_routes(
 ) -> None:
     """Use Cursor's native plugin route when present; avoid duplicate global MCP/hooks."""
     plugin_present = cursor_hub_plugin_installed(cursor_dir)
+    if plugin_present and not sync_cursor_plugin_bundle(cursor_dir, backup_enabled):
+        action = f"Cursor local Hub plugin could not be refreshed safely; review {cursor_dir / 'plugins' / 'local' / 'local-ai-hub'}"
+        manual_actions.append(action)
+        log(f"Manual agent setup required: {action}")
     mcp_path = cursor_dir / "mcp.json"
     hooks_path = cursor_dir / "hooks.json"
     if _agent_component_enabled(agent_components, "cursor", "mcp"):
@@ -3582,6 +3909,7 @@ def _configure_agents_impl(
     *,
     include_companion: bool = True,
     agent_components: dict[str, Any] | None = None,
+    interactive: bool = False,
 ) -> list[str]:
     manual_actions: list[str] = []
     codex_entries = build_codex_mcp_entries(install_dir, hub_python, serena, cfg)
@@ -3749,6 +4077,7 @@ def _configure_agents_impl(
                 configure_gemini_instance(
                     g_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion,
                     agent_components=agent_components, manual_actions=manual_actions,
+                    interactive=interactive,
                 )
     # Additional MCP hosts with their documented user-level skills and rules.
     if agents_cfg.get("cursor", True):
@@ -3960,6 +4289,7 @@ def configure_agents(
     *,
     include_companion: bool = True,
     agent_components: dict[str, Any] | None = None,
+    interactive: bool = False,
 ) -> list[str]:
     global _ACTIVE_INSTALL_ROOT
     previous_root = _ACTIVE_INSTALL_ROOT
@@ -3972,6 +4302,7 @@ def configure_agents(
             install_dir, hub_python, serena, cfg,
             include_companion=include_companion,
             agent_components=agent_components,
+            interactive=interactive,
         )
     finally:
         _ACTIVE_INSTALL_ROOT = previous_root
@@ -4104,6 +4435,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         hub_python = venv_python(install_dir / ".venv")
         if not hub_python.exists():
             hub_python = Path(sys.executable)
+        sync_packaged_defaults()
         write_all_generated(cfg, SOURCE_ROOT, hub_python)
         try:
             generate_provider_plugin_skills()
@@ -4113,6 +4445,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             return 1
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
+            sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
             for manual_action in configure_agents(
                 install_dir, hub_python, None, cfg,
@@ -4590,6 +4923,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
                 install_dir, hub_python, serena, cfg,
                 include_companion=include_companion,
                 agent_components=setup_choices,
+                interactive=not args.non_interactive and sys.stdin.isatty(),
             )
         else:
             write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
