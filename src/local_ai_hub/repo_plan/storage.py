@@ -864,6 +864,20 @@ class RepoPlanStorage:
         if previous is not None and previous["parent_revision"] != expected_revision:
             raise RepoPlanConflictError("Handoff attempt parent must match the adopted record revision")
 
+    def _reject_handoff_lineage_reset(self, path: str, data: bytes, actual: str) -> None:
+        if not actual or not path.startswith(".local-ai-hub/agent-os/handoffs/"):
+            return
+        from ..repo_knowledge import validate_knowledge_file
+
+        candidate = validate_knowledge_file(path, data)
+        if candidate["payload"].get("previous_attempt") is not None:
+            return
+        previous = self._read_record(self.repo_root / path, max_record_bytes=10000)
+        if self._target_sha256(path) != actual:
+            raise RepoPlanConflictError("Handoff changed during lineage check")
+        if not isinstance(previous.get("payload"), dict) or previous["payload"].get("previous_attempt") is not None:
+            raise RepoPlanConflictError("Cannot reset published handoff attempt ancestry")
+
     @staticmethod
     def _validate_knowledge_batch(candidates: list[tuple[str, bytes, str]]) -> None:
         from ..repo_knowledge import _MANIFEST, validate_knowledge_file
@@ -962,6 +976,8 @@ class RepoPlanStorage:
                 actual = self._target_sha256(path)
                 if expected is not None and expected != actual:
                     raise RepoPlanConflictError(f"Content revision conflict on {path}: expected {expected}, found {actual}")
+                if operation in {"save_knowledge", "save_knowledge_batch"}:
+                    self._reject_handoff_lineage_reset(path, data, actual)
                 targets.append(IntentTarget(path, actual, compute_bytes_sha256(data),
                                             candidate_base64=base64.b64encode(data).decode("ascii")))
             changed = [target.rel_path for target in targets if target.expected_sha256 != target.candidate_sha256]
@@ -1196,6 +1212,8 @@ class RepoPlanStorage:
                             if self._target_sha256(target.rel_path) != actual:
                                 raise RepoPlanConflictError("Recovery target changed during reconciliation")
                             if actual != target.candidate_sha256:
+                                if intent.operation in {"save_knowledge", "save_knowledge_batch"}:
+                                    self._reject_handoff_lineage_reset(target.rel_path, data, actual)
                                 self._atomic_write_bytes(self.repo_root / target.rel_path, data)
                             target.status = "confirmed"
                             self._save_intent(intent)
