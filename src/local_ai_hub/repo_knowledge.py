@@ -369,9 +369,12 @@ class RepoKnowledgeStore:
         from .repo_knowledge_graph import project_dependency_freshness
 
         records, graph_issues = project_dependency_freshness(records)
+        if len(graph_issues) > 128:
+            complete = False
+            issues.append({"kind": "graph", "code": "issue_limit"})
         return {"project_id": manifest["project_id"], "mode": manifest["mode"],
                 "complete": complete, "records": records, "issues": issues,
-                "graph_issues": graph_issues}
+                "graph_issues": graph_issues[:128]}
 
 
 def _digest_value(value: Any) -> str:
