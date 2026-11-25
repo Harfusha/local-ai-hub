@@ -314,3 +314,50 @@ def test_handoff_untracked_private_and_unsafe_dependency_is_not_hashed(tmp_path)
         {"path": ".env", "content_digest": ""}, {"path": "untracked.py", "content_digest": ""},
     ]
     assert inspect_handoff_dependencies(store, record)["resume_allowed"] is False
+
+
+def test_agent_state_inventory_reads_only_schema_and_rejects_unknown_fields(tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    from local_ai_hub.agent_state_inventory import inspect_agent_state_inventory
+
+    db = tmp_path / "agent_state.sqlite"
+    assert inspect_agent_state_inventory(tmp_path)["reason"] == "database_unavailable"
+    assert not db.exists()
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("""CREATE TABLE agent_tasks_projection (
+            task_id TEXT PRIMARY KEY, status TEXT NOT NULL, owner TEXT NOT NULL,
+            lease_id TEXT NOT NULL, contract TEXT NOT NULL, context TEXT NOT NULL,
+            checkpoint TEXT NOT NULL, receipts TEXT NOT NULL, heartbeat_expires_at REAL NOT NULL,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+        con.execute("INSERT INTO agent_tasks_projection VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    ("task-a", "planned", "private-owner", "private-lease", "private-contract",
+                     "{}", "{}", "{}", 0, 0, 0))
+        con.commit()
+    before = db.read_bytes()
+    report = inspect_agent_state_inventory(tmp_path)
+    assert report["success"] and report["complete"]
+    assert not report["canonical_cutover_supported"]
+    assert not report["row_values_read"]
+    assert not report["classification_is_export_authority"]
+    fields = {row["field"]: row["classification"] for row in report["tables"][0]["fields"]}
+    assert fields["contract"] == "G+L"
+    assert fields["lease_id"] == "L"
+    assert fields["receipts"] == "L"
+    assert "private-contract" not in str(report) and "private-lease" not in str(report)
+    assert db.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["agent_state.sqlite"]
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("ALTER TABLE agent_tasks_projection ADD COLUMN new_durable_field TEXT")
+        con.execute("CREATE TABLE new_store (value TEXT)")
+        con.commit()
+    report = inspect_agent_state_inventory(tmp_path)
+    assert report["success"] and not report["complete"]
+    rows = {row["table"]: row for row in report["tables"]}
+    assert rows["new_store"]["state"] == "unclassified"
+    assert {"field": "new_durable_field", "classification": "unclassified"} in rows["agent_tasks_projection"]["fields"]
+    sidecar = tmp_path / "agent_state.sqlite-wal"
+    sidecar.write_bytes(b"pending")
+    assert inspect_agent_state_inventory(tmp_path)["reason"] == "offline_snapshot_required"
+    assert sidecar.read_bytes() == b"pending"
