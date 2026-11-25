@@ -10,8 +10,8 @@ from local_ai_hub.preprocess import ProjectPreprocessor
 def test_rag_pending_batch_does_not_enumerate_entire_inventory(tmp_path):
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'pending.py', 'abc', 0, NULL, 0, 10)", (str(tmp_path),))
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size) VALUES(?, 'pending.py', 'abc', 0, NULL, 0, 10)", (str(tmp_path),))
         con.commit()
     statements = []
 
@@ -46,9 +46,9 @@ def test_rag_completion_does_not_mark_a_new_version_as_indexed(tmp_path, change)
     (root / "file.py").write_text("new", encoding="utf-8")
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old')", (str(root),))
         con.commit()
 
@@ -83,9 +83,9 @@ def test_rag_uses_current_text_and_only_reuses_source_text_from_other_roots(tmp_
     (root / "file.py").write_text("new", encoding="utf-8")
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'new', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'file.py', 'new', 0, NULL, 0, 3, 0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old', 'source')", (str(root),))
         con.execute("INSERT INTO source_index VALUES('donor', 'file.py', 'new', 'new', ?)", (donor_origin,))
         con.commit()
@@ -115,10 +115,10 @@ def test_recreated_file_is_not_removed_by_old_rag_batch(tmp_path, recreate):
     root.mkdir()
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old')", (str(root),))
         con.execute("INSERT INTO source_fts VALUES(?, 'file.py', 'old')", (str(root),))
         con.commit()
@@ -198,10 +198,10 @@ def test_rag_cleanup_escaped_path_removes_ref_safely(tmp_path):
 
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'escaped.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'escaped.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'escaped.py', 'old', 'old')", (str(root),))
         con.execute("INSERT INTO source_fts VALUES(?, 'escaped.py', 'old')", (str(root),))
         con.commit()
@@ -241,10 +241,10 @@ def test_rag_idle_skips_full_inventory_scan_when_digest_matches(tmp_path):
     root.mkdir()
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
         con.execute("CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)")
         con.execute("CREATE TABLE projects(root TEXT, phase TEXT, status TEXT, updated_at REAL)")
-        con.execute("INSERT INTO file_refs VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0)", (str(root),))
         con.execute("INSERT INTO file_refs_revision VALUES(?, 1)", (str(root),))
         con.execute("INSERT INTO projects VALUES(?, 'rag', 'running', 0)", (str(root),))
         con.commit()
@@ -351,11 +351,11 @@ def test_rag_marks_policy_excluded_paths_complete_to_avoid_retry_loop(tmp_path):
     with closing(sqlite3.connect(db)) as con:
         con.execute(
             "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, "
-            "rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)"
+            "rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)"
         )
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)")
         con.execute(
-            "INSERT INTO file_refs VALUES(?, 'excluded.py', 'hash', 0, NULL, 0, 8, 0)",
+            "INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'excluded.py', 'hash', 0, NULL, 0, 8, 0)",
             (str(root),),
         )
         con.commit()
