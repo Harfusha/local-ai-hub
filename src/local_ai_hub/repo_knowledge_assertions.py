@@ -96,3 +96,73 @@ def inspect_source_assertion(root: Path, assertion: Mapping[str, Any], expected:
         "authority": "static_literal_only",
     })
     return output
+
+
+def validate_verification_targets(value: Any) -> None:
+    """Explicit static Python test locators; never executable commands."""
+    from .repo_task_handoff import _safe_relative_path
+
+    if not isinstance(value, list) or not 1 <= len(value) <= 4:
+        raise RepoPlanValidationError("Verification targets require 1 through 4 locators")
+    seen: set[tuple[str, str]] = set()
+    for target in value:
+        if not isinstance(target, dict) or set(target) != {"path", "symbol"}:
+            raise RepoPlanValidationError("Invalid verification target")
+        path, symbol = target["path"], target["symbol"]
+        if (
+            not _safe_relative_path(path) or not path.endswith(".py")
+            or any(part.startswith(".") or _PRIVATE.search(part) for part in path.split("/"))
+            or not isinstance(symbol, str) or len(symbol) > 160
+            or not re.fullmatch(r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?test_[A-Za-z0-9_]+", symbol)
+            or _PRIVATE.search(symbol)
+        ):
+            raise RepoPlanValidationError("Unsupported or private verification target")
+        key = (path, symbol)
+        if key in seen:
+            raise RepoPlanValidationError("Duplicate verification target")
+        seen.add(key)
+
+
+def inspect_verification_target(root: Path, target: Mapping[str, Any]) -> dict[str, Any]:
+    """Observe a named test declaration without importing or running it."""
+    validate_verification_targets([dict(target)])
+    path, symbol = target["path"], target["symbol"]
+    output: dict[str, Any] = {
+        "path": path, "symbol": symbol, "status": "unknown",
+        "runtime_verified": False, "authority": "static_test_declaration_only",
+    }
+    source = _evidence_path_under_root(str(root), path, strict=True)
+    if source is None or not source.is_file():
+        return output
+    result = read_source_slice(str(root), path, line_end=200, max_chars=12000)
+    if (
+        result.get("success") is not True or result.get("complete") is not True
+        or result.get("total_lines", 201) > 200 or result.get("relative_path") != path
+        or _evidence_path_under_root(str(root), path, strict=True) != source
+    ):
+        return output
+    try:
+        tree = ast.parse(result["text"])
+    except (SyntaxError, ValueError, RecursionError):
+        return output
+    parts = symbol.split(".")
+    body = tree.body
+    if len(parts) == 2:
+        classes = [node for node in body if isinstance(node, ast.ClassDef) and node.name == parts[0]]
+        if len(classes) > 1:
+            return output
+        body = classes[0].body if classes else []
+    matches = [
+        node for node in body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == parts[-1]
+    ]
+    if len(matches) > 1:
+        return output
+    node = matches[0] if matches else None
+    output.update({
+        "status": "declared" if node is not None else "not_declared",
+        "source": {"schema_version": 1, "path": path, "content_digest": result["file_sha256"],
+                   "start_line": node.lineno if node else 1,
+                   "end_line": (node.end_lineno or node.lineno) if node else max(1, result["total_lines"])},
+    })
+    return output
