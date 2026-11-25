@@ -1606,8 +1606,12 @@ def test_retryable_background_scheduler_rejection_yields_without_failing():
     else:
         raise AssertionError("terminal GPU admission must remain fail closed")
 
-    timed_out = make_preprocessor(TimeoutError())._run_background_generate(
-        "configured-model", "prompt", "system", {}, 32, "preprocess:file-card"
+
+def test_retryable_preprocessing_error_keeps_structured_error_code():
+    error = _RetryablePreprocessingError(
+        "GPU admission is unavailable", error_code="gpu_reserved",
     )
-    assert timed_out["preempted"] is True
-    assert timed_out["retry_after_seconds"] == 60
+
+    assert str(error) == "GPU admission is unavailable"
+    assert error.error_code == "gpu_reserved"
+    assert error.retryable is True

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import local_ai_hub.deterministic as deterministic
 from local_ai_hub.deterministic import DeterministicEngine
+import local_ai_hub.schema_file_bounds as schema_file_bounds
 
 
 @contextmanager
@@ -224,6 +225,8 @@ def test_migration_drift_does_not_report_sync_without_live_database(tmp_path: Pa
 
     assert result["success"] is False
     assert result["status"] == "database_missing"
+    assert result["error_code"] == "migration_database_missing"
+    assert result["status_code"] == 404
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert result["in_sync"] is None
@@ -258,6 +261,8 @@ def test_migration_drift_rejects_database_outside_root(tmp_path: Path) -> None:
 
     assert result["success"] is False
     assert result["status"] == "database_path_outside_root"
+    assert result["error_code"] == "migration_database_path_invalid"
+    assert result["status_code"] == 400
     assert result["in_sync"] is None
     assert result["drift_detected"] is None
 
@@ -308,7 +313,7 @@ def test_migration_drift_bounds_directory_entry_scan(
     with _connect(db_file):
         pass
     (tmp_path / "models.py").write_text("class User: pass\n", encoding="utf-8")
-    monkeypatch.setattr(deterministic, "_MAX_SCHEMA_SCAN_ENTRIES", 1)
+    monkeypatch.setattr(schema_file_bounds, "_MAX_SCHEMA_SCAN_ENTRIES", 1)
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
     result = engine.migration_drift(str(tmp_path), str(db_file))
@@ -329,7 +334,7 @@ def test_migration_drift_bounds_python_model_fallback_scan(
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
     (tmp_path / "one.py").write_text("class One: pass\n", encoding="utf-8")
     (tmp_path / "two.py").write_text("class Two: pass\n", encoding="utf-8")
-    monkeypatch.setattr(deterministic, "_MAX_SCHEMA_SCAN_FILES", 1)
+    monkeypatch.setattr(schema_file_bounds, "_MAX_SCHEMA_SCAN_FILES", 1)
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
     result = engine.migration_drift(str(tmp_path), str(db_file))

@@ -2717,7 +2717,10 @@ class AffinityScheduler:
                 "lease_id": lease_id, "generation": generation,
             }
             if not released:
-                result["error"] = "lease is missing, changed, reservation-bound, or owner process is not confirmed gone"
+                result.update(
+                    error="lease is missing, changed, reservation-bound, or owner process is not confirmed gone",
+                    error_code="gpu_lease_conflict", status_code=409, terminal=True, retryable=False,
+                )
             return result
         if action == "release_scheduler_capacity_lease":
             parts = owner.split(":") if isinstance(owner, str) else []
@@ -2756,7 +2759,10 @@ class AffinityScheduler:
                 "lease_id": lease_id, "generation": generation,
             }
             if not released:
-                result["error"] = "lease is missing, changed, created during this Hub run, or reservation-bound"
+                result.update(
+                    error="lease is missing, changed, created during this Hub run, or reservation-bound",
+                    error_code="gpu_lease_conflict", status_code=409, terminal=True, retryable=False,
+                )
             return result
         if action != "release":
             return {"success": False, "operation_not_started": True,

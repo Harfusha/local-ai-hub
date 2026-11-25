@@ -69,6 +69,29 @@ def _api_result_http_response(result: Any) -> tuple[int, Any]:
         status = 422
     elif body.get("error_code") == "local_model_error":
         status = 502
+    elif body.get("error_code") == "gpu_reserved":
+        status = 503
+    elif body.get("error_code") == "gpu_outcome_unknown":
+        status = 409
+    elif body.get("error_code") in {
+        "index_stale",
+        "gpu_lease_conflict",
+    }:
+        status = 409
+    elif body.get("error_code") == "invalid_project_configuration":
+        status = 400
+    elif body.get("error_code") == "migration_database_missing":
+        status = 404
+    elif body.get("error_code") == "migration_database_path_invalid":
+        status = 400
+    elif body.get("error_code") == "package_manifest_unavailable":
+        status = 422
+    elif body.get("error_code") in {
+        "review_diff_fragment_exceeds_budget",
+        "review_prompt_budget_too_small",
+        "review_diff_segment_limit_exceeded",
+    }:
+        status = 422
     else:
         status = 503 if retryable else (409 if body.get("operation_not_started") is True else 500)
     body.setdefault("status_code", status)
@@ -1263,16 +1286,27 @@ def _response_phase_latency(data: Any) -> dict[str, float]:
     return result
 
 
-def _log_http_failure(logger: Any, method: str, path: str, exc: BaseException) -> None:
+def _log_http_failure(
+    logger: Any,
+    method: str,
+    path: str,
+    exc: BaseException,
+    *,
+    request_id: str = "",
+) -> None:
     # Stack locations only: messages, source lines and locals can contain secrets.
     frames = traceback.extract_tb(exc.__traceback__, limit=-32)
     stack = "\n".join(
         f"  File {frame.filename!r}, line {frame.lineno}, in {frame.name}"
         for frame in frames
     )
+    safe_request_id = "".join(
+        char for char in str(request_id)[:96]
+        if (char.isascii() and char.isalnum()) or char in "_.:-"
+    )
     logger.error(
-        "%s request failed path=%s pid=%s error_type=%s traceback=\n%s",
-        method, urlparse(path).path, os.getpid(), type(exc).__name__, stack or "(unavailable)",
+        "%s request failed path=%s request_id=%s pid=%s error_type=%s traceback=\n%s",
+        method, urlparse(path).path, safe_request_id, os.getpid(), type(exc).__name__, stack or "(unavailable)",
     )
 
 

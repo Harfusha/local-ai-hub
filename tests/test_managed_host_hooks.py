@@ -534,8 +534,10 @@ def test_cursor_shell_hook_denies_policy_violations_and_keeps_user_approval(tmp_
         handle_host_event(tmp_path, "cursor", oversized)
 
 
-def test_codex_read_hook_enforces_shared_80_line_limit(tmp_path):
-    from local_ai_hub.repo_plan.host_hooks import handle_host_event
+def test_codex_read_hook_enforces_shared_80_line_limit(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan import host_hooks
+    handle_host_event = host_hooks.handle_host_event
+    monkeypatch.setattr(host_hooks, "_is_hub_online", lambda: False, raising=False)
 
     source = tmp_path / "long.py"
     source.write_text("\n".join(f"line_{i}" for i in range(81)), encoding="utf-8")
@@ -549,6 +551,61 @@ def test_codex_read_hook_enforces_shared_80_line_limit(tmp_path):
     result = handle_host_event(tmp_path, "codex", payload)
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "> 80 lines" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_gemini_before_tool_routes_source_reads_and_bounded_search_through_hub(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan import host_hooks
+    monkeypatch.setattr(host_hooks, "_is_hub_online", lambda: True, raising=False)
+    source = tmp_path / "small.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    base = {
+        "hook_event_name": "BeforeTool",
+        "session_id": "session-1",
+        "cwd": str(tmp_path),
+    }
+
+    read = host_hooks.handle_host_event(tmp_path, "gemini_cli", {
+        **base, "tool_name": "read_file", "tool_input": {"file_path": str(source)},
+    })
+    search = host_hooks.handle_host_event(tmp_path, "gemini_cli", {
+        **base, "tool_name": "run_shell_command", "tool_input": {"command": "rg -m 5 needle src"},
+    })
+
+    assert read["decision"] == "deny"
+    assert "local_ai_repo" in read["reason"]
+    assert search["decision"] == "deny"
+    assert "local_ai_repo" in search["reason"]
+
+    powershell_read = host_hooks.handle_host_event(tmp_path, "gemini_cli", {
+        **base,
+        "tool_name": "run_shell_command",
+        "tool_input": {"command": "Get-Content .\\small.py"},
+    })
+    recursive_list = host_hooks.handle_host_event(tmp_path, "gemini_cli", {
+        **base,
+        "tool_name": "run_shell_command",
+        "tool_input": {"command": "Get-ChildItem -Recurse src"},
+    })
+    assert powershell_read["decision"] == "deny"
+    assert "local_ai_artifact" in powershell_read["reason"]
+    assert recursive_list["decision"] == "deny"
+    assert "local_ai_repo" in recursive_list["reason"]
+
+
+def test_gemini_before_tool_keeps_native_small_reads_when_hub_is_offline(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan import host_hooks
+
+    monkeypatch.setattr(host_hooks, "_is_hub_online", lambda: False, raising=False)
+    source = tmp_path / "small.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    result = host_hooks.handle_host_event(tmp_path, "gemini_cli", {
+        "hook_event_name": "BeforeTool",
+        "session_id": "session-offline",
+        "cwd": str(tmp_path),
+        "tool_name": "read_file",
+        "tool_input": {"file_path": str(source)},
+    })
+    assert result == {}
 
 
 def test_gemini_session_start_injects_static_laya_context_without_prompt(tmp_path, monkeypatch):

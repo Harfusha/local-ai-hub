@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,7 @@ class HierarchicalSpeculativeCascade:
         try:
             raw_draft = draft_model_fn(clean_prefix, k)
             draft_tokens = _validate_tokens(raw_draft)[:k]
-        except Exception as exc:
+        except Exception:
             draft_tokens = []
 
         if not draft_tokens:

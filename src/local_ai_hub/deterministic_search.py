@@ -92,6 +92,7 @@ class DeterministicSearchMixin:
         except (OSError, RuntimeError, ValueError, UnicodeError):
             return {"success": False, "status": "invalid", "parse_complete": False,
                     "advisory_complete": False, "error": "manifest unavailable or outside permitted repository input",
+                    "error_code": "package_manifest_unavailable", "status_code": 422,
                     "terminal": True, "retryable": False}
 
     def structural_search(

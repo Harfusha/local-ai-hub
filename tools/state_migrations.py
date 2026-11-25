@@ -13,7 +13,7 @@ import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from local_ai_hub.state_lifecycle import (
     BOOTSTRAP_STATE_ENTRIES,
@@ -731,7 +731,7 @@ def discard_stale_migration_artifacts(
     if not state.is_dir():
         raise ValueError(f"state migration cleanup requires an existing directory: {state}")
 
-    current_version = read_state_version(state)
+    _ = read_state_version(state)
     removed: list[str] = []
 
     # 1. Clean up stale staging directories (.{state.name}.migration-*)

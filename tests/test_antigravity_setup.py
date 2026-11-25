@@ -640,8 +640,26 @@ def test_remove_duplicate_antigravity_hooks_removes_only_exact_generated_group(t
 
 
 def test_provider_plugin_skills_are_generated_from_canonical_sources(tmp_path, monkeypatch):
+    import json
+
     monkeypatch.setattr(setup, "SOURCE_ROOT", tmp_path)
     providers = ("antigravity", "claude", "codex", "copilot", "cursor", "devin", "gemini")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nversion = "8.1.0"\n', encoding="utf-8",
+    )
+    manifests = {
+        "antigravity": "plugin.json",
+        "claude": ".claude-plugin/plugin.json",
+        "codex": "plugin.json",
+        "copilot": "plugin.json",
+        "cursor": ".cursor-plugin/plugin.json",
+        "devin": "plugin.json",
+        "gemini": "gemini-extension.json",
+    }
+    for provider, relative_manifest in manifests.items():
+        manifest = tmp_path / "plugins" / provider / "local-ai-hub" / relative_manifest
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
     for skill in ("local-ai-orchestrator", "plan-led-work", "token-economizer"):
         source = tmp_path / "skills" / skill / "references" / "generated.md"
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -848,8 +866,9 @@ def test_antigravity_hook_session_start_injects_bounded_static_hub_guidance(monk
     assert "private prompt" not in message
 
 
-def test_antigravity_hook_pre_tool_use_read_file(tmp_path):
+def test_antigravity_hook_pre_tool_use_read_file(tmp_path, monkeypatch):
     from local_ai_hub import antigravity_hook
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: False)
 
     # Whitelisted path
     res = antigravity_hook.handle_pre_tool_use({
@@ -896,8 +915,9 @@ def test_antigravity_hook_pre_tool_use_read_file(tmp_path):
     assert res["decision"] == "allow"
 
 
-def test_antigravity_hook_pre_tool_use_run_command():
+def test_antigravity_hook_pre_tool_use_run_command(monkeypatch):
     from local_ai_hub import antigravity_hook
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: False)
 
     # Unconstrained searches denied
     for bad_cmd in ["dir /s", "dir /s /b", "findstr /s foo *", "grep -r foo .", "rg pattern", "ripgrep test"]:
@@ -913,6 +933,52 @@ def test_antigravity_hook_pre_tool_use_run_command():
             "toolCall": {"name": "run_command", "args": {"CommandLine": good_cmd}}
         })
         assert res["decision"] == "allow", f"expected allow for {good_cmd}"
+
+
+def test_antigravity_hook_routes_source_reads_through_hub_when_online(tmp_path, monkeypatch):
+    from local_ai_hub import antigravity_hook
+
+    source = tmp_path / "small.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: True, raising=False)
+
+    result = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(source)}}
+    })
+
+    assert result["decision"] == "deny"
+    assert "local_ai_repo" in result["reason"]
+    assert "local_ai_artifact" in result["reason"]
+
+
+def test_antigravity_hook_routes_bounded_source_search_through_hub_when_online(monkeypatch):
+    from local_ai_hub import antigravity_hook
+
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: True, raising=False)
+    for command in (
+        "rg -m 5 needle src",
+        "Get-ChildItem -Path src -Recurse | Select-String -Pattern needle",
+    ):
+        result = antigravity_hook.handle_pre_tool_use({
+            "toolCall": {"name": "run_command", "args": {"CommandLine": command}}
+        })
+
+        assert result["decision"] == "deny", command
+        assert "local_ai_repo" in result["reason"], command
+
+
+def test_antigravity_hook_keeps_native_source_fallback_when_hub_offline(tmp_path, monkeypatch):
+    from local_ai_hub import antigravity_hook
+
+    source = tmp_path / "small.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: False, raising=False)
+
+    result = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(source)}}
+    })
+
+    assert result["decision"] == "allow"
 
 
 

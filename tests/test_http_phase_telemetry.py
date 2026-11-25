@@ -149,3 +149,82 @@ def test_json_response_records_safe_project_name_in_http_history(tmp_path, monke
         assert row == (".local-ai-hub",)
     finally:
         store.close()
+
+
+def test_http_failure_preserves_explicit_terminal_retryable_metadata(monkeypatch):
+    from types import SimpleNamespace
+    import time
+
+    import local_ai_hub.http_server as http_server
+
+    events = []
+    errors = []
+
+    class Telemetry:
+        def record_http(self, **event):
+            events.append(event)
+
+        def record_error(self, *args, **kwargs):
+            errors.append((args, kwargs))
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        telemetry=Telemetry(),
+        config={"observability": {"exclude_http_paths": []}},
+        debug_traces=None,
+        endpoint_stats=None,
+    ))
+    handler = object.__new__(Handler)
+    handler.headers = {}
+    handler.command = "POST"
+    handler.path = "/api/repo/find_files"
+    handler._request_path = handler.path
+    handler._request_started = time.perf_counter()
+    handler._telemetry_finished = False
+    handler._trace_request_id = "req-find-files"
+    handler._trace_id = ""
+    handler._request_root = ""
+    handler._finish_debug_trace = lambda *_args, **_kwargs: None
+    handler._close_trace_context = lambda: None
+    handler._agent = lambda: "antigravity"
+    handler.close_connection = False
+    handler.wfile = SimpleNamespace(write=lambda body: len(body))
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+    handler._common_headers = lambda **_kwargs: None
+
+    handler._send(503, {
+        "success": False,
+        "status_code": 503,
+        "error": "file inventory exceeded its path limit",
+        "terminal": True,
+        "retryable": False,
+    })
+
+    assert events[0]["terminal"] is True
+    assert events[0]["retryable"] is False
+    assert errors[0][1]["retryable"] is False
+
+
+def test_http_failure_log_includes_request_id_without_exception_message():
+    import local_ai_hub.http_server as http_server
+
+    class Logger:
+        calls = []
+
+        def error(self, message, *args):
+            self.calls.append((message, args))
+
+    logger = Logger()
+    http_server._log_http_failure(
+        logger,
+        "POST",
+        "/api/async-jobs?secret=must-not-log",
+        RuntimeError("private request content"),
+        request_id="req-async-500",
+    )
+
+    rendered = logger.calls[0][0] % logger.calls[0][1]
+    assert "request_id=req-async-500" in rendered
+    assert "private request content" not in rendered
+    assert "secret=must-not-log" not in rendered

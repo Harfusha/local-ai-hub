@@ -1308,7 +1308,13 @@ class HTTPPostRoutesMixin:
                 return
             logger = getattr(services_module.APP, "logger", None)
             if logger is not None:
-                services_module._log_http_failure(logger, "POST", path, exc)
+                services_module._log_http_failure(
+                    logger,
+                    "POST",
+                    path,
+                    exc,
+                    request_id=str(getattr(self, "_trace_request_id", "") or ""),
+                )
             try:
                 self._send(500, {
                     "success": False,

@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import json
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -1082,6 +1083,24 @@ class AsyncJobManager:
             return detail[:500]
         return None
 
+    @staticmethod
+    def _safe_failure_metadata(result_json: str) -> dict[str, Any]:
+        """Keep bounded machine-readable failure fields when exposing a failed job."""
+        try:
+            result_value = json.loads(result_json or "{}")
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(result_value, dict):
+            return {}
+        metadata: dict[str, Any] = {}
+        error_code = result_value.get("error_code")
+        if isinstance(error_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):
+            metadata["error_code"] = error_code
+        status_code = result_value.get("status_code")
+        if type(status_code) is int and 400 <= status_code <= 599:
+            metadata["status_code"] = status_code
+        return metadata
+
     def submit(self, action: str, payload: dict[str, Any], *, dispatch_delay_seconds: float = 0.0, **fields: Any) -> dict[str, Any]:
         self._reject_retired_fields(fields)
         if self._shutdown.is_set():
@@ -1144,6 +1163,8 @@ class AsyncJobManager:
                     self._stats["coalesced"] += 1
                     replay = {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
                     if state == "failed":
+                        replay.update(terminal=True, retryable=False)
+                        replay.update(self._safe_failure_metadata(str(old_result_json or "")))
                         error_detail = self._safe_failure_detail(str(old_result_json or ""))
                         if error_detail:
                             replay["error_detail"] = error_detail
@@ -1881,6 +1902,7 @@ class AsyncJobManager:
         elif state == "outcome_unknown":
             result["error"] = str(row["error"] or "async job outcome unknown")
         elif state == "failed":
+            result.update(self._safe_failure_metadata(str(row["result_json"] or "")))
             error_detail = self._safe_failure_detail(str(row["result_json"] or ""))
             if error_detail:
                 result["error_detail"] = error_detail
@@ -1967,6 +1989,7 @@ class AsyncJobManager:
                 except (TypeError, ValueError):
                     pass
             elif state == "failed":
+                result.update(self._safe_failure_metadata(str(row["result_json"] or "")))
                 error_detail = self._safe_failure_detail(str(row["result_json"] or ""))
                 if error_detail:
                     result["error_detail"] = error_detail

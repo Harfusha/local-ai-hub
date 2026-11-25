@@ -624,7 +624,7 @@ def test_runtime_outcome_records_server_derived_baseline_for_typed_category(cand
     [
         ("model_route", "model_router_classify", ["fast", "smart", "generic"], "fast"),
         ("context_budget", "repo_context_token_budget", ["compact", "standard", "expanded"], "standard"),
-        ("subagent_budget", "agent_os_delegation_budget", ["single_agent", "parallel_split", "swarm"], "single_agent"),
+        ("subagent_budget", "request_delegation_budget", ["single_agent", "parallel_split", "swarm"], "single_agent"),
     ],
 )
 def test_runtime_outcome_accepts_registered_automatic_category_baselines(

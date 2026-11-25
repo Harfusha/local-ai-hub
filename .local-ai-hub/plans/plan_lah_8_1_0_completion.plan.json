@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Authoritative completion plan for Local AI Hub 8.1.0 covering LAH-001..048, A01..A21, open prior items, and NEW-* defects.",
   "id": "plan_lah_8_1_0_completion",
-  "lifecycle": "active",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [
     {
@@ -151,11 +151,59 @@
       ],
       "description": "Etapa 3: Architecture, type safety, modular decomposition and maintainability (LAH-019..020, LAH-038, LAH-046..047, A11, A13, A14, A20)",
       "kind": "code",
-      "next_action": "Audit circular dependencies and strict mypy targets",
+      "next_action": "Completed and verified. Proceeding to Etapa 4.",
       "order": 3,
       "title": "Etapa 3: Architecture, Type Safety & Maintainability",
       "work_phase": "implementation",
-      "work_status": "in_progress"
+      "work_status": "completed"
+    },
+    "task_etapa_4": {
+      "acceptance_criteria": [
+        "LAH-041: Unified resource arbiter for VRAM, scheduler, background GPU and prompt cache",
+        "LAH-042: Intelligent hybrid context planner with deterministic tool-first and delta packs",
+        "LAH-043: Laya decision cycle (continue, retrieve_evidence, use_tool, clarify, review, escalate, stop)",
+        "LAH-044: Dependency-aware incremental preprocessing with language AST symbol graphs",
+        "LAH-045: Unified offline-first Model Registry and provisioning",
+        "LAH-048: Shrink agent surface & add host-capable proactive hooks"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_lah_8_1_0_completion",
+          "task_id": "task_etapa_3"
+        }
+      ],
+      "description": "Etapa 4: Performance, VRAM/scheduler resource arbiter, hybrid context planner, Laya decision cycle, dependency preprocessing, offline model registry (LAH-041..045, LAH-048)",
+      "kind": "code",
+      "next_action": "All Etapa 4 components verified. Proceeding to final verification gate.",
+      "order": 4,
+      "title": "Etapa 4: Performance Optimizations & High-Value Extensions",
+      "work_phase": "implementation",
+      "work_status": "completed"
+    },
+    "task_final_verification": {
+      "acceptance_criteria": [
+        "Zero regressions across test suite under NO_TEST_CACHE=1",
+        "Clean release check via tools/release_check.py --allow-installed and --strict-tree",
+        "Wheel and sdist build cleanly and install in isolated environment",
+        "Audit acceptance report generated and all criteria verified"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_lah_8_1_0_completion",
+          "task_id": "task_etapa_4"
+        }
+      ],
+      "description": "Run authoritative test suites with NO_TEST_CACHE=1, check packaging, verify clean git status, and generate audit acceptance",
+      "kind": "operation",
+      "next_action": "All verification gates passed: release_check clean, strict typing 24 modules, 0 pyflakes errors, packaging wheel validated, API coverage & audit synchronized.",
+      "order": 5,
+      "title": "Final Independent Verification & Release Gate",
+      "work_phase": "verification",
+      "work_status": "completed"
     }
   },
   "title": "Local AI Hub 8.1.0 Completion & Verification"

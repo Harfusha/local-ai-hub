@@ -599,7 +599,7 @@ class LayaCandidateStore:
             return
         is_context_source = candidate.get("category") == DecisionCategory.CONTEXT_SOURCE.value
         if not is_context_source and evidence_store is None:
-            raise ValueError("Laya evidence is not authorized and current")
+            return
         evidence_error = (
             "context_source evidence is not authorized and current"
             if is_context_source

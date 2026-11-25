@@ -431,12 +431,20 @@ def _safe_error_message(value: Any, *, error_type_override: str = "") -> str:
 
 
 _SAFE_ERROR_CODE_MESSAGES = {
+    "gpu_reserved": "GPU admission unavailable",
+    "gpu_outcome_unknown": "GPU inference outcome unknown",
     "local_backend_transport": "local backend transport failure",
     "local_model_error": "local model inference failed",
+    "model_output_truncated": "model output was truncated",
     "model_request_timeout": "model request timed out",
     "circuit_open": "model circuit open",
     "http_request_failed": "HTTP request failed",
     "http_stream_failed": "HTTP stream failed",
+    "embedding_space_rebuild_required": "embedding space rebuild required",
+    "embedding_space_recovery_failed": "embedding space recovery failed",
+    "embedding_count_mismatch": "embedding count mismatch",
+    "embedding_identity_changed": "embedding identity changed",
+    "invalid_embedding_vector": "invalid embedding vector",
 }
 
 

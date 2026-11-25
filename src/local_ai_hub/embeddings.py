@@ -772,10 +772,19 @@ class EmbeddingModel:
         return embeddings.detach().cpu().numpy()
 
     def _claim_embedding_gpu(self) -> tuple[str, str] | bool | None:
+        execution_local = getattr(self, "_execution_local", None)
+        if execution_local is not None:
+            execution_local.gpu_admission_reason = None
+
+        def denied(reason: str) -> bool:
+            if execution_local is not None:
+                execution_local.gpu_admission_reason = reason
+            return False
+
         store = getattr(self, "_gpu_reservation_store", None)
         if store is None:
             if getattr(self, "_gpu_reservation_path", None) is not None:
-                return False
+                return denied("reservation_store_unavailable")
             return None
         digest = hashlib.sha256(os.urandom(32)).hexdigest()
         try:
@@ -783,7 +792,7 @@ class EmbeddingModel:
 
             owner_budget = conservative_gpu_capacity_budget_bytes()
             if owner_budget is None:
-                return False
+                return denied("capacity_telemetry_unavailable")
             record = store.reserve(
                 digest,
                 owner=f"embedding:{os.getpid()}:{threading.get_ident()}",
@@ -791,12 +800,14 @@ class EmbeddingModel:
             )
             generation = record.get("generation") if isinstance(record, dict) else None
             if not isinstance(generation, str) or not generation:
-                return False
+                return denied("reservation_generation_missing")
             if not store.renew(digest, generation, state="active"):
                 store.release(digest, generation)
-                return False
-        except (OSError, ValueError):
-            return False
+                return denied("reservation_activation_failed")
+        except OSError:
+            return denied("reservation_io_error")
+        except ValueError:
+            return denied("reservation_data_invalid")
         return digest, generation
 
     def _release_embedding_gpu(self, reservation: tuple[str, str]) -> bool:
@@ -869,6 +880,7 @@ class EmbeddingModel:
     ) -> dict[str, Any]:
         self._execution_local.snapshot = None
         self._execution_local.ollama_gpu_fenced = False
+        self._execution_local.gpu_admission_reason = None
         backend = getattr(self, "backend", "")
         device = getattr(self, "device", None)
         candidate_specs: list[tuple[str, str]] | None = None
@@ -978,8 +990,18 @@ class EmbeddingModel:
                     output.setdefault("embedding_backend", self.active_backend)
                     output.setdefault("embedding_device", self.active_device)
                     output.setdefault("fallback_reason", "GPU admission unavailable; used CPU fallback")
+                    admission_reason = getattr(self._execution_local, "gpu_admission_reason", None)
+                    if admission_reason:
+                        output.setdefault("gpu_admission_reason", admission_reason)
                     return output
-            return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
+            return {
+                "success": False,
+                "error_code": "gpu_reserved",
+                "error": "GPU admission is unavailable",
+                "gpu_admission_reason": getattr(self._execution_local, "gpu_admission_reason", None)
+                    or "reservation_denied",
+                "retryable": True,
+            }
         digest = reservation[0] if isinstance(reservation, tuple) else None
         self._execution_local.gpu_fence_digest = digest
         terminal_response = False

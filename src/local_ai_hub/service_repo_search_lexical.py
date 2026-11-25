@@ -682,6 +682,8 @@ def _repo_search_lexical(
             "success": False,
             "root": root,
             "error": f"project configuration is invalid: {exc}",
+            "error_code": "invalid_project_configuration",
+            "status_code": 400,
             "terminal": True,
             "retryable": False,
         }

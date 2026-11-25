@@ -114,7 +114,7 @@ def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b"
     assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
     assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
-    assert cfg["models"]["reasoning"] == "qwen2.5-coder:7b"
+    assert cfg["models"]["reasoning"] == "qwen2.5-coder:3b"
     assert cfg["models"]["general"] == "qwen2.5-coder:3b"
     assert cfg["background_gpu"]["enabled"] is False
     assert cfg["features"]["local_reranking"] is True

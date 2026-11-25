@@ -514,7 +514,6 @@ class PreprocessCardStoreMixin:
             ).fetchone()
             if current is None or str(current[0]) != source_hash:
                 return False
-            previous_card_key = current[1]
             if enrichment_claim is not None and (
                 enrichment_claim.content_hash != source_hash
                 or not self._finish_file_card_claim(con, enrichment_claim, success=True)

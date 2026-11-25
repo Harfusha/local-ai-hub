@@ -10,6 +10,32 @@ def test_review_failure_preserves_safe_http_status_code():
     assert _review_failure_details({"status_code": True}) == {}
 
 
+def test_unsplittable_review_diff_returns_terminal_client_error():
+    service = SimpleNamespace(
+        config={},
+        deterministic=None,
+        incident_store=None,
+        router=SimpleNamespace(classify=lambda *_args: {"model": "fast-model", "complexity": "fast"}),
+        _resident_optimize=lambda route, *_args: route,
+        model_policy=SimpleNamespace(
+            tier_for=lambda _model: "fast",
+            profile=lambda *_args, **_kwargs: SimpleNamespace(prompt_budget_tokens=8192),
+        ),
+        vram_balancer=None,
+        delegate=lambda _payload: {"success": True, "text": "unused"},
+    )
+    result = LocalAIServices.review_diff(
+        service,
+        {"diff": "diff --git a/minified.js b/minified.js\n+" + ("x" * 20000), "max_tokens": 1024},
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "review_diff_fragment_exceeds_budget"
+    assert result["status_code"] == 422
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+
 def test_chunked_review_uses_available_synthesis_output_budget(monkeypatch):
     monkeypatch.setattr(services_module, "_REVIEW_SYNTHESIS_CONTEXT_TOKENS", 4096)
     monkeypatch.setattr(services_module, "_REVIEW_DIFF_CONTEXT_FRACTION", 0.15)

@@ -31,6 +31,13 @@ def test_async_job_http_status_defaults_for_non_mapping_result():
     [
         ({"success": False, "error_code": "model_output_truncated", "retryable": False}, 422),
         ({"success": False, "error_code": "local_model_error", "retryable": False}, 502),
+        ({"success": False, "error_code": "gpu_reserved", "retryable": False}, 503),
+        ({"success": False, "error_code": "review_diff_fragment_exceeds_budget", "retryable": False}, 422),
+        ({"success": False, "error_code": "invalid_project_configuration", "retryable": False}, 400),
+        ({"success": False, "error_code": "migration_database_missing", "retryable": False}, 404),
+        ({"success": False, "error_code": "package_manifest_unavailable", "retryable": False}, 422),
+        ({"success": False, "error_code": "gpu_lease_conflict", "retryable": False}, 409),
+        ({"success": False, "error_code": "gpu_outcome_unknown", "retryable": False}, 409),
     ],
 )
 def test_semantic_model_failures_use_client_or_upstream_status(response, expected):

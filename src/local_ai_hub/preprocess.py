@@ -302,15 +302,24 @@ def _resolve_preprocess_path_policy(api: Any | None, root: Any, settings: Any | 
 class _RetryablePreprocessingError(RuntimeError):
     """A project step was deferred by a transient resource or backend state."""
 
-    def __init__(self, message: str, retry_after_seconds: float = 60.0) -> None:
+    retryable = True
+
+    def __init__(
+        self, message: str, retry_after_seconds: float = 60.0, *, error_code: str = "",
+    ) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+        self.error_code = error_code
 
 
 class _NonRetryablePreprocessingError(RuntimeError):
     """A project step needs an explicit repair or operator action before retry."""
 
     retryable = False
+
+    def __init__(self, message: str, *, error_code: str = "") -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class _FileCardClaim(NamedTuple):

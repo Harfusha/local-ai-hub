@@ -683,7 +683,8 @@ def test_find_files_fails_closed_when_inventory_is_incomplete(tmp_path: Path, mo
     result = tools.find_files(str(repo), pattern="*.py")
 
     assert result["success"] is False
-    assert result["status_code"] == 503
+    assert result["status_code"] == 422
+    assert result["error_code"] == "repository_inventory_incomplete"
     assert result["terminal"] is True
     assert result["retryable"] is False
 
@@ -703,7 +704,8 @@ def test_find_files_bounds_fallback_and_reports_incomplete_inventory(tmp_path: P
     result = tools.find_files(str(repo), pattern="*.py")
 
     assert result["success"] is False
-    assert result["status_code"] == 503
+    assert result["status_code"] == 422
+    assert result["error_code"] == "repository_inventory_incomplete"
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert "time_limit" in result["error"]
