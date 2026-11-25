@@ -89,10 +89,10 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
         for key, item in rows.items() if key[0] == "review"
     }
 
-    def add(code: str, key: tuple[str, str], discriminator: str = "") -> None:
+    def add(code: str, key: tuple[str, str], discriminator: str = "", observation: Mapping[str, Any] | None = None) -> None:
         item = rows[key]
         finding_id = "f-" + _digest_value([catalog["project_id"], code, *key, discriminator])[:24]
-        subject = _digest_value([item["revision"], item["freshness"], item.get("dependency_status", ""), discriminator])
+        subject = _digest_value([item["revision"], item["freshness"], item.get("dependency_status", ""), discriminator, observation])
         review = reviews.get(finding_id)
         disposition = "unreviewed"
         note = ""
@@ -103,12 +103,18 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
                 note = payload["statement"]
             else:
                 disposition = "needs_revalidation"
+        details: dict[str, Any] = {}
+        if observation:
+            details = {"assertion_status": observation["status"], "expected": observation["expected"],
+                       "assertion_path": observation["path"]}
+            if "source" in observation:
+                details.update({"actual": observation["actual"], "current_source": observation["source"]})
         findings.append({
             "id": finding_id, "subject_digest": subject, "type": code,
             "record_kind": key[0], "record_id": key[1], "discriminator": discriminator,
             "freshness": item["freshness"], "status": "candidate",
             "review_disposition": disposition, "review_note": note,
-            "review_authority": "repository_declaration",
+            "review_authority": "repository_declaration", **details,
         })
 
     for key, item in sorted(rows.items()):
@@ -118,6 +124,10 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
             add("stale_knowledge", key)
         elif item["freshness"] == "unknown":
             add("unverified_knowledge", key)
+        assertion = item.get("source_assertion")
+        if assertion and assertion["status"] != "matches":
+            add("source_literal_mismatch" if assertion["status"] == "mismatch" else "source_literal_unverified",
+                key, assertion["path"], assertion)
     for issue in catalog.get("graph_issues", []):
         key = (issue["kind"], issue["id"])
         if key in rows:
@@ -160,7 +170,8 @@ def build_remediation_contract(catalog: Mapping[str, Any], finding_id: str, subj
     if finding["review_disposition"] in {"acceptable", "expected", "false_positive", "deferred"}:
         raise RepoPlanValidationError("Finding has a non-remediation review; re-evaluate it first")
     subjects = finding_subjects(catalog, finding)
-    locators = sorted({ref["path"] for item in subjects for ref in item["record"]["evidence"]})
+    locators = sorted({ref["path"] for item in subjects for ref in item["record"]["evidence"]}
+                      | ({finding["assertion_path"]} if "assertion_path" in finding else set()))
     description = (
         "Repository quality candidate " + finding_id + " (" + finding["type"] + "). "
         "Subject digest: " + subject_digest + ". "

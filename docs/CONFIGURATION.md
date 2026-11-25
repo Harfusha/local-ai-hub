@@ -377,3 +377,16 @@ conflicted shared paths, plus accidental tracking of private local state
 existing local upstream tracking ref; no fetch or remote verification occurs.
 This diagnostic never changes the Git index, commits, stashes or merges.
 It reports the default shared layout, not arbitrary custom workspace paths.
+
+### Explicit static business assertions
+
+An intended requirement/business rule may include `payload.source_assertion`,
+e.g. `{"path":"settings.py","format":"python_literal","key":["ALLOW_RESCHEDULE"]}`
+alongside its boolean claim. Full catalog/audit reads current source through
+the existing bounded source reader and compares an unambiguous Python
+module-level literal, JSON key path or TOML key path. Dynamic, ambiguous,
+private or oversized targets are rejected or unknown. Findings bind current
+source digest and record revision; a later source edit reopens review.
+This checks explicitly linked documentation intent against static source
+declarations, not effective runtime behavior. No source is imported/executed,
+and PHP/dynamic semantics still require evidence-backed analysis.

@@ -105,6 +105,13 @@ def validate_knowledge_file(rel_path: str, data: bytes) -> dict[str, Any]:
         raise _invalid()
     review_fields = {"finding_id", "subject_digest", "decision"}
     allowed = {"title", "statement", "layer", "claim_key", "claim_value"}
+    if record["kind"] in {"requirement", "business_rule"} and "source_assertion" in payload:
+        from .repo_knowledge_assertions import validate_source_assertion
+
+        if payload["layer"] != "intended" or type(payload.get("claim_value")) is not bool:
+            raise _invalid()
+        validate_source_assertion(payload["source_assertion"])
+        allowed.add("source_assertion")
     if record["kind"] == "process":
         allowed.add("flow")
         if "flow" in payload:
@@ -268,8 +275,14 @@ class RepoKnowledgeStore:
             "unknown" if not states or any(state != "matching_file" for state in states) else
             "matching_sources"
         )
-        return {"record": record, "revision": record_revision, "freshness": freshness,
-                "authority": "repository_declaration", "evidence_statuses": states}
+        result = {"record": record, "revision": record_revision, "freshness": freshness,
+                  "authority": "repository_declaration", "evidence_statuses": states}
+        assertion = record["payload"].get("source_assertion")
+        if verify_sources and assertion is not None:
+            from .repo_knowledge_assertions import inspect_source_assertion
+
+            result["source_assertion"] = inspect_source_assertion(self.root, assertion, record["payload"]["claim_value"])
+        return result
 
     def save(
         self, record: Mapping[str, Any], *, expected_revision: str, owner: str,
@@ -417,6 +430,9 @@ def build_finding_review(
             if ref not in sources:
                 sources.append(ref)
         relations.append({"type": "reviews", "target_kind": kind, "target_id": record_id})
+    current_source = finding.get("current_source")
+    if isinstance(current_source, dict) and current_source not in sources:
+        sources.append(current_source)
     if len(sources) > 16:
         raise RepoPlanValidationError("Review evidence exceeds publication bound")
     return {
