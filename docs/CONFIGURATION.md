@@ -302,17 +302,24 @@ The local operator can preview and explicitly publish a scoped task handoff
 into `.local-ai-hub/agent-os/handoffs/`. The record contains the goal,
 acceptance criteria, constraints, non-goals and selected checkpoint guidance.
 It is **not** a canonical replacement for the task store. Raw events, leases,
-execution state, local evidence IDs, receipts and arbitrary checkpoint state
+execution state, local evidence IDs, raw receipts and arbitrary checkpoint state
 are never copied. Review the preview for sensitive text before publication.
+Optional `--include-historical-verification` adds only bounded criterion and
+revision digests, evidence type and the stored reported result for linked
+receipts. It does not attest their authenticity or current validity. Use the
+same flag on preview and apply; neither a historical pass nor Git provenance
+can satisfy the existing verification gate.
 
 ```sh
 python tools/hubctl.py knowledge handoff-export --root /path/to/project --task-id task_123
-python tools/hubctl.py knowledge handoff-export --root /path/to/project --task-id task_123 --expected-revision "" --apply
+python tools/hubctl.py knowledge handoff-export --root /path/to/project --task-id task_123 --expected-revision "" --preview-digest PREVIEW_DIGEST --apply
 python tools/hubctl.py knowledge handoff-resume --root /path/to/clone --handoff-id HANDOFF_ID
-python tools/hubctl.py knowledge handoff-resume --root /path/to/clone --handoff-id HANDOFF_ID --expected-revision REVIEWED_DIGEST --apply
+python tools/hubctl.py knowledge handoff-resume --root /path/to/clone --handoff-id HANDOFF_ID --expected-revision REVIEWED_DIGEST --task-id task_new --apply
 ```
 
-Resume creates a new planned task through the existing scoped Agent OS client;
+Publication binds the reviewed manifest revision, previous file revision and
+exact projected record. A changed preview requires a new review. Resume
+creates a new planned task through the existing scoped Agent OS client;
 it does not execute, complete or grant verification to the task. Its contract
 requires current revalidation. Handoffs are excluded from generic knowledge
 retrieval and require explicit selection. Custom SLO profiles and non-task
