@@ -184,3 +184,68 @@ def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[st
     if store.manifest()[1] != manifest_revision:
         raise _reject("Project changed during handoff inventory")
     return result
+
+
+def preflight_task_handoffs(
+    store: RepoKnowledgeStore, tasks: list[Any], *, inventory_complete: bool,
+) -> dict[str, Any]:
+    """Classify legacy task snapshots before any reviewed handoff publication.
+
+    This is not a canonical store cutover. It never copies receipts, leases,
+    local evidence or execution state, and never returns raw contract content.
+    """
+    from .repo_knowledge import _encode, _path_for, validate_knowledge_file
+
+    if not isinstance(tasks, list) or len(tasks) > 64:
+        raise _reject("Preflight requires a bounded task inventory")
+    manifest, manifest_revision = store.manifest()
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for task in tasks:
+        row: dict[str, Any] = {"state": "blocked_invalid_or_out_of_scope"}
+        if isinstance(task, Mapping):
+            task_id = task.get("task_id")
+            if _identifier(task_id):
+                assert isinstance(task_id, str)
+                # Verify the scope before returning even a task identifier.
+                try:
+                    record = build_task_handoff(store, task)
+                    validate_knowledge_file(_path_for("handoff", record["id"]), _encode(record))
+                except (OSError, RepoPlanValidationError, ValueError, TypeError):
+                    rows.append(row)
+                    continue
+                row = {"handoff_id": record["id"], "state": "review_required"}
+                if task_id in seen:
+                    row["state"] = "blocked_duplicate_task"
+                elif task.get("status") in {"active", "verifying"} or task.get("lease_id"):
+                    row["state"] = "blocked_live_attempt"
+                else:
+                    try:
+                        existing = store.get("handoff", record["id"], verify_sources=False)
+                    except FileNotFoundError:
+                        existing = None
+                    except (OSError, RepoPlanValidationError):
+                        row["state"] = "blocked_existing_record_invalid"
+                        rows.append(row)
+                        seen.add(task_id)
+                        continue
+                    if existing is not None:
+                        row["state"] = (
+                            "already_published" if existing["record"] == record
+                            else "blocked_existing_record_differs"
+                        )
+                        row["revision"] = existing["revision"]
+                    elif manifest["mode"] == "read_only":
+                        row["state"] = "blocked_read_only"
+                seen.add(task_id)
+        rows.append(row)
+    if store.manifest()[1] != manifest_revision:
+        raise _reject("Project changed during handoff preflight")
+    return {
+        "project_id": manifest["project_id"],
+        "complete": inventory_complete is True,
+        "records": rows,
+        "publication_requires_review": True,
+        "canonical_cutover_supported": False,
+        "runtime_state_imported": False,
+    }
