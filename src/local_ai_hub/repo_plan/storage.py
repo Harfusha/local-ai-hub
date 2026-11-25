@@ -785,8 +785,13 @@ class RepoPlanStorage:
     def _knowledge_batch_fence(self) -> dict[str, Any]:
         """Read the small durable local publication marker without creating files."""
         path = self.intents_dir / "knowledge-batch-fence.json"
-        validate_repo_path(path.relative_to(self.repo_root).as_posix(), repo_root=self.repo_root)
         try:
+            validate_repo_path(path.relative_to(self.repo_root).as_posix(), repo_root=self.repo_root)
+            for candidate in (path, *path.parents):
+                if candidate == self.repo_root:
+                    break
+                if candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)():
+                    raise RepoPlanConflictError("Knowledge batch fence path contains a link")
             record = self._read_record(path, max_record_bytes=4096)
         except FileNotFoundError:
             return {"state": "idle", "epoch": ""}
