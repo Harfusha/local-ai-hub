@@ -124,7 +124,8 @@ def checkout_sync_status(root: Path) -> dict[str, Any]:
     from .repo_plan.schema_validation import RepoPlanError
 
     publication_status = "unavailable"
-    epoch = None
+    epoch: str | None = None
+    store: RepoKnowledgeStore | None = None
     try:
         store = RepoKnowledgeStore(root)
         epoch = store.read_epoch()
@@ -179,7 +180,7 @@ def checkout_sync_status(root: Path) -> dict[str, Any]:
             divergence = {"status": "local_tracking_ref_only", "ahead": int(parts[0]), "behind": int(parts[1])}
     if get_git_context(root) != (branch, head):
         return {"state": "changed_during_read", "complete": False}
-    if epoch is not None:
+    if epoch is not None and store is not None:
         try:
             store.require_read_epoch(epoch)
         except (OSError, ValueError, RepoPlanError, RuntimeError):
