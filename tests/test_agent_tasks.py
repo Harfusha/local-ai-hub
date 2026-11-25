@@ -2190,7 +2190,7 @@ def test_commit_update_only_refreshes_search_index_when_indexed_fields_change(
 
 def test_handoff_attempt_lineage_is_persisted_and_server_managed(store: TaskStore, tmp_path):
     from local_ai_hub.repo_knowledge import RepoKnowledgeStore
-    from local_ai_hub.repo_task_handoff import build_task_handoff, preview_handoff_resume
+    from local_ai_hub.repo_task_handoff import build_task_handoff, preview_handoff_resume, validate_resume_creation
     from local_ai_hub.repo_plan.schema_validation import RepoPlanError
 
     root = (tmp_path / "shared-project").resolve()
@@ -2238,3 +2238,41 @@ def test_handoff_attempt_lineage_is_persisted_and_server_managed(store: TaskStor
         reloaded.create(GoalContract(goal="Different goal"), context, task_id="task-forged",
                         repo_root=str(root), _handoff_resume=selection)
     assert reloaded.get("task-forged") is None
+    competing = reloaded.create(contract, context, task_id="task-competing", repo_root=str(root),
+                                _handoff_resume=selection)
+    continued = build_task_handoff(shared, updated.to_dict())
+    assert continued["id"] == record["id"]
+    assert continued["payload"]["origin_task_id"] == "task-origin"
+    assert continued["payload"]["previous_attempt"] == {
+        "attempt_id": "task-attempt", "parent_revision": preview["revision"],
+    }
+    assert continued["payload"]["contract"] == record["payload"]["contract"]
+    assert continued["payload"]["checkpoint"]["phase"] == "new phase"
+    with pytest.raises(RepoPlanError):
+        shared.save(continued, expected_revision="", owner="operator", idempotency_key="wrong-parent",
+                    authorize_write=lambda: True)
+    shared.save(continued, expected_revision=preview["revision"], owner="operator",
+                idempotency_key="continuation", authorize_write=lambda: True)
+    assert shared.get("handoff", record["id"])["record"] == continued
+    with pytest.raises(RepoPlanError, match="Parent handoff changed"):
+        build_task_handoff(shared, competing.to_dict())
+    next_preview = preview_handoff_resume(shared, record["id"])
+    with pytest.raises(RepoPlanError):
+        validate_resume_creation({
+            "root": str(root), "repo_root": str(root), "task_id": "task-attempt",
+            "contract": next_preview["contract"],
+            "handoff_resume": {"handoff_id": record["id"], "revision": next_preview["revision"],
+                               "preview_digest": next_preview["preview_digest"]},
+        })
+    next_attempt = reloaded.create(
+        GoalContract.from_dict(next_preview["contract"]), context,
+        task_id="task-next-attempt", repo_root=str(root),
+        _handoff_resume={"handoff_id": record["id"], "revision": next_preview["revision"],
+                         "preview_digest": next_preview["preview_digest"]},
+    )
+    assert next_attempt.checkpoint.state_data["_portable_attempt"]["origin_task_id"] == "task-origin"
+    assert not next_attempt.verification_receipts
+    next_record = build_task_handoff(shared, next_attempt.to_dict())
+    assert next_record["id"] == record["id"]
+    assert next_record["payload"]["contract"] == record["payload"]["contract"]
+
