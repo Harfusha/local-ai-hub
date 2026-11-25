@@ -152,6 +152,8 @@ def test_event_stream_provider_failure_emits_retryable_replay_error(monkeypatch,
 
 def test_telemetry_timeline_get_provider_failure_is_retryable(monkeypatch, tmp_path):
     class BrokenTelemetry:
+        enabled = True
+
         def record_system(self, *_args, **_kwargs):
             return None
 
@@ -160,6 +162,7 @@ def test_telemetry_timeline_get_provider_failure_is_retryable(monkeypatch, tmp_p
 
     app, _root = _scoped_app(tmp_path, telemetry=BrokenTelemetry())
     app.config["debug_traces"] = {"enabled": True}
+    app.config["telemetry"] = {"mode": "full"}
     handler = _http_get_handler(monkeypatch, app=app, path="/api/telemetry/timeline?limit=20&before_id=10")
 
     handler.do_GET()

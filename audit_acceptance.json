@@ -1,8 +1,8 @@
 {
   "schema_version": "2.0",
-  "audit_name": "Fourth Audit Action Plan (HUB-076–HUB-112)",
-  "generated_at": "2026-11-25T18:01:22Z",
-  "git_head_sha": "25efd32664fac24c1e377e5bad9c9d88a84b6c00",
+  "audit_name": "Local AI Hub 8.1.0 Critical Audit and Completion (LAH-001–LAH-048, A01–A21, NEW-001–NEW-003, HUB-076–HUB-112)",
+  "generated_at": "2026-11-25T18:33:24Z",
+  "git_head_sha": "0fbed00309d15aab2152c5799052dc035866dc5b",
   "environment": {
     "platform": "win32",
     "os": "Windows-11-10.0.26300-SP0",
@@ -11,15 +11,15 @@
     "gpu_target": null
   },
   "summary": {
-    "total_items": 37,
+    "total_items": 109,
     "verified_count": 0,
     "locally_tested_count": 0,
-    "unverified_count": 21,
+    "unverified_count": 93,
     "blocked_count": 4,
     "regressions_count": null,
     "overall_status": "BLOCKED",
     "status_counts": {
-      "UNVERIFIED": 21,
+      "UNVERIFIED": 93,
       "USER_CANCELLED": 12,
       "BLOCKED_MODEL_ABSENT": 1,
       "BLOCKED_EXTERNAL": 1,
@@ -33,6 +33,942 @@
     "ci": "UNKNOWN"
   },
   "items": [
+    {
+      "id": "LAH-001",
+      "title": "Decide & enforce `.agents/plugins/marketplace.json` contract vs `_TOP_LEVEL_FORBIDDEN_DIRS` in `tool",
+      "priority": "P0",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "`release_check.py` + `--strict-tree` on clean checkout/worktree; negative fixture test rejecting unauthorized `.agents/*",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-002",
+      "title": "Replace deleted `tests/test_laya_pipeline_shadow.py` reference in `.github/workflows/ci.yml:L95`; mi",
+      "priority": "P0",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Preflight selector validator script + negative test for missing/renamed test; CI `fast-contract` collects >0 and runs al",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-003",
+      "title": "Separate `NOT_RUN`/`SKIPPED` from `PASS` in `.github/workflows/ci.yml` (`integration` job and condit",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "CI workflow contract tests simulating skipped/cancelled/0-test/stale-SHA gates.",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-004",
+      "title": "Fix coverage export (`ci.yml` L232-240, L298-305) so early failures do not produce secondary coverag",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Workflow/script simulation tests for checkout fail, release_check fail, collection fail, test fail, test pass, missing c",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-021",
+      "title": "Reconcile audit claims with actual release proof via machine-readable SHA-bound receipts (`tools/gen",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Expand `tests/test_audit_acceptance_truth.py` rejecting empty, mock, skipped, stale-SHA, and assertionless receipts.",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-037",
+      "title": "Audit `tests/conftest.py` auto-markers & `--test-result-cache`: verify ownership-driven critical mar",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Regression test mutating shared module / `pyproject.toml` / fixture invalidating cache; explicit counts logged without c",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "NEW-003",
+      "title": "`.venv` missing `mypy` dev tool locally (`python -m mypy` fails in `.venv` while passing in global P",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "`.\\.venv\\Scripts\\python.exe -m mypy --config-file pyproject.toml` passes.",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-005",
+      "title": "Remove live runtime telemetry `.local-ai-hub/telemetry/agents.jsonl` & inspect/classify `.ownership/",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "`git ls-files` clean of runtime payloads; clean test/run leaves zero tracked mutations; CI index/gitignore + redacted sc",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-015",
+      "title": "Distinguish empty state init vs existing-state update vs explicit fast/no-backup mode in `tools/setu",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Fault-injection suite across steps 6->11 (kill, disk full, sqlite lock, mid-marker, mid-reset, mid-swap); idempotent re-",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-016",
+      "title": "Replace name/version-prefix cleanup (`state_migrations.py:650-677`) with verified journal + ownershi",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Negative tests: spoofed prefix dir, active staging, partial manifest, different-content same-version, stale lock, symlin",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-017",
+      "title": "Set `embedding_trust_remote_code = false` by default (`defaults.toml` & `embeddings.py`), gate remot",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Negative test rejecting fake remote-code model in default profile; offline socket-blocked runtime test; altered-pin fail",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-018",
+      "title": "Preserve tokenless loopback single-owner model (`http_api_auth.py`, `docs/SECURITY_MODEL.md`) while ",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Tests: external socket peer rejection, spoofed headers, cross-origin browser requests, second local user / unauthorized ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-022",
+      "title": "Build authoritative runtime asset manifest from `importlib.resources` loaders (`grammars/*.gbnf` che",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Packaging parity tests + negative asset-removal failure test + isolated clean-venv wheel smoke & MCP/grammar/dashboard/b",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-023",
+      "title": "Verify core / extras / backend dependency matrices across Python 3.11, 3.12, 3.13, 3.14 & OS constra",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Local venv tests on installed Python 3.11, 3.12, 3.13 (`pip check`, `python -I` imports); CI matrix for Linux/macOS/3.14",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-024",
+      "title": "Verify end-to-end clean install, upgrade from supported prior versions, repeat update, cancelled upd",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Disposable-state fault injection across every `update_transaction` & `update_install` phase + real service restart/hands",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-026",
+      "title": "Audit & enforce canonical physical root/worktree confinement across ALL read, search, artifact, writ",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Regression matrix: symlink/junction escape, case folding, UNC, drive-relative, nested git/submodule, traversal, TOCTOU s",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-027",
+      "title": "Harden command broker (`command_*.py`) beyond static allowlist: inspect repo-controlled executable r",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Negative tests on synthetic malicious repo (no secret access), cancel/timeout kills full child tree, cache key invalidat",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-028",
+      "title": "Prove SQLite, lease, fence, and durable async-job crash consistency (`sqlite_support.py`, `async_job",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Repeated crash/restart fault-injection cycles + `PRAGMA integrity_check` & `foreign_key_check` + retention/backup foregr",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-029",
+      "title": "Propagate single absolute monotonic request deadline across `MCP -> HTTP -> scheduler -> backend` (`",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Cancel tests at queue, load, stream, artifact upload, fallback; slow-header/slow-body/slow-reader + immediate health pro",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-035",
+      "title": "Verify minimal vs full telemetry (`defaults.toml`, `telemetry.py`), clean fresh start without DB err",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Tests: fresh minimal boot (no 500 on absent DB), `off` writes 0 payload, `full` with secret canaries exports cleanly red",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-036",
+      "title": "Harden `browser_bridge` (`manifest.json`, `browser_bridge.py`, `background.js`, `capture.js`): origi",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Adversarial web fixture with secret canaries & prompt injections, cross-origin rejection, disabled capture zero transfer",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-006",
+      "title": "Fix `preprocess_cards.py:390-416` storing LLM draft cards as `\"deterministic-stub\"`. Enforce strict ",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Adversarial mock model returning `NOT_IN_SOURCE` symbol & fake import must not create deterministic fact or authoritativ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-007",
+      "title": "Fix cascade off/fallback inconsistency (`preprocess_controls.py` vs `preprocess_card_store.py:90-107",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Parametrized test across all 7 profiles x cascade on/off x fallback on/off x missing model x invalid JSON x circuit open",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-008",
+      "title": "Expand pipeline fingerprint (`preprocess_card_store.py:109-117`) to include canonical model/adapter/",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "A/B tests across restart & config changes (cascade flip, same-tag digest change, draft prompt change, policy change) pro",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-009",
+      "title": "Eliminate silent `except Exception: pass` in draft/neighborhood enrichment (`preprocess_cards.py:417",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Fixture tests for 1%, 14%, 16% diffs, rename, citation change, and fallback visibility in redacted diagnostics.",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-010",
+      "title": "Fix `speculative_cascade.py` separating `estimated_speedup` vs `measured_speedup` and `sequential_dr",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Fake-cost unit test + live RTX 5070 Ti paired cold/warm benchmark (p50/p95, load+prefill+queue, VRAM, acceptance rate, o",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-011",
+      "title": "Validate speculative token callbacks (`speculative_cascade.py:46-84`): `1 <= k <= max`, `accepted` s",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Property/fuzz tests over random sequences, invalid callbacks, EOS, k<=0, max budget, cancel, tokenizer mismatch.",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-012",
+      "title": "Replace bag-of-words cross-project Laya cache (`laya_semantic_dedup.py`, `laya_unified_coordinator.p",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Regression tests: same prompt across 2 repos/2 worktrees/after source edit; inverted word order (`povol zápis a zakaž čt",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-013",
+      "title": "Fix unsynchronized multi-dict `_prompts`/`_vectors`/`_payloads` & colliding `_total_inferences` IDs ",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Concurrent barrier stress tests (10k parallel lookup/insert/evict/update, repeated IDs, max_entries 0/1) with zero race ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-014",
+      "title": "Fix Laya self-labeling ground-truth contamination (`laya_unified_coordinator.py:117-132`, `laya_trai",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Tests proving failed prediction never becomes gold label, deduplicated leak-free train/val/test splits, deterministic ba",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-025",
+      "title": "Fix post-reset RAG tracking & hybrid relevance (`rag_storage.py`, `rag_search.py`, `embeddings.py`, ",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Golden CZ/EN benchmark + delete/rename/branch/worktree/ignore/cancel-restart tests + assert `fully_indexed=false` when v",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "NEW-001",
+      "title": "Diagnose & fix live Hub preprocessing loop `embedding_space_rebuild_required` (114 consecutive error",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Reproduce root cause in `.local-ai-hub` state / code, add regression test for `embedding_space_rebuild_required` transit",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "NEW-002",
+      "title": "Fix `local_ai_coord(action=\"plan_list\")` returning `error: \"max_response_tokens too small\"` (`reject",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Regression test for `plan_list` with many plans + `response_profile=\"minimal\"` / default limit verifying valid budgeted ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-030",
+      "title": "Enforce VRAM/slot admission (`hardware.py`, `vram_balancer.py`, `scheduler.py`, `background_gpu.py`,",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Hardware/mocked+live tests on RTX 5070 Ti with 12 GB cap, foreground preemption over background preprocess, cold switch,",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-031",
+      "title": "Measure default cascade (`draft->refiner->3B` vs `one-pass 3B` vs `deterministic-only`) cost & quali",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Balanced 100-500 file benchmark recording correctness, evidence precision, p95, files/min, switch count, TTFT impact on ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-032",
+      "title": "Implement explicit Laya state machine (`off`, `shadow`, `advisory`, `active`) inside `laya_unified_c",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Tests across all modes via MCP/HTTP/hooks, valid vs missing/corrupt checkpoint, zero policy bypass, held-out confusion m",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-033",
+      "title": "Audit & test real provider integrations against supported matrix (`Codex`, `Antigravity`, `OpenCode`",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Fixture roundtrip tests in CI + live host tests for installed hosts (`opencode`, `claude`, `codex`/Antigravity configs) ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-034",
+      "title": "Harden completion & verification receipts (`agent_verification.py`, `agent_task_lifecycle.py`, `agen",
+      "priority": "P1",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Adversarial tests: agent prose success without tool call, fake/empty receipt, wrong-worktree test, post-test source edit",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-039",
+      "title": "Eliminate contract registry drift (`operation_contracts.py`, `generator.py`, `http_route_registry.py",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "`surface_inventory.py --check` (0 drift), `audit_agent_surface.py`, roundtrip schema property tests, negative CI test ad",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-040",
+      "title": "Investigate Native SimHash CI macOS cancellation (`native-experiment.yml`), verify Cython extension ",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "`tools/cython_experiment.py` parity + overflow/Unicode tests + multi-run p50/p95 CI check; confirm macOS workflow issue ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-019",
+      "title": "Expand `mypy` `strict=true` beyond 16 modules (`pyproject.toml`): first schema/model boundaries, com",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Baseline type-error/strict-coverage tracker, clean `mypy --config-file pyproject.toml` and `ruff check` on expanded scop",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-020",
+      "title": "Reduce module bloat & generated-doc overhead (`agent_memory.py` 142KB, `operation_contracts.py` 140K",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Complexity/DAG baseline + CI test forbidding new import cycles + deterministic doc regeneration + before/after startup/s",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-038",
+      "title": "Harden `/dashboard` (`ui_static/dashboard.html`, TS sources, `http_routes_ui.py`, `dashboard_contrac",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Double-build determinism test, browser/DOM XSS canary test, 10k-event load test, reconnect/offline/stale-status tests, c",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-046",
+      "title": "End-to-end local observability inside existing telemetry/dashboard: propagate correlation ID across ",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "End-to-end request trace test, p95 minimal-telemetry overhead <=5% vs off under load, bounded retention & canary redacti",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-047",
+      "title": "Unify `audit`/`doctor --verify` + `tools/generate_audit_acceptance.py` + `release_check.py`: machine",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Negative gate tests: stale report, failing gate, `--allow-installed` disguised as strict, missing asset, skipped suite, ",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-041",
+      "title": "Unify `scheduler.py`, `vram_balancer.py`, `background_gpu.py`, `vram_eviction.py`, `prompt_cache.py`",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Stress workload vs baseline: fewer model switches, 0 OOM restarts/over-budget leases, foreground p95 regression <=5%, no",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-042",
+      "title": "Upgrade intelligent context planner (`service_hybrid_context.py`, `hybrid_fusion.py`, `evidence_merg",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Paired A/B benchmark across 30+ real anonymized tasks (Hub vs native baseline) measuring correctness, rework, tokens, ti",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-043",
+      "title": "Complete Laya decision cycle (`continue`, `retrieve_evidence`, `use_tool`, `clarify`, `review`, `esc",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Holdout CZ/EN benchmark covering drift, no-drift, redundant tool, missing evidence, conflicting instructions, genuine am",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-044",
+      "title": "Upgrade dependency-aware incremental preprocessing: content+parser+language+AST symbol hashes + reve",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Golden repos (PHP/CakePHP, Python, TS, mixed): 1-symbol edit recomputes only closure, parser/model bump invalidates affe",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-045",
+      "title": "Build unified offline-first Model Registry & provisioning (`trained_models.py`, `hardware.py`, `fp4_",
+      "priority": "P2",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Tests: corrupt/incomplete download, checksum mismatch, disk full, offline mode, switched floating tag, role mismatch rej",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "LAH-048",
+      "title": "Shrink agent surface & add host-capable proactive hooks: profile/feature-scoped `tools/list`, compac",
+      "priority": "P3",
+      "category": "Audit 8.1.0 Backlog",
+      "verification_command": "Measure startup/schema tokens & wrong-tool error rate before/after on held-out prompts; verify disabled features omitted",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 with NO_TEST_CACHE=1",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A01",
+      "title": "State & backup isolation - `LAH-001`, `LAH-005` — untrack telemetry/rollback artifacts, enforce `.gi",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-001`, `LAH-005` — untrack telemetry/rollback artifacts, enforce `.gitigno",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A02",
+      "title": "Ruff test errors - `Etapa 0` — confirmed PASS locally (`ruff check src tools tests` = 0 errors); re-",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `Etapa 0` — confirmed PASS locally (`ruff check src tools tests` = 0 errors); ",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A03",
+      "title": "API/MCP drift - `LAH-039` — verify 674+ operation surface against recent cascade/model commits & liv",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-039` — verify 674+ operation surface against recent cascade/model commits",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A04",
+      "title": "Config schema v1 - `LAH-015`, `LAH-024` — verify fresh install + migrated v0->v1 config + retired al",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-015`, `LAH-024` — verify fresh install + migrated v0->v1 config + retired",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A05",
+      "title": "Security policy 8.x - `LAH-017`, `LAH-018` — verify 8.x strict check + expanded loopback/remote-code",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-017`, `LAH-018` — verify 8.x strict check + expanded loopback/remote-code",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A06",
+      "title": "Vector reset / RAG - `LAH-015`, `LAH-025`, `NEW-001` — replace lexical-200 claim with real CZ/EN hyb",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-015`, `LAH-025`, `NEW-001` — replace lexical-200 claim with real CZ/EN hy",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A07",
+      "title": "Provider matrix - `LAH-033` — live E2E host checks beyond config/manifest presence (`opencode`, `cla",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-033` — live E2E host checks beyond config/manifest presence (`opencode`, ",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A08",
+      "title": "Endpoint benchmark - `LAH-041`, `LAH-042`, `LAH-046` — establish fresh 8.1.0 cold/warm p50/p95/p99 b",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-041`, `LAH-042`, `LAH-046` — establish fresh 8.1.0 cold/warm p50/p95/p99 ",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A09",
+      "title": "Packaging / CI - `LAH-001`..`004`, `LAH-022`, `LAH-023` — clean wheel/sdist build, isolated venv smo",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-001`..`004`, `LAH-022`, `LAH-023` — clean wheel/sdist build, isolated ven",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A10",
+      "title": "Hub plan & coordination - `LAH-028`, `LAH-034`, `NEW-002` — verify real receipts, fences, scopes & f",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-028`, `LAH-034`, `NEW-002` — verify real receipts, fences, scopes & fix `",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A11",
+      "title": "Strict mypy - `LAH-019`, `NEW-003` — keep 16 modules, expand across boundaries, fix `.venv` mypy ava",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-019`, `NEW-003` — keep 16 modules, expand across boundaries, fix `.venv` ",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A12",
+      "title": "Codex workflows / docs - `LAH-033`, `LAH-039` — verify generated outputs & live host contract parity",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-033`, `LAH-039` — verify generated outputs & live host contract parity.",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A13",
+      "title": "AST parser shell invocation - `LAH-027` — verify `tools/model_training/mine_code_triplets.py` `shell",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-027` — verify `tools/model_training/mine_code_triplets.py` `shell=False` ",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A14",
+      "title": "TaskPage contract - `LAH-028`, `LAH-039` — verify DB filtering & TaskStore/API/SDK/MCP contract unde",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-028`, `LAH-039` — verify DB filtering & TaskStore/API/SDK/MCP contract un",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A15",
+      "title": "Duplicate CI scenarios - `LAH-002`, `LAH-003`, `LAH-004` — fix deleted path, selector manifest, cove",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-002`, `LAH-003`, `LAH-004` — fix deleted path, selector manifest, coverag",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A16",
+      "title": "Setup recovery - `LAH-015`, `LAH-016`, `LAH-024` — eliminate `create_backup=False` risk on existing ",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-015`, `LAH-016`, `LAH-024` — eliminate `create_backup=False` risk on exis",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A17",
+      "title": "Browser bridge assets - `LAH-022`, `LAH-036` — verify all 8 bridge files in built wheel + installed ",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-022`, `LAH-036` — verify all 8 bridge files in built wheel + installed ex",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A18",
+      "title": "Root task pagination - `LAH-026`, `LAH-039` — verify runtime query-level filtering, advancing cursor",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-026`, `LAH-039` — verify runtime query-level filtering, advancing cursor,",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A19",
+      "title": "Laya checkpoint presence - `LAH-032`, `LAH-045` — verify physical presence, SHA-256 integrity & offl",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-032`, `LAH-045` — verify physical presence, SHA-256 integrity & offline a",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A20",
+      "title": "Dashboard TS lockfile - `LAH-038` — run `npm ci`, `typecheck`, `build`, XSS/load/E2E verification.",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-038` — run `npm ci`, `typecheck`, `build`, XSS/load/E2E verification.",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
+    {
+      "id": "A21",
+      "title": "Cleanup on clean state - `LAH-016` — harden journal-verified cleanup ordering after migration/reset ",
+      "priority": "P1",
+      "category": "Historical Matrix A01-A21",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "files": [
+        "src/local_ai_hub/"
+      ],
+      "historical_claim": "Verified in 8.1.0 via `LAH-016` — harden journal-verified cleanup ordering after migration/reset and",
+      "verification_status": "UNVERIFIED",
+      "verification_receipt": null
+    },
     {
       "id": "HUB-076",
       "title": "Decouple strict typing from NumPy stubs on Python 3.11/3.13",

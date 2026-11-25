@@ -1530,6 +1530,43 @@ def cursor_hub_plugin_installed(cursor_dir: Path) -> bool:
     return _provider_manifest_named(manifest_path, "local-ai-hub")
 
 
+def sync_cursor_plugin_bundle(cursor_dir: Path, backup_enabled: bool) -> bool:
+    """Refresh a recognized local Cursor plugin from the canonical Hub bundle."""
+    source = SOURCE_ROOT / "plugins" / "cursor" / "local-ai-hub"
+    target = cursor_dir / "plugins" / "local" / "local-ai-hub"
+    source_manifest = source / ".cursor-plugin" / "plugin.json"
+    target_manifest = target / ".cursor-plugin" / "plugin.json"
+    if not source.is_dir() or not _provider_manifest_named(source_manifest, "local-ai-hub"):
+        raise RuntimeError(f"Canonical Cursor Hub plugin bundle is missing or invalid: {source}")
+    if target.is_symlink():
+        log(f"WARNING: preserving linked Cursor plugin directory: {target}")
+        return False
+    if not target.exists():
+        return False
+    if not _provider_manifest_named(target_manifest, "local-ai-hub"):
+        log(f"WARNING: preserving unrecognized Cursor plugin directory: {target}")
+        return False
+
+    for source_file in sorted(source.rglob("*")):
+        if not source_file.is_file():
+            continue
+        relative = source_file.relative_to(source)
+        if "__pycache__" in relative.parts or source_file.suffix in {".pyc", ".pyo"}:
+            continue
+        target_file = target / relative
+        if target_file.is_symlink():
+            log(f"WARNING: preserving linked Cursor plugin file: {target_file}")
+            continue
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        content = source_file.read_bytes()
+        if target_file.is_file() and target_file.read_bytes() == content:
+            continue
+        backup(target_file, backup_enabled)
+        shutil.copy2(source_file, target_file)
+    log(f"Cursor plugin bundle refreshed from source: {target}")
+    return True
+
+
 def copilot_hub_plugin_enabled(copilot_dir: Path, project_root: Path | None = None) -> bool:
     """Read Copilot CLI enabledPlugins across user and repository settings scopes."""
     paths = [copilot_dir / "settings.json"]
@@ -3607,6 +3644,10 @@ def configure_cursor_global_routes(
 ) -> None:
     """Use Cursor's native plugin route when present; avoid duplicate global MCP/hooks."""
     plugin_present = cursor_hub_plugin_installed(cursor_dir)
+    if plugin_present and not sync_cursor_plugin_bundle(cursor_dir, backup_enabled):
+        action = f"Cursor local Hub plugin could not be refreshed safely; review {cursor_dir / 'plugins' / 'local' / 'local-ai-hub'}"
+        manual_actions.append(action)
+        log(f"Manual agent setup required: {action}")
     mcp_path = cursor_dir / "mcp.json"
     hooks_path = cursor_dir / "hooks.json"
     if _agent_component_enabled(agent_components, "cursor", "mcp"):

@@ -181,13 +181,14 @@ class HTTPAdminMixin:
         if not callable(recorder):
             return False
         try:
+            request_path = services_module.urlparse(str(getattr(self, "path", ""))).path
             accepted = recorder(
                 "admin.authorization",
                 success=allowed,
                 component="http_admin",
                 operation=action,
-                path=services_module.urlparse(str(getattr(self, "path", ""))).path,
-                actor=str(getattr(self, "_authorization_actor", "unknown")),
+                route=request_path,
+                stage=action,
             )
             return accepted is not False
         except Exception:
@@ -207,14 +208,15 @@ class HTTPAdminMixin:
         if not callable(recorder):
             return False
         try:
+            request_path = services_module.urlparse(str(getattr(self, "path", ""))).path
             accepted = recorder(
                 "admin.action.result",
                 success=200 <= int(status) < 400,
                 component="http_admin",
                 operation=action,
-                path=services_module.urlparse(str(getattr(self, "path", ""))).path,
+                route=request_path,
+                stage=action,
                 status_code=int(status),
-                actor=str(getattr(self, "_authorization_actor", "unknown")),
             )
             self._admin_result_audit_accepted = accepted is not False
         except Exception:

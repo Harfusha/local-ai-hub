@@ -91,6 +91,59 @@ def test_provider_plugin_generation_tracks_current_hub_release_version(tmp_path,
         assert json.loads(manifest.read_text(encoding="utf-8"))["version"] == "8.1.0"
 
 
+def test_cursor_setup_refreshes_recognized_plugin_bundle_and_backs_up_old_files(tmp_path, monkeypatch):
+    source_root = tmp_path / "hub-source"
+    source = source_root / "plugins" / "cursor" / "local-ai-hub"
+    (source / ".cursor-plugin").mkdir(parents=True)
+    (source / ".cursor-plugin" / "plugin.json").write_text(
+        '{"name":"local-ai-hub","version":"8.1.0"}\n', encoding="utf-8",
+    )
+    (source / "mcp.json").write_text('{"mcpServers":{"local-ai":{"command":"python"}}}\n', encoding="utf-8")
+    (source / "rules").mkdir()
+    (source / "rules" / "hub.mdc").write_text("current Hub rule\n", encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+
+    cursor_dir = tmp_path / ".cursor"
+    target = cursor_dir / "plugins" / "local" / "local-ai-hub"
+    (target / ".cursor-plugin").mkdir(parents=True)
+    (target / ".cursor-plugin" / "plugin.json").write_text(
+        '{"name":"local-ai-hub","version":"6.1.0"}\n', encoding="utf-8",
+    )
+    (target / "mcp.json").write_text('{"mcpServers":{}}\n', encoding="utf-8")
+    (target / "user-owned.txt").write_text("keep\n", encoding="utf-8")
+
+    assert setup.sync_cursor_plugin_bundle(cursor_dir, backup_enabled=True) is True
+
+    manifest = json.loads((target / ".cursor-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "8.1.0"
+    assert json.loads((target / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]["local-ai"]
+    assert (target / "rules" / "hub.mdc").read_text(encoding="utf-8") == "current Hub rule\n"
+    assert (target / "user-owned.txt").read_text(encoding="utf-8") == "keep\n"
+    backups = list(target.rglob("*.local-ai-hub-backup-*"))
+    assert len(backups) == 2
+    assert any(path.read_text(encoding="utf-8") == '{"name":"local-ai-hub","version":"6.1.0"}\n' for path in backups)
+
+    assert setup.sync_cursor_plugin_bundle(cursor_dir, backup_enabled=True) is True
+    assert len(list(target.rglob("*.local-ai-hub-backup-*"))) == 2
+
+
+def test_cursor_setup_refreshes_bundle_when_local_plugin_route_is_installed(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(setup, "cursor_hub_plugin_installed", lambda _cursor_dir: True)
+    monkeypatch.setattr(
+        setup, "sync_cursor_plugin_bundle",
+        lambda cursor_dir, backup_enabled: calls.append((cursor_dir, backup_enabled)) or True,
+        raising=False,
+    )
+
+    setup.configure_cursor_global_routes(
+        tmp_path / ".cursor", tmp_path / "install", Path("python"), None,
+        {}, False, None, [],
+    )
+
+    assert calls == [(tmp_path / ".cursor", False)]
+
+
 def test_setup_generation_refreshes_managed_policy_blocks_in_install_prompts(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
     docs.mkdir()

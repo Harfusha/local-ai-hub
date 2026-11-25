@@ -181,6 +181,18 @@ def check_claude_settings(path: Path) -> tuple[str, str]:
         return "PLUGIN_ENABLED_CONFIGURED", "Hub plugin enabled in config: enabledPlugins.local-ai-hub@local-ai-hub"
     return "CONFIG_PRESENT_NO_HUB_ROUTE", "Valid Claude settings; Hub plugin is not enabled"
 
+def source_hub_version() -> str | None:
+    """Read the release version used to generate provider plugin bundles."""
+    project_file = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    try:
+        project = tomllib.loads(project_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return None
+    project_data = project.get("project")
+    version = project_data.get("version") if isinstance(project_data, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
 def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str, str]:
     if not manifest_path.is_file():
         return "MISSING", "Native Hub plugin manifest is not installed"
@@ -190,6 +202,17 @@ def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str,
         return "INVALID_CONFIG", f"Plugin manifest JSON error: {exc}"
     if not isinstance(data, dict) or data.get("name") != expected_name:
         return "INVALID_CONFIG", f"Plugin manifest does not identify {expected_name}"
+    expected_version = source_hub_version()
+    if expected_version is None:
+        return "SOURCE_VERSION_UNAVAILABLE", "Cannot verify plugin version without the Hub source version"
+    installed_version = data.get("version")
+    if not isinstance(installed_version, str) or not installed_version.strip():
+        return "INVALID_CONFIG", "Plugin manifest does not declare a version"
+    if installed_version.strip() != expected_version:
+        return (
+            "STALE_PLUGIN_VERSION",
+            f"Installed plugin version {installed_version.strip()} differs from Hub source {expected_version}; refresh the provider bundle",
+        )
     return "PLUGIN_MANIFEST_PRESENT", f"Native Hub plugin manifest present: {manifest_path}"
 
 def check_antigravity_plugin(plugin_dir: Path) -> tuple[str, str]:
@@ -389,7 +412,7 @@ def main() -> int:
     plugin_status, plugin_detail = check_antigravity_plugin_bundle(g_dir)
     if plugin_status == "PLUGIN_MANIFEST_PRESENT":
         status_mcp, msg_mcp = plugin_status, plugin_detail
-    elif plugin_status == "INVALID_CONFIG" and status_mcp != "HUB_ROUTE_CONFIGURED":
+    elif plugin_status in {"INVALID_CONFIG", "STALE_PLUGIN_VERSION", "SOURCE_VERSION_UNAVAILABLE"}:
         status_mcp, msg_mcp = plugin_status, plugin_detail
     results.append({"agent": "Antigravity", "status": status_mcp, "detail": msg_mcp})
     for profile_name, profile_gemini_dir in discover_multigravity_profile_homes(user_home):
@@ -450,7 +473,7 @@ def main() -> int:
     )
     if cursor_plugin_status == "PLUGIN_MANIFEST_PRESENT":
         cursor_status, msg_cursor = cursor_plugin_status, cursor_plugin_detail
-    elif cursor_plugin_status == "INVALID_CONFIG" and cursor_status != "HUB_ROUTE_CONFIGURED":
+    elif cursor_plugin_status in {"INVALID_CONFIG", "STALE_PLUGIN_VERSION", "SOURCE_VERSION_UNAVAILABLE"}:
         cursor_status, msg_cursor = cursor_plugin_status, cursor_plugin_detail
     results.append({"agent": "Cursor", "status": cursor_status, "detail": msg_cursor})
 

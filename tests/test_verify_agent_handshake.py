@@ -171,7 +171,10 @@ def test_antigravity_native_plugin_manifest_is_reported_without_claiming_runtime
     plugin_dir = tmp_path / "plugins" / "local-ai-hub"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.json").write_text(
-        '{"name":"local-ai-hub","version":"6.1.0"}', encoding="utf-8"
+        json.dumps({
+            "name": "local-ai-hub",
+            "version": verify_agent_handshake.source_hub_version(),
+        }), encoding="utf-8"
     )
 
     status, detail = verify_agent_handshake.check_antigravity_plugin(plugin_dir)
@@ -184,7 +187,10 @@ def test_antigravity_plugin_bundle_check_requires_generated_runtime_files(tmp_pa
     plugin = gemini / "config" / "plugins" / "local-ai-hub"
     (plugin / "scripts").mkdir(parents=True)
     (plugin / "skills" / "local-ai-orchestrator").mkdir(parents=True)
-    (plugin / "plugin.json").write_text('{"name":"local-ai-hub"}', encoding="utf-8")
+    (plugin / "plugin.json").write_text(json.dumps({
+        "name": "local-ai-hub",
+        "version": verify_agent_handshake.source_hub_version(),
+    }), encoding="utf-8")
     (plugin / "mcp_config.json").write_text(
         '{"mcpServers":{"local-ai":{"command":"python"}}}', encoding="utf-8"
     )
@@ -212,7 +218,10 @@ def test_configuration_check_reports_each_multigravity_profile(tmp_path, monkeyp
     plugin = gemini / "config" / "plugins" / "local-ai-hub"
     (plugin / "scripts").mkdir(parents=True)
     (plugin / "skills" / "local-ai-orchestrator").mkdir(parents=True)
-    (plugin / "plugin.json").write_text('{"name":"local-ai-hub"}', encoding="utf-8")
+    (plugin / "plugin.json").write_text(json.dumps({
+        "name": "local-ai-hub",
+        "version": verify_agent_handshake.source_hub_version(),
+    }), encoding="utf-8")
     (plugin / "mcp_config.json").write_text(
         '{"mcpServers":{"local-ai":{"command":"python"}}}', encoding="utf-8"
     )
@@ -253,8 +262,25 @@ def test_gemini_cli_extension_manifest_is_reported_without_claiming_runtime(tmp_
 def test_cursor_native_plugin_manifest_is_not_misreported_as_missing_mcp(tmp_path):
     manifest = tmp_path / ".cursor-plugin" / "plugin.json"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text('{"name":"local-ai-hub"}', encoding="utf-8")
+    manifest.write_text(json.dumps({
+        "name": "local-ai-hub",
+        "version": verify_agent_handshake.source_hub_version(),
+    }), encoding="utf-8")
 
     status, detail = verify_agent_handshake.check_plugin_manifest(manifest, "local-ai-hub")
     assert status == "PLUGIN_MANIFEST_PRESENT"
     assert str(manifest) in detail
+
+
+def test_cursor_native_plugin_stale_version_is_reported(tmp_path):
+    manifest = tmp_path / ".cursor-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '{"name":"local-ai-hub","version":"6.1.0"}', encoding="utf-8"
+    )
+
+    status, detail = verify_agent_handshake.check_plugin_manifest(manifest, "local-ai-hub")
+
+    assert status == "STALE_PLUGIN_VERSION"
+    assert "6.1.0" in detail
+    assert "8.1.0" in detail
