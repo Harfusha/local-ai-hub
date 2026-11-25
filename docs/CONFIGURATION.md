@@ -267,3 +267,23 @@ byte matches do not establish business truth or execution proof. The internal
 bootstrap/edit API reuses the existing plan journal, revision and checkout
 fences, and needs a caller-owned authorization callback. This is not yet an
 automatic publication, Agent OS migration or complete knowledge UI.
+
+Explicit local operator writes use the same journal, not a second database.
+Initialize the existing plan workspace / ensure `.local-ai-hub/local/` is
+ignored and untracked before attempting writes in Git projects:
+
+```sh
+python tools/hubctl.py knowledge init --root /path/to/project --apply
+python tools/hubctl.py knowledge save --root /path/to/project --record-file rule.json --expected-revision "" --apply
+python tools/hubctl.py knowledge review --root /path/to/project --finding-id ID --subject-digest DIGEST --decision expected --reason "Approved expected deviation" --expected-revision "" --apply
+```
+
+Use the exact current record revision instead of the empty create revision
+for edits. Review declarations are stored separately from observed/intended
+claims and bind to the current conflict subject digest. A later edit requires
+revalidation; the original decision remains available. The initial strict
+validator reports reviewed conflicts too: Git content alone does not establish
+authorization for a completion waiver. Normal adaptive context retrieval
+includes a bounded, explicitly untrusted projection of relevant knowledge
+declarations when the project manifest is present; this is not yet full
+process discovery or a substitute for current source evidence.

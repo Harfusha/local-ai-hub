@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub.repo_knowledge import RepoKnowledgeStore, build_knowledge_context, detect_declared_claim_conflicts, query_declared_knowledge
+from local_ai_hub.repo_knowledge import RepoKnowledgeStore, build_finding_review, build_knowledge_context, detect_declared_claim_conflicts, query_declared_knowledge
 from local_ai_hub.repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError
 
 PROJECT = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
@@ -87,10 +87,11 @@ def test_structured_conflict_is_candidate_and_stale_sources_excluded(tmp_path):
     _save(store, _rule(root, kind="observation", layer="observed", value=False), key="observed")
     catalog = store.catalog()
     assert catalog["complete"]
-    assert detect_declared_claim_conflicts(catalog) == [{
-        "type": "declared_claim_conflict", "claim_key": "order.reschedule.paid",
-        "intended_id": "order-paid", "observed_id": "order-paid", "status": "candidate",
-    }]
+    findings = detect_declared_claim_conflicts(catalog)
+    assert len(findings) == 1
+    assert findings[0]["claim_key"] == "order.reschedule.paid"
+    assert findings[0]["review_disposition"] == "unreviewed"
+    assert findings[0]["status"] == "candidate"
     (root / "order.py").write_bytes(b"paid = False\n")
     assert detect_declared_claim_conflicts(store.catalog()) == []
 
@@ -154,3 +155,28 @@ def test_business_context_is_bounded_and_untrusted(tmp_path):
     assert not build_knowledge_context(str(root), "paid order", token_budget=32)["text"]
     (root / "order.py").write_bytes(b"paid = False\n")
     assert '"freshness":"stale"' in build_knowledge_context(str(root), "paid order", token_budget=400)["text"]
+
+
+def test_finding_review_is_bound_to_current_subject_and_preserved(tmp_path):
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    first = _save(store, _rule(root))
+    _save(store, _rule(root, kind="observation", layer="observed", value=False), key="observation")
+    catalog = store.catalog()
+    finding = detect_declared_claim_conflicts(catalog)[0]
+    review = build_finding_review(catalog, finding["id"], finding["subject_digest"], "expected", "Intentional temporary deviation")
+    _save(store, review, key="review")
+    reviewed = detect_declared_claim_conflicts(store.catalog())[0]
+    assert reviewed["review_disposition"] == "expected"
+    assert reviewed["review_authority"] == "repository_declaration"
+    changed = _rule(root)
+    changed["payload"]["statement"] = "New business requirement"
+    _save(store, changed, first["file_revision"], "changed")
+    updated = detect_declared_claim_conflicts(store.catalog())[0]
+    assert updated["id"] == finding["id"]
+    assert updated["subject_digest"] != finding["subject_digest"]
+    assert updated["review_disposition"] == "needs_revalidation"
+    with pytest.raises(RepoPlanValidationError):
+        build_finding_review(store.catalog(), finding["id"], finding["subject_digest"], "expected", "Old review")
+    assert store.get("review", review["id"])["record"] == review

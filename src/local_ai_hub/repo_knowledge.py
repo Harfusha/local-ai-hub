@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from collections.abc import Callable, Mapping
 from itertools import islice
 from pathlib import Path
@@ -17,6 +18,7 @@ from uuid import UUID
 
 from .evidence import EvidenceStore, _evidence_path_under_root, _valid_portable_locator
 from .project_config import resolve_project_config
+from .process_utils import clean_git_env, hidden_run_kwargs
 from .repo_plan.schema_validation import RepoPlanValidationError, parse_plan_json
 from .repo_plan.storage import RepoPlanStorage
 from .secret_scan_config import _SECRET_SCAN_PATTERNS
@@ -26,6 +28,7 @@ _MAX_BYTES = 10000
 _MAX_RECORDS = 128
 _ID = re.compile(r"[a-z][a-z0-9_.-]{0,95}")
 _MANIFEST = ".local-ai-hub/project.json"
+_REVIEW_DECISIONS = ("acceptable", "expected", "confirmed_issue", "false_positive", "deferred")
 _DIR = ".local-ai-hub/knowledge"
 _KINDS = {
     "requirement": "requirements", "process": "processes", "entity": "entities",
@@ -91,7 +94,20 @@ def validate_knowledge_file(rel_path: str, data: bytes) -> dict[str, Any]:
     provenance = record["provenance"]
     if not isinstance(payload, dict) or not {"title", "statement", "layer"} <= set(payload):
         raise _invalid()
-    if set(payload) - {"title", "statement", "layer", "claim_key", "claim_value"}:
+    review_fields = {"finding_id", "subject_digest", "decision"}
+    allowed = {"title", "statement", "layer", "claim_key", "claim_value"}
+    if record["kind"] == "review":
+        allowed |= review_fields
+        if not review_fields <= set(payload):
+            raise _invalid()
+        if (not _identifier(payload["finding_id"])
+                or not isinstance(payload["subject_digest"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", payload["subject_digest"]) is None
+                or payload["decision"] not in _REVIEW_DECISIONS):
+            raise _invalid()
+        if record["id"] != "review-" + payload["finding_id"]:
+            raise _invalid()
+    if set(payload) - allowed:
         raise _invalid()
     if not _text(payload["title"], 160) or not _text(payload["statement"], 2000):
         raise _invalid()
@@ -176,11 +192,33 @@ class RepoKnowledgeStore:
     def manifest(self) -> tuple[dict[str, Any], str]:
         return self._read(_MANIFEST)
 
+    def _require_local_journal_ignored(self) -> None:
+        """A tracked or unignored transaction journal must never receive record contents."""
+        if not (self.root / ".git").exists():
+            return
+        try:
+            base = ["git", "-C", str(self.root)]
+            ignored = subprocess.run(
+                [*base, "check-ignore", "-q", "--", ".local-ai-hub/local/intents/.knowledge-probe"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.0,
+                env=clean_git_env(), **hidden_run_kwargs(),
+            ).returncode
+            tracked = subprocess.run(
+                [*base, "ls-files", "--error-unmatch", "--", ".local-ai-hub/local"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.0,
+                env=clean_git_env(), **hidden_run_kwargs(),
+            ).returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RepoPlanValidationError("Cannot verify local journal Git isolation") from exc
+        if ignored != 0 or tracked != 1:
+            raise RepoPlanValidationError("Local journal must be ignored and untracked before knowledge writes")
+
     def bootstrap(
         self, project_id: str, *, mode: str, owner: str, idempotency_key: str,
         authorize_write: Callable[[], bool],
     ) -> dict[str, Any]:
         """Explicit initial identity creation; never adopt or overwrite an identity."""
+        self._require_local_journal_ignored()
         data = _encode({"schema_version": 1, "project_id": project_id, "mode": mode})
         return self.storage.save_knowledge_file(
             _MANIFEST, data, expected_revision="", owner=owner,
@@ -213,6 +251,7 @@ class RepoKnowledgeStore:
         Authorization is external to Git content. This API is intentionally
         internal until the HTTP/MCP actor and privacy policy is wired.
         """
+        self._require_local_journal_ignored()
         manifest, manifest_revision = self.manifest()
         data = _encode(record)
         rel = _path_for(record.get("kind"), record.get("id"))
@@ -272,31 +311,88 @@ class RepoKnowledgeStore:
                 "complete": complete, "records": records, "issues": issues}
 
 
-def detect_declared_claim_conflicts(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Only compare explicitly structured booleans; never infer from prose.
+def _digest_value(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
-    A result is a review candidate, not a verified defect or a claim about
-    actual runtime behavior. Stale sources cannot support a current candidate.
-    """
+
+def detect_declared_claim_conflicts(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Compare explicit booleans; keep reviewed declarations visible."""
     groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    reviews: dict[str, dict[str, Any]] = {}
     for item in catalog["records"]:
-        if item["freshness"] != "matching_sources":
-            continue
         record = item["record"]
         payload = record["payload"]
+        if record["kind"] == "review":
+            reviews[payload["finding_id"]] = item
+            continue
+        if item["freshness"] != "matching_sources":
+            continue
         if payload.get("claim_key") and payload["layer"] in ("intended", "observed"):
-            groups.setdefault(payload["claim_key"], {}).setdefault(payload["layer"], []).append(record)
+            groups.setdefault(payload["claim_key"], {}).setdefault(payload["layer"], []).append(item)
     findings = []
     for claim, layers in sorted(groups.items()):
         for intended in layers.get("intended", []):
             for observed in layers.get("observed", []):
-                if intended["payload"]["claim_value"] != observed["payload"]["claim_value"]:
-                    findings.append({"type": "declared_claim_conflict", "claim_key": claim,
-                                     "intended_id": intended["id"], "observed_id": observed["id"],
-                                     "status": "candidate"})
-                    if len(findings) >= 128:
-                        return findings
+                i_record, o_record = intended["record"], observed["record"]
+                if i_record["payload"]["claim_value"] == o_record["payload"]["claim_value"]:
+                    continue
+                finding_id = "f-" + _digest_value([
+                    catalog["project_id"], claim, i_record["kind"], i_record["id"],
+                    o_record["kind"], o_record["id"]
+                ])[:24]
+                subject_digest = _digest_value([intended["revision"], observed["revision"]])
+                review = reviews.get(finding_id)
+                disposition = "unreviewed"
+                review_note = ""
+                if review is not None:
+                    review_payload = review["record"]["payload"]
+                    if review_payload["subject_digest"] == subject_digest and review["freshness"] == "matching_sources":
+                        disposition = review_payload["decision"]
+                        review_note = review_payload["statement"]
+                    else:
+                        disposition = "needs_revalidation"
+                findings.append({
+                    "id": finding_id, "subject_digest": subject_digest,
+                    "type": "declared_claim_conflict", "claim_key": claim,
+                    "intended_id": i_record["id"], "intended_kind": i_record["kind"],
+                    "observed_id": o_record["id"], "observed_kind": o_record["kind"],
+                    "status": "candidate", "review_disposition": disposition,
+                    "review_note": review_note, "review_authority": "repository_declaration",
+                })
+                if len(findings) >= 128:
+                    return findings
     return findings
+
+
+def build_finding_review(
+    catalog: Mapping[str, Any], finding_id: str, subject_digest: str, decision: str, note: str,
+) -> dict[str, Any]:
+    """Build a review of exactly the currently displayed conflict revision."""
+    if not catalog["complete"] or decision not in _REVIEW_DECISIONS or not _text(note, 2000):
+        raise _invalid()
+    finding = next((item for item in detect_declared_claim_conflicts(catalog) if item["id"] == finding_id), None)
+    if finding is None or finding["subject_digest"] != subject_digest:
+        raise RepoPlanValidationError("Finding changed; refresh before review")
+    sources: list[dict[str, Any]] = []
+    relations: list[dict[str, str]] = []
+    for layer in ("intended", "observed"):
+        kind, record_id = finding[layer + "_kind"], finding[layer + "_id"]
+        item = next(item for item in catalog["records"]
+                    if item["record"]["kind"] == kind and item["record"]["id"] == record_id)
+        for ref in item["record"]["evidence"]:
+            if ref not in sources:
+                sources.append(ref)
+        relations.append({"type": "reviews", "target_kind": kind, "target_id": record_id})
+    if len(sources) > 16:
+        raise RepoPlanValidationError("Review evidence exceeds publication bound")
+    return {
+        "schema_version": 1, "project_id": catalog["project_id"], "kind": "review",
+        "id": "review-" + finding_id,
+        "payload": {"title": "Conflict review", "statement": note, "layer": "interpretation",
+                    "finding_id": finding_id, "subject_digest": subject_digest, "decision": decision},
+        "provenance": {"origin_kind": "manual"}, "evidence": sources, "relations": relations,
+    }
+
 
 def query_declared_knowledge(catalog: Mapping[str, Any], query: str, *, limit: int = 8) -> dict[str, Any]:
     """Bounded lexical discovery over curated records; not a semantic verifier."""

@@ -265,7 +265,14 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=None, help="Repository root path (defaults to current working directory)")
     parser.add_argument("--scope", type=str, default="", help="Memory scope filter (task, session, branch, project, user, global)")
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
-    parser.add_argument("--query", type=str, default="", help="Memory search query")
+    parser.add_argument("--query", type=str, default="", help="Memory or knowledge search query")
+    parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
+    parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
+    parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
+    parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
+    parser.add_argument("--finding-id", default="", help="Knowledge conflict ID")
+    parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
+    parser.add_argument("--decision", choices=["acceptable", "expected", "confirmed_issue", "false_positive", "deferred"])
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
     parser.add_argument("--compact", action="store_true", help="Compact older memory records into digest summaries")
     parser.add_argument("--vacuum", action="store_true", help="Run SQLite WAL checkpoint and VACUUM during cleanup")
@@ -282,10 +289,18 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate"}:
-            parser.error("knowledge requires catalog, query or validate")
+        if args.sub_arg not in {"catalog", "query", "validate", "init", "save", "review"}:
+            parser.error("knowledge requires catalog, query, validate, init, save or review")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
+        if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
+            parser.error("knowledge mutations require explicit --apply (review content first)")
+        if args.sub_arg in {"save", "review"} and args.expected_revision is None:
+            parser.error("knowledge save/review requires --expected-revision (empty string for create)")
+        if args.sub_arg == "save" and args.record_file is None:
+            parser.error("knowledge save requires --record-file")
+        if args.sub_arg == "review" and not all((args.finding_id, args.subject_digest, args.decision, args.reason)):
+            parser.error("knowledge review requires --finding-id, --subject-digest, --decision and --reason")
         requested_mode = None
     elif args.action == "client":
         if args.sub_arg is not None and args.sub_arg not in {"status", "detect", "inject", "remove", "config"}:
@@ -303,13 +318,39 @@ def main() -> int:
     if args.action == "knowledge":
         from local_ai_hub.repo_knowledge import (
             RepoKnowledgeStore,
+            build_finding_review,
             detect_declared_claim_conflicts,
             query_declared_knowledge,
         )
-        from local_ai_hub.repo_plan.schema_validation import RepoPlanError
+        from local_ai_hub.repo_plan.schema_validation import RepoPlanError, parse_plan_json
+        from uuid import uuid4
 
         try:
-            catalog = RepoKnowledgeStore(args.root).catalog()
+            store = RepoKnowledgeStore(args.root)
+            if args.sub_arg in {"init", "save", "review"}:
+                operation_id = args.operation_id or str(uuid4())
+                # This is an explicit local operator command, not a remotely
+                # supplied actor or a permission granted by Git metadata.
+                def authorize_local_operator() -> bool:
+                    return args.apply is True and not args.dry_run
+
+                if args.sub_arg == "init":
+                    result = store.bootstrap(str(uuid4()), mode=args.knowledge_mode,
+                                             owner="local-operator", idempotency_key=operation_id,
+                                             authorize_write=authorize_local_operator)
+                else:
+                    if args.sub_arg == "save":
+                        with args.record_file.open("rb") as stream:
+                            record = parse_plan_json(stream.read(10001))
+                    else:
+                        record = build_finding_review(store.catalog(), args.finding_id,
+                                                      args.subject_digest, args.decision, args.reason)
+                    result = store.save(record, expected_revision=args.expected_revision,
+                                        owner="local-operator", idempotency_key=operation_id,
+                                        authorize_write=authorize_local_operator)
+                print(json.dumps({**result, "operation_id": operation_id}, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
+            catalog = store.catalog()
             if args.sub_arg == "query":
                 result = query_declared_knowledge(catalog, args.query, limit=min(args.limit, 32))
             elif args.sub_arg == "validate":
