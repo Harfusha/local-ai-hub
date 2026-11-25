@@ -776,7 +776,8 @@ class RepoPlanStorage:
             raise RepoPlanConflictError("Knowledge write is not authorized")
         if not idempotency_key or not isinstance(expected_revision, str):
             raise RepoPlanValidationError("Knowledge writes require a revision and operation key")
-        validate_knowledge_file(rel_path, data)
+        record = validate_knowledge_file(rel_path, data)
+        self._validate_handoff_parent(record, expected_revision)
         return self._save_targets(
             "save_knowledge", [(rel_path, data, expected_revision)],
             owner, idempotency_key, lease_check_fn,
@@ -856,6 +857,14 @@ class RepoPlanStorage:
                                   idempotency_key, lease_check_fn)
 
     @staticmethod
+    def _validate_handoff_parent(record: dict[str, Any], expected_revision: str) -> None:
+        if record.get("kind") != "handoff":
+            return
+        previous = record["payload"].get("previous_attempt")
+        if previous is not None and previous["parent_revision"] != expected_revision:
+            raise RepoPlanConflictError("Handoff attempt parent must match the adopted record revision")
+
+    @staticmethod
     def _validate_knowledge_batch(candidates: list[tuple[str, bytes, str]]) -> None:
         from ..repo_knowledge import _MANIFEST, validate_knowledge_file
 
@@ -875,6 +884,7 @@ class RepoPlanStorage:
                 raise RepoPlanValidationError("Invalid or duplicate knowledge batch target")
             seen.add(path)
             record = validate_knowledge_file(path, data)
+            RepoPlanStorage._validate_handoff_parent(record, revision)
             if record["project_id"] != manifest["project_id"] or record.get("kind") in {None, "review", "finding"}:
                 raise RepoPlanValidationError("Invalid knowledge batch project or record kind")
 
@@ -1178,7 +1188,8 @@ class RepoPlanStorage:
                                 validate_plan_dict(parse_plan_json(data), repo_root=self.repo_root)
                             if intent.operation == "save_knowledge":
                                 from ..repo_knowledge import validate_knowledge_file
-                                validate_knowledge_file(target.rel_path, data)
+                                record = validate_knowledge_file(target.rel_path, data)
+                                self._validate_handoff_parent(record, target.expected_sha256)
                         for target, actual, data in zip(intent.targets, current, payloads):
                             self._check_fence(intent.context, lease_check_fn)
                             validate_repo_path(target.rel_path, repo_root=self.repo_root)
