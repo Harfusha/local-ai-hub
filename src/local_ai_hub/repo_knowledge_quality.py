@@ -38,10 +38,14 @@ def knowledge_impact(catalog: Mapping[str, Any], changed_paths: list[str]) -> di
             if relation["type"] in {"depends_on", "derived_from", "verified_by"}:
                 target = (relation["target_kind"], relation["target_id"])
                 reverse.setdefault(target, []).append(key)
-    direct = {
-        key: sorted({ref["path"] for ref in item["record"]["evidence"]} & paths)
-        for key, item in rows.items()
-    }
+    direct: dict[tuple[str, str], list[str]] = {}
+    for key, item in rows.items():
+        record = item["record"]
+        source_paths = {ref["path"] for ref in record["evidence"]}
+        assertion = record["payload"].get("source_assertion")
+        if assertion:
+            source_paths.add(assertion["path"])
+        direct[key] = sorted(source_paths & paths)
     direct = {key: matched for key, matched in direct.items() if matched}
     chains: dict[tuple[str, str], list[tuple[str, str]]] = {key: [key] for key in direct}
     queue = deque(sorted(direct))
@@ -92,7 +96,10 @@ def quality_report(catalog: Mapping[str, Any]) -> dict[str, Any]:
     def add(code: str, key: tuple[str, str], discriminator: str = "", observation: Mapping[str, Any] | None = None) -> None:
         item = rows[key]
         finding_id = "f-" + _digest_value([catalog["project_id"], code, *key, discriminator])[:24]
-        subject = _digest_value([item["revision"], item["freshness"], item.get("dependency_status", ""), discriminator, observation])
+        subject_fields = [item["revision"], item["freshness"], item.get("dependency_status", ""), discriminator]
+        if observation is not None:
+            subject_fields.append(observation)
+        subject = _digest_value(subject_fields)
         review = reviews.get(finding_id)
         disposition = "unreviewed"
         note = ""

@@ -96,7 +96,7 @@ function renderProjectKnowledgeResults(result){
     const statement=document.createElement('p');statement.textContent=String(payload.statement||'');card.appendChild(statement);
     const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Sources, revision and declared relationships';details.appendChild(summary);
     const pre=document.createElement('pre');pre.className='human-pre';
-    pre.textContent=JSON.stringify({record_id:record.id,revision:item.revision,evidence:record.evidence||[],source_statuses:item.evidence_statuses||[],source_checks_complete:item.source_checks_complete,relations:record.relations||[],flow:payload.flow},null,2);
+    pre.textContent=JSON.stringify({record_id:record.id,revision:item.revision,evidence:record.evidence||[],source_statuses:item.evidence_statuses||[],source_checks_complete:item.source_checks_complete,source_assertion:item.source_assertion,relations:record.relations||[],flow:payload.flow},null,2);
     details.appendChild(pre);card.appendChild(details);
     const editor=document.createElement('details'),editorTitle=document.createElement('summary');editorTitle.textContent='Edit declaration';editor.appendChild(editorTitle);
     const input=document.createElement('textarea');input.rows=8;input.setAttribute('aria-label','Knowledge record JSON');input.value=JSON.stringify(record,null,2);editor.appendChild(input);

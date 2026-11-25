@@ -188,6 +188,19 @@ class ServiceReviewMixin:
         # instructions can otherwise undo the per-segment input limit.
         instructions = fit_text(instructions, 600).text
         det_hint = fit_text(det_hint, 700).text if det_hint else ""
+        knowledge_review: dict[str, Any] = {"status": "skipped"}
+        if isinstance(regression_root, str) and is_rooted_path(regression_root) and diff.get("changed_files"):
+            from .repo_knowledge import reserve_knowledge_context
+
+            knowledge_review, _ = reserve_knowledge_context(
+                self.config, regression_root, instructions or "Review changed code",
+                token_budget=1600, changed_paths=tuple(diff["changed_files"]),
+            )
+            knowledge_text = knowledge_review.get("text", "")
+            if knowledge_text:
+                # The existing metadata budget is shared, not expanded.
+                metadata_budget = max(0, 700 - estimate_tokens(knowledge_text + "\n\n"))
+                det_hint = (fit_text(det_hint, metadata_budget).text if det_hint and metadata_budget else "") + "\n\n" + knowledge_text
 
         diff_text = str(diff["diff"])
         complexity_hint = review_diff_complexity(args, det_diff, diff)
@@ -559,6 +572,11 @@ class ServiceReviewMixin:
         result["untracked_files_excluded"] = excluded
         result["untracked_inventory_complete"] = inventory_complete
         result["review_scope_complete"] = scope_complete
+        if knowledge_review["status"] not in {"skipped", "uninitialized"}:
+            result["knowledge_review"] = {
+                "status": knowledge_review["status"],
+                "needs_revalidation": bool(knowledge_review.get("needs_revalidation")),
+            }
         if "review_source_sha256" in diff:
             result["review_source_sha256"] = diff["review_source_sha256"]
         from .semantic_quality import assess_review_consistency, constrain_semantic_quality

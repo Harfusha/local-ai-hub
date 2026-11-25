@@ -436,7 +436,9 @@ def main() -> int:
                 result = query_declared_knowledge(catalog, args.query, limit=min(args.limit, 32))
             elif args.sub_arg == "validate":
                 from local_ai_hub.repo_knowledge_graph import process_flow_findings
+                from local_ai_hub.repo_knowledge_quality import quality_report
 
+                quality = quality_report(catalog)
                 result = {
                     "project_id": catalog["project_id"], "complete": catalog["complete"],
                     "issues": catalog["issues"], "record_count": len(catalog["records"]),
@@ -445,12 +447,14 @@ def main() -> int:
                     "conflict_candidates": detect_declared_claim_conflicts(catalog),
                     "graph_issues": catalog.get("graph_issues", []),
                     "process_candidates": process_flow_findings(catalog),
+                    "quality_complete": quality["complete"],
+                    "quality_candidates": quality["findings"],
                 }
             else:
                 result = catalog
             print(json.dumps(result, indent=2, ensure_ascii=False))
             if args.sub_arg == "validate":
-                return 0 if result["complete"] and not result["stale_count"] and not result["unknown_count"] and not result["conflict_candidates"] and not result["graph_issues"] and not result["process_candidates"] else 1
+                return 0 if result["complete"] and result["quality_complete"] and not result["quality_candidates"] else 1
             return 0 if result["complete"] else 1
         except (OSError, RepoPlanError, ValueError) as exc:
             print(json.dumps({"success": False, "error": type(exc).__name__}))

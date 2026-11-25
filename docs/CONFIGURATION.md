@@ -390,3 +390,10 @@ source digest and record revision; a later source edit reopens review.
 This checks explicitly linked documentation intent against static source
 declarations, not effective runtime behavior. No source is imported/executed,
 and PHP/dynamic semantics still require evidence-backed analysis.
+
+Explicit assertion paths participate in changed-file business impact and
+bounded normal query/solve/review context; source assertion results are
+advisory and separate from source freshness. Headless validation fails on
+quality candidates, including unverified or mismatched assertions.
+Semantic diff review uses its existing metadata budget and reports whether
+knowledge needs revalidation; no additional model invocation is required.

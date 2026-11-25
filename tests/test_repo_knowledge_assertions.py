@@ -35,6 +35,12 @@ def test_documented_intent_detects_current_source_literal_drift(tmp_path):
     store = RepoKnowledgeStore(root)
     store.save(record, expected_revision="", owner="operator", idempotency_key="rule", authorize_write=lambda: True)
     catalog = store.catalog()
+    from local_ai_hub.repo_knowledge_quality import knowledge_impact
+    from local_ai_hub.repo_knowledge import query_repository_knowledge
+
+    assert knowledge_impact(catalog, ["settings.py"])["impacts"][0]["id"] == "paid-reschedule"
+    query_result = query_repository_knowledge({}, {"root": str(root), "query": "paid order"})
+    assert query_result["records"][0]["source_assertion"]["status"] == "mismatch"
     finding = quality_report(catalog)["findings"][0]
     assert finding["type"] == "source_literal_mismatch"
     assert finding["expected"] is True and finding["actual"] is False
