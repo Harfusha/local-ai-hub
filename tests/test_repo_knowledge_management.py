@@ -185,7 +185,7 @@ def test_portable_handoff_receipt_summary_never_grants_current_verification(tmp_
         attach_historical_verification(record, task, [])
 
 
-def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path):
+def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path, monkeypatch):
     import shutil
     import subprocess
 
@@ -261,6 +261,24 @@ def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path):
     assert manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)["resume_allowed"] is False
     with pytest.raises(RepoPlanValidationError):
         validate_resume_creation(creation)
+
+    # The real HTTP create handler must reject before invoking the existing store.
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+    from local_ai_hub.http_post_tasks import handle_agent_state_tasks
+
+    created = []
+    responses = []
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        agent_tasks=SimpleNamespace(state_store=SimpleNamespace(enabled=True),
+                                    create=lambda *args, **kwargs: created.append((args, kwargs))),
+    ))
+    handler = SimpleNamespace(_agent=lambda: "agent", _authorization_root=str(clone),
+                              _send=lambda status, body: responses.append((status, body)))
+    handle_agent_state_tasks(handler, creation)
+    assert responses[0][0] == 409
+    assert responses[0][1]["operation_not_started"] is True
+    assert not created
     assert not (clone / ".local-ai-hub/local").exists()
     assert "paid = True" not in str(record)
     bad = {**record, "payload": {**record["payload"], "source_dependencies": []}}
