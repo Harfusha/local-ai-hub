@@ -58,6 +58,7 @@ _TOP_LEVEL = frozenset(
         "verification_rules",
         "pinned_context",
         "entry_points",
+        "shared_path_hints",
         "retrieval_weights",
         "project_type",
         "solution_path",
@@ -146,6 +147,7 @@ class ProjectSettings:
     shared_namespace: str | None = None
     workspace: WorkspaceSettings = field(default_factory=WorkspaceSettings)
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
+    shared_path_hints: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in (
@@ -167,6 +169,7 @@ class ProjectSettings:
             "env_references",
             "verification_rules",
             "retrieval_weights",
+            "shared_path_hints",
             "language_overrides",
         ):
             object.__setattr__(self, name, _freeze(getattr(self, name)))
@@ -260,10 +263,14 @@ class ProjectContext:
         repository_revision: str | Callable[[], str],
         path_hints: list[PathHint] | tuple[PathHint, ...] = (),
     ) -> PathHintUsage:
-        """Rank candidates by durable, request, then saved repo-scoped hints."""
+        """Rank candidates by curated purpose-specific, entrypoint, request, then learned hints."""
         configured_hints = tuple(
             PathHint(path=path, purpose=purpose, scope=scope)
             for path in self.settings.entry_points
+        )
+        shared_hints = tuple(
+            PathHint(path=path, purpose=purpose, scope=scope)
+            for path in self.settings.shared_path_hints.get(purpose, ())
         )
         request_hints = tuple(
             hint
@@ -280,12 +287,13 @@ class ProjectContext:
         if callable(repository_revision):
             repository_revision = (saved_hints[0].repository_revision or "") if saved_hints else ""
         ordered = tuple(candidates)
-        hints_available = bool(configured_hints or request_hints or saved_hints)
+        hints_available = bool(shared_hints or configured_hints or request_hints or saved_hints)
         hint_used = False
         for hints, learned in (
             (saved_hints, True),
             (request_hints, False),
             (configured_hints, False),
+            (shared_hints, False),
         ):
             if not hints:
                 continue
@@ -767,6 +775,22 @@ def _normalize(
 
     project_env, env_references = _environment_values(data.get("env", {}))
 
+    shared_hints_raw = data.get("shared_path_hints", {})
+    if not isinstance(shared_hints_raw, dict) or len(shared_hints_raw) > 64:
+        raise ProjectConfigError("invalid_config")
+    shared_hints: dict[str, tuple[str, ...]] = {}
+    total_hints = 0
+    for purpose, paths in shared_hints_raw.items():
+        if not isinstance(purpose, str) or not _KEY.fullmatch(purpose):
+            raise ProjectConfigError("invalid_config")
+        if not isinstance(paths, list) or len(paths) > _MAX_HINTS_PER_SCOPE:
+            raise ProjectConfigError("invalid_config")
+        normalized = tuple(dict.fromkeys(_literal_path_list(paths)))
+        total_hints += len(normalized)
+        if total_hints > _MAX_HINTS_PER_SCOPE:
+            raise ProjectConfigError("invalid_config")
+        shared_hints[purpose] = normalized
+
     return ProjectSettings(
         exclude_paths=_string_list(data.get("exclude_paths", [])),
         force_include_paths=_string_list(data.get("force_include_paths", [])),
@@ -783,6 +807,7 @@ def _normalize(
         verification_rules=rules,
         pinned_context=_literal_path_list(data.get("pinned_context", [])),
         entry_points=_literal_path_list(data.get("entry_points", [])),
+        shared_path_hints=shared_hints,
         retrieval_weights=normalized_weights,
         project_type=project_type,
         solution_path=solution,

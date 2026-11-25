@@ -225,3 +225,16 @@ All compressions strictly enforce:
 2. Independent semantic review for equivalence (`{"equivalent": true, "missing": [], "weakened": []}`).
 3. Hash-verified backup retention with reversible manifests.
 
+## Shared project retrieval hints
+
+A project can version manually curated, purpose-specific retrieval hints in its existing `.local-ai.toml`:
+
+```toml
+[shared_path_hints]
+search = ["src/Service", "docs/architecture.md"]
+```
+
+Keys are exact purpose names used by the existing project-context consumer.
+Each value is a bounded list of repository-relative literal paths. Purpose-specific hints rank existing candidates ahead of broad entry points, request hints, and locally learned hints; they never add candidates, override path policy, or authenticate a fact. Missing paths are ignored by the existing validation pipeline. Use Git review for curated entries; the current implementation does not automatically publish learned hints. The ordinary configuration resolver and overlay precedence remain authoritative.
+
+See [the V4 specification](superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md) for the proposed full project-state migration. This setting and the portable source locator are initial foundations, not the complete V4 integration.
