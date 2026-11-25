@@ -120,6 +120,17 @@ def checkout_sync_status(root: Path) -> dict[str, Any]:
     """Report shared-state Git changes; never expose local journal contents."""
     if not (root / ".git").exists():
         return {"state": "not_git_checkout", "complete": False}
+    from .repo_knowledge import RepoKnowledgeStore
+    from .repo_plan.schema_validation import RepoPlanError
+
+    publication_status = "unavailable"
+    epoch = None
+    try:
+        store = RepoKnowledgeStore(root)
+        epoch = store.read_epoch()
+        publication_status = "idle"
+    except (OSError, ValueError, RepoPlanError, RuntimeError):
+        publication_status = "pending_or_unavailable"
     branch, head = get_git_context(root)
     raw = _git(root, "status", "--porcelain=v1", "-z", "--no-renames",
                "--untracked-files=all", "--ignored=matching", "--", *_PATHS)
@@ -168,10 +179,18 @@ def checkout_sync_status(root: Path) -> dict[str, Any]:
             divergence = {"status": "local_tracking_ref_only", "ahead": int(parts[0]), "behind": int(parts[1])}
     if get_git_context(root) != (branch, head):
         return {"state": "changed_during_read", "complete": False}
+    if epoch is not None:
+        try:
+            store.require_read_epoch(epoch)
+        except (OSError, ValueError, RepoPlanError, RuntimeError):
+            publication_status = "changed_or_pending"
+    if publication_status != "idle":
+        complete = False
     # Ignored shareable files cannot silently count as synchronized.
     state = (
         "conflict" if any(item["state"] == "conflict" for item in entries)
         else "unsafe_local_tracking" if local_tracked
+        else "publication_pending_or_unavailable" if publication_status != "idle"
         else "partial" if not complete
         else "local_changes" if entries
         else "clean_shared_paths"
@@ -179,6 +198,7 @@ def checkout_sync_status(root: Path) -> dict[str, Any]:
     return {
         "state": state, "complete": complete, "branch": branch, "head": head,
         "entries": entries, "tracked_local_state": bool(local_tracked),
+        "publication_status": publication_status,
         "conflicts": conflict_summaries, "conflicts_truncated": len(conflict_entries) > 8,
         "divergence": divergence, "remote_verified": False,
     }
