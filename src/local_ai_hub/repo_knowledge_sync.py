@@ -30,7 +30,7 @@ def _git(root: Path, *args: str) -> bytes | None:
             ["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
              "-C", str(root), *args],
             capture_output=True, timeout=5,
-            env=clean_git_env(), **hidden_run_kwargs(),
+            env={**clean_git_env(), "GIT_NO_LAZY_FETCH": "1"}, **hidden_run_kwargs(),
         )
         if result.returncode or len(result.stdout) > _MAX_OUTPUT:
             return None
@@ -181,4 +181,99 @@ def checkout_sync_status(root: Path) -> dict[str, Any]:
         "entries": entries, "tracked_local_state": bool(local_tracked),
         "conflicts": conflict_summaries, "conflicts_truncated": len(conflict_entries) > 8,
         "divergence": divergence, "remote_verified": False,
+    }
+
+
+def compare_knowledge_revisions(root: Path, base: str, head: str = "HEAD") -> dict[str, Any]:
+    """Bounded committed knowledge diff; no checkout, fetch or content disclosure."""
+    from .repo_knowledge import _MAX_BYTES, validate_knowledge_file
+    from .repo_plan.schema_validation import RepoPlanValidationError
+
+    def unavailable(reason: str) -> dict[str, Any]:
+        return {"complete": False, "state": reason, "changes": [], "runtime_verified": False}
+
+    def commit_id(ref: str) -> str | None:
+        if not isinstance(ref, str) or not ref or len(ref) > 256 or not ref.isprintable():
+            return None
+        raw = _git(root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
+        if raw is None or not re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})\n?", raw):
+            return None
+        return raw.strip().decode("ascii")
+
+    def read_record(path: str, oid: str) -> dict[str, Any]:
+        size = _git(root, "cat-file", "-s", oid)
+        if size is None or not size.strip().isdigit() or int(size) > _MAX_BYTES:
+            raise RepoPlanValidationError("Git blob unavailable or oversized")
+        data = _git(root, "cat-file", "blob", oid)
+        if data is None:
+            raise RepoPlanValidationError("Git blob unavailable")
+        return validate_knowledge_file(path, data)
+
+    def manifest(commit: str) -> dict[str, Any]:
+        path = ".local-ai-hub/project.json"
+        tree = _git(root, "ls-tree", "-z", commit, "--", path)
+        match = re.fullmatch(rb"100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t\.local-ai-hub/project\.json\0", tree or b"")
+        if match is None:
+            raise RepoPlanValidationError("Project manifest unavailable in commit")
+        return read_record(path, match.group(1).decode("ascii"))
+
+    left, right = commit_id(base), commit_id(head)
+    if left is None or right is None:
+        return unavailable("revision_unavailable")
+    try:
+        before_manifest, after_manifest = manifest(left), manifest(right)
+    except (RepoPlanValidationError, ValueError, TypeError):
+        return unavailable("manifest_unavailable")
+    if before_manifest["project_id"] != after_manifest["project_id"]:
+        return unavailable("project_identity_changed")
+
+    raw = _git(root, "diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff",
+               "-z", left, right, "--", ".local-ai-hub/knowledge")
+    if raw is None:
+        return unavailable("diff_unavailable")
+    fields = raw.split(b"\0")
+    if fields[-1] != b"" or (len(fields) - 1) % 2:
+        return unavailable("invalid_diff")
+    changes: list[dict[str, Any]] = []
+    complete = len(fields) - 1 <= 32
+    for index in range(0, min(len(fields) - 1, 32), 2):
+        meta, raw_path = fields[index:index + 2]
+        match = re.fullmatch(
+            rb":(000000|100644|100755) (000000|100644|100755) "
+            rb"([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) ([ADM])",
+            meta,
+        )
+        if match is None or not re.fullmatch(rb"\.local-ai-hub/knowledge/[a-z_]+/[a-z0-9_.-]+\.json", raw_path):
+            complete = False
+            continue
+        path = raw_path.decode("ascii")
+        old_mode, new_mode, old_id, new_id, status = match.groups()
+        try:
+            old = read_record(path, old_id.decode("ascii")) if old_mode != b"000000" else None
+            new = read_record(path, new_id.decode("ascii")) if new_mode != b"000000" else None
+            records = [record for record in (old, new) if record is not None]
+            if not records or any(record["project_id"] != before_manifest["project_id"] for record in records):
+                raise RepoPlanValidationError("Project identity mismatch")
+        except (RepoPlanValidationError, ValueError, TypeError):
+            complete = False
+            changes.append({"path": path, "state": "invalid_or_unavailable_record"})
+            continue
+        record = new if new is not None else old
+        assert record is not None
+        groups = []
+        if old is not None and new is not None:
+            groups = [key for key in ("payload", "provenance", "evidence", "relations") if old[key] != new[key]]
+        changes.append({
+            "path": path, "kind": record["kind"], "id": record["id"],
+            "state": {b"A": "added", b"D": "removed", b"M": "modified"}[status],
+            "changed_groups": groups,
+            "previous_layer": old["payload"]["layer"] if old else None,
+            "current_layer": new["payload"]["layer"] if new else None,
+            "requires_review": True,
+        })
+    return {
+        "complete": complete, "state": "available" if complete else "partial",
+        "base": left, "head": right, "project_id": before_manifest["project_id"],
+        "manifest_mode_changed": before_manifest["mode"] != after_manifest["mode"],
+        "changes": changes, "runtime_verified": False, "committed_only": True,
     }
