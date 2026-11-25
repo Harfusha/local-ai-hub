@@ -317,3 +317,17 @@ def test_portable_task_handoff_uses_fresh_attempt_without_local_state(tmp_path):
         build_task_handoff(store, {**task, "repo_root": str(clone)})
     with pytest.raises(RepoPlanValidationError):
         build_task_handoff(store, {**task, "checkpoint": {**task["checkpoint"], "affected_paths": ["../outside"]}})
+
+
+def test_knowledge_query_operation_contract_agrees_with_service(tmp_path):
+    from local_ai_hub.operation_contracts import operation_input_schema, validate_operation_arguments
+    from local_ai_hub.http_route_registry import select_http_routes
+
+    schema = operation_input_schema("local_ai_repo", "knowledge_query")
+    assert schema["properties"]["limit"]["maximum"] == 8
+    assert schema["properties"]["limit"]["default"] == 4
+    payload = {"root": str(tmp_path), "query": "service", "limit": 4}
+    assert validate_operation_arguments("local_ai_repo", "knowledge_query", payload) is None
+    assert validate_operation_arguments("local_ai_repo", "knowledge_query", {**payload, "limit": 9})
+    assert validate_operation_arguments("local_ai_repo", "knowledge_query", {**payload, "query": " "})
+    assert select_http_routes("POST", "/api/repo/knowledge/query") == ("post_repo_knowledge_query_1",)

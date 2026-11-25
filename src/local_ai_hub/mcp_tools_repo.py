@@ -292,7 +292,7 @@ def _local_ai_repo_impl(
         return services_module._compact(services_module.CLIENT.post("/api/repo/knowledge/query", {
             "root": root, "query": query, "limit": limit,
         }, timeout=services_module._timeout("quick")), "architecture",
-            extra_fields=["records", "complete", "issues", "answer_status", "match_count", "truncated", "project_id"])
+            extra_fields=["records", "complete", "issues", "graph_issues", "answer_status", "match_count", "direct_match_count", "truncated", "project_id"])
     if action == "briefing":
         return services_module._compact(services_module.CLIENT.post("/api/repo/briefing", {
             "root": root,

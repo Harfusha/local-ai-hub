@@ -1433,6 +1433,11 @@ def operation_input_schema(tool: str, action: str, features: Any = None) -> dict
         }
     if tool == "local_ai_coord" and action == "task_list":
         schema["properties"]["limit"]["default"] = 20
+    if tool == "local_ai_repo" and action == "knowledge_query":
+        schema["properties"]["limit"] = {
+            "type": "integer", "minimum": 1, "maximum": 8, "default": 4,
+        }
+        schema["properties"]["query"] = {"type": "string", "minLength": 1, "maxLength": 2000}
     if tool == "local_ai_repo" and action == "reachability_dead_code":
         schema["properties"]["limit"] = {
             "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
@@ -1537,6 +1542,11 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         if tool == "local_ai_work" and action == "submit":
             then.setdefault("required", []).append("mode")
             then.setdefault("properties", {})["mode"] = {"type": "string", "enum": ["bounded"]}
+        if tool == "local_ai_repo" and action == "knowledge_query":
+            then.setdefault("properties", {})["limit"] = {
+                "type": "integer", "minimum": 1, "maximum": 8, "default": 4,
+            }
+            then["properties"]["query"] = {"type": "string", "minLength": 1, "maxLength": 2000}
         if tool == "local_ai_repo" and action == "reachability_dead_code":
             then.setdefault("properties", {})["limit"] = {
                 "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
@@ -2463,6 +2473,13 @@ def validate_operation_arguments(
             return "key must be a non-empty string for action='memory_record'"
         if not isinstance(arguments.get("value"), str):
             return "value must be a string for action='memory_record'"
+    if tool == "local_ai_repo" and action == "knowledge_query":
+        query = arguments.get("query")
+        limit = arguments.get("limit", 4)
+        if not isinstance(query, str) or not query.strip() or len(query) > 2000:
+            return "knowledge_query requires nonempty query of at most 2000 characters"
+        if type(limit) is not int or not 1 <= limit <= 8:
+            return "knowledge_query limit must be between 1 and 8"
     if tool == "local_ai_repo" and action == "structural_search":
         revision = arguments.get("expected_revision")
         if revision is not None and (
