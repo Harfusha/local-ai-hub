@@ -11,7 +11,7 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
     db = tmp_path / 'index.sqlite'
     roots = [tmp_path / 'one', tmp_path / 'two']
     with closing(sqlite3.connect(db)) as con:
-        con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
+        con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)')
         con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)')
         con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
         content_hash = hashlib.sha256(b'text').hexdigest()
@@ -20,7 +20,7 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
             for i in range(8):
                 name = f'{i}.py'
                 (root / name).write_text('text', encoding='utf-8')
-                con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, content_hash))
+                con.execute('INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, content_hash))
                 con.execute('INSERT INTO source_index VALUES(?, ?, ?, ?)', (str(root), name, content_hash, 'text'))
         con.commit()
 
@@ -71,14 +71,14 @@ def test_batch_recovers_after_sustained_progress(tmp_path):
     root = tmp_path / 'repo'
     root.mkdir()
     with closing(sqlite3.connect(db)) as con:
-        con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
+        con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)')
         con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)')
         con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
         content_hash = hashlib.sha256(b'text').hexdigest()
         for i in range(20):
             name = f'{i:02}.py'
             (root / name).write_text('text', encoding='utf-8')
-            con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, content_hash))
+            con.execute('INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, content_hash))
             con.execute('INSERT INTO source_index VALUES(?, ?, ?, ?)', (str(root), name, content_hash, 'text'))
         con.commit()
 
@@ -193,11 +193,11 @@ def test_real_rag_preemption_preserves_snapshot_and_reduces_batch(tmp_path, monk
     chunks[:] = [f'replacement chunk {i}' for i in range(65)]
     db = tmp_path / 'index.sqlite'
     with closing(sqlite3.connect(db)) as con:
-        con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
+        con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)')
         con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)')
         con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
         content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-        con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 10, 0)', (str(root), 'module.py', content_hash))
+        con.execute('INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, ?, ?, 0, NULL, 0, 10, 0)', (str(root), 'module.py', content_hash))
         con.commit()
 
     def connect():
