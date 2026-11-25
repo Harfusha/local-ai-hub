@@ -331,6 +331,7 @@ def preview_handoff_resume(store: RepoKnowledgeStore, handoff_id: str) -> dict[s
     """One read-only resume preview shared by HTTP and the CLI."""
     from .repo_knowledge import _digest_value
 
+    epoch = store.read_epoch()
     manifest_revision = store.manifest()[1]
     item = store.get("handoff", handoff_id, verify_sources=False)
     dependencies = inspect_handoff_dependencies(store, item["record"])
@@ -340,6 +341,7 @@ def preview_handoff_resume(store: RepoKnowledgeStore, handoff_id: str) -> dict[s
         or store.get("handoff", handoff_id, verify_sources=False)["revision"] != item["revision"]
     ):
         raise _reject("Handoff changed during preview")
+    store.require_read_epoch(epoch)
     return {
         "preview": True, "revision": item["revision"], "contract": contract,
         "historical_verification": item["record"]["payload"].get("historical_verification", []),
@@ -392,6 +394,7 @@ def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[st
 
     if type(limit) is not int or not 1 <= limit <= 64:
         raise _reject("Handoff limit must be between 1 and 64")
+    epoch = store.read_epoch()
     manifest, manifest_revision = store.manifest()
     relative = ".local-ai-hub/agent-os/handoffs"
     parent = store.root / relative
@@ -400,6 +403,7 @@ def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[st
         "handoffs": [], "issues": [], "authority": "historical_declaration",
     }
     if not parent.exists() and not parent.is_symlink():
+        store.require_read_epoch(epoch)
         return result
     if _evidence_path_under_root(str(store.root), relative, strict=True) != parent or not parent.is_dir():
         raise _reject("Unsafe handoff directory")
@@ -427,6 +431,7 @@ def list_task_handoffs(store: RepoKnowledgeStore, *, limit: int = 32) -> dict[st
         })
     if store.manifest()[1] != manifest_revision:
         raise _reject("Project changed during handoff inventory")
+    store.require_read_epoch(epoch)
     return result
 
 
@@ -442,6 +447,7 @@ def preflight_task_handoffs(
 
     if not isinstance(tasks, list) or len(tasks) > 64:
         raise _reject("Preflight requires a bounded task inventory")
+    epoch = store.read_epoch()
     manifest, manifest_revision = store.manifest()
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -491,6 +497,7 @@ def preflight_task_handoffs(
         rows.append(row)
     if store.manifest()[1] != manifest_revision:
         raise _reject("Project changed during handoff preflight")
+    store.require_read_epoch(epoch)
     return {
         "project_id": manifest["project_id"],
         "complete": inventory_complete is True,
