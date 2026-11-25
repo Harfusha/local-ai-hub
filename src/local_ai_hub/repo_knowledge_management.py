@@ -18,6 +18,7 @@ from .repository_scope import RepositoryScopeError, authorized_repository_root
 _FIELDS = {
     "audit": {"action", "root"},
     "sync_status": {"action", "root"},
+    "handoff_list": {"action", "root", "limit"},
     "impact": {"action", "root", "changed_paths"},
     "preview_edit": {"action", "root", "record", "expected_revision"},
     "save_edit": {"action", "root", "record", "expected_revision", "preview_digest", "operation_id", "apply"},
@@ -57,6 +58,10 @@ def manage_repository_knowledge(
             from .repo_knowledge_sync import checkout_sync_status
 
             return {"success": True, **checkout_sync_status(store.root)}
+        if action == "handoff_list":
+            from .repo_task_handoff import list_task_handoffs
+
+            return {"success": True, **list_task_handoffs(store, limit=payload["limit"])}
         manifest, manifest_revision = store.manifest()
         if action == "audit":
             return {"success": True, **quality_report(store.catalog())}
