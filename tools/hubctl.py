@@ -292,8 +292,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export or handoff-resume")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume or handoff-list")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -312,8 +312,8 @@ def main() -> int:
             parser.error("handoff-export --apply requires --expected-revision and no --dry-run")
         if args.sub_arg == "handoff-resume" and not args.handoff_id:
             parser.error("handoff-resume requires --handoff-id")
-        if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision):
-            parser.error("handoff-resume --apply requires the reviewed --expected-revision")
+        if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision or not args.task_id):
+            parser.error("handoff-resume --apply requires the reviewed --expected-revision and explicit new --task-id")
         if args.sub_arg in {"save", "review"} and args.expected_revision is None:
             parser.error("knowledge save/review requires --expected-revision (empty string for create)")
         if args.sub_arg == "save" and args.record_file is None:
@@ -352,6 +352,12 @@ def main() -> int:
                 result = checkout_sync_status(store.root)
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
+            if args.sub_arg == "handoff-list":
+                from local_ai_hub.repo_task_handoff import list_task_handoffs
+
+                result = list_task_handoffs(store, limit=args.limit)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] else 1
             if args.sub_arg in {"handoff-export", "handoff-resume"}:
                 from local_ai_hub.repo_task_handoff import build_task_handoff, handoff_resume_contract
 
@@ -382,7 +388,7 @@ def main() -> int:
                     print(json.dumps({"success": False, "error": "Handoff revision changed; review again"}))
                     return 1
                 result = HubClient(config_path=_config_arg(args.config)).create_task(
-                    contract, task_id="task_" + uuid4().hex[:12], root=target_root,
+                    contract, task_id=args.task_id, root=target_root,
                 )
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result.get("success") is True else 1
