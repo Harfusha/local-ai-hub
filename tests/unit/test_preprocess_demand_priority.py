@@ -411,3 +411,22 @@ def test_repository_benchmark_uses_scoped_learned_query_without_emitting_it(tmp_
     assert result["query_length"] == len(query)
     assert result["query_sha256"] == hashlib.sha256(query.encode("utf-8")).hexdigest()
     assert "private learned query" not in repr(result)
+
+
+def test_centrality_schema_upgrade_preserves_inventory_and_scores(tmp_path):
+    from local_ai_hub.preprocess_storage import PreprocessStorageMixin
+
+    db = tmp_path / "legacy.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT)")
+        con.execute("INSERT INTO file_refs VALUES('repo', 'a.py', 'hash-a')")
+        con.commit()
+        PreprocessStorageMixin._ensure_file_ref_centrality(con)
+        assert con.execute("SELECT root,path,content_hash,centrality_score FROM file_refs").fetchall() == [
+            ("repo", "a.py", "hash-a", 0.0)
+        ]
+        con.execute("UPDATE file_refs SET centrality_score=0.75")
+        con.commit()
+        PreprocessStorageMixin._ensure_file_ref_centrality(con)
+        assert con.execute("SELECT centrality_score FROM file_refs").fetchone() == (0.75,)
+        assert sum(row[1] == "centrality_score" for row in con.execute("PRAGMA table_info(file_refs)")) == 1
