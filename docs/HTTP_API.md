@@ -276,3 +276,20 @@ local publication fence. The fence is local and does not prevent external
 Git operations or guarantee atomic visibility in a second clone.
 No live tasks, leases or fresh receipts are imported. Generic review/finding records must use their existing dedicated
 review workflow.
+
+
+### Portable attempt ancestry
+
+Handoff list and resume previews include `origin_task_id` and optional
+`previous_attempt` (attempt ID and parent handoff revision). The task create
+boundary revalidates the exact reviewed handoff selection inside TaskStore
+creation. The resulting local planned task and its task.created event
+contain an immutable server-managed `checkpoint.state_data._portable_attempt`
+marker. It is metadata, not authority, and cannot be set by an ordinary
+checkpoint request. No receipt, lease or previous execution status is
+imported.
+
+The continuation export uses the stable original handoff ID and binds its
+parent revision to the CAS expectation. Divergent attempts are rejected
+rather than silently replacing shared intent. Historical verification
+remains subject to the original fresh verification gates.
