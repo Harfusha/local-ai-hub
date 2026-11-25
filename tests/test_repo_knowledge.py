@@ -396,3 +396,104 @@ def test_context_rechecks_selected_revision_after_source_read(tmp_path, monkeypa
     result = query_repository_knowledge({}, {"root": str(root), "query": "paid order"})
     assert result["status_code"] == 409
     assert result["retryable"] is True
+
+
+def test_knowledge_batch_rejects_stale_review_and_checks_all_targets_before_write(tmp_path):
+    from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    a = _rule(root)
+    b = {**_rule(root), "id": "second-rule"}
+    batch = [{"record": a, "expected_revision": ""}, {"record": b, "expected_revision": ""}]
+    preview = preview_knowledge_batch(store, batch)
+    digest = preview["preview_digest"]
+    assert preview_knowledge_batch(store, list(reversed(batch)))["preview_digest"] == digest
+    assert not (root / ".local-ai-hub/local").exists()
+    with pytest.raises(RepoPlanConflictError):
+        apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="denied",
+                              authorize_write=lambda: False)
+    changed = [{**batch[0], "record": {**a, "payload": {**a["payload"], "statement": "Changed"}}}, batch[1]]
+    with pytest.raises(RepoPlanConflictError):
+        apply_knowledge_batch(store, changed, preview_digest=digest, operation_id="changed",
+                              authorize_write=lambda: True)
+    with pytest.raises(RepoPlanValidationError):
+        preview_knowledge_batch(store, [batch[0], batch[0]])
+    _save(store, b, key="existing")
+    with pytest.raises(RepoPlanConflictError):
+        apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="stale",
+                              authorize_write=lambda: True)
+    assert not (root / ".local-ai-hub/knowledge/rules/order-paid.json").exists()
+
+
+def test_knowledge_batch_recovers_interrupted_write_only_after_explicit_review(tmp_path, monkeypatch):
+    from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+    from local_ai_hub.repo_plan.storage import RepoPlanStorage
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    a = _rule(root)
+    b = {**_rule(root), "id": "second-rule"}
+    batch = [{"record": a, "expected_revision": ""}, {"record": b, "expected_revision": ""}]
+    preview = preview_knowledge_batch(store, batch)
+    digest = preview["preview_digest"]
+    manifest_bytes = (root / ".local-ai-hub/project.json").read_bytes()
+    original = RepoPlanStorage._atomic_write_bytes
+
+    def interrupted(self, path, data):
+        if path.name == "second-rule.json":
+            raise OSError("fixture interrupted second target")
+        return original(self, path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(RepoPlanStorage, "_atomic_write_bytes", interrupted)
+        with pytest.raises(OSError):
+            apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="migration",
+                                  authorize_write=lambda: True)
+    assert store.get("business_rule", "order-paid")["record"] == a
+    assert not (root / ".local-ai-hub/knowledge/rules/second-rule.json").exists()
+    # Generic plan recovery cannot authorize the batch.
+    pending = store.storage.recover_pending_intents()
+    assert any(row["resolution"] == "recovery_blocked" for row in pending)
+    with pytest.raises(RepoPlanConflictError):
+        apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="migration",
+                              recover=True, authorize_write=lambda: False)
+    result = apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="migration",
+                                   recover=True, authorize_write=lambda: True)
+    assert result["success"]
+    assert store.get("business_rule", "second-rule")["record"] == b
+    assert (root / ".local-ai-hub/project.json").read_bytes() == manifest_bytes
+    assert not result["canonical_cutover_supported"]
+    replay = apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="migration",
+                                   authorize_write=lambda: True)
+    assert replay["success"]
+    assert len(replay["file_revisions"]) == 2
+
+
+def test_knowledge_batch_recovery_refuses_changed_manifest(tmp_path, monkeypatch):
+    from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+    from local_ai_hub.repo_plan.storage import RepoPlanStorage
+
+    root = tmp_path / "repo"
+    _setup(root)
+    store = RepoKnowledgeStore(root)
+    batch = [{"record": _rule(root), "expected_revision": ""}]
+    digest = preview_knowledge_batch(store, batch)["preview_digest"]
+
+    def interrupted(self, path, data):
+        raise OSError("fixture interruption")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(RepoPlanStorage, "_atomic_write_bytes", interrupted)
+        with pytest.raises(OSError):
+            apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="batch",
+                                  authorize_write=lambda: True)
+    manifest = root / ".local-ai-hub/project.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "project_id": PROJECT, "mode": "read_only"}),
+                        encoding="utf-8")
+    with pytest.raises(RepoPlanConflictError):
+        apply_knowledge_batch(store, batch, preview_digest=digest, operation_id="batch", recover=True,
+                              authorize_write=lambda: True)
+    assert not (root / ".local-ai-hub/knowledge/rules/order-paid.json").exists()
