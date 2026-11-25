@@ -569,14 +569,17 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "terminal": True,
                 "retryable": False,
             }); return
+        request_root = getattr(self, "_request_root", "") or getattr(self, "_authorization_root", "")
+        # Scope at the storage query before LIMIT: unrelated newer tasks must
+        # not crowd out the requested project's durable work inventory.
         task_page = services_module.APP.agent_tasks.list_tasks(
             status=status_filter,
             limit=limit,
             include_stale=include_stale,
             query=task_query,
+            repo_root=request_root or None,
         )
         owner_filter = payload.get("owner")
-        request_root = getattr(self, "_request_root", "") or getattr(self, "_authorization_root", "")
         filtered_tasks = [t for t in task_page.tasks if (not owner_filter or getattr(t, "owner", "") == str(owner_filter)) and self._task_matches_request(t, request_root)]
         response = {"success": True, "tasks": [t.to_dict() for t in filtered_tasks]}
         if task_page.query_truncated:
