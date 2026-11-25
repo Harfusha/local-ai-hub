@@ -45,6 +45,7 @@ class TaskCoreMixin:
         repository_revision: str = "",
         worktree_ttl_seconds: float = 24 * 60 * 60.0,
         response_budget_tokens: int | None = None,
+        _handoff_resume: dict[str, Any] | None = None,
     ) -> TaskState:
         if not isinstance(auto_worktree, bool):
             raise ValueError("auto_worktree must be a boolean")
@@ -72,6 +73,14 @@ class TaskCoreMixin:
                     outcome_unknown=False,
                 ) from exc
             raise
+        if _handoff_resume is not None:
+            from .repo_task_handoff import validate_resume_creation
+
+            initial_sd["_portable_attempt"] = validate_resume_creation({
+                "root": canonical_root, "repo_root": canonical_root,
+                "task_id": t_id, "contract": contract.to_dict(),
+                "handoff_resume": _handoff_resume, "auto_worktree": auto_worktree,
+            })
         worktree_plan = None
         if canonical_root:
             initial_sd["repo_root"] = canonical_root
