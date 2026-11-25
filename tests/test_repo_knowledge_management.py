@@ -73,6 +73,21 @@ def test_handoff_inventory_includes_only_valid_project_records(tmp_path):
     response = manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)
     assert response["success"] is True
     assert response["handoffs"] == result["handoffs"]
+    preview_request = {"root": str(root), "action": "preview_handoff_resume",
+                       "handoff_id": handoff_id, "expected_revision": item["revision"]}
+    preview = manage_repository_knowledge({}, preview_request, authorize_operator_write=lambda: False)
+    assert preview["success"] is True
+    assert preview["requires_revalidation"] is True
+    assert preview["contract"]["goal"] == "Resume work"
+    assert "verification_receipts" not in preview["contract"]
+    assert preview["historical_verification"] == []
+    assert preview["preview_digest"]
+    assert manage_repository_knowledge(
+        {}, {**preview_request, "expected_revision": "0" * 64}, authorize_operator_write=lambda: False
+    )["status_code"] == 409
+    assert manage_repository_knowledge(
+        {"security": {"allowed_roots": []}}, preview_request, authorize_operator_write=lambda: False
+    )["status_code"] == 403
     assert manage_repository_knowledge(
         {"security": {"allowed_roots": []}}, request, authorize_operator_write=lambda: False
     )["status_code"] == 403
