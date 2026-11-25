@@ -121,3 +121,50 @@ def test_handoff_preflight_is_scoped_read_only_and_never_imports_runtime_state(t
     assert "outside" not in str(result)
     assert len(list(directory.iterdir())) == 1
     assert not (root / ".local-ai-hub/local").exists()
+
+
+def test_portable_handoff_receipt_summary_never_grants_current_verification(tmp_path):
+    from local_ai_hub.repo_task_handoff import (
+        attach_historical_verification, build_task_handoff, handoff_resume_contract,
+    )
+    from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
+    import pytest
+
+    root = tmp_path / "repo"
+    (root / ".local-ai-hub").mkdir(parents=True)
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "mode": "shared",
+    }), encoding="utf-8")
+    store = RepoKnowledgeStore(root)
+    task = {
+        "task_id": "task-demo", "status": "completed", "repo_root": str(root),
+        "contract": {"goal": "Review the order", "acceptance_criteria": ["Run order tests"]},
+        "checkpoint": {}, "verification_receipts": {"Run order tests": "local-receipt"},
+    }
+    receipt = {
+        "task_id": "task-demo", "receipt_id": "local-receipt",
+        "criterion": "Run order tests", "repository_revision": "local-revision",
+        "passed": True, "evidence_type": "test", "command_id": "local-command",
+        "details": {"raw": "private output"},
+    }
+    record = build_task_handoff(store, task)
+    shared = attach_historical_verification(record, task, [receipt])
+    summary = shared["payload"]["historical_verification"][0]
+    assert summary["reported_pass"] is True
+    assert len(summary["revision_digest"]) == 64
+    for value in ("local-receipt", "local-command", "local-revision", "private output"):
+        assert value not in str(shared)
+    contract = handoff_resume_contract(shared)
+    assert contract["acceptance_criteria"] == ["Run order tests"]
+    assert "verification_receipts" not in contract
+    assert "none are valid verification" in contract["description"]
+    for bad in (
+        {**receipt, "task_id": "other-task"},
+        {**receipt, "criterion": "Different criterion"},
+        {**receipt, "repository_revision": ""},
+        {**receipt, "passed": "true"},
+    ):
+        with pytest.raises(RepoPlanValidationError):
+            attach_historical_verification(record, task, [bad])
+    with pytest.raises(RepoPlanValidationError):
+        attach_historical_verification(record, task, [])
