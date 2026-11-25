@@ -33,3 +33,47 @@ def test_preview_requires_current_revision_and_explicit_authorized_save(tmp_path
     assert report["findings"][0]["type"] == "unverified_knowledge"
     assert manage_repository_knowledge({"security": {"allowed_roots": []}}, request,
                                        authorize_operator_write=lambda: True)["status_code"] == 403
+
+
+def test_handoff_inventory_includes_only_valid_project_records(tmp_path):
+    import hashlib
+
+    from local_ai_hub.repo_task_handoff import list_task_handoffs
+
+    root = tmp_path / "repo"
+    directory = root / ".local-ai-hub/agent-os/handoffs"
+    directory.mkdir(parents=True)
+    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project, "mode": "shared",
+    }), encoding="utf-8")
+    origin = "task-original"
+    handoff_id = "handoff-" + hashlib.sha256(origin.encode()).hexdigest()[:24]
+    record = {
+        "schema_version": 1, "project_id": project, "kind": "handoff", "id": handoff_id,
+        "payload": {
+            "origin_task_id": origin, "historical_status": "planned",
+            "contract": {"goal": "Resume work", "description": "", "acceptance_criteria": [],
+                         "non_goals": [], "constraints": [], "risk_profile": "normal"},
+            "checkpoint": {"phase": "", "next_action": "", "blockers": [], "affected_paths": []},
+        },
+        "provenance": {"origin_kind": "manual"}, "evidence": [], "relations": [],
+    }
+    (directory / (handoff_id + ".json")).write_text(json.dumps(record), encoding="utf-8")
+    (directory / "invalid.json").write_text("not JSON", encoding="utf-8")
+    result = list_task_handoffs(RepoKnowledgeStore(root))
+    assert result["complete"] is False
+    assert result["issues"] == ["invalid_or_unavailable_handoff"]
+    assert len(result["handoffs"]) == 1
+    item = result["handoffs"][0]
+    assert item["id"] == handoff_id
+    assert item["requires_revalidation"] is True
+    assert item["revision"]
+    request = {"root": str(root), "action": "handoff_list", "limit": 32}
+    response = manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)
+    assert response["success"] is True
+    assert response["handoffs"] == result["handoffs"]
+    assert manage_repository_knowledge(
+        {"security": {"allowed_roots": []}}, request, authorize_operator_write=lambda: False
+    )["status_code"] == 403
+    assert not (root / ".local-ai-hub/local").exists()
