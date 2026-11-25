@@ -641,8 +641,7 @@ class RepoPlanStorage:
                 raise RepoPlanError("Idempotency record capacity reached; explicit archival required")
             self._atomic_record(self._request_path(key), data)
 
-    def _read_record(self, path: Path) -> dict[str, Any]:
-        max_record_bytes = 12 * 1024 * 1024
+    def _read_record(self, path: Path, *, max_record_bytes: int = 12 * 1024 * 1024) -> dict[str, Any]:
         if os.name == "nt":
             import ctypes
             import msvcrt
@@ -783,6 +782,56 @@ class RepoPlanStorage:
             owner, idempotency_key, lease_check_fn,
         )
 
+    def _knowledge_batch_fence(self) -> dict[str, Any]:
+        """Read the small durable local publication marker without creating files."""
+        path = self.intents_dir / "knowledge-batch-fence.json"
+        validate_repo_path(path.relative_to(self.repo_root).as_posix(), repo_root=self.repo_root)
+        try:
+            record = self._read_record(path, max_record_bytes=4096)
+        except FileNotFoundError:
+            return {"state": "idle", "epoch": ""}
+        except (OSError, ValueError, RepoPlanError) as exc:
+            raise RepoPlanConflictError("Knowledge batch fence unavailable") from exc
+        if (
+            set(record) != {"state", "epoch", "operation_digest"}
+            or record["state"] not in ("pending", "idle")
+            or not isinstance(record["epoch"], str)
+            or len(record["epoch"]) != 32
+            or any(c not in "0123456789abcdef" for c in record["epoch"])
+            or not isinstance(record["operation_digest"], str)
+            or len(record["operation_digest"]) != 64
+            or any(c not in "0123456789abcdef" for c in record["operation_digest"])
+        ):
+            raise RepoPlanConflictError("Invalid knowledge batch fence")
+        return record
+
+    def knowledge_read_epoch(self) -> str:
+        """Fail closed during a partial publication; no reader-side writes."""
+        record = self._knowledge_batch_fence()
+        if record["state"] != "idle":
+            raise RepoPlanConflictError("Knowledge publication pending explicit recovery")
+        return str(record["epoch"])
+
+    def _begin_knowledge_batch(self, key: str) -> None:
+        # Caller holds the existing physical-worktree storage lock.
+        current = self._knowledge_batch_fence()
+        digest = compute_bytes_sha256(key.encode("utf-8"))
+        if current["state"] == "pending":
+            if current["operation_digest"] != digest:
+                raise RepoPlanConflictError("Another knowledge batch requires recovery")
+            return
+        self._atomic_record(self.intents_dir / "knowledge-batch-fence.json", {
+            "state": "pending", "epoch": uuid.uuid4().hex, "operation_digest": digest,
+        })
+
+    def _finish_knowledge_batch(self, key: str) -> None:
+        current = self._knowledge_batch_fence()
+        if current["state"] != "pending" or current["operation_digest"] != compute_bytes_sha256(key.encode("utf-8")):
+            raise RepoPlanConflictError("Knowledge batch fence identity changed")
+        self._atomic_record(self.intents_dir / "knowledge-batch-fence.json", {
+            **current, "state": "idle",
+        })
+
     def save_knowledge_batch(
         self, candidates: list[tuple[str, bytes, str]], *, owner: str,
         idempotency_key: str, lease_check_fn: Callable[[], bool],
@@ -875,9 +924,24 @@ class RepoPlanStorage:
                            "targets": [{"path": path, "candidate": compute_bytes_sha256(data), "expected": expected}
                                        for path, data, expected in candidates]}
             payload_sha = compute_bytes_sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8"))
+            batch_pending = False
+            if operation in {"save_knowledge", "save_knowledge_batch"}:
+                marker = self._knowledge_batch_fence()
+                batch_pending = marker["state"] == "pending"
+                if batch_pending and (operation != "save_knowledge_batch"
+                                      or marker["operation_digest"] != compute_bytes_sha256(key.encode("utf-8"))):
+                    raise RepoPlanConflictError("Knowledge publication pending explicit recovery")
             replay = self._request_replay(key, payload_sha)
             if replay is not None:
+                if batch_pending:
+                    # Crash after journal completion, before releasing readers.
+                    if any(self._target_sha256(path) != compute_bytes_sha256(data) for path, data, _ in candidates):
+                        raise RepoPlanConflictError("Completed knowledge batch changed before acknowledgement")
+                    self._check_fence(context, lease_check_fn)
+                    self._finish_knowledge_batch(key)
                 return replay
+            if batch_pending:
+                raise RepoPlanConflictError("Knowledge batch requires explicit recovery")
             targets = []
             for path, data, expected in candidates:
                 actual = self._target_sha256(path)
@@ -916,6 +980,8 @@ class RepoPlanStorage:
                                      "reserved_intent": snapshot, "reserved_intent_sha256": snapshot_hash,
                                      "fingerprint": fingerprint})
             self._save_intent(intent)
+            if operation == "save_knowledge_batch":
+                self._begin_knowledge_batch(key)
             for target, (_, data, _) in zip(targets, candidates):
                 self._check_fence(context, lease_check_fn)
                 validate_repo_path(target.rel_path, repo_root=self.repo_root)
@@ -932,6 +998,8 @@ class RepoPlanStorage:
                 if self._target_sha256(target.rel_path) != target.candidate_sha256:
                     raise RepoPlanConflictError(f"Content changed before acknowledgement: {target.rel_path}")
             self._complete_intent(intent)
+            if operation == "save_knowledge_batch":
+                self._finish_knowledge_batch(key)
             return result
 
     def _assert_request_owned(self, intent: OperationIntent) -> None:
@@ -1058,6 +1126,15 @@ class RepoPlanStorage:
                         self._validate_knowledge_batch(batch)
                         if current[0] != intent.targets[0].expected_sha256:
                             raise RepoPlanConflictError("Knowledge batch manifest changed")
+                    if intent.operation == "save_knowledge":
+                        self.knowledge_read_epoch()
+                    if intent.operation == "save_knowledge_batch":
+                        if intent.context != self._context():
+                            raise RepoPlanConflictError("Knowledge batch checkout changed")
+                        if any(actual not in (target.expected_sha256, target.candidate_sha256)
+                               for target, actual in zip(intent.targets, current)):
+                            raise RepoPlanConflictError("Knowledge batch target diverged")
+                        self._begin_knowledge_batch(intent.idempotency_key)
                     if intent.status == "completed":
                         if (intent.context != self._context() or not isinstance(intent.result, dict)
                                 or any(actual != target.candidate_sha256 for target, actual in zip(intent.targets, current))):
@@ -1065,6 +1142,8 @@ class RepoPlanStorage:
                         self._check_fence(intent.context, lease_check_fn)
                         self._save_request(only_key, {"payload_sha256": intent.payload_sha256,
                                                       "status": "completed", "result": intent.result})
+                        if intent.operation == "save_knowledge_batch":
+                            self._finish_knowledge_batch(intent.idempotency_key)
                         outcomes.append({"intent_id": intent.intent_id, "resolution": "acknowledged", "status": "completed"})
                         continue
                     if intent.context is not None and intent.context != self._context():
@@ -1111,6 +1190,8 @@ class RepoPlanStorage:
                         resolution, status = "forward_recovered", "completed"
                     intent.status = status
                     self._save_intent(intent)
+                    if intent.operation == "save_knowledge_batch" and status == "completed":
+                        self._finish_knowledge_batch(intent.idempotency_key)
                     outcomes.append({"intent_id": intent.intent_id, "resolution": resolution, "status": status})
                 except Exception as exc:
                     # Corrupt records or lost fences never become completion evidence.
