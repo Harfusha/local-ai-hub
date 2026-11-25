@@ -255,3 +255,19 @@ The query inspects at most two targets per selected record and reports
 whether the target inventory was checked. A declared target does not prove
 collection, coverage, execution, a passing test, or a valid Agent OS
 receipt. Existing completion and command authorization remain unchanged.
+ 
+
+### Reviewed multi-record knowledge operations
+
+The same scoped management endpoint supports `preview_batch` with
+`root, records` and `save_batch` / `save_batch_recovery` with
+`root, records, preview_digest, operation_id, apply`. Records are an array of
+1–16 objects containing exactly `record` and `expected_revision`.
+The manifest is a read-only fence, not a mutable batch target. Preview returns
+a digest of the exact candidates and prior revisions. Save/recovery require
+the existing trusted local dashboard operator authorization. Recovery requires
+the original operation ID and exact reviewed input; ordinary plan recovery
+does not authorize the batch. Partial publication is recoverable, not an
+atomic multi-file snapshot. No live tasks, leases or fresh receipts are
+imported. Generic review/finding records must use their existing dedicated
+review workflow.
