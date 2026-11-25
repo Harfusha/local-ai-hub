@@ -271,6 +271,8 @@ def main() -> int:
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
+    parser.add_argument("--preview-digest", default="", help="Exact reviewed handoff export digest")
+    parser.add_argument("--include-historical-verification", action="store_true", help="Include redacted historical receipt summaries in handoff export")
     parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
     parser.add_argument("--base", default="", help="Base Git commit/ref for committed knowledge diff")
     parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
@@ -310,8 +312,8 @@ def main() -> int:
             parser.error("knowledge remediate --apply requires explicit new --task-id and no --dry-run")
         if args.sub_arg == "handoff-export" and not args.task_id:
             parser.error("handoff-export requires --task-id")
-        if args.sub_arg == "handoff-export" and args.apply and (args.dry_run or args.expected_revision is None):
-            parser.error("handoff-export --apply requires --expected-revision and no --dry-run")
+        if args.sub_arg == "handoff-export" and args.apply and (args.dry_run or args.expected_revision is None or not args.preview_digest):
+            parser.error("handoff-export --apply requires --expected-revision, --preview-digest and no --dry-run")
         if args.sub_arg == "handoff-resume" and not args.handoff_id:
             parser.error("handoff-resume requires --handoff-id")
         if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision or not args.task_id):
@@ -396,12 +398,35 @@ def main() -> int:
 
                 target_root = str(store.root)
                 if args.sub_arg == "handoff-export":
-                    response = HubClient(config_path=_config_arg(args.config)).get_task(args.task_id, root=target_root)
+                    from local_ai_hub.repo_knowledge import _digest_value
+                    from local_ai_hub.repo_task_handoff import attach_historical_verification
+
+                    client = HubClient(config_path=_config_arg(args.config))
+                    response = client.get_task(args.task_id, root=target_root)
                     if response.get("success") is not True or not isinstance(response.get("task"), dict):
                         print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
                         return 1
-                    record = build_task_handoff(store, response["task"])
+                    task = response["task"]
+                    record = build_task_handoff(store, task)
+                    if args.include_historical_verification:
+                        exported = client.post("/api/agent-state/verification", {
+                            "action": "export", "root": target_root,
+                            "task_id": args.task_id, "format": "json",
+                        })
+                        if exported.get("success") is not True or not isinstance(exported.get("receipts"), list):
+                            print(json.dumps({"success": False, "error": "Scoped historical verification unavailable"}))
+                            return 1
+                        record = attach_historical_verification(record, task, exported["receipts"])
+                    manifest_revision = store.manifest()[1]
+                    try:
+                        current_revision = store.get("handoff", record["id"], verify_sources=False)["revision"]
+                    except FileNotFoundError:
+                        current_revision = ""
+                    preview_digest = _digest_value([manifest_revision, current_revision, record])
                     if args.apply:
+                        if args.preview_digest != preview_digest or args.expected_revision != current_revision:
+                            print(json.dumps({"success": False, "error": "Handoff changed; preview again"}))
+                            return 1
                         result = store.save(
                             record, expected_revision=args.expected_revision, owner="local-operator",
                             idempotency_key=args.operation_id or str(uuid4()),
@@ -409,7 +434,8 @@ def main() -> int:
                         )
                         print(json.dumps({**result, "handoff_id": record["id"]}, indent=2))
                         return 0 if result.get("success") is True else 1
-                    print(json.dumps({"preview": True, "record": record}, indent=2, ensure_ascii=False))
+                    print(json.dumps({"preview": True, "record": record, "expected_revision": current_revision,
+                                      "preview_digest": preview_digest}, indent=2, ensure_ascii=False))
                     return 0
                 item = store.get("handoff", args.handoff_id, verify_sources=False)
                 contract = handoff_resume_contract(item["record"])
