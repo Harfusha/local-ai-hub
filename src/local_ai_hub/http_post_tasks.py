@@ -165,9 +165,10 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "retryable": False,
             }); return
     if action == "create":
+        from .repo_plan.schema_validation import RepoPlanError
+
         if "handoff_resume" in payload:
             from .repo_task_handoff import validate_resume_creation
-            from .repo_plan.schema_validation import RepoPlanError
 
             try:
                 validate_resume_creation(payload)
@@ -207,7 +208,11 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 auto_worktree=auto_worktree,
                 repo_root=str(payload.get("repo_root", "")),
                 response_budget_tokens=payload.get("response_budget_tokens"),
+                **({"_handoff_resume": payload["handoff_resume"]} if "handoff_resume" in payload else {}),
             )
+        except RepoPlanError:
+            self._send(409, {"success": False, "error": "Handoff adoption could not be verified",
+                             "terminal": True, "retryable": False}); return
         except services_module.CheckpointResponseBudgetError as exc:
             self._send(413, {
                 "success": False, "error": str(exc), "terminal": True, "retryable": False,
