@@ -220,3 +220,13 @@ edits and declaration changes may be nondivergent candidates; semantic
 declaration, provenance, evidence and relations are treated as one coupled
 group. Findings/reviews, identity changes and add/delete conflicts require
 manual review. No result grants merge or publication authority.
+
+The read-only `diff` action accepts `root`, `base` and `head` (local Git
+commit references). CLI: `hubctl knowledge diff --root <path> --base <ref>
+--head HEAD`. It validates both project identities and summarizes up to 16
+changed knowledge files with their kinds, IDs, intended/observed layers and
+changed field groups. It excludes uncommitted edits, raw declaration text and
+runtime verification claims. A missing/invalid Git object or an incomplete
+inventory is explicitly reported; no Git fetch, checkout or model is needed.
+This is a committed declaration diff, not inferred behavior or proof that
+the application implements a change.
