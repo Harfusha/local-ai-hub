@@ -349,9 +349,12 @@ class RepoKnowledgeStore:
                 continue
             if len(entries) > remaining:
                 complete = False
-                break
+                issues.append({"kind": kind, "code": "inventory_limit"})
+            # Do not discard the entire bounded sample of a large directory.
+            # A partial scan cannot support an authoritative negative answer.
+            entries = sorted(entries)[:remaining]
             remaining -= len(entries)
-            for entry in sorted(entries):
+            for entry in entries:
                 if entry.suffix != ".json" or not _identifier(entry.stem):
                     issues.append({"kind": kind, "code": "unexpected_entry"})
                     complete = False
@@ -539,6 +542,7 @@ def build_knowledge_context(
         return {"status": "uninitialized", "text": ""}
     try:
         store = RepoKnowledgeStore(root)
+        manifest_revision = store.manifest()[1]
         catalog = store.catalog(verify_sources=False, max_records=48)
         query_result = query_declared_knowledge(catalog, query, limit=4, changed_paths=changed_paths)
         selected: list[dict[str, Any]] = []
@@ -547,7 +551,7 @@ def build_knowledge_context(
             record = item["record"]
             current = store.get(record["kind"], record["id"], verify_sources=False)
             if current["revision"] != item["revision"]:
-                return {"status": "changed_during_read", "text": ""}
+                return {"status": "changed_during_read", "text": "", "needs_revalidation": True}
             # Never hash more than two files per selected record on the hot path.
             refs = record["evidence"][:2]
             statuses = [EvidenceStore.portable_source_status(ref, root=str(store.root)) for ref in refs]
@@ -589,14 +593,19 @@ def build_knowledge_context(
                 break
             selected.append(projection)
             text = candidate
+        if store.manifest()[1] != manifest_revision or any(
+            store.get(row["kind"], row["id"], verify_sources=False)["revision"] != row["record_revision"]
+            for row in selected
+        ):
+            return {"status": "changed_during_read", "text": "", "needs_revalidation": True}
         status = "partial" if not catalog["complete"] or len(selected) < len(query_result["records"]) or query_result["truncated"] else "available"
         return {"status": status, "text": text, "records": len(selected),
-                "needs_revalidation": any(
+                "needs_revalidation": status == "partial" or any(
                     row["freshness"] != "matching_sources"
                     or row.get("source_assertion", {}).get("status", "matches") != "matches"
                     for row in selected)}
     except (OSError, RepoPlanValidationError, ValueError, RuntimeError):
-        return {"status": "unavailable", "text": ""}
+        return {"status": "unavailable", "text": "", "needs_revalidation": True}
 
 
 def reserve_knowledge_context(
@@ -613,7 +622,7 @@ def reserve_knowledge_context(
     try:
         authorized = authorized_repository_root(config, root)
     except RepositoryScopeError:
-        return {"status": "unavailable", "text": ""}, token_budget
+        return {"status": "unavailable", "text": "", "needs_revalidation": True}, token_budget
     # Reserve room for the separator too.
     knowledge = build_knowledge_context(authorized, query, token_budget=min(400, token_budget // 5) - 2,
                                         changed_paths=changed_paths)
@@ -648,7 +657,7 @@ def attach_knowledge_context(packed: dict[str, Any], knowledge: Mapping[str, Any
         status = "budget_omitted"
     retrieval = dict(result.get("retrieval") or {})
     retrieval["knowledge_context_status"] = status
-    retrieval["knowledge_needs_revalidation"] = bool(knowledge.get("needs_revalidation"))
+    retrieval["knowledge_needs_revalidation"] = status == "budget_omitted" or bool(knowledge.get("needs_revalidation"))
     result["retrieval"] = retrieval
     return result
 
@@ -672,6 +681,7 @@ def query_repository_knowledge(config: Mapping[str, Any], payload: Mapping[str, 
     try:
         root = authorized_repository_root(config, payload.get("root"))
         store = RepoKnowledgeStore(root)
+        manifest_revision = store.manifest()[1]
         catalog = store.catalog(verify_sources=False)
         found = query_declared_knowledge(catalog, query, limit=limit)
         selected = []
@@ -707,6 +717,12 @@ def query_repository_knowledge(config: Mapping[str, Any], payload: Mapping[str, 
             selected.append({**current, "freshness": freshness, "evidence_statuses": checked,
                              "dependency_status": item.get("dependency_status", "not_applicable"),
                              "source_checks_complete": len(checked) == len(refs)})
+        if store.manifest()[1] != manifest_revision or any(
+            store.get(item["record"]["kind"], item["record"]["id"], verify_sources=False)["revision"] != item["revision"]
+            for item in selected
+        ):
+            return {"success": False, "status_code": 409, "error": "Knowledge changed during query",
+                    "terminal": True, "retryable": True}
         return {"success": True, **found, "records": selected, "degraded": not found["complete"],
                 "evidence_ids": []}
     except RepositoryScopeError as exc:
