@@ -230,3 +230,15 @@ runtime verification claims. A missing/invalid Git object or an incomplete
 inventory is explicitly reported; no Git fetch, checkout or model is needed.
 This is a committed declaration diff, not inferred behavior or proof that
 the application implements a change.
+
+Intended `requirement` and `business_rule` payloads may declare
+`verification_targets`, a list of up to four static Python test locators,
+for example `{"path":"tests/test_order.py","symbol":"TestOrder.test_paid"}`.
+Module functions and class methods named `test_*` are supported. The audit
+reports missing or unknown declarations and binds the finding to the
+observed file digest where available. Impact includes these paths, and
+ordinary context includes the declared obligations without running them.
+The query inspects at most two targets per selected record and reports
+whether the target inventory was checked. A declared target does not prove
+collection, coverage, execution, a passing test, or a valid Agent OS
+receipt. Existing completion and command authorization remain unchanged.
