@@ -198,7 +198,13 @@ automatic approval or Git operation is introduced.
 The read-only management action `handoff_list` accepts `root` and an
 integer `limit` (1–64). It returns validated handoff IDs, record revisions,
 short goals, historical status, and explicit inventory completeness. A handoff
-is never current verification or authorization. The CLI equivalent is
+is never current verification or authorization. The `preview_handoff_resume`
+action accepts `root`, `handoff_id` and `expected_revision` and returns the
+fresh-task contract, historical summaries (if present), and a preview digest
+bound to the manifest and handoff revision. A mismatched revision returns
+409. The existing Projects dashboard rechecks this preview before explicit
+creation via the existing Agent OS task endpoint; it does not import a lease,
+completion status or verification receipt. The CLI equivalent is
 `hubctl knowledge handoff-list --root <path> --limit 32`; use
 `handoff-resume --handoff-id <id> --root <path>` for a preview, then add
 `--apply --expected-revision <reviewed-revision> --task-id <new-task-id>`
