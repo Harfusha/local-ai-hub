@@ -1049,56 +1049,56 @@ Pro kvalitativní a performance metriky stanovit číselné prahy před benchmar
 
 ### P0 — Sdílené jádro a použitelný vertikální slice
 
-| ID | Dodávka | Závislosti / výstup |
-|---|---|---|
-| KI-001 | Evidence-backed inventory současné implementace, actual runtime call graph, baseline | Seznam reuse, gaps, rizik, ověřených API a Laya paths |
-| KI-002 | Versioned knowledge contracts, typed graph extensions a provenance | Stable IDs, scope, revision, migrations, schema validation |
-| KI-003 | Inkrementální extraction/linking v existujícím preprocessingu | Process/Entity/Feature candidates, dependency invalidation, atomická publikace |
-| KI-004 | Business Rule/Invariant model a Process Cards | Enforcement references, claim states, test mapping a unknowns |
-| KI-005 | Shared Knowledge Query Engine a evidence verification | Deterministic-first, graph expansion, RAG/memory reuse, bounded synthesis |
-| KI-006 | Business Context Pack v `context`/`solve` | Automatické využití pro běžné tasks, shared budget, delta, reuse |
-| KI-007 | Minimální HTTP/MCP knowledge operations a KB UI | Read-only query, project selection, answer, sources, partial state |
-| KI-008 | End-to-end fixture a bezpečnostní/regresní gates | Referenční změna objednávky, dva rooty, model unavailable |
-| KI-009 | Repository-native knowledge store a sync adapter | Git-friendly záznamy, reuse plans storage, load/publish/revision checks, clone/worktree isolation |
-| KI-010 | Editace business znalostí a human overrides | Intended/observed/interpretation, diff, review, durable repo persistence |
-| KI-011 | Základní consistency detection a finding lifecycle | Docs/code/knowledge mismatch, evidence, OK/expected/issue, poznámky, revalidation |
-| KI-012 | Dependency freshness a základní knowledge observabilita | Source/knowledge generations, stale badges, lost watcher guards, sync status a kolaborační E2E |
+| ID | Dodávka | Závislosti / výstup | Stav (viz §40) |
+|---|---|---|---|
+| KI-001 | Evidence-backed inventory současné implementace, actual runtime call graph, baseline | Seznam reuse, gaps, rizik, ověřených API a Laya paths | ČÁSTEČNĚ |
+| KI-002 | Versioned knowledge contracts, typed graph extensions a provenance | Stable IDs, scope, revision, migrations, schema validation | ČÁSTEČNĚ |
+| KI-003 | Inkrementální extraction/linking v existujícím preprocessingu | Process/Entity/Feature candidates, dependency invalidation, atomická publikace | ČÁSTEČNĚ |
+| KI-004 | Business Rule/Invariant model a Process Cards | Enforcement references, claim states, test mapping a unknowns | ČÁSTEČNĚ |
+| KI-005 | Shared Knowledge Query Engine a evidence verification | Deterministic-first, graph expansion, RAG/memory reuse, bounded synthesis | ČÁSTEČNĚ |
+| KI-006 | Business Context Pack v `context`/`solve` | Automatické využití pro běžné tasks, shared budget, delta, reuse | ČÁSTEČNĚ |
+| KI-007 | Minimální HTTP/MCP knowledge operations a KB UI | Read-only query, project selection, answer, sources, partial state | ČÁSTEČNĚ |
+| KI-008 | End-to-end fixture a bezpečnostní/regresní gates | Referenční změna objednávky, dva rooty, model unavailable | ČÁSTEČNĚ |
+| KI-009 | Repository-native knowledge store a sync adapter | Git-friendly záznamy, reuse plans storage, load/publish/revision checks, clone/worktree isolation | ČÁSTEČNĚ |
+| KI-010 | Editace business znalostí a human overrides | Intended/observed/interpretation, diff, review, durable repo persistence | HOTOVO (úzký kontrakt) |
+| KI-011 | Základní consistency detection a finding lifecycle | Docs/code/knowledge mismatch, evidence, OK/expected/issue, poznámky, revalidation | ČÁSTEČNĚ |
+| KI-012 | Dependency freshness a základní knowledge observabilita | Source/knowledge generations, stale badges, lost watcher guards, sync status a kolaborační E2E | ČÁSTEČNĚ |
 
 P0 musí přinést současně základní použitelnou KB pro člověka i business-aware agent task; nepřijatelné je dokončit pouze chatbot a odsunout agentní integraci na neurčito.
 
 ### P1 — Produktová a agentní hloubka
 
-| ID | Dodávka | Závislosti / výstup |
-|---|---|---|
-| KI-101 | Laya knowledge categories a bounded adaptive decision loop | Reuse typed runtime, baseline, advisory, evaluation hooks |
-| KI-102 | Business Impact Analysis | Direct/indirect/hypothetical paths a evidence |
-| KI-103 | Business-aware planning/review a test gap detection | Diff-aware invariants, evidence-backed findings, test mapping |
-| KI-104 | Agent OS lifecycle a completion integration | Task state, delta context, receipts, candidate lessons |
-| KI-105 | Rozšířené cards a živá dokumentace | Entity, feature, integration, rule, glossary, decisions/incident/runbook projections |
-| KI-106 | Full KB dashboard, trvalý chat, browsing a source inspector | Process/state diagrams, revision, feedback, accessible UI |
-| KI-107 | Knowledge review a documentation drift | Approval, conflicts, staleness, no overwrite |
-| KI-108 | CZ/EN retrieval a model evaluation | Otestované query expansion, multilingual baseline, exact identifiers |
-| KI-109 | Provider integration a CLI | Aktualizované generované skills/MCP schemas, validace provider handshake kde dostupné |
-| KI-110 | Performance, observability a release evidence | Benchmarks, feature flags, rollback, telemetry a docs |
-| KI-111 | Agentní remediation z findings | Reuse plans/Agent OS, explicitní autorita a handoff, verification receipts a re-open |
-| KI-112 | Pokročilá consistency/drift a anomaly detection | Typované detektory, graph/semantic checks, scope a negative controls |
-| KI-113 | Kompletní review/sync/observability dashboard | Merge preview, source/record history, detector health, revalidation a audit |
-| KI-114 | Laya pro consistency a freshness v běžných taskech | Evidence-gated relevance, triage, escalation, delta context a outcome evaluation |
+| ID | Dodávka | Závislosti / výstup | Stav (viz §40) |
+|---|---|---|---|
+| KI-101 | Laya knowledge categories a bounded adaptive decision loop | Reuse typed runtime, baseline, advisory, evaluation hooks | NEHOTOVO |
+| KI-102 | Business Impact Analysis | Direct/indirect/hypothetical paths a evidence | ČÁSTEČNĚ |
+| KI-103 | Business-aware planning/review a test gap detection | Diff-aware invariants, evidence-backed findings, test mapping | ČÁSTEČNĚ |
+| KI-104 | Agent OS lifecycle a completion integration | Task state, delta context, receipts, candidate lessons | ČÁSTEČNĚ |
+| KI-105 | Rozšířené cards a živá dokumentace | Entity, feature, integration, rule, glossary, decisions/incident/runbook projections | ČÁSTEČNĚ |
+| KI-106 | Full KB dashboard, trvalý chat, browsing a source inspector | Process/state diagrams, revision, feedback, accessible UI | ČÁSTEČNĚ |
+| KI-107 | Knowledge review a documentation drift | Approval, conflicts, staleness, no overwrite | ČÁSTEČNĚ |
+| KI-108 | CZ/EN retrieval a model evaluation | Otestované query expansion, multilingual baseline, exact identifiers | ČÁSTEČNĚ |
+| KI-109 | Provider integration a CLI | Aktualizované generované skills/MCP schemas, validace provider handshake kde dostupné | ČÁSTEČNĚ |
+| KI-110 | Performance, observability a release evidence | Benchmarks, feature flags, rollback, telemetry a docs | ČÁSTEČNĚ |
+| KI-111 | Agentní remediation z findings | Reuse plans/Agent OS, explicitní autorita a handoff, verification receipts a re-open | ČÁSTEČNĚ |
+| KI-112 | Pokročilá consistency/drift a anomaly detection | Typované detektory, graph/semantic checks, scope a negative controls | ČÁSTEČNĚ |
+| KI-113 | Kompletní review/sync/observability dashboard | Merge preview, source/record history, detector health, revalidation a audit | ČÁSTEČNĚ |
+| KI-114 | Laya pro consistency a freshness v běžných taskech | Evidence-gated relevance, triage, escalation, delta context a outcome evaluation | ČÁSTEČNĚ |
 
 ### P2 — Pokročilé rozšíření
 
-| ID | Dodávka |
-|---|---|
-| KI-201 | Knowledge Graph Explorer a pokročilé architektonické procházení |
-| KI-202 | Runtime Process Discovery a lokální trace korelace |
-| KI-203 | Git History Intelligence a porovnání historických business procesů |
-| KI-204 | Cross-project Knowledge/Business Intelligence s explicitním scope |
-| KI-205 | Knowledge Gap Detection a pokročilé what-if scénáře |
-| KI-206 | Onboarding mode, runbook generation a pokročilé exporty |
-| KI-207 | Lokální import PDF/DOCX/diagramů a optional OCR/vision |
-| KI-208 | E2E scénářové návrhy ze state/process graphu |
-| KI-209 | Laya feedback dataset, offline evaluation a volitelný explicitně schválený fine-tuning |
-| KI-210 | Evidence-gated aktivní Laya routing per category, pokud splní požadavky |
+| ID | Dodávka | Stav (viz §40) |
+|---|---|---|
+| KI-201 | Knowledge Graph Explorer a pokročilé architektonické procházení | NEHOTOVO |
+| KI-202 | Runtime Process Discovery a lokální trace korelace | NEHOTOVO |
+| KI-203 | Git History Intelligence a porovnání historických business procesů | ČÁSTEČNĚ |
+| KI-204 | Cross-project Knowledge/Business Intelligence s explicitním scope | NEHOTOVO |
+| KI-205 | Knowledge Gap Detection a pokročilé what-if scénáře | ČÁSTEČNĚ |
+| KI-206 | Onboarding mode, runbook generation a pokročilé exporty | NEHOTOVO |
+| KI-207 | Lokální import PDF/DOCX/diagramů a optional OCR/vision | NEHOTOVO |
+| KI-208 | E2E scénářové návrhy ze state/process graphu | NEHOTOVO |
+| KI-209 | Laya feedback dataset, offline evaluation a volitelný explicitně schválený fine-tuning | NEHOTOVO |
+| KI-210 | Evidence-gated aktivní Laya routing per category, pokud splní požadavky | NEHOTOVO |
 
 Priority určují pořadí a závislosti, nikoliv povolení vynechat P2 z cílové specifikace. Nepřidávat složitost jen kvůli počtu komponent. Po každé fázi zkontrolovat regresní testy, scope, runtime skutečnost a aktualizovat evidence-backed stav. Pokud se ukáže existující implementace některého bodu, ověřit ji a rozšířit místo přepisování.
 
@@ -1450,26 +1450,26 @@ Jednotná existující telemetry, trace/evidence IDs a dashboards: měřit end-t
 
 Revize 3 nemění závaznost KI-001 až KI-210 z §19; doplňuje povinné prerequisity a cross-system acceptance. P0 je platformní základ: nepokračovat k produktovým features nad dvěma autoritami. P1 dokončuje workflow, P2 pokročilé moduly. Nepovažovat existenci adapteru nebo feature flag za hotovou migraci; všechny relevantní consumer paths musí používat canonical state.
 
-| ID | Priorita | Dodávka a akceptace |
-|---|---|---|
-| UPS-001 | P0 | Kompletní inventory persistence, authority matrix a ADR; každý existující store klasifikován a scope ověřen |
-| UPS-002 | P0 | Reuse project config/workspace settings, logical identity + snapshot, stable references, schema validator |
-| UPS-003 | P0 | Sdílené repo storage primitives, CAS/fences/journal, local projection a watcher integration |
-| UPS-004 | P0 | Repo-backed Agent OS task contract, safe checkpoint/handoff, task/plan mapping, local attempt separation |
-| UPS-005 | P0 | Repo-backed memory, decisions, incidents, negative knowledge, approved fact reuse; no duplicates |
-| UPS-006 | P0 | Portable verification summaries + fresh completion gates, source/env trust, stale handling |
-| UPS-007 | P0 | Migration dry-run, scoped import, crash-safe cutover/rebuild/rollback, backwards compatibility |
-| UPS-008 | P0 | Repo-native sharing of project policy, path hints, commands, verification, pinned context via existing resolver |
-| UPS-009 | P0 | Cross-clone/worktree collaboration, conflict UI, delete/tombstone, explicit sync status and offline support |
-| UPS-010 | P0 | Requirement/intent records + graph traceability, canonical task/finding/rule links, no-op stable writes |
-| UPS-011 | P1 | Unified task lifecycle, semantic delta and business-aware review/acceptance, intentional changes |
-| UPS-012 | P1 | Process editor and linked project workspace; shared questions/decisions, agent remediation |
-| UPS-013 | P1 | Quality registry, dedup/reopen, baseline/new classification, issue workflow, trust/coverage |
-| UPS-014 | P1 | CLI/headless validation/CI & human diff, no mandatory inference, local-first |
-| UPS-015 | P1 | UI/API/MCP integration parity, scope, read-only operation and accessibility, no second managers |
-| UPS-016 | P1 | Laya bounded typed decisions, category benchmarks, evidence gated rollout and safe abstention |
-| UPS-017 | P1 | Integrated observability, performance budgets and storage growth checks, metadata privacy |
-| UPS-018 | P2 | Cross-project, runtime trace, history and advanced what-if on same model; curated learning/eval reuse |
+| ID | Priorita | Dodávka a akceptace | Stav (viz §40) |
+|---|---|---|---|
+| UPS-001 | P0 | Kompletní inventory persistence, authority matrix a ADR; každý existující store klasifikován a scope ověřen | ČÁSTEČNĚ |
+| UPS-002 | P0 | Reuse project config/workspace settings, logical identity + snapshot, stable references, schema validator | ČÁSTEČNĚ |
+| UPS-003 | P0 | Sdílené repo storage primitives, CAS/fences/journal, local projection a watcher integration | ČÁSTEČNĚ |
+| UPS-004 | P0 | Repo-backed Agent OS task contract, safe checkpoint/handoff, task/plan mapping, local attempt separation | ČÁSTEČNĚ |
+| UPS-005 | P0 | Repo-backed memory, decisions, incidents, negative knowledge, approved fact reuse; no duplicates | NEHOTOVO |
+| UPS-006 | P0 | Portable verification summaries + fresh completion gates, source/env trust, stale handling | ČÁSTEČNĚ |
+| UPS-007 | P0 | Migration dry-run, scoped import, crash-safe cutover/rebuild/rollback, backwards compatibility | ČÁSTEČNĚ |
+| UPS-008 | P0 | Repo-native sharing of project policy, path hints, commands, verification, pinned context via existing resolver | ČÁSTEČNĚ |
+| UPS-009 | P0 | Cross-clone/worktree collaboration, conflict UI, delete/tombstone, explicit sync status and offline support | ČÁSTEČNĚ |
+| UPS-010 | P0 | Requirement/intent records + graph traceability, canonical task/finding/rule links, no-op stable writes | ČÁSTEČNĚ |
+| UPS-011 | P1 | Unified task lifecycle, semantic delta and business-aware review/acceptance, intentional changes | ČÁSTEČNĚ |
+| UPS-012 | P1 | Process editor and linked project workspace; shared questions/decisions, agent remediation | ČÁSTEČNĚ |
+| UPS-013 | P1 | Quality registry, dedup/reopen, baseline/new classification, issue workflow, trust/coverage | ČÁSTEČNĚ |
+| UPS-014 | P1 | CLI/headless validation/CI & human diff, no mandatory inference, local-first | ČÁSTEČNĚ |
+| UPS-015 | P1 | UI/API/MCP integration parity, scope, read-only operation and accessibility, no second managers | ČÁSTEČNĚ |
+| UPS-016 | P1 | Laya bounded typed decisions, category benchmarks, evidence gated rollout and safe abstention | NEHOTOVO |
+| UPS-017 | P1 | Integrated observability, performance budgets and storage growth checks, metadata privacy | ČÁSTEČNĚ |
+| UPS-018 | P2 | Cross-project, runtime trace, history and advanced what-if on same model; curated learning/eval reuse | ČÁSTEČNĚ |
 
 ### 26.1 Povinné E2E scénáře (skutečné soubory, dva independent local state dirs, ne pouze mocks)
 
@@ -1804,26 +1804,26 @@ Git churn: měřit počet souborů a bytes změněných per source edit/task, no
 
 ### 37.2 Rozšířený backlog (navíc k KI/UPS položkám; ne samostatný projekt)
 
-| ID | Priorita | Deliverable | Akceptační důkaz |
-|---|---|---|---|
-| GIT-001 | P0 | Complete storage inventory a canonical ownership ADR | Všechny actual stores/consumers klasifikované, žádné nezdůvodněné durable local data |
-| GIT-002 | P0 | Shared project bootstrap/default policy a trust separation | Safe automatic writes bez per-record export; read-only a untrusted root nepíšou |
-| GIT-003 | P0 | Unified repo record storage primitives | CAS, atomic/recovery, migration, path/security tests; existující plans beze ztrát |
-| GIT-004 | P0 | Portable identity/evidence/refs and separate digests | Druhý clone resolve, receipt neinvaliduje sám sebe, dirty snapshot tested |
-| GIT-005 | P0 | Agent OS canonical task/workflow/checkpoint migration | Bez staré DB pokračovat bezpečným novým attemptem; no dual owner |
-| GIT-006 | P0 | Memory, incidents, decisions, questions a durable coordination | Původní API/UI změny čtou a píšou stejný record; no private session leak |
-| GIT-007 | P0 | Portable receipt/attempt/artefact manifest a completion gates | Historical vs current, stale tests, missing patch blocked, forged receipt rejected |
-| GIT-008 | P0 | Cross-worktree watcher, freshness a projection rebuild | Old background job fenced; stale immediately; no resurrection |
-| GIT-009 | P0 | Git sync diagnostics a semantic conflict handling | Two clones disjoint/divergent edits, ignored/untracked visibility, no Git side effects |
-| GIT-010 | P0 | Auto-publish safe observations/task summaries/findings | Byte-identical no-op, no approval escalation, human edits survive |
-| GIT-011 | P0 | Project privacy/auth/secret guard a pending failure UX | Public repo fixture, malformed imports, denied writes, filesystem failures |
-| GIT-012 | P1 | Shared project path hints, policies, test mappings, workflow preferences | Clone gets same safe config; machine overrides remain local |
-| GIT-013 | P1 | Unified human review inbox and semantic PR diff | Correction, expected waiver, requirements drift, agent remediation with verification |
-| GIT-014 | P1 | Native ordinary-task context/review/test integration | No additional mandatory MCP call, same graph and source refs, disabled Laya fallback |
-| GIT-015 | P1 | Headless validation, CI and schema evolution | Offline validation from checkout, unsupported schema fail-closed, no LLM dependency |
-| GIT-016 | P1 | Curated project evaluation corpus and Laya routing integration | Reviewed redacted labels, no raw training sync, per-category quality evidence |
-| GIT-017 | P1 | Observability, archive, performance/churn controls | Measured no-op, p95, size, reviewer burden, repair priorities and clear sync states |
-| GIT-018 | P1 | Two-clone E2E across real agent adapters and browser UI | All scenario assertions and provider capabilities documented; no invented parity |
+| ID | Priorita | Deliverable | Akceptační důkaz | Stav (viz §40) |
+|---|---|---|---|---|
+| GIT-001 | P0 | Complete storage inventory a canonical ownership ADR | Všechny actual stores/consumers klasifikované, žádné nezdůvodněné durable local data | ČÁSTEČNĚ |
+| GIT-002 | P0 | Shared project bootstrap/default policy a trust separation | Safe automatic writes bez per-record export; read-only a untrusted root nepíšou | ČÁSTEČNĚ |
+| GIT-003 | P0 | Unified repo record storage primitives | CAS, atomic/recovery, migration, path/security tests; existující plans beze ztrát | ČÁSTEČNĚ |
+| GIT-004 | P0 | Portable identity/evidence/refs and separate digests | Druhý clone resolve, receipt neinvaliduje sám sebe, dirty snapshot tested | ČÁSTEČNĚ |
+| GIT-005 | P0 | Agent OS canonical task/workflow/checkpoint migration | Bez staré DB pokračovat bezpečným novým attemptem; no dual owner | ČÁSTEČNĚ |
+| GIT-006 | P0 | Memory, incidents, decisions, questions a durable coordination | Původní API/UI změny čtou a píšou stejný record; no private session leak | NEHOTOVO |
+| GIT-007 | P0 | Portable receipt/attempt/artefact manifest a completion gates | Historical vs current, stale tests, missing patch blocked, forged receipt rejected | ČÁSTEČNĚ |
+| GIT-008 | P0 | Cross-worktree watcher, freshness a projection rebuild | Old background job fenced; stale immediately; no resurrection | ČÁSTEČNĚ |
+| GIT-009 | P0 | Git sync diagnostics a semantic conflict handling | Two clones disjoint/divergent edits, ignored/untracked visibility, no Git side effects | ČÁSTEČNĚ |
+| GIT-010 | P0 | Auto-publish safe observations/task summaries/findings | Byte-identical no-op, no approval escalation, human edits survive | ČÁSTEČNĚ |
+| GIT-011 | P0 | Project privacy/auth/secret guard a pending failure UX | Public repo fixture, malformed imports, denied writes, filesystem failures | ČÁSTEČNĚ |
+| GIT-012 | P1 | Shared project path hints, policies, test mappings, workflow preferences | Clone gets same safe config; machine overrides remain local | ČÁSTEČNĚ |
+| GIT-013 | P1 | Unified human review inbox and semantic PR diff | Correction, expected waiver, requirements drift, agent remediation with verification | ČÁSTEČNĚ |
+| GIT-014 | P1 | Native ordinary-task context/review/test integration | No additional mandatory MCP call, same graph and source refs, disabled Laya fallback | ČÁSTEČNĚ |
+| GIT-015 | P1 | Headless validation, CI and schema evolution | Offline validation from checkout, unsupported schema fail-closed, no LLM dependency | ČÁSTEČNĚ |
+| GIT-016 | P1 | Curated project evaluation corpus and Laya routing integration | Reviewed redacted labels, no raw training sync, per-category quality evidence | NEHOTOVO |
+| GIT-017 | P1 | Observability, archive, performance/churn controls | Measured no-op, p95, size, reviewer burden, repair priorities and clear sync states | ČÁSTEČNĚ |
+| GIT-018 | P1 | Two-clone E2E across real agent adapters and browser UI | All scenario assertions and provider capabilities documented; no invented parity | ČÁSTEČNĚ |
 
 Mapovat GIT položky na již existující KI/UPS ID, aby se neimplementovala jedna schopnost dvakrát. P0/P1/P2 jsou pořadí dodávky, nikoliv povolení vypustit deklarovaný požadavek. Aktivní nedokončené kroky evidovat v existing repo plans s dependencies a acceptance evidence. Spec není pokyn automaticky commitovat nebo pushovat. Skutečné API, enumy, schema and paths odvodit z aktuálního zdrojového kódu a zachovat public compatibility tam, kde je to možné.
 
@@ -1874,3 +1874,124 @@ Použít reálné Git repozitáře, nejméně dva independent clones s odlišný
 ## 39. Revize V4 — zdroje a rozsah ověření
 
 V4 vychází z kompletní V3, jejího source-backed inventáře a předchozích diskusí. Zachovává referenční commit a odkazy §23/27; nebyl proveden nový runtime audit ani ověření aktuálního HEAD. Nové storage classification, publish defaults, schema, merge, CLI a release contracts jsou návrh požadovaného cílového stavu. Před implementací ověřit aktuální repozitář, existující read/write call sites, jejich public contracts, schema a skutečné testy. Samotný repozitář v rámci této revize specifikace není měněn.
+
+## 40. Implementační stav a akceptační evidence (živý registr)
+
+Audit 2026-11-25, referenční HEAD `c1e6c6c3474f5ed01bb3c13adf23ccd571260c0b`, PR #9 (64 commitů, 62 změněných souborů). Tento oddíl je stav implementace, nikoli změna normativních požadavků. HOTOVO = doložený úzký kontrakt s relevantními zelenými testy; ČÁSTEČNĚ = existuje implementace nebo test, ale alespoň jeden požadavek/akceptace chybí; NEHOTOVO = žádná doložená V4 implementace požadovaného kontraktu. Existující obecná schopnost Hubu sama o sobě není V4 acceptance. Žádná položka neznamená release-ready celý produkt.
+
+Součet 72 backlogových ID: ČÁSTEČNĚ: 58; HOTOVO (úzký kontrakt): 1; NEHOTOVO: 13. Jde o překrývající se ID, nikoli procento práce.
+
+### 40.1 Backlog evidence a zbývající práce
+
+Cesty bez prefixu jsou v `src/local_ai_hub/`, CLI v `tools/`, testy v `tests/`. Ověření musí být vždy vázané na konkrétní HEAD.
+
+| ID | Stav | Evidence / implementace | Zbývá k akceptaci |
+|---|---|---|---|
+| KI-001 | ČÁSTEČNĚ | §40; app_runtime.py, změněné soubory PR a CI logy | Kompletní callsite/storage inventář, baseline master a runtime. |
+| KI-002 | ČÁSTEČNĚ | repo_knowledge.py, repo_knowledge_graph.py, evidence.py | Schema evolution, plná typologie, canonical refs a migration. |
+| KI-003 | ČÁSTEČNĚ | repo_knowledge_discovery.py, preprocess_cards.py, pipeline.py | Skutečné process/entity extraction, dependency graph, pending recovery. |
+| KI-004 | ČÁSTEČNĚ | repo_knowledge_graph.py, repo_knowledge_assertions.py | State machines, guards, enforcement, vícejazyčné/framework extractors. |
+| KI-005 | ČÁSTEČNĚ | repo_knowledge.py query_repository_knowledge | RAG/graph fusion, bounded semantic answer s citacemi; velké katalogy. |
+| KI-006 | ČÁSTEČNĚ | service_context.py, service_hybrid_context.py, task_context.py | Task create/checkpoint delta, risk adaptation a E2E. |
+| KI-007 | ČÁSTEČNĚ | mcp_tools_repo.py, http_routes_post.py, dashboard_projects_trace.ts | Sémantická odpověď, source inspector; browser E2E. |
+| KI-008 | ČÁSTEČNĚ | tests/test_repo_knowledge_*.py, test_portable_source_locator.py | Celý order fixture, dva state dirs, real adapters; CI neprošlo. |
+| KI-009 | ČÁSTEČNĚ | repo_knowledge.py, repo_plan/storage.py, repo_knowledge_sync.py | Hydration/projection, custom paths, worktree acceptance. |
+| KI-010 | HOTOVO (úzký kontrakt) | repo_knowledge_management.py + test_repo_knowledge_management.py: CAS edit, intended/observed/interpretation, preview, review | Plná lifecycle/merge/human provenance zůstává v GIT-013, KI-107. |
+| KI-011 | ČÁSTEČNĚ | repo_knowledge_quality.py, assertions, test_repo_knowledge_assertions.py | Durable occurrences, semantic docs/code drift, linked verified resolution. |
+| KI-012 | ČÁSTEČNĚ | repo_knowledge_graph.py, repo_knowledge_sync.py, dashboard | Watcher, full invalidation, large graph, cross-clone E2E. |
+| KI-101 | NEHOTOVO | Existující Laya runtime; nové categories neprokázány | Closed options, baseline, uncertainty loop, eval. |
+| KI-102 | ČÁSTEČNĚ | repo_knowledge_quality.py knowledge_impact | Hypothetical/inferred impacts, code graph refs, coverage. |
+| KI-103 | ČÁSTEČNĚ | service_review.py, static test targets, remediation | Runtime tests and actual gate/requirements traceability. |
+| KI-104 | ČÁSTEČNĚ | repo_task_handoff.py, hubctl.py, HTTP preview | Canonical task, mutation delta, local verified completion linkage. |
+| KI-105 | ČÁSTEČNĚ | repo_knowledge.py declarations, preprocess source candidates | Full cards, generated docs/onboarding. |
+| KI-106 | ČÁSTEČNĚ | Projects browser/editor/inbox/handoffs | Persistent private chat, diagrams, rich history and browser tests. |
+| KI-107 | ČÁSTEČNĚ | revision-bound review, static assertion and conflict classifier | Rich approval lifecycle, docs drift, merge editing. |
+| KI-108 | ČÁSTEČNĚ | laya_crosslingual_reranker.py lexicon reuse, query expansion | CZ/EN measured benchmark and model evaluation. |
+| KI-109 | ČÁSTEČNĚ | hubctl.py, operation_contracts.py, mcp_tools_repo.py | Provider-specific install/handshake and real E2E. |
+| KI-110 | ČÁSTEČNĚ | bounded context, sync diagnostics, CI | Performance baselines, rollout evidence, clean release. |
+| KI-111 | ČÁSTEČNĚ | build_remediation_contract, existing task creation | Canonical links, actual verified resolution and reopen workflow. |
+| KI-112 | ČÁSTEČNĚ | process flow, dependency and static detectors | Semantic anomalies, typed registry, negative controls. |
+| KI-113 | ČÁSTEČNĚ | Projects sync/review/handoff UI | History, semantic merge preview, detector health. |
+| KI-114 | ČÁSTEČNĚ | task_context.py revalidation input to existing next-step | Dedicated categories and outcome evaluation. |
+| KI-201 | NEHOTOVO | One-hop graph retrieval only | Interactive explorer. |
+| KI-202 | NEHOTOVO | No V4 runtime extraction proven | Trace correlation and privacy. |
+| KI-203 | ČÁSTEČNĚ | compare_knowledge_revisions | Historical semantic process evolution and UI. |
+| KI-204 | NEHOTOVO | Existing cross-project code tools not V4 business parity | Scoped shared business graph. |
+| KI-205 | ČÁSTEČNĚ | quality report unmapped paths/unverified candidates | Typed gaps and what-if. |
+| KI-206 | NEHOTOVO | No V4 onboarding/export implementation proven | Derived docs/runbooks with ownership. |
+| KI-207 | NEHOTOVO | Existing document tools not integrated V4 | Licensed local import, OCR/vision evidence. |
+| KI-208 | NEHOTOVO | Declared flow graph only | Scenario generation and traceable coverage. |
+| KI-209 | NEHOTOVO | Existing Laya curation not V4 curated dataset | Shared eval fixtures and offline measured feedback. |
+| KI-210 | NEHOTOVO | Existing active next-step only | Evidence-gated rollout per category. |
+| UPS-001 | ČÁSTEČNĚ | §40.3 initial actual owner inventory | Exhaustive field/consumer inventory and ADR validation. |
+| UPS-002 | ČÁSTEČNĚ | project_config.py, repo_knowledge.py, evidence.py | Unified snapshot/refs, schema evolution. |
+| UPS-003 | ČÁSTEČNĚ | RepoPlanStorage.save_knowledge_file and fences | Projection, watcher, multirecord recovery proof. |
+| UPS-004 | ČÁSTEČNĚ | repo_task_handoff.py, TaskStore still SQLite | Canonical task contract and plan mapping; cutover. |
+| UPS-005 | NEHOTOVO | agent_memory.py, agent_incidents.py still local owner | Git-backed memory/decisions/incidents and original consumer cutover. |
+| UPS-006 | ČÁSTEČNĚ | attach_historical_verification, existing VerificationStore | Canonical receipt lineage, fresh proof/attempt/patch policy. |
+| UPS-007 | ČÁSTEČNĚ | preflight_task_handoffs | Scoped migration of all types, backup/rebuild/cutover/rollback. |
+| UPS-008 | ČÁSTEČNĚ | project_config.py shared hints and existing .local-ai.toml | Full policy and verification mapping coverage. |
+| UPS-009 | ČÁSTEČNĚ | repo_knowledge_sync.py, test_repo_knowledge_sync.py two clones | Delete/merge resolution, projection and worktree acceptance. |
+| UPS-010 | ČÁSTEČNĚ | knowledge rules/relations, findings | Canonical task/finding/requirement links and lifecycle. |
+| UPS-011 | ČÁSTEČNĚ | service_review.py, knowledge diff, remediation | Unified task lifecycle and verified intentional change. |
+| UPS-012 | ČÁSTEČNĚ | Projects editor and corrective task preview | Process editor, typed questions/decisions. |
+| UPS-013 | ČÁSTEČNĚ | quality_report stable candidate IDs and reviews | Durable registry, occurrence history, verified resolution. |
+| UPS-014 | ČÁSTEČNĚ | hubctl knowledge validate/audit/diff, CI focused tests | Headless PR gate, schema evolution, full CI. |
+| UPS-015 | ČÁSTEČNĚ | existing HTTP/MCP/CLI/Projects | Parity and accessibility/browser acceptance. |
+| UPS-016 | NEHOTOVO | No new evaluated decision categories | Typed baselines and safe rollout. |
+| UPS-017 | ČÁSTEČNĚ | sync/freshness status and bounds | Metrics, archive, p95 and churn. |
+| UPS-018 | ČÁSTEČNĚ | committed declaration diff only | Cross-project/runtime/what-if/eval. |
+| GIT-001 | ČÁSTEČNĚ | §40.3 | Complete actual stores/fields/consumers, validated authority ADR. |
+| GIT-002 | ČÁSTEČNĚ | RepoKnowledgeStore.bootstrap, mode, opt-in discovery | Authorized shared default auto writes; no manual export. |
+| GIT-003 | ČÁSTEČNĚ | RepoPlanStorage CAS, journal, fences | All typed records, migration/recovery acceptance. |
+| GIT-004 | ČÁSTEČNĚ | portable source locators, project UUID | Logical task/attempt refs and dirty snapshot identity. |
+| GIT-005 | ČÁSTEČNĚ | portable handoff + preflight + resume | Git canonical task and local attempt separation. |
+| GIT-006 | NEHOTOVO | Current Agent OS still SQLite | Memory, incidents, decisions, questions and coordination cutover. |
+| GIT-007 | ČÁSTEČNĚ | historical digest summaries, resume revalidation | Patch dependencies, attempt/artifact manifests and real receipts. |
+| GIT-008 | ČÁSTEČNĚ | read-time dependency freshness and existing journal fences | Watchers, hydration/rebuild, no resurrection. |
+| GIT-009 | ČÁSTEČNĚ | sync diagnostics and two-clone conflict classification | Resolution workflow, full disjoint/divergent acceptance. |
+| GIT-010 | ČÁSTEČNĚ | opt-in preprocessing source-card publication | Default safe auto task/findings/checkpoints; pending/no-op proof. |
+| GIT-011 | ČÁSTEČNĚ | scope checks, secret patterns, journal isolation | Visibility policy, PII, pending failure UX and full adversarial tests. |
+| GIT-012 | ČÁSTEČNĚ | shared hints, config, explicit Python test targets | Workflow preferences and complete mappings. |
+| GIT-013 | ČÁSTEČNĚ | review inbox + declaration diff | Semantic behavior diff and actual verified remediation. |
+| GIT-014 | ČÁSTEČNĚ | context/delegate/solve/review paths | Task lifecycle and actual verification integration. |
+| GIT-015 | ČÁSTEČNĚ | CLI validator/audit/diff, CI wiring | Schema evolution and reproducible clean release gate. |
+| GIT-016 | NEHOTOVO | Existing Laya and lexicon not V4 eval corpus | Curated labels, category eval. |
+| GIT-017 | ČÁSTEČNĚ | bounded diagnostics | Measured performance, archive, churn and pending state. |
+| GIT-018 | ČÁSTEČNĚ | real two-clone Git conflict fixture | Full two-state-dir/provider/browser E2E. |
+
+### 40.2 Skutečné CI a release blockery
+
+[CI 45612996800](https://github.com/Harfusha/local-ai-hub/actions/runs/45612996800) na referenčním HEAD: lint, typing, fast-contract a všech 12 platform-smoke jobs prošly; 11 z 12 integration jobs zelených (ne všechny běží plnou sadu). Plná Ubuntu 3.14 sada: 17 844 passed, 574 failed, 231 skipped, 66 errors. Critical coverage: 1 119 passed, 6 platform skips, ale kontrola baseline selhala (shutdown.py 8/12 vs 10/12 branches; missing commands.py; chybějící baseline CommandBroker.run v command_broker.py; staré názvy Handler._require_authorized, Handler._authorized a commands.py::CommandBroker.run). Nezmenšovat coverage floor ani nevyřazovat selhávající testy. Ověřit baseline na master, rozlišit zastaralé fixture od skutečných regresí, přesun coverage mapping pouze s důkazem ekvivalence. Release skipped. Full logs ukazují mimo jiné chybějící centrality_score v preprocess schema, zastaralé imports/route fixtures a chybějící config_schema_version; kauzalita vůči tomuto PR dosud neprokázána. Žádný nový runtime/provider nebo browser benchmark nebyl proveden. Release BLOCKED.
+
+### 40.3 Počáteční inventář skutečných vlastníků (§29.2, NEKOMPLETNÍ)
+
+| Komponenta / fyzická vrstva | Aktuální owner a consumer | Cílová třída | Stav / cutover podmínka |
+|---|---|---|---|
+| Project identity, knowledge, review, handoff: .local-ai-hub/project.json, knowledge/, agent-os/handoffs/ | RepoKnowledgeStore; repo_knowledge_management, CLI, HTTP/MCP, context | G | Git files canonical pro deklarace; handoff pouze export, ne task authority |
+| Spec/plan, journal | RepoPlanStorage, agent_task_plan.py; local/intents | G+L | Reuse CAS/fences; ověřit recovery a task mapping |
+| Project config a path hints | project_config.py, .local-ai.toml, ProjectPathHintStore | G+L | Shared hint subset; local overrides/registry zůstávají L |
+| agent_state.sqlite task events/projection | app_runtime.py -> AgentStateStore, TaskStore; agent_task_core, agent_task_plan, lifecycle, mutation, HTTP tasks | G+L | SQLite authoritative dnes; migrate contract/checkpoint/status s odděleným runtime attempt; žádný dual owner |
+| agent_state.sqlite memory/relations | MemoryStore (agent_memory.py), task memory, HTTP/MCP context | G+L / L | Projekt/task/branch durable subset dosud SQLite; user/global/session private |
+| agent_state.sqlite incidents | IncidentStore (agent_incidents.py), incident HTTP | G+L | Root-cause/prevention summaries potřebují scope/redaction; raw local |
+| agent_state.sqlite verification/change/outcome | VerificationStore (agent_verification.py), completion, HTTP export | G+L | Handoff summary only; fresh receipts/command IDs local; migrate historical lineage |
+| agent_state.sqlite blackboard, swarm | BlackboardStore, SwarmCoordinator, app_runtime.py | G+L / L | Durable decisions/briefings missing; locks/messages/live coordination local |
+| WorkOrchestrator, RecoveryJournal, ScopeLeaseStore, SemaphoreStore | app_runtime.py, work_orchestrator, agent_events, recovery | G+L / L | Safe work results missing; local execution, locks, intents never Git |
+| EvidenceStore, artifacts, bundle export/import | app_runtime.py, evidence.py, app_bundle.py | G+L / C/L | Portable source locator exists; artifacts/patch missing contract; bundle not canonical sync |
+| code-index.sqlite3, rag.sqlite3, preprocess.sqlite3, cache.sqlite | app_runtime.py + existing retrieval/preprocess | L | Rebuildable; canonical business graph projection not yet proved |
+| Laya/DPO/triplet inbox, telemetry, debug traces, endpoint stats, scheduler | app_runtime.py | L / C | Raw private; curated project eval/rollout missing |
+| KB chat, glossary/onboarding, open typed questions, project decisions, risk register | Existing task questions and knowledge declarations only; no complete V4 store mapping | G / L/C | Missing canonical mapping and private chat persistence |
+
+Toto není vyčerpávající inventář polí/tabulek. Před cutover ověřit všechny SQL writes, files, import/export, cleanup, scoped reads, provider-specific stores a runtime consumers, včetně rollback. SQLite se nesmí prostě zkopírovat do Git ani zavést automatický dvojí zápis jako náhradu cutover.
+
+### 40.4 E2E acceptance matrix
+
+Žádný kompletní E2E-UPS-01 až 14 ani V4-E01 až 18 nebyl doložen jako PASS. Částečný důkaz: UPS-03/06 a V4-E05/10/11 (static assertion/review invalidation, historic summaries); UPS-04 a V4-E04 (real two-clone conflict diagnosis, not merge); UPS-07/08 a V4-E07/08 (existing journal/path fences, not full migration); UPS-10/11/12 a V4-E12/14/15 (deterministic context/query/CLI subsets); UPS-14 a V4-E13/17 (scope and recognized secret guards); UPS-02 a V4-E02/03 (explicit handoff/resume only); UPS-09 a V4-E09 (read-only preflight). Vše ostatní NEHOTOVO, včetně V4-E01/06/16/18 a UPS-01/05/13. Žádný partial nesmí být započítán do release acceptance. Full scenario assertions viz §26.1 a §38.1.
+
+### 40.5 Pořadí další práce
+
+1. P0: opravovat plné CI podle příčin; samostatně ověřit master baseline. Neodstraňovat testy ani oslabovat gates.
+2. P0: dokončit inventory/ADR a navrhnout transakční cutover podle §37.1 (Git durable state, SQLite rebuildable projection + private live attempts). Neimplementovat další nezávislý tracker.
+3. P0: canonical task contract + scope mapping + restartable migration, no dual owner; dva klony a rollback. Poté memory/incident/decision/question/work/receipt coverage.
+4. P0: odstranit bounded inventory false negatives, explicit partial/stale flags, watcher/recovery and safe publication policy. Ověřit large fixture a no-op.
+5. P1/P2: semantic query/chat, process extraction, verification mapping to actual Agent OS receipts, complete human lifecycle; typed Laya and measured provider acceptance. Všechny původní ID zůstávají závazné.
