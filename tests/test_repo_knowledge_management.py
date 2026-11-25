@@ -244,8 +244,23 @@ def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path):
     assert allowed["resume_allowed"] is True
     assert allowed["preview_digest"] != blocked["preview_digest"]
     assert allowed["dependencies"]["coverage"] == "declared_affected_paths_only"
+    from local_ai_hub.repo_task_handoff import validate_resume_creation
+
+    creation = {
+        "action": "create", "root": str(clone), "repo_root": str(clone),
+        "task_id": "task-new", "contract": allowed["contract"],
+        "handoff_resume": {"handoff_id": record["id"], "revision": allowed["revision"],
+                           "preview_digest": allowed["preview_digest"]},
+    }
+    validate_resume_creation(creation)
+    with pytest.raises(RepoPlanValidationError):
+        validate_resume_creation({**creation, "task_id": task["task_id"]})
+    with pytest.raises(RepoPlanValidationError):
+        validate_resume_creation({**creation, "contract": {"goal": "Different goal"}})
     (clone / "order.py").unlink()
     assert manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)["resume_allowed"] is False
+    with pytest.raises(RepoPlanValidationError):
+        validate_resume_creation(creation)
     assert not (clone / ".local-ai-hub/local").exists()
     assert "paid = True" not in str(record)
     bad = {**record, "payload": {**record["payload"], "source_dependencies": []}}
