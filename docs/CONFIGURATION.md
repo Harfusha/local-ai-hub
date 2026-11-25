@@ -448,11 +448,24 @@ python tools/hubctl.py knowledge batch-recover --root /path/to/project --record-
 ```
 
 All target revisions are checked before the first publication. Each file is
-durably replaced, but readers may observe intermediate files; this is a
-recoverable batch, not an atomic multi-file snapshot. Recovery must use the
-same original input, operation ID and reviewed digest, with fresh operator
-authorization. A changed manifest, checkout or independently edited target
-blocks recovery. Generic plan recovery cannot publish these batches.
+durably replaced. Before the first target write, an ignored local publication
+fence is durably marked pending. Cooperative knowledge, handoff and adaptive
+context readers refuse partial data until recovery; competing knowledge writes
+are blocked. The epoch changes after a publication, so a read spanning a
+completed batch is rejected too. Sync status exposes the pending state without
+disclosing journal content. Recovery must use the same original input,
+operation ID and reviewed digest, with fresh operator authorization. A changed
+manifest, checkout or independently edited target blocks recovery. Generic
+plan recovery cannot publish these batches. If the journal already completed
+but the fence did not become idle, repeat the exact original batch-apply to
+acknowledge the completed targets and release the fence.
+
+This is a cooperative local read barrier, not a Git-wide atomic transaction.
+External editors, Git commits and other clones do not honor the local fence;
+do not commit a partial batch. An interrupted batch created before this fence
+was introduced needs manual inspection and explicit recovery. The local marker
+is not shared state, and must never be committed. Canonical authority cutover
+still requires a portable generation/visibility contract.
 
 With the Hub stopped (or a clean offline backup configured), prepare
 historical task candidates using:
