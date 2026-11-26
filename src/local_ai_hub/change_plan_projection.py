@@ -13,8 +13,8 @@ def project_change_plan(
     result: dict[str, Any], *, mode: str = "summary", limit: int = 8, offset: int = 0,
     delegate: Callable[..., Any] | None = None, root: str = "",
 ) -> dict[str, Any]:
-    if mode not in {"summary", "details", "semantic"}:
-        return {"success": False, "error": "mode must be summary, details or semantic"}
+    if mode not in {"summary", "details", "semantic", "pr", "release"}:
+        return {"success": False, "error": "invalid change plan projection mode"}
     if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
         return {"success": False, "error": "limit must be 1 through 8; offset must be 0 through 100000"}
     if result.get("success") is not True:
@@ -74,6 +74,22 @@ def project_change_plan(
         "projection_partial": True,
         "commit_ready": False,
     })
+    if mode in {"pr", "release"}:
+        comparison = result.get("comparison")
+        if not isinstance(comparison, dict):
+            return {"success": False, "error": "Committed comparison required"}
+        output["summary_kind"] = "pr_draft" if mode == "pr" else "release_draft"
+        output["draft_summary"] = {
+            "title": "Changes in committed revision range",
+            "items": [
+                {"group": group["name"], "description": group["summary"],
+                 "suggested_heading": group["suggested_commit_message"]}
+                for group in page
+            ],
+            "remaining_groups": max(0, len(groups) - offset - len(page)),
+            "verification": "Not assessed for the compared commit range.",
+            "advisory_only": True,
+        }
     if mode == "semantic":
         output["model_advice_status"] = _advise(page, delegate, root)
     return output

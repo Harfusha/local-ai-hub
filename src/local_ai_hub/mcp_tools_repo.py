@@ -615,13 +615,16 @@ def _local_ai_repo_impl(
     if action == "split_changes":
         view = ("details" if path else "summary") if mode == "adaptive" else mode
         page_limit = limit if explicit_limit else 8
-        if view not in {"summary", "details", "semantic"}:
-            return services_module.contract_error("split_changes mode must be summary, details or semantic")
+        if view not in {"summary", "details", "semantic", "preflight", "pr", "release"}:
+            return services_module.contract_error("invalid split_changes mode")
+        if path and changed_paths:
+            return services_module.contract_error("specify path or changed_paths, not both")
         if type(page_limit) is not int or not 1 <= page_limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return services_module.contract_error("split_changes limit must be 1 through 8 and offset 0 through 100000")
         return services_module._compact(services_module.CLIENT.post("/api/repo/split_changes", {
-            "root": root, "paths": [path] if path else None,
+            "root": root, "paths": [path] if path else changed_paths,
             "mode": view, "limit": page_limit, "offset": offset,
+            **({"expected_revision": expected_revision} if expected_revision is not None else {}),
             **({"task_id": task_id} if task_id else {}),
             **({"base": base, "head": head or "HEAD"} if base != "HEAD" or head else {}),
         }, timeout=services_module._timeout("model" if view == "semantic" else "quick")), "architecture",
@@ -631,7 +634,12 @@ def _local_ai_repo_impl(
                           "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id",
                           "projection_mode", "projection_partial", "comparison", "offset", "limit", "has_more",
                           "next_offset", "model_advice_status", "task_context", "git_snapshot_metadata",
-                          "inventory_scope", "inventory_file_count", "git_visible_observation_complete", "dependency_plan"])
+                          "inventory_scope", "inventory_file_count", "git_visible_observation_complete", "dependency_plan",
+                          "selected_paths", "already_staged", "unstaged_selection", "outside_staged_count",
+                          "outside_staged_paths", "outside_staged_omitted", "blockers", "selection_matches_observation",
+                          "staging_preview_available", "stage_argv_preview", "index_scope_matches_selection",
+                          "candidate_dependency_count", "requires_explicit_approval", "requires_post_stage_reinspection",
+                          "draft_summary", "summary_kind"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,

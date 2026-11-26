@@ -40,6 +40,10 @@ Compact worktree plans can link bounded, repository-scoped tasks through exact c
 
 The existing deterministic source-fact extractor is reused for supported PHP/CakePHP, JS/TS and other known file formats. Exact source pairs produce bounded added/removed/changed declaration/fact identities; only selected identifier kinds and value hashes are compared. This is lexical fact analysis, not full semantic equivalence or proof that function bodies are unchanged. Python AST results additionally include source ranges and import candidates. The planner associates hunks with overlapping changed symbols and proposes group ordering from uniquely matched changed Python module paths, relative JS imports and PHP declaration/import names. Cycles and their blocked dependents remain explicit. The graph is incomplete by design, is not a proof of dependency closure, and cannot authorize separate commits. The compact view reports omitted candidates.
 
+## Snapshot-bound preflight and publication drafts
+
+Use the full-inventory `observed_change_set_id` as `expected_revision` for subsequent pages or `mode="preflight"` with explicit `changed_paths`. Preflight always re-observes the entire Git-visible inventory before comparing the expected ID. It blocks incomplete observations, foreign staged files, conflicts, mixed staging, untracked selections, partial groups and unselected candidate dependencies. It returns a literal-path Git argv preview only, never performs staging or commits. A matching index scope is not a validation receipt or proof of ownership. Modes `pr` and `release` produce paged factual draft descriptions for exact committed ranges. CLI exposes the same modes and expected revision. No publication occurs.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.

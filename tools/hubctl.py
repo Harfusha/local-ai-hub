@@ -298,8 +298,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic"} or args.apply or args.root is None:
-            parser.error("changes requires --root, optional summary/details/semantic, and is read-only")
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release"} or args.apply or args.root is None:
+            parser.error("changes requires --root, optional summary/details/semantic/preflight/pr/release, and is read-only")
         requested_mode = None
     elif args.action == "knowledge":
         if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
@@ -359,6 +359,8 @@ def main() -> int:
 
     if args.action == "changes":
         payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary"}
+        if args.expected_revision is not None:
+            payload["expected_revision"] = args.expected_revision
         if args.changed_path:
             payload["paths"] = args.changed_path
         if args.base:

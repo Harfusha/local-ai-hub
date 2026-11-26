@@ -412,7 +412,7 @@ _ACTION_SCOPED_FIELDS = {
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "structural_search", "split_changes"}),
         "match_offset": frozenset({"structural_search"}),
         "file_offset": frozenset({"structural_search"}),
-        "expected_revision": frozenset({"structural_search"}),
+        "expected_revision": frozenset({"structural_search", "split_changes"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
@@ -431,7 +431,7 @@ _ACTION_SCOPED_FIELDS = {
         "line_end": frozenset({"source"}),
         "max_chars": frozenset({"source"}),
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
-        "changed_paths": frozenset({"context"}),
+        "changed_paths": frozenset({"context", "split_changes"}),
     },
     "local_ai_coord": {
         "scope": frozenset({
@@ -608,7 +608,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "git_log": ("root", "query", "max_commits", "author", "since", "until", "path", "limit"),
             "mutation_test": ("root", "path", "diff"),
             "type_stubs": ("root", "path"),
-            "split_changes": ("root", "path", "mode", "limit", "offset", "base", "head", "task_id"),
+            "split_changes": ("root", "path", "mode", "limit", "offset", "base", "head", "task_id", "expected_revision", "changed_paths"),
             "generate_tests_for_diff": ("root", "diff", "path"),
             "cross_repo_contract": ("root", "path"),
             "circular_dependencies": ("root", "language"),
