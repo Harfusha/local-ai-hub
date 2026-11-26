@@ -83,6 +83,27 @@ complete repository inventory. Use the existing authorized inventory tools to
 obtain resources and record exclusions. A receipt validates its criterion
 only; it cannot establish that omitted resources do not exist.
 
+## Server-checked repository scope
+
+For a bounded read-only repository review, set the inventory's
+`scope` to `repository` and omit `resources` on HTTP/MCP task creation.
+The server enumerates the authorized checkout with the existing confined
+security inventory, fixed default ignore policy, a five-second deadline
+and 512-file bound. It refuses incomplete inventory, links, oversized
+files, mismatched supplied resources, and an expanded matrix exceeding the
+obligation limit. The same scope is rechecked at completion; newly added
+or deleted resources block completion, even with a receipt waiver.
+Use the declared scope for explicit subsets or a task that intentionally
+changes inventory. A repository scope is bounded by the inventory's
+default exclusions (ignored directories/extensions/archives); it does not
+attest to excluded files. Auto-worktree and portable handoff creation are
+not supported for this scope yet. Split large projects into explicit
+subtasks; server-attested hierarchical coverage is still pending.
+
+Structured contract steering is additive: existing mandatory obligations
+cannot disappear in an ordinary criteria revision. This is deliberately
+more restrictive than unstructured task steering.
+
 ## Durable problem reports
 
 Report a discovered issue with the existing `task_checkpoint` operation by

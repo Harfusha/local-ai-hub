@@ -1924,6 +1924,17 @@ class VerificationStore:
                 receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
             )
             execution["problems"] = problems
+            from .execution_inventory import check_repository_scope
+
+            scope_check = check_repository_scope(
+                task_state.contract.slo_profile[EXECUTION_KEY], trusted_repository_root,
+            )
+            if scope_check:
+                execution["scope_check"] = scope_check
+                execution["inventory"]["authority"] = "server_checked_repository"
+                if not scope_check["complete"]:
+                    execution["ready_for_completion_attempt"] = False
+                    is_complete = False
             if problems["blocking_open"]:
                 execution["ready_for_completion_attempt"] = False
             is_complete = is_complete and not task_state.checkpoint.blockers and not problems["blocking_open"]

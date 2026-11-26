@@ -28,8 +28,12 @@ def expand_declared_inventory(
     if type(raw) is not dict or "inventory" not in raw:
         return tuple(criteria), raw
     inventory = raw["inventory"]
-    if type(inventory) is not dict or set(inventory) != {"resources", "checks"}:
+    if (type(inventory) is not dict or not {"resources", "checks"}.issubset(inventory)
+            or set(inventory) - {"resources", "checks", "scope"}):
         raise ValueError("inventory must contain resources and checks")
+    scope = inventory.get("scope", "declared")
+    if scope not in ("declared", "repository"):
+        raise ValueError("invalid inventory scope")
     resources = inventory["resources"]
     checks = inventory["checks"]
     if type(resources) is not list or not 1 <= len(resources) <= MAX_OBLIGATIONS:
@@ -79,7 +83,10 @@ def expand_declared_inventory(
         raise ValueError("expanded execution exceeds obligation limit")
     return tuple(expanded), {
         **raw, "units": units,
-        "inventory": {"resources": list(resources), "checks": normalized_checks},
+        "inventory": {
+            "resources": list(resources), "checks": normalized_checks,
+            **({"scope": scope} if scope != "declared" else {}),
+        },
     }
 
 

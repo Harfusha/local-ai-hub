@@ -270,6 +270,9 @@ class TaskLifecycleMixin:
         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
         if EXECUTION_KEY in task.contract.slo_profile:
             execution = result.get("execution", {}) if isinstance(result, Mapping) else getattr(result, "execution", {})
+            scope_check = execution.get("scope_check", {})
+            if scope_check and scope_check.get("complete") is not True:
+                raise CompletionGateError("Cannot transition to COMPLETED: repository inventory scope changed or is unavailable")
             problems = execution.get("problems", {})
             if problems.get("blocking_open", 0):
                 raise CompletionGateError("Cannot transition to COMPLETED: verified execution has unresolved blocking problems")
@@ -1075,6 +1078,12 @@ class TaskLifecycleMixin:
         }]
         criteria = tuple(acceptance_criteria)
         contract = replace(current.contract, acceptance_criteria=criteria)
+        from .verified_execution import EXECUTION_KEY
+
+        if EXECUTION_KEY in current.contract.slo_profile and not set(
+            current.contract.acceptance_criteria
+        ).issubset(contract.acceptance_criteria):
+            raise ValueError("verified execution contract revisions must preserve existing obligations")
         state_data["contract_history"] = history
         state_data["contract_revision"] = revision + 1
         checkpoint = replace(current.checkpoint, state_data=state_data)
