@@ -246,3 +246,41 @@ def execution_projection(
         "remaining_count": len(rows),
         "preview_truncated": len(rows) > MAX_PREVIEW,
     }
+
+
+def validate_criteria_revision(contract: Any, criteria: Sequence[str]) -> None:
+    """Check the exact resulting structured contract before a plan is mutated."""
+    from dataclasses import replace
+
+    if EXECUTION_KEY not in contract.slo_profile:
+        return
+    candidate = replace(contract, acceptance_criteria=tuple(criteria))
+    if (tuple(criteria) != candidate.acceptance_criteria
+            or not set(contract.acceptance_criteria).issubset(candidate.acceptance_criteria)):
+        raise ValueError("verified execution contract revisions must preserve existing obligations")
+
+
+def execution_resume_summary(execution: Mapping[str, Any]) -> str:
+    """Compact, explicit advisory handoff; no completion authorization."""
+    if not execution:
+        return "Verification status unavailable; call verify_completion before proceeding."
+    counts = execution.get("coverage", {})
+    problems = execution.get("problems", {})
+    scope = execution.get("scope_check", {})
+    next_unit = execution.get("next_obligation")
+    parts = [
+        "Verified execution (advisory snapshot; recheck with verify_completion):",
+        f"coverage {counts.get('verified', 0)}/{counts.get('total', 0)}; "
+        f"stale={counts.get('stale', 0)}; dependency-blocked={counts.get('dependency_blocked', 0)}; "
+        f"open blocking problems={problems.get('blocking_open', 0)}",
+        f"checkpoint blockers={execution.get('checkpoint_blocker_count', 0)}",
+    ]
+    if scope and scope.get("complete") is not True:
+        parts.append("Repository scope changed or unavailable; reconcile the scope before completion.")
+    elif isinstance(next_unit, Mapping):
+        parts.append(f"Next obligation: {next_unit.get('criterion', '')}")
+    elif execution.get("ready_for_completion_attempt") is True:
+        parts.append("Evidence preview ready; run the authoritative completion gate.")
+    else:
+        parts.append("Completion not ready; inspect remaining obligations and blockers.")
+    return "\n".join(parts)

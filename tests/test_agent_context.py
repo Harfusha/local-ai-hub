@@ -993,3 +993,25 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
     assert wrong_session.record_id not in element_ids
     assert unscoped_task.record_id not in element_ids
     assert unscoped_session.record_id not in element_ids
+
+
+def test_verified_execution_context_contains_next_action_not_all_criteria(tmp_path: Path):
+    state = AgentStateStore(tmp_path / "state.sqlite3")
+    tasks = TaskStore(state)
+    verifier = VerificationStore(state, task_store=tasks)
+    task = tasks.create(
+        GoalContract(
+            goal="review every unit",
+            acceptance_criteria=tuple(f"review item {i:04}" for i in range(100)),
+            slo_profile={"verified_execution": {}},
+        ),
+        ScopeContext(task_id="execution-context"), task_id="execution-context",
+    )
+    compiler = ContextCompiler(state, task_store=tasks, verification_store=verifier)
+    context = compiler.compile(ContextRequest(task_id=task.task_id, token_budget=256))
+    assert context.estimated_tokens <= 256
+    text = context.text()
+    assert "coverage 0/100" in text
+    assert "Next obligation: review item 0000" in text
+    assert "review item 0099" not in text
+    assert "verify_completion" in text

@@ -610,6 +610,9 @@ def reconcile_contract_revision(
         raise ValueError("task owner mismatch during contract reconciliation")
     if tuple(task_data.get("acceptance_criteria", ())) != tuple(execution.contract.acceptance_criteria):
         raise ValueError("plan and Agent OS criteria diverged before reconciliation")
+    from local_ai_hub.verified_execution import validate_criteria_revision
+
+    validate_criteria_revision(execution.contract, new_acceptance_criteria)
     current_contract_revision = execution.checkpoint.state_data.get("contract_revision", 1)
     if type(current_contract_revision) is not int or current_contract_revision != binding.contract_revision:
         raise ValueError("binding contract revision is stale; reload before reconciling")
@@ -749,6 +752,9 @@ def reconcile_task_steering(
         raise KeyError(f"Task '{task_id}' not found in task store")
     if _task_scope_root(execution) != canonical:
         raise ValueError("root does not match the server-managed task scope")
+    from local_ai_hub.verified_execution import validate_criteria_revision
+
+    validate_criteria_revision(execution.contract, acceptance_criteria)
     manager = TaskBindingManager(canonical)
     binding = manager.get_binding(task_id)
     if binding is None or not execution.context.session_id or binding.session_id != execution.context.session_id:

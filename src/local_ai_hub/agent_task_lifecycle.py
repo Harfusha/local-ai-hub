@@ -1077,13 +1077,10 @@ class TaskLifecycleMixin:
             "reason": reason.strip(),
         }]
         criteria = tuple(acceptance_criteria)
-        contract = replace(current.contract, acceptance_criteria=criteria)
-        from .verified_execution import EXECUTION_KEY
+        from .verified_execution import validate_criteria_revision
 
-        if EXECUTION_KEY in current.contract.slo_profile and not set(
-            current.contract.acceptance_criteria
-        ).issubset(contract.acceptance_criteria):
-            raise ValueError("verified execution contract revisions must preserve existing obligations")
+        validate_criteria_revision(current.contract, criteria)
+        contract = replace(current.contract, acceptance_criteria=criteria)
         state_data["contract_history"] = history
         state_data["contract_revision"] = revision + 1
         checkpoint = replace(current.checkpoint, state_data=state_data)

@@ -136,6 +136,18 @@ blocking report. Resolution is not proof
 of independent expert review: the criterion and actual evidence still
 must adequately cover the reported problem.
 
+## Context recovery
+
+The existing Agent OS context compiler emits a compact structured execution
+handoff rather than repeating every criterion and old passing receipt. It
+preserves the goal, constraints and non-goals; includes counts, blockers,
+scope drift and the next obligation; and directs the agent to the existing
+task_get and verify_completion actions. This snapshot is advisory because
+the request revision may be stale. The authoritative completion endpoint
+rechecks the actual revision and project rules. Both direct contract
+revision and repository plan steering reject removal of mandatory criteria
+before mutating the plan.
+
 ## Agent behavior
 
 Define measurable criteria for the intended scope. Use repository inventory

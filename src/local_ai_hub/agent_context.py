@@ -937,10 +937,22 @@ class ContextCompiler:
                 freshness=time.time(),
             )))
 
+        from .verified_execution import EXECUTION_KEY, execution_resume_summary
+
+        task = self.task_store.get(request.task_id) if self.task_store is not None else None
+        profile = getattr(getattr(task, "contract", None), "slo_profile", {})
+        structured = isinstance(profile, Mapping) and EXECUTION_KEY in profile
+        execution_summary: dict[str, Any] = {}
         # 1. Fresh verification receipts (highest priority: 100)
         if self.verification_store is not None:
-            comp_res = self.verification_store.completion(request.task_id)
-            for rcpt in comp_res.receipts:
+            if structured:
+                # The request revision is advisory here. The authoritative
+                # verify_completion action resolves and checks the actual root.
+                comp_res = self.verification_store.completion(request.task_id, current_revision=effective_revision)
+                execution_summary = comp_res.execution
+            else:
+                comp_res = self.verification_store.completion(request.task_id)
+            for rcpt in (() if structured else comp_res.receipts):
                 if rcpt.passed:
                     content = f"Verification receipt for '{rcpt.criterion}': passed (observed at {rcpt.observed_at:.0f})"
                     tokens = _estimate_tokens(content)
@@ -959,9 +971,20 @@ class ContextCompiler:
 
         # 2. Task goal and checkpoint (priority: 95 / 90)
         if self.task_store is not None:
-            task = self.task_store.get(request.task_id)
             if task:
                 goal_content = f"Task Goal: {task.contract.goal}\nCriteria: {', '.join(task.contract.acceptance_criteria)}"
+                if structured:
+                    # Avoid repeating hundreds of completed criteria in every
+                    # context. The durable contract remains retrievable via task_get.
+                    goal_content = (
+                        f"Task Goal: {task.contract.goal}\n"
+                        f"Mandatory obligations: {len(task.contract.acceptance_criteria)} (full contract via task_get).\n"
+                        f"{execution_resume_summary(execution_summary)}"
+                    )
+                    if task.contract.constraints:
+                        goal_content += f"\nConstraints: {'; '.join(task.contract.constraints)}"
+                    if task.contract.non_goals:
+                        goal_content += f"\nNon-goals: {'; '.join(task.contract.non_goals)}"
                 pinned_goal = ContextElement(
                     element_id=f"goal_{task.task_id}",
                     source_kind="task_goal",
