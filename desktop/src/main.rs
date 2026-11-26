@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod records;
+
 use eframe::egui;
 use serde_json::{json, Value};
 use std::{
@@ -149,6 +151,10 @@ struct Desktop {
     trace_cursor: i64,
     filter: String,
     rows: Vec<Row>,
+    snapshot: Option<Value>,
+    snapshot_view: String,
+    raw_view: bool,
+    record_detail: Option<Value>,
     visible: Vec<usize>,
     detail: Option<usize>,
     pending: Option<Pending>,
@@ -172,7 +178,7 @@ impl Desktop {
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
             reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, filter: String::new(),
-            rows: Vec::new(), visible: Vec::new(), detail: None, pending: None, busy: None,
+            rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
             auto_probe: true, installation_open: false,
@@ -222,13 +228,16 @@ impl Desktop {
                     Ok(value) => {
                         self.rows.clear();
                         self.detail = None;
+                        self.record_detail = None;
                         flatten(&value, "", 0, &mut self.rows);
+                        self.snapshot = Some(value);
+                        self.snapshot_view = done.label.clone();
                         self.refilter();
                         self.status = format!("{}: response received{}", done.label,
                             if self.rows.len() >= MAX_ROWS { " (display capped)" } else { "" });
                         self.last_probe = Instant::now() - Duration::from_secs(30);
                     }
-                    Err(error) => { self.status = format!("{}: {error}", done.label); }
+                    Err(error) => { self.status = format!("{}: {error} (previous response, if any, is not fresh)", done.label); }
                 }
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
@@ -242,6 +251,10 @@ impl Desktop {
         let data = request("lifecycle", json!({"action": action}));
         if action == "start" { self.submit(ctx, "Start Hub".into(), data); }
         else { self.confirm(&format!("{action} Hub (may interrupt active work)"), data); }
+    }
+    fn clear_response(&mut self) {
+        self.rows.clear(); self.visible.clear(); self.detail = None; self.record_detail = None;
+        self.snapshot = None; self.snapshot_view.clear();
     }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
@@ -496,7 +509,7 @@ impl eframe::App for Desktop {
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
                 ui.label("Repository root");
-                ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0));
+                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -531,8 +544,92 @@ impl eframe::App for Desktop {
                 ui.label("Search response");
                 if ui.text_edit_singleline(&mut self.filter).changed() { self.refilter(); }
                 ui.label(format!("{} fields", self.visible.len()));
+                ui.checkbox(&mut self.raw_view, "Raw fields");
             });
             if self.rows.is_empty() { ui.label("Load this view to inspect data. No hidden screen is polled."); }
+            if !self.raw_view && self.snapshot_view == self.current() {
+                if let Some(snapshot) = &self.snapshot {
+                    if self.current() == "Plan board" {
+                        if let Some(columns) = records::board_columns(snapshot) {
+                            if let Some((total, declared, verified)) = records::progress(snapshot) {
+                                ui.label(format!("{verified} verified complete / {total} tasks · {declared} declared done"));
+                                if total > 0 { ui.add(egui::ProgressBar::new(verified as f32 / total as f32).show_percentage()); }
+                            }
+                            let mut selected = None;
+                            let needle = self.filter.to_lowercase();
+                            egui::ScrollArea::both().id_salt("kanban").show(ui, |ui| {
+                                ui.horizontal_top(|ui| {
+                                    for (state, cards) in columns {
+                                        ui.vertical(|ui| {
+                                            ui.set_min_width(175.0);
+                                            ui.heading(format!("{state} ({})", cards.len()));
+                                            for card in cards.iter().take(500) {
+                                                if !needle.is_empty() && !card.to_string().to_lowercase().contains(&needle) { continue; }
+                                                let title = records::display(&card["title"]);
+                                                if ui.button(title.chars().take(80).collect::<String>()).clicked() { selected = Some(card.clone()); }
+                                                ui.small(records::display(&card["task_id"]));
+                                                if state == "done" && card["verified"].as_bool() != Some(true) {
+                                                    ui.small("Declared, not verified");
+                                                }
+                                            }
+                                            if cards.len() > 500 { ui.small("Display capped at 500 cards"); }
+                                        });
+                                        ui.separator();
+                                    }
+                                });
+                            });
+                            if let Some(card) = selected {
+                                if let Some(id) = card["task_id"].as_str() { self.plan_task = id.to_owned(); }
+                                if let Some(revision) = card["plan_file_revision"].as_str() { self.revision = revision.to_owned(); }
+                                if let Some(id) = card["plan_id"].as_str() { self.entity = id.to_owned(); }
+                                if let Some(title) = card["title"].as_str() { self.plan_title = title.to_owned(); }
+                                self.record_detail = Some(card);
+                            }
+                            return;
+                        }
+                    }
+                    if let Some(table) = records::records(self.current(), snapshot) {
+                        let needle = self.filter.to_lowercase();
+                        let filtered: Vec<&Value> = table.values.into_iter().filter(|item|
+                            needle.is_empty() || item.to_string().to_lowercase().contains(&needle)).collect();
+                        ui.label(format!("{} matching records (bounded response)", filtered.len()));
+                        let mut selected = None;
+                        egui::ScrollArea::both().id_salt("records").show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for column in table.columns {
+                                    ui.add_sized([155.0, 24.0], egui::Label::new(*column));
+                                }
+                            });
+                            let height = ui.text_style_height(&egui::TextStyle::Body) + 10.0;
+                            egui::ScrollArea::vertical().id_salt("records_rows").show_rows(ui, height, filtered.len(), |ui, range| {
+                                for index in range {
+                                    let item = filtered[index];
+                                    ui.horizontal(|ui| {
+                                        for (col, field) in table.columns.iter().enumerate() {
+                                            let value = records::display(&item[*field]);
+                                            let display: String = value.chars().take(32).collect();
+                                            if col == 0 {
+                                                if ui.add_sized([155.0, height], egui::Button::new(display)).clicked() { selected = Some(item.clone()); }
+                                            } else {
+                                                ui.add_sized([155.0, height], egui::Label::new(display));
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                        if let Some(item) = selected {
+                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["id"].as_str()) { self.entity = id.to_owned(); }
+                            if self.current() == "Plans" {
+                                if let Some(revision) = item["file_revision"].as_str() { self.revision = revision.to_owned(); }
+                                if let Some(title) = item["title"].as_str() { self.plan_title = title.to_owned(); }
+                            }
+                            self.record_detail = Some(item);
+                        }
+                        return;
+                    }
+                }
+            }
             let row_height = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
             egui::ScrollArea::vertical().id_salt("response").show_rows(ui, row_height, self.visible.len(), |ui, range| {
                 for pos in range {
@@ -547,6 +644,15 @@ impl eframe::App for Desktop {
                 }
             });
         });
+        if let Some(record) = &self.record_detail {
+            let mut open = true;
+            egui::Window::new("Record detail").open(&mut open).show(ctx, |ui| {
+                let text = serde_json::to_string_pretty(record).unwrap_or_default();
+                if ui.button("Copy record").clicked() { ui.ctx().copy_text(text.clone()); }
+                egui::ScrollArea::both().max_height(500.0).show(ui, |ui| { ui.label(text); });
+            });
+            if !open { self.record_detail = None; }
+        }
         if let Some(index) = self.detail {
             let mut open = true;
             if let Some(row) = self.rows.get(index) {
