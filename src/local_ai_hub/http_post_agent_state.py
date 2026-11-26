@@ -169,7 +169,8 @@ def handle_agent_state_verification(self: Any, payload: dict[str, Any]) -> None:
 
         task_store = getattr(verifier, "task_store", None)
         task = task_store.get(task_id) if task_store is not None else None
-        if (task is not None and EXECUTION_KEY in task.contract.slo_profile and current_revision):
+        profile = getattr(getattr(task, "contract", None), "slo_profile", {})
+        if isinstance(profile, dict) and EXECUTION_KEY in profile and current_revision:
             res = evaluate_project_completion(
                 verifier, task_id, root=root, current_revision=current_revision,
                 state_dir=verifier.state_store.db_path.parent,

@@ -387,6 +387,12 @@ class TaskLifecycleMixin:
                 allow_server_memory_refresh=_allow_server_memory_refresh,
             )
 
+        if target is TaskStatus.COMPLETED:
+            from .verified_execution import EXECUTION_KEY
+
+            if EXECUTION_KEY in current.contract.slo_profile and current.checkpoint.blockers:
+                raise CompletionGateError("Cannot complete with unresolved checkpoint blockers; record their resolution first")
+
         if target == current.status:
             if target == TaskStatus.COMPLETED:
                 completed_checkpoint = _checkpoint_with_scheduled_worktree_cleanup(
@@ -643,6 +649,10 @@ class TaskLifecycleMixin:
             or current.owner not in (_expected_completion_content[6], actor)
         ):
             raise ConcurrentTaskUpdateError("task completion content changed after response preflight")
+        from .verified_execution import EXECUTION_KEY
+
+        if EXECUTION_KEY in current.contract.slo_profile and current.checkpoint.blockers:
+            raise CompletionGateError("Cannot complete with unresolved checkpoint blockers; record their resolution first")
         requested_checkpoint = current.checkpoint
         if checkpoint is not None:
             requested_checkpoint = _preserve_checkpoint_memory_state(current.checkpoint.state_data, checkpoint)

@@ -153,11 +153,13 @@ class GoalContract:
         object.__setattr__(self, "constraints", _clean_tuple(self.constraints, "constraints"))
         if type(self.slo_profile) is not dict:
             raise ValueError("slo_profile must be a mapping")
-        from .verified_execution import EXECUTION_KEY, normalize_execution
+        from .verified_execution import EXECUTION_KEY, expand_declared_inventory, normalize_execution
 
         if EXECUTION_KEY in self.slo_profile:
             profile = dict(self.slo_profile)
-            profile[EXECUTION_KEY] = normalize_execution(self.acceptance_criteria, profile[EXECUTION_KEY])
+            criteria, config = expand_declared_inventory(self.acceptance_criteria, profile[EXECUTION_KEY])
+            profile[EXECUTION_KEY] = normalize_execution(criteria, config)
+            object.__setattr__(self, "acceptance_criteria", criteria)
             object.__setattr__(self, "slo_profile", profile)
 
     def has_criteria(self) -> bool:

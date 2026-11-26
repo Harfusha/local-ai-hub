@@ -102,3 +102,64 @@ def test_additive_steering_inherits_mandatory_independent_unit():
     )
     assert result["next_obligation"]["criterion"] == "new-obligation"
     assert result["coverage"]["total"] == 2
+
+
+def test_inventory_compiles_generic_resource_check_matrix():
+    contract = GoalContract(
+        "evaluate a collection",
+        acceptance_criteria=("final review",),
+        slo_profile={"verified_execution": {
+            "profile": "research",
+            "inventory": {
+                "resources": ["article-a", "article-b"],
+                "checks": [
+                    {"name": "source review", "dimension": "quality", "priority": 50},
+                    {"name": "verify citation", "dimension": "citations"},
+                ],
+            },
+            "required_dimensions": ["quality", "citations"],
+        }},
+    )
+    assert contract.acceptance_criteria == (
+        "final review", "source review: article-a", "verify citation: article-a",
+        "source review: article-b", "verify citation: article-b",
+    )
+    assert GoalContract.from_dict(contract.to_dict()) == contract
+    projection = execution_projection(
+        contract.acceptance_criteria, contract.slo_profile["verified_execution"],
+        satisfied=(), unsatisfied=contract.acceptance_criteria, stale=(),
+        receipt_ids={}, receipt_gate_complete=False,
+    )
+    assert projection["inventory"] == {
+        "authority": "declared", "resources": 2, "checks": 2, "obligations": 4,
+    }
+    assert projection["next_obligation"]["criterion"] == "source review: article-a"
+
+
+def test_inventory_cannot_be_silently_removed_by_criteria_only_update():
+    from dataclasses import replace
+    contract = GoalContract("review", slo_profile={"verified_execution": {
+        "inventory": {"resources": ["a"], "checks": [{"name": "review"}]},
+    }})
+    updated = replace(contract, acceptance_criteria=())
+    assert updated.acceptance_criteria == ("review: a",)
+
+
+@pytest.mark.parametrize("inventory", [
+    {"resources": ["a", "a"], "checks": [{"name": "review"}]},
+    {"resources": [], "checks": [{"name": "review"}]},
+    {"resources": ["a"], "checks": [{"name": "review: a"}]},
+    {"resources": ["a"], "checks": [{"name": "review"}, {"name": "review"}]},
+    {"resources": [str(i) for i in range(300)], "checks": [{"name": "review"}, {"name": "verify"}]},
+])
+def test_inventory_rejects_duplicate_or_oversized_scope(inventory):
+    with pytest.raises(ValueError):
+        GoalContract("review", slo_profile={"verified_execution": {"inventory": inventory}})
+
+
+def test_inventory_rejects_conflicting_generated_metadata():
+    with pytest.raises(ValueError):
+        GoalContract("review", slo_profile={"verified_execution": {
+            "inventory": {"resources": ["a"], "checks": [{"name": "review", "dimension": "security"}]},
+            "units": {"review: a": {"dimension": "general"}},
+        }})

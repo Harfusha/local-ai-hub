@@ -23,6 +23,7 @@ Local AI Hub 8.2.1 uses one current runtime contract across packaging, HTTP, MCP
 - automatic hardware profile selection across Windows, macOS and Linux, including NVIDIA, AMD, Intel and Apple graphics detection;
 - metadata-only telemetry, realtime monitoring and a self-contained dashboard;
 - **Agent Operating System**: durable execution state, scoped key-value memory, exact token-bounded context compilation, verification receipts, and negative knowledge incident avoidance;
+- opt-in [verified execution work graphs](docs/VERIFIED_EXECUTION.md): mandatory evidence-backed obligations, declared resource/check matrices, dependencies, coverage and next-action previews;
 - **Token Economy Suite**: CLI tools (`tokcount`, `trim-run`, `repo-map`), AST structural search, ANSI-stripped output truncation, and automated context budgeting. See [docs/TOKEN_ECONOMY.md](docs/TOKEN_ECONOMY.md).
 
 ## Supported Languages & Frameworks

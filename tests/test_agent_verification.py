@@ -2063,3 +2063,58 @@ def test_structured_project_receipt_recomputes_argv_env_and_arguments(
     )
 
     assert result.complete is expected_complete
+
+
+def test_verified_execution_uses_persisted_receipts_after_restart(tmp_path: Path):
+    db_path = tmp_path / "execution.sqlite3"
+    state_store = AgentStateStore(db_path)
+    task_store = TaskStore(state_store)
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    verifier = VerificationStore(state_store, task_store=task_store, artifact_store=artifacts)
+    task = task_store.create(
+        GoalContract(
+            goal="verify implementation", acceptance_criteria=("review api", "review consumer"),
+            slo_profile={"verified_execution": {
+                "profile": "implementation",
+                "units": {"review consumer": {"depends_on": ["review api"]}},
+            }},
+        ),
+        ScopeContext(task_id="structured-execution"),
+        task_id="structured-execution",
+    )
+    verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=artifacts))
+    first = verifier.completion(task.task_id)
+    assert not first.complete
+    assert first.execution["coverage"]["dependency_blocked"] == 1
+    assert first.execution["next_obligation"]["criterion"] == "review api"
+
+    reopened_state = AgentStateStore(db_path)
+    reopened_tasks = TaskStore(reopened_state)
+    reopened_verifier = VerificationStore(reopened_state, task_store=reopened_tasks, artifact_store=artifacts)
+    assert reopened_verifier.completion(task.task_id).execution == first.execution
+    reopened_verifier.record(receipt_for(task.task_id, "review api", artifact_store=artifacts))
+    assert reopened_verifier.completion(task.task_id).execution["coverage"]["verified"] == 2
+    assert reopened_tasks.complete(task.task_id).status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_blockers_cannot_be_cleared_in_completion(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="verify changes", acceptance_criteria=("review",),
+            slo_profile={"verified_execution": {}},
+        ),
+        ScopeContext(task_id="execution-blocker"),
+        task_id="execution-blocker",
+    )
+    verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    task_store.checkpoint(task.task_id, TaskCheckpoint(blockers=("unresolved integration",)))
+    projection = verifier.completion(task.task_id)
+    assert not projection.complete
+    assert projection.execution["checkpoint_blocker_count"] == 1
+    with pytest.raises(CompletionGateError, match="blockers"):
+        task_store.complete(task.task_id, checkpoint=TaskCheckpoint())
+    with pytest.raises(CompletionGateError, match="blockers"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    task_store.checkpoint(task.task_id, TaskCheckpoint())
+    assert task_store.complete(task.task_id).status is TaskStatus.COMPLETED

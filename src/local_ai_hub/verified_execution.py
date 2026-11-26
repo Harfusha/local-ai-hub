@@ -17,10 +17,79 @@ def _canonical(value: Any, label: str, limit: int = 512) -> str:
     return value
 
 
+def expand_declared_inventory(
+    criteria: Sequence[str], raw: Any,
+) -> tuple[tuple[str, ...], Any]:
+    """Compile a declared resource × check matrix into mandatory criteria.
+
+    This is a generic input compiler, not proof that a repository inventory
+    is exhaustive. Resource identity is opaque and does not authorize reads.
+    """
+    if type(raw) is not dict or "inventory" not in raw:
+        return tuple(criteria), raw
+    inventory = raw["inventory"]
+    if type(inventory) is not dict or set(inventory) != {"resources", "checks"}:
+        raise ValueError("inventory must contain resources and checks")
+    resources = inventory["resources"]
+    checks = inventory["checks"]
+    if type(resources) is not list or not 1 <= len(resources) <= MAX_OBLIGATIONS:
+        raise ValueError("inventory resources must be a nonempty bounded array")
+    if type(checks) is not list or not 1 <= len(checks) <= 64:
+        raise ValueError("inventory checks must be a nonempty bounded array")
+    if len(resources) * len(checks) > MAX_OBLIGATIONS:
+        raise ValueError("inventory matrix exceeds obligation limit; split the work into scoped tasks")
+    for resource in resources:
+        _canonical(resource, "resource", 360)
+    if len(set(resources)) != len(resources):
+        raise ValueError("duplicate inventory resource")
+    check_names: set[str] = set()
+    normalized_checks: list[dict[str, Any]] = []
+    for check in checks:
+        if type(check) is not dict or set(check) - {"name", "dimension", "priority"}:
+            raise ValueError("invalid inventory check")
+        name = _canonical(check.get("name"), "check name", 100)
+        if ":" in name or name in check_names:
+            raise ValueError("inventory check names must be unique and cannot contain ':'")
+        check_names.add(name)
+        dimension = _canonical(check.get("dimension", "general"), "dimension", 64)
+        priority = check.get("priority", 0)
+        if type(priority) is not int or not 0 <= priority <= 100:
+            raise ValueError("inventory check priority must be an integer from 0 to 100")
+        normalized_checks.append({"name": name, "dimension": dimension, "priority": priority})
+    supplied = raw.get("units", {})
+    if type(supplied) is not dict:
+        raise ValueError("execution units must be an object")
+    units = dict(supplied)
+    expanded = list(criteria)
+    existing = set(expanded)
+    for resource in resources:
+        for check in normalized_checks:
+            criterion = f"{check['name']}: {resource}"
+            expected = {"dimension": check["dimension"], "priority": check["priority"]}
+            metadata = units.get(criterion, {})
+            if type(metadata) is not dict or any(
+                key in metadata and metadata[key] != value for key, value in expected.items()
+            ):
+                raise ValueError("inventory criterion metadata conflicts with check")
+            units[criterion] = {**metadata, **expected}
+            if criterion not in existing:
+                expanded.append(criterion)
+                existing.add(criterion)
+    if len(expanded) > MAX_OBLIGATIONS:
+        raise ValueError("expanded execution exceeds obligation limit")
+    return tuple(expanded), {
+        **raw, "units": units,
+        "inventory": {"resources": list(resources), "checks": normalized_checks},
+    }
+
+
 def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     """Validate contract metadata. Missing metadata means a mandatory independent unit."""
-    if type(raw) is not dict or set(raw) - {"version", "profile", "units", "required_dimensions"}:
+    if type(raw) is not dict or set(raw) - {"version", "profile", "units", "required_dimensions", "inventory"}:
         raise ValueError("invalid verified_execution contract")
+    expanded, raw = expand_declared_inventory(criteria, raw)
+    if tuple(criteria) != expanded:
+        raise ValueError("inventory criteria must be present in the goal contract")
     if type(raw.get("version", 1)) is not int or raw.get("version", 1) != 1:
         raise ValueError("unsupported verified_execution version")
     if not 1 <= len(criteria) <= MAX_OBLIGATIONS or len(set(criteria)) != len(criteria):
@@ -59,7 +128,10 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     if set(dimensions) - actual:
         raise ValueError("required execution dimension has no acceptance criterion")
     _order(criteria, units)
-    return {"version": 1, "profile": profile, "units": units, "required_dimensions": list(dimensions)}
+    normalized = {"version": 1, "profile": profile, "units": units, "required_dimensions": list(dimensions)}
+    if "inventory" in raw:
+        normalized["inventory"] = raw["inventory"]
+    return normalized
 
 
 def _order(criteria: Sequence[str], units: Mapping[str, Any]) -> list[str]:
@@ -141,8 +213,15 @@ def execution_projection(
             ready.append(row)
     ready.sort(key=lambda row: (-row["priority"], -row["dependent_count"], row["criterion"]))
     total = len(ordered)
+    inventory = normalized.get("inventory")
+    inventory_summary = ({
+        "authority": "declared", "resources": len(inventory["resources"]),
+        "checks": len(inventory["checks"]),
+        "obligations": len(inventory["resources"]) * len(inventory["checks"]),
+    } if inventory is not None else None)
     return {
         "version": 1, "profile": normalized["profile"],
+        **({"inventory": inventory_summary} if inventory_summary is not None else {}),
         "coverage": {
             "total": total, "verified": len(verified),
             "unverified": states["unverified"], "stale": states["stale"],

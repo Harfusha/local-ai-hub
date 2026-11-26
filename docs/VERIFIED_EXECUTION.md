@@ -49,6 +49,40 @@ remain authoritative. Unresolved checkpoint blockers stop opted-in completion,
 including through the receipt-waiver path. Preview is not authorization:
 the lifecycle gate rechecks conditions before transition.
 
+## Generic declared inventory compiler
+
+For a finite collection of files, features, documents, experimental scenarios
+or other resources, give the contract a resource/check matrix instead of
+manually writing one criterion per combination. For example:
+
+```json
+{
+  "goal": "Review both modules for correctness and consistency",
+  "slo_profile": {
+    "verified_execution": {
+      "profile": "audit",
+      "inventory": {
+        "resources": ["module-a", "module-b"],
+        "checks": [
+          {"name": "review correctness", "dimension": "correctness", "priority": 80},
+          {"name": "review consistency", "dimension": "consistency"}
+        ]
+      },
+      "required_dimensions": ["correctness", "consistency"]
+    }
+  }
+}
+```
+
+The server expands all four combinations into acceptance criteria and keeps
+the original matrix in the persisted goal contract. Additional explicit
+criteria are additive. An oversized matrix is rejected, never silently
+truncated; partition large inventories into scoped tasks using existing
+repository plans. The resource list is **declared**, not a server-attested
+complete repository inventory. Use the existing authorized inventory tools to
+obtain resources and record exclusions. A receipt validates its criterion
+only; it cannot establish that omitted resources do not exist.
+
 ## Agent behavior
 
 Define measurable criteria for the intended scope. Use repository inventory
@@ -62,8 +96,8 @@ blocking for audit completion.
 
 ## Scope and follow-up
 
-This increment implements graph, coverage, deterministic next action and
-opt-in blocker gating. It does not prove that user intent was translated into
+This increment implements graph, declared inventory compilation, coverage,
+deterministic next action and opt-in blocker gating. It does not prove that user intent was translated into
 complete criteria. Remaining acceptance work:
 
 1. Compile repository inventory/impact into versioned, provenance-bound
