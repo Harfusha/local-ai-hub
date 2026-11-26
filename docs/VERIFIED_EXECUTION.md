@@ -148,6 +148,15 @@ rechecks the actual revision and project rules. Both direct contract
 revision and repository plan steering reject removal of mandatory criteria
 before mutating the plan.
 
+## CLI and automation
+
+Run `python tools/hubctl.py execution --root /absolute/repository --task-id TASK_ID`
+to retrieve authoritative coverage, next obligation and blockers without
+mutating task state. Add `--json` for the exact API result. Exit code 0 means
+the current verification preview is ready, 2 means incomplete, and 1 means
+the request failed or is not a structured execution. The CLI is not a
+replacement for task_complete, which still revalidates completion.
+
 ## Agent behavior
 
 Define measurable criteria for the intended scope. Use repository inventory

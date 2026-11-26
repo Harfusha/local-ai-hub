@@ -252,7 +252,8 @@ def validate_criteria_revision(contract: Any, criteria: Sequence[str]) -> None:
     """Check the exact resulting structured contract before a plan is mutated."""
     from dataclasses import replace
 
-    if EXECUTION_KEY not in contract.slo_profile:
+    profile = getattr(contract, "slo_profile", {})
+    if not isinstance(profile, Mapping) or EXECUTION_KEY not in profile:
         return
     candidate = replace(contract, acceptance_criteria=tuple(criteria))
     if (tuple(criteria) != candidate.acceptance_criteria

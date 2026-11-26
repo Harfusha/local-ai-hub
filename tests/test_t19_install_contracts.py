@@ -147,7 +147,9 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
     assert project["tool"]["setuptools"]["package-data"]["local_ai_hub"] == [
         "defaults.toml",
         "automation_browser.js",
+        "grammars/*.gbnf",
         "ui_static/*",
+        "ui_static/dist/*",
         "data/*.json",
     ]
     for asset in ("app.css", "app.js", "index.html"):

@@ -49,7 +49,8 @@ def compile_repository_contract(contract: Mapping[str, Any], root: str) -> dict[
     inventory = config["inventory"]
     if "resources" in inventory:
         supplied = inventory["resources"]
-        if type(supplied) is not list or sorted(supplied) != resources:
+        if (type(supplied) is not list or any(type(item) is not str for item in supplied)
+                or sorted(supplied) != resources):
             raise ValueError("declared resources differ from the server repository inventory")
     return {
         **contract,

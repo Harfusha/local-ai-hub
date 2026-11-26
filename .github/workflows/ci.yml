@@ -87,6 +87,16 @@ jobs:
       - run: npm run build
       - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills
       - run: python -m pytest -q tests/test_packaging_assets.py tests/test_provider_plugin_bundles.py
+      - name: Verify execution graph, inventory, persisted problems and context recovery
+        run: >-
+          python -m pytest -q
+          tests/unit/test_verified_execution.py
+          tests/unit/test_execution_inventory.py
+          tests/unit/test_execution_problems.py
+          tests/test_agent_verification.py
+          tests/test_agent_context.py
+          tests/test_hubctl_dispatch_acceptance.py
+          -k "verified_execution or execution_cli or execution_inventory or execution_problems"
       - run: >-
           python -m pytest -q
           tests/test_mcp_contract_dispatch.py

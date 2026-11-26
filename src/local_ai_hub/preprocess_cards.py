@@ -495,7 +495,8 @@ class PreprocessCardsMixin:
                     ).fetchone()
                     if prev:
                         old_card_text = str(prev[1])
-                        import difflib, re
+                        import difflib
+                        import re
                         old_lines = [re.sub(r"^\d+:\s*", "", l) for l in old_src_text.splitlines()]
                         new_lines = [re.sub(r"^\d+:\s*", "", l) for l in file_text.splitlines()]
                         if old_lines and new_lines:
