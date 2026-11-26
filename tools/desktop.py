@@ -23,7 +23,7 @@ from local_ai_hub.process_utils import hidden_run_kwargs
 LIFECYCLE = frozenset({"start", "stop", "restart"})
 MODES = ("active", "gaming", "maintenance", "preprocessing")
 VIEWS = {
-    "Overview": "/api/live/status?light=1&scope=process",
+    "Overview": "/api/live/status?light=1&scope=1h",
     "Projects": "/api/preprocess/status",
     "Tasks": "/api/agent-state/tasks?limit=100",
     "Memory": "/api/agent-state/memory",
@@ -31,15 +31,24 @@ VIEWS = {
     "Activity": "/api/live?limit=50",
     "Service health": "/api/logs/tail?lines=250",
     "Diagnostics": "/api/doctor",
+    "Settings — activity mode": "/api/mode",
+    "Search workspaces": "/api/rag/workspaces",
+    "File leases": "/api/leases",
+    "Hardware": "/api/hardware/system",
 }
 SCOPED = frozenset({"Tasks", "Memory", "Incidents"})
+MAINTENANCE = {
+    "Optimize databases": ("/api/maintenance/optimize_db", {}),
+    "Purge expired cache (7 days)": ("/api/maintenance/purge_cache", {"days": 7}),
+    "Cleanup stale agent state": ("/api/agent-state/cleanup", {}),
+}
 
 
 class HubControl:
     """Explicit, bounded operations only. Reads must never start the service."""
 
     def __init__(self, config: str | None = None) -> None:
-        self.config = config
+        self.config = config or (str(ROOT / "config.toml") if (ROOT / "config.toml").is_file() else None)
 
     def _client(self) -> HubClient:
         return HubClient(config_path=self.config, auto_start=False)
@@ -73,15 +82,26 @@ class HubControl:
             raise ValueError("Unsupported lifecycle action")
         if action == "start" and self.online():
             return "Hub is already online."
-        if action == "stop" and not self.online():
-            # Still call the CLI: a managed supervisor may be warming up.
-            pass
+        # Stop even if unreachable: a managed supervisor may be warming up.
         return self._cli((action,), timeout=760)
 
     def mode(self, value: str) -> str:
         if value not in MODES:
             raise ValueError("Unsupported activity mode")
         return self._cli(("mode", value), timeout=30)
+
+    def maintenance(self, action: str) -> dict[str, Any]:
+        path, payload = MAINTENANCE[action]
+        client = self._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            result = client.post(path, dict(payload), timeout=120.0)
+            if result.get("success") is not True:
+                raise RuntimeError(str(result.get("error") or "Hub did not confirm completion"))
+            return result
+        finally:
+            client.close()
 
     def read(self, view: str, root: str = "") -> dict[str, Any]:
         path = VIEWS[view]
@@ -147,6 +167,12 @@ class Desktop:
         button = ttk.Button(filters, text="Refresh view", command=self.refresh)
         button.pack(side="right")
         self.buttons.append(button)
+        self.maintenance_action = tk.StringVar(value=next(iter(MAINTENANCE)))
+        ttk.Combobox(filters, textvariable=self.maintenance_action, values=tuple(MAINTENANCE),
+                     state="readonly", width=27).pack(side="left", padx=3)
+        button = ttk.Button(filters, text="Run", command=self.run_maintenance)
+        button.pack(side="left")
+        self.buttons.append(button)
 
         nav = ttk.Frame(window, padding=(12, 0, 8, 12))
         nav.grid(row=2, column=0, sticky="ns")
@@ -206,7 +232,7 @@ class Desktop:
             except Exception as exc:
                 self.results.put((kind, None, exc))
 
-        # Closing the window does not stop the service or cancel a lifecycle command.
+        # Closing is blocked while a command is running; the service owns its lifetime.
         threading.Thread(target=run, daemon=True).start()
 
     def probe(self) -> None:
@@ -233,6 +259,13 @@ class Desktop:
                                parent=self.window):
             self.submit("mode", lambda: self.control.mode(value))
 
+    def run_maintenance(self) -> None:
+        action = self.maintenance_action.get()
+        if messagebox.askyesno("Confirm maintenance",
+                               f"{action}? This changes Hub state and may interrupt work.",
+                               parent=self.window):
+            self.submit("maintenance", lambda: self.control.maintenance(action))
+
     def drain(self) -> None:
         try:
             kind, value, error = self.results.get_nowait()
@@ -247,6 +280,8 @@ class Desktop:
                 label = "unknown (check configuration)" if error else (
                     "online" if value else "unreachable / stopped")
                 self.state.set("Hub: " + label)
+                if value is False and not error:
+                    self.notice.set("Hub is not reachable. Select Start Hub to launch it.")
             elif error:
                 self.notice.set(f"{kind}: failed — {error}")
                 if kind == "view:" + self.view:
@@ -259,6 +294,9 @@ class Desktop:
                         output = json.dumps(value, indent=2, ensure_ascii=False)
                     self.write(output[:250_000] + ("\n[Display truncated; use CLI for full data.]" if len(output) > 250_000 else ""))
                 self.notice.set(f"{kind}: loaded")
+            elif kind == "maintenance":
+                self.notice.set("Maintenance completed. Refresh the selected view to update it.")
+                self.write(json.dumps(value, indent=2, ensure_ascii=False)[:250_000])
             else:
                 self.notice.set(f"{kind}: {value or 'completed'}")
             if kind in LIFECYCLE:
