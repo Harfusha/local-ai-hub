@@ -14,16 +14,16 @@ use std::{
 };
 
 const PAGES: &[(&str, &[&str])] = &[
-    ("Overview", &["Overview", "Hardware"]),
+    ("Overview", &["Overview", "Hardware", "GPU"]),
     ("Requests", &["Requests", "Trace index", "Endpoint analytics"]),
-    ("Tasks", &["Tasks", "Memory", "Incidents"]),
+    ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
-    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Benchmark", "Telemetry report"]),
-    ("Service health", &["Runtime health", "Service health", "Diagnostics"]),
-    ("Settings", &["Settings", "Settings — activity mode"]),
-    ("Activity", &["Activity"]),
+    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report"]),
+    ("Service health", &["Runtime health", "Service health", "Diagnostics", "Audit"]),
+    ("Settings", &["Settings", "Settings — activity mode", "Updates"]),
+    ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Search workspaces"]),
 ];
 const MAINTENANCE: &[&str] = &[
@@ -149,6 +149,15 @@ struct Desktop {
     semaphore: String,
     capacity: i64,
     trace_cursor: i64,
+    task_offset: i64,
+    task_query: String,
+    stream_id: String,
+    event_cursor: i64,
+    update_version: String,
+    update_revision: String,
+    hardware_profile: String,
+    plan_status: String,
+    vision_path: String,
     filter: String,
     rows: Vec<Row>,
     snapshot: Option<Value>,
@@ -177,7 +186,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -230,6 +239,13 @@ impl Desktop {
                         self.detail = None;
                         self.record_detail = None;
                         flatten(&value, "", 0, &mut self.rows);
+                        if done.label == "Updates" {
+                            self.update_version = value.pointer("/check/target_version").and_then(Value::as_str).unwrap_or("").into();
+                            self.update_revision = value.pointer("/check/revision").and_then(Value::as_str).unwrap_or("").into();
+                        }
+                        if done.label == "Agent event stream" {
+                            if let Some(cursor) = value["next_seq"].as_i64() { self.event_cursor = cursor; }
+                        }
                         self.snapshot = Some(value);
                         self.snapshot_view = done.label.clone();
                         self.refilter();
@@ -258,7 +274,13 @@ impl Desktop {
     }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
-        let data = view_request(view, &self.repo, &self.entity);
+        let data = match view {
+            "Updates" => request("update_status", json!({})),
+            "Tasks" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
+            "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
+            "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
+            _ => view_request(view, &self.repo, &self.entity),
+        };
         self.submit(ctx, view.into(), data);
     }
     fn operations(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -279,6 +301,18 @@ impl Desktop {
                 }
             }
             2 => {
+                if self.current() == "Vision review" {
+                    ui.small("Raster images are not semantically indexed. Review is opt-in and sends the selected PNG/JPEG to the configured vision route.");
+                    ui.label("Image file (PNG or JPEG, maximum 8 MiB)");
+                    ui.text_edit_singleline(&mut self.vision_path);
+                    ui.label("Review prompt");
+                    ui.text_edit_multiline(&mut self.prompt);
+                    if ui.button("Run vision review").clicked() {
+                        self.confirm("Run vision review", request("vision_review",
+                            json!({"file": self.vision_path, "prompt": self.prompt, "confirmed": true})));
+                    }
+                    return;
+                }
                 if self.view == 1 {
                     ui.label("Repository fact key and value (text or JSON)");
                     ui.text_edit_singleline(&mut self.memory_key);
@@ -303,6 +337,20 @@ impl Desktop {
                     }
                     return;
                 }
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Server-side task search");
+                    if ui.text_edit_singleline(&mut self.task_query).changed() { self.task_offset = 0; }
+                    if ui.button("Search tasks").clicked() { self.task_offset = 0; self.refresh(ctx); }
+                    if ui.add_enabled(self.task_offset >= 100, egui::Button::new("Previous 100")).clicked() {
+                        self.task_offset = self.task_offset.saturating_sub(100); self.refresh(ctx);
+                    }
+                    let more = self.snapshot_view == "Tasks" && self.snapshot.as_ref()
+                        .is_some_and(|v| v["has_more"].as_bool() == Some(true) || v["tasks"].as_array().is_some_and(|a| a.len() == 100));
+                    if ui.add_enabled(more, egui::Button::new("Next 100")).clicked() {
+                        self.task_offset = (self.task_offset + 100).min(i32::MAX as i64); self.refresh(ctx);
+                    }
+                    ui.label(format!("Offset {}", self.task_offset));
+                });
                 ui.collapsing("Create task contract", |ui| {
                     ui.label("Goal");
                     ui.text_edit_multiline(&mut self.goal);
@@ -373,6 +421,18 @@ impl Desktop {
                         }
                     }
                 });
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("plan_move").selected_text(&self.plan_status).show_ui(ui, |ui| {
+                        for status in ["planned", "ready", "in_progress", "blocked"] {
+                            ui.selectable_value(&mut self.plan_status, status.into(), status);
+                        }
+                    });
+                    if ui.button("Move task").clicked() {
+                        self.confirm("Move plan task", request("plan_task_move", json!({
+                            "root": self.repo, "id": self.entity, "task_id": self.plan_task,
+                            "revision": self.revision, "status": self.plan_status, "confirmed": true})));
+                    }
+                });
                 ui.collapsing("Session briefing", |ui| {
                     ui.label("Agent ID");
                     ui.text_edit_singleline(&mut self.reason);
@@ -418,8 +478,44 @@ impl Desktop {
                 });
             }
             8 => {
+                if self.current() == "Updates" {
+                    ui.small("Managed installations only. The Hub checks the exact release candidate again before scheduling the update and restart.");
+                    if ui.button("Check for updates").clicked() {
+                        self.confirm("Updates", request("update_check", json!({"confirmed": true})));
+                    }
+                    ui.label(format!("Candidate: {} / {}", self.update_version, self.update_revision));
+                    if ui.add_enabled(!self.update_version.is_empty() && self.update_revision.len() == 40,
+                        egui::Button::new("Install reviewed candidate")).clicked() {
+                        self.confirm("Install reviewed release and restart Hub", request("update_install", json!({
+                            "version": self.update_version, "revision": self.update_revision, "confirmed": true})));
+                    }
+                    return;
+                }
                 ui.horizontal_wrapped(|ui| {
-                    for (title, mode) in [("Minimal telemetry", "minimal"), ("Detailed telemetry", "full")] {
+                    egui::ComboBox::from_id_salt("hardware_profile").selected_text(&self.hardware_profile).show_ui(ui, |ui| {
+                        for profile in ["auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"] {
+                            ui.selectable_value(&mut self.hardware_profile, profile.into(), profile);
+                        }
+                    });
+                    if ui.button("Apply hardware profile").clicked() {
+                        self.confirm("Apply hardware profile", request("setting", json!({
+                            "key": "hardware.profile", "value": self.hardware_profile, "confirmed": true})));
+                    }
+                    for (title, key) in [("Preprocessing", "preprocessing.enabled"), ("Code intelligence", "code_intelligence.enabled"),
+                        ("Serena", "code_intelligence.serena_enabled"), ("Work orchestrator", "features.work_orchestrator")] {
+                        ui.menu_button(title, |ui| {
+                            for (label, enabled) in [("Enable", true), ("Disable", false)] {
+                                if ui.button(label).clicked() {
+                                    self.confirm(&format!("{label} {title}"), request("setting",
+                                        json!({"key": key, "value": enabled, "confirmed": true})));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for (title, mode) in [("Telemetry off", "off"), ("Minimal telemetry", "minimal"), ("Detailed telemetry", "full")] {
                         if ui.button(title).clicked() {
                             self.confirm(&format!("{title} (may retain sensitive request content)"),
                                 request("telemetry", json!({"mode": mode, "confirmed": true})));
@@ -440,6 +536,22 @@ impl Desktop {
                         self.confirm("Reset configuration overrides", request("config_reset", json!({"confirmed": true})));
                     }
                 });
+            }
+            9 => {
+                if self.current() == "Agent event stream" {
+                    ui.label("Scoped agent event stream ID (repository root required)");
+                    if ui.text_edit_singleline(&mut self.stream_id).changed() { self.event_cursor = 0; self.clear_response(); }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Resume after sequence");
+                        ui.add(egui::DragValue::new(&mut self.event_cursor).range(0..=i64::MAX));
+                        if ui.button("Read history page").clicked() { self.refresh(ctx); }
+                        if ui.button("Collect live SSE (5 seconds)").clicked() {
+                            self.submit(ctx, "Agent event stream".into(), request("event_stream",
+                                json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})));
+                        }
+                    });
+                    ui.small("Retention gaps and cursor resets are reported in Raw fields. Collection is bounded and does not run in the background.");
+                }
             }
             10 => {
                 ui.label("ZIP file path (export requires a new file; import requires repository root)");
@@ -510,7 +622,7 @@ impl eframe::App for Desktop {
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
                 ui.label("Repository root");
-                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); }
+                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -671,7 +783,7 @@ impl eframe::App for Desktop {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision"] {
+                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
                 }
                 ui.horizontal(|ui| {
