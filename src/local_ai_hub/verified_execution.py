@@ -7,6 +7,7 @@ from typing import Any
 
 EXECUTION_KEY = "verified_execution"
 MAX_OBLIGATIONS = 512
+MAX_REPOSITORY_RESOURCES = 8000
 MAX_PREVIEW = 12
 
 
@@ -29,7 +30,7 @@ def expand_declared_inventory(
         return tuple(criteria), raw
     inventory = raw["inventory"]
     if (type(inventory) is not dict or not {"resources", "checks"}.issubset(inventory)
-            or set(inventory) - {"resources", "checks", "scope"}):
+            or set(inventory) - {"resources", "checks", "scope", "partition"}):
         raise ValueError("inventory must contain resources and checks")
     scope = inventory.get("scope", "declared")
     if scope not in ("declared", "repository"):
@@ -46,6 +47,26 @@ def expand_declared_inventory(
         _canonical(resource, "resource", 360)
     if len(set(resources)) != len(resources):
         raise ValueError("duplicate inventory resource")
+    partition = inventory.get("partition")
+    if "partition" in inventory:
+        if scope != "repository" or type(partition) is not dict or set(partition) != {
+            "index", "size", "total", "resource_count", "manifest_sha256",
+        }:
+            raise ValueError("repository partition requires a server compiled manifest")
+        index, size = partition["index"], partition["size"]
+        total, count = partition["total"], partition["resource_count"]
+        digest = partition["manifest_sha256"]
+        if (any(type(number) is not int for number in (index, size, total, count))
+                or not 1 <= size <= MAX_OBLIGATIONS
+                or not 1 <= count <= MAX_REPOSITORY_RESOURCES
+                or total != (count + size - 1) // size
+                or not 0 <= index < total
+                or len(resources) != min(size, count - index * size)
+                or type(digest) is not str or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            raise ValueError("invalid repository partition manifest")
+        if size * len(checks) > MAX_OBLIGATIONS:
+            raise ValueError("partition size times check count exceeds obligation limit")
     check_names: set[str] = set()
     normalized_checks: list[dict[str, Any]] = []
     for check in checks:
@@ -86,6 +107,7 @@ def expand_declared_inventory(
         "inventory": {
             "resources": list(resources), "checks": normalized_checks,
             **({"scope": scope} if scope != "declared" else {}),
+            **({"partition": dict(partition)} if partition is not None else {}),
         },
     }
 
@@ -225,6 +247,7 @@ def execution_projection(
         "authority": "declared", "resources": len(inventory["resources"]),
         "checks": len(inventory["checks"]),
         "obligations": len(inventory["resources"]) * len(inventory["checks"]),
+        **({"partition": dict(inventory["partition"])} if "partition" in inventory else {}),
     } if inventory is not None else None)
     return {
         "version": 1, "profile": normalized["profile"],

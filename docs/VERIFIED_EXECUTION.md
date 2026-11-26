@@ -89,7 +89,7 @@ For a bounded read-only repository review, set the inventory's
 `scope` to `repository` and omit `resources` on HTTP/MCP task creation.
 The server enumerates the authorized checkout with the existing confined
 security inventory, fixed default ignore policy, a five-second deadline
-and 512-file bound. It refuses incomplete inventory, links, oversized
+and 8,000-file inventory bound (512 obligations per task). It refuses incomplete inventory, links, oversized
 files, mismatched supplied resources, and an expanded matrix exceeding the
 obligation limit. The same scope is rechecked at completion; newly added
 or deleted resources block completion, even with a receipt waiver.
@@ -97,8 +97,17 @@ Use the declared scope for explicit subsets or a task that intentionally
 changes inventory. A repository scope is bounded by the inventory's
 default exclusions (ignored directories/extensions/archives); it does not
 attest to excluded files. Auto-worktree and portable handoff creation are
-not supported for this scope yet. Split large projects into explicit
-subtasks; server-attested hierarchical coverage is still pending.
+not supported for this scope yet.
+
+For larger projects add `"partition": {"index": 0, "size": 100}` to
+the inventory and keep the same check matrix and size across tasks. The
+server sorts the full inventory, slices it without overlaps, and persists
+the manifest hash, resource count and partition count. Read the returned
+contract to obtain the remaining partition indices. Each task's obligations
+remain bounded (size × checks ≤ 512). All partitions recheck the entire
+manifest; even a change outside a partition invalidates its scope. The
+caller must create and verify every partition; aggregate plan-level
+completion is separate from an individual partition's gate.
 
 Structured contract steering is additive: existing mandatory obligations
 cannot disappear in an ordinary criteria revision. This is deliberately

@@ -42,3 +42,35 @@ def test_repository_inventory_refuses_incomplete_inventory(tmp_path: Path):
     (tmp_path / "large.txt").write_bytes(b"x" * 2_000_001)
     with pytest.raises(ValueError, match="incomplete"):
         repository_resources(str(tmp_path))
+
+
+def test_partition_manifest_is_disjoint_complete_and_detects_outside_changes(tmp_path: Path):
+    for name in ("a.py", "b.py", "c.py", "d.py", "e.py"):
+        (tmp_path / name).write_text("pass", encoding="utf-8")
+    resources = []
+    configurations = []
+    for index in range(3):
+        contract = _contract()
+        contract["slo_profile"]["verified_execution"]["inventory"]["partition"] = {"index": index, "size": 2}
+        created = GoalContract.from_dict(compile_repository_contract(contract, str(tmp_path)))
+        config = created.slo_profile["verified_execution"]
+        inventory = config["inventory"]
+        assert inventory["partition"]["total"] == 3
+        assert inventory["partition"]["resource_count"] == 5
+        assert check_repository_scope(config, str(tmp_path))["complete"]
+        resources.extend(inventory["resources"])
+        configurations.append(config)
+    assert resources == ["a.py", "b.py", "c.py", "d.py", "e.py"]
+    assert len({config["inventory"]["partition"]["manifest_sha256"] for config in configurations}) == 1
+    (tmp_path / "z.py").write_text("pass", encoding="utf-8")
+    assert check_repository_scope(configurations[0], str(tmp_path))["status"] == "partition_manifest_changed"
+
+
+def test_partition_rejects_forged_manifest(tmp_path: Path):
+    (tmp_path / "a.py").write_text("pass", encoding="utf-8")
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"]["partition"] = {
+        "index": 0, "size": 1, "total": 3,
+    }
+    with pytest.raises(ValueError, match="manifest changed"):
+        compile_repository_contract(contract, str(tmp_path))
