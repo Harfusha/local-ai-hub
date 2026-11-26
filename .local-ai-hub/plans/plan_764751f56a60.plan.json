@@ -14,14 +14,14 @@
         "Incident signatures remain stable; resolved records require a concrete verified fix.",
         "A clean clone without an existing SQLite database can rebuild; repeated rebuild is idempotent; Git updates and deletions reconcile per project scope.",
         "Offline legacy migration preview is bounded, read-only, snapshot-bound, and publishes only an explicitly reviewed record.",
-        "Projection rebuild CLI works on a clean project; critical HTTP/MCP acceptance and authorization boundaries pass."
+        "Projection rebuild CLI works on a clean project; HTTP/MCP acceptance and authorization boundaries pass, including non-critical MCP routing contract checks."
       ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified changes.",
+      "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified work.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Resolve the eight failing non-critical MCP routing tests without weakening diagnostics gates; rerun focused and critical validation, publish follow-up.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
@@ -46,7 +46,7 @@
         }
       ],
       "title": "Complete PR #9 practical business acceptance",
-      "work_status": "completed"
+      "work_status": "in_progress"
     }
   },
   "title": "PR #9 integration, repair, verification and publication"

@@ -687,7 +687,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "submit", "status", "wait", "result", "cancel", "vision", "transcribe", "complete_code", "scaffold", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "candidate_create", "candidate_promote", "speculative_draft", "eval_suite", "prompt_eval", "eval_drift"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-            "local_ai_coord": {"claim", "renew", "release", "leases", "client_status", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "task_sync", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "session_briefing"},
+            "local_ai_coord": {"claim", "renew", "release", "leases", "client_status", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "laya_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "task_sync", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "session_briefing"},
     }
     expected["local_ai_task"].update({"browser", "automation"})
     expected["local_ai_coord"].update({
@@ -736,12 +736,12 @@ def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, mon
     original_features = local_ai_mcp.FEATURES
     disabled_config = tmp_path / "disabled.toml"
     disabled_config.write_text(
-        f'[features]\nbatch_replacement = false\n\n[server]\nstate_dir = "{(tmp_path / "disabled-state").as_posix()}"\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[features]\nbatch_replacement = false\n\n[server]\nstate_dir = "{(tmp_path / "disabled-state").as_posix()}"\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
         encoding="utf-8",
     )
     enabled_config = tmp_path / "enabled.toml"
     enabled_config.write_text(
-        f'[features]\nbatch_replacement = true\n\n[server]\nstate_dir = "{(tmp_path / "enabled-state").as_posix()}"\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[features]\nbatch_replacement = true\n\n[server]\nstate_dir = "{(tmp_path / "enabled-state").as_posix()}"\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
         encoding="utf-8",
     )
     try:
@@ -915,12 +915,13 @@ def test_repo_surface_does_not_advertise_or_route_codegraph() -> None:
     assert "graph" not in operation_actions("local_ai_repo")
 
 
-def test_mcp_descriptions_support_on_demand_semantic_delegation() -> None:
+def test_mcp_descriptions_state_required_semantic_second_pass() -> None:
     descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
     normalized = descriptions.lower()
 
-    assert "semantic delegation is on-demand" in normalized
-    assert "never blocked by mandatory local handoffs" in normalized
+    assert "required semantic second pass" in normalized
+    assert "for each independent non-trivial" in normalized
+    assert "output is advisory" in normalized
     assert "local_ai_task" in descriptions
 
 
@@ -1098,8 +1099,9 @@ def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean)
     normalized = descriptions.lower()
 
     assert "local_ai_task" in descriptions
-    assert "semantic delegation is on-demand" in normalized
-    assert "never blocked by mandatory local handoffs" in normalized
+    assert "required semantic second pass" in normalized
+    assert "for each independent non-trivial" in normalized
+    assert "output is advisory" in normalized
 
 
 @pytest.mark.parametrize("lean", [True, False])
@@ -1112,8 +1114,9 @@ def test_status_disabled_descriptions_omit_unavailable_bypass_tool(monkeypatch, 
     descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
     normalized = descriptions.lower()
 
-    assert "semantic delegation is on-demand" in normalized
-    assert "never blocked by mandatory local handoffs" in normalized
+    assert "required semantic second pass" in normalized
+    assert "for each independent non-trivial" in normalized
+    assert "output is advisory" in normalized
     assert "local_ai_status" not in descriptions
 
 
@@ -1409,7 +1412,7 @@ def test_invalid_task_action_excludes_orchestration() -> None:
     assert "peer subagents" in result["error"]
 
 
-def test_eval_suite_is_routed_from_mcp(monkeypatch) -> None:
+def test_eval_suite_requires_dashboard_diagnostics_gate(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def post(path, payload, **kwargs):
@@ -1419,8 +1422,9 @@ def test_eval_suite_is_routed_from_mcp(monkeypatch) -> None:
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
     result = local_ai_mcp.local_ai_task(action="eval_suite", task="synthetic_quality")
-    assert result["success"] is True, result
-    assert captured == {"path": "/api/task/eval_suite", "payload": {"suite_name": "synthetic_quality"}}
+    assert result["success"] is False, result
+    assert result["error_code"] == "detailed_diagnostics_disabled"
+    assert captured == {}
 
 
 def test_local_ai_task_exposes_named_profile_fields() -> None:
