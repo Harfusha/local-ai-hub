@@ -160,3 +160,38 @@ def test_bridge_never_imports_tkinter():
     assert "tkinter" not in imports
     assert not any(isinstance(node, ast.ImportFrom) and node.module == "tkinter"
                    for node in ast.walk(tree))
+
+
+@pytest.mark.parametrize("path", ["/", "/dashboard", "/dashboard/", "/favicon.ico"])
+def test_http_web_ui_route_is_retired(path):
+    from local_ai_hub.http_api_get import HttpGetMixin
+    handler = MagicMock()
+    handler.path = path
+    handler._reject_identity_fields.return_value = True
+    HttpGetMixin.do_GET(handler)
+    handler._send.assert_called_once_with(
+        404, {"success": False, "error": "Web UI removed; use Local AI Hub Desktop."}
+    )
+
+
+def test_trace_identifier_cannot_select_another_route():
+    control = MagicMock()
+    with pytest.raises(ValueError, match="Invalid trace identifier"):
+        desktop.dispatch(control, {"op": "trace_detail", "args": {"id": "../config"}})
+    control._client.assert_not_called()
+
+
+def test_plan_edit_requires_current_revision(tmp_path):
+    control = MagicMock()
+    with pytest.raises(ValueError, match="revision"):
+        desktop.dispatch(control, {"op": "plan_update", "args": {
+            "root": str(tmp_path), "id": "plan_1", "title": "new", "confirmed": True}})
+    control._client.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["bundle_import", "bundle_export", "diagnostics_export"])
+def test_binary_transfer_requires_confirmation(operation):
+    control = MagicMock()
+    with pytest.raises(ValueError, match="confirmation"):
+        desktop.dispatch(control, {"op": operation, "args": {"file": "test.zip"}})
+    control._client.assert_not_called()

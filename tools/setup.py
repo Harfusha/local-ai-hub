@@ -5482,7 +5482,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    log("Dashboard: http://127.0.0.1:11435/dashboard")
+    log("Desktop: python tools/hubctl.py desktop (build/install native binary first)")
     return 0
 
 
