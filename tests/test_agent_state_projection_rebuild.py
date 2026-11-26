@@ -76,7 +76,7 @@ def test_rebuild_projection_from_canonical_git(tmp_path: Path):
         ).fetchone() is None
         t_row = con.execute("SELECT status, contract FROM agent_tasks_projection WHERE task_id='task-rebuild-1'").fetchone()
         assert t_row is not None
-        assert t_row[0] == "in_progress"
+        assert t_row[0] == "active"
         assert json.loads(t_row[1])["goal"] == "Test rebuild"
 
         m_row = con.execute("SELECT key, value FROM agent_memory_records WHERE record_id='mem-rebuild-1'").fetchone()
@@ -121,7 +121,7 @@ def test_rebuild_projection_from_canonical_git(tmp_path: Path):
             "SELECT key, value, scope_id FROM agent_memory_records WHERE record_id='mem-rebuild-1'"
         ).fetchone() == (
             "git_first_principle_updated",
-            "Git canonical data was reconciled",
+            json.dumps("Git canonical data was reconciled"),
             project,
         )
         assert con.execute(

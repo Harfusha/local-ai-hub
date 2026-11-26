@@ -87,6 +87,10 @@ def rebuild_agent_state_projection(
             }
             checkpoint_json = json.dumps(checkpoint, ensure_ascii=False)
             status = payload.get("status", "planned")
+            # Canonical project records accept the plan-facing spelling, while
+            # the runtime TaskStore uses TaskStatus.ACTIVE.
+            if status == "in_progress":
+                status = "active"
 
             existing = con.execute(
                 "SELECT checkpoint, owner FROM agent_tasks_projection WHERE task_id=?", (task_id,)
@@ -114,7 +118,7 @@ def rebuild_agent_state_projection(
                 """INSERT INTO agent_tasks_projection (
                     task_id, status, contract, checkpoint, context, owner, lease_id, receipts,
                     created_at, updated_at, heartbeat_expires_at
-                ) VALUES (?, ?, ?, ?, '{}', 'canonical-git', '', '[]', ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, '{}', 'canonical-git', '', '{}', ?, ?, 0)
                 ON CONFLICT(task_id) DO UPDATE SET
                     status=excluded.status,
                     contract=excluded.contract,
@@ -132,11 +136,27 @@ def rebuild_agent_state_projection(
             record_id = payload.get("record_id")
             if not record_id:
                 continue
-            value_val = payload.get("value")
-            value_str = value_val if isinstance(value_val, str) else json.dumps(value_val, ensure_ascii=False)
             project_id = str(mem_rec.get("project_id", ""))
+            canonical_scope = payload.get("scope", "project")
+            scope = "global" if canonical_scope == "global" else "repository"
+            scope_id = "" if scope == "global" else project_id
+            runtime_kind = {
+                "concept": "fact",
+                "fact": "fact",
+                "pattern": "convention",
+                "rule": "convention",
+                "decision": "decision",
+                "negative_knowledge": "rejected_approach",
+            }.get(payload.get("kind", "fact"))
+            if runtime_kind is None:
+                con.rollback()
+                return {"success": False, "error": f"Unsupported canonical memory kind: {record_id}"}
+            value_val = payload.get("value")
+            value_str = json.dumps(value_val, ensure_ascii=False)
+            runtime_sensitivity = "normal"
             provenance = json.dumps({
-                "_agent_project_scope": {"repo_root": str(root), "project_id": project_id}
+                "repository_id": project_id,
+                "_agent_project_scope": {"repo_root": str(root), "project_id": project_id},
             })
             existing = con.execute(
                 """SELECT kind, scope, scope_id, key, value, provenance
@@ -160,11 +180,12 @@ def rebuild_agent_state_projection(
                 matches_canonical = (
                     existing_root == str(root)
                     and existing_scope.get("project_id") == project_id
-                    and existing[0] == payload.get("kind", "fact")
-                    and existing[1] == payload.get("scope", "project")
-                    and existing[2] == project_id
+                    and existing[0] == runtime_kind
+                    and existing[1] == scope
+                    and existing[2] == scope_id
                     and existing[3] == payload.get("key", "")
                     and existing[4] == value_str
+                    and existing[5] == runtime_sensitivity
                 )
                 if not owned and not matches_canonical:
                     con.rollback()
@@ -194,16 +215,16 @@ def rebuild_agent_state_projection(
                 """,
                 (
                     record_id,
-                    payload.get("kind", "fact"),
-                    payload.get("scope", "project"),
-                    project_id,
+                    runtime_kind,
+                    scope,
+                    scope_id,
                     payload.get("key", ""),
                     value_str,
                     "quarantined" if payload.get("quarantine_reason") else "active",
                     payload.get("confidence", 1.0),
                     payload.get("source", "agent"),
                     "[]",
-                    payload.get("sensitivity", "internal"),
+                    runtime_sensitivity,
                     payload.get("contradicts_record_id", ""),
                     payload.get("supersedes_record_id", ""),
                     payload.get("quarantine_reason", ""),

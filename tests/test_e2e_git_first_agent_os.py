@@ -96,7 +96,7 @@ def test_e2e_git_first_multi_clone_collaboration(tmp_path: Path):
     with closing(sqlite3.connect(db_b)) as con:
         # Task is present
         task_row = con.execute("SELECT status FROM agent_tasks_projection WHERE task_id='task-collab-v4'").fetchone()
-        assert task_row[0] == "in_progress"
+        assert task_row[0] == "active"
 
         # Memory is present
         mem_row = con.execute("SELECT value FROM agent_memory_records WHERE record_id='mem-shared-rule'").fetchone()

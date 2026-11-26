@@ -22,7 +22,13 @@ class HttpAuthorizationMixin:
 
             context = resolve_project_context(requested_root, configured_state_dir(services_module.APP.config))
             root = str(services_module.Path(context.root).resolve(strict=True))
-            repository_id = getattr(context, "coordination_id", None)
+            project_manifest = services_module.Path(root) / ".local-ai-hub" / "project.json"
+            if project_manifest.is_file():
+                from .repo_knowledge import RepoKnowledgeStore
+
+                repository_id = RepoKnowledgeStore(root).manifest()[0]["project_id"]
+            else:
+                repository_id = getattr(context, "coordination_id", None)
             if not isinstance(repository_id, str) or not repository_id or repository_id != repository_id.strip() or "\x00" in repository_id:
                 return None
             req_norm = str(services_module.Path(requested_root).resolve(strict=True)) if isinstance(requested_root, str) and requested_root.strip() else requested_root

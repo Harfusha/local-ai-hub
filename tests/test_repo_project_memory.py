@@ -62,5 +62,35 @@ def test_memory_rejects_credentials_and_session_tokens(tmp_path: Path):
         "key": "api_config",
         "value": {"session_id": "sess-secret-12345", "token": "ghp_secret"},
     }
-    with pytest.raises(RepoPlanValidationError, match="must not contain private key"):
+    with pytest.raises(RepoPlanValidationError, match="private session, receipt, or credential data"):
         build_project_memory_record(store, leaky_input)
+
+
+@pytest.mark.parametrize("value", [
+    "Deployment password: CorrectHorseBatteryStaple-9284",
+    "Authorization: Bearer eyJhbGciOiJub25lIn0.private-session-token",
+    {"runtime": {"sessionId": "private-session-9284"}},
+])
+def test_memory_rejects_private_data_in_realistic_value_content(tmp_path: Path, value: object):
+    store = _setup_repo(tmp_path)
+    with pytest.raises(RepoPlanValidationError):
+        build_project_memory_record(store, {
+            "record_id": "mem-private-value",
+            "kind": "rule",
+            "scope": "project",
+            "key": "deployment_guidance",
+            "value": value,
+        })
+
+
+def test_memory_rejects_confidential_content_from_shared_git_store(tmp_path: Path):
+    store = _setup_repo(tmp_path)
+    with pytest.raises(RepoPlanValidationError, match="confidential memory cannot be published"):
+        build_project_memory_record(store, {
+            "record_id": "mem-confidential",
+            "kind": "fact",
+            "scope": "project",
+            "key": "private_customer_data",
+            "value": "Customer credential details",
+            "sensitivity": "confidential",
+        })

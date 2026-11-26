@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from .repo_knowledge import RepoKnowledgeStore, _identifier, _text, validate_knowledge_file
+from .repo_knowledge_privacy import contains_private_project_data
 from .repo_plan.schema_validation import RepoPlanValidationError
 
 _ALLOWED_KINDS = {"concept", "fact", "pattern", "rule", "decision", "negative_knowledge"}
 _ALLOWED_SCOPES = {"project", "workspace", "global"}
-_ALLOWED_SENSITIVITIES = {"low", "internal", "confidential"}
+_ALLOWED_SENSITIVITIES = {"low", "internal"}
 
 
 def _reject(message: str = "Invalid canonical project memory") -> RepoPlanValidationError:
@@ -46,11 +47,10 @@ def validate_project_memory_payload(record: Mapping[str, Any]) -> None:
     ):
         raise _reject()
 
-    # Disallow leaking local session IDs or credentials in memory records
-    raw_str = json.dumps(payload, ensure_ascii=False)
-    for forbidden in ("session_id", "lease_id", "token", "password", "secret", "evidence_ids"):
-        if f'"{forbidden}"' in raw_str:
-            raise _reject(f"Project memory payload must not contain private key '{forbidden}'")
+    # Durable memory may be shared through Git; reject private field names and
+    # recognizable credential values wherever they appear in nested content.
+    if contains_private_project_data(payload):
+        raise _reject("Project memory payload contains private session, receipt, or credential data")
 
     value = payload["value"]
     if not (isinstance(value, (str, dict, list)) and len(json.dumps(value)) <= 65536):
@@ -61,6 +61,8 @@ def validate_project_memory_payload(record: Mapping[str, Any]) -> None:
         raise _reject("Memory confidence must be between 0.0 and 1.0")
 
     sensitivity = payload.get("sensitivity", "internal")
+    if sensitivity == "confidential":
+        raise _reject("confidential memory cannot be published in the shared Git store")
     if sensitivity not in _ALLOWED_SENSITIVITIES:
         raise _reject("Invalid memory sensitivity")
 

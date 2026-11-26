@@ -7,12 +7,14 @@ and raw execution command outputs remain private in SQLite.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from .repo_knowledge import RepoKnowledgeStore, _identifier, _text, validate_knowledge_file
+from .repo_knowledge_privacy import contains_private_project_data
 from .repo_plan.schema_validation import RepoPlanValidationError
 
 _ALLOWED_OPERATION_CLASSES = {"agent", "command", "tool", "mcp", "verification"}
@@ -55,6 +57,9 @@ def validate_project_incident_payload(record: Mapping[str, Any]) -> None:
     ):
         raise _reject()
 
+    if contains_private_project_data(payload):
+        raise _reject("Project incident contains private session, receipt, or credential data")
+
     # Redacted message must not contain secrets or raw exception dumps
     redacted_message = payload.get("redacted_message", "")
     if redacted_message and not _text(redacted_message, 1500):
@@ -69,6 +74,10 @@ def validate_project_incident_payload(record: Mapping[str, Any]) -> None:
         raise _reject("Resolved incident requires a concrete verified_fix description")
     if verified_fix and str(verified_fix).strip().casefold() == "resolved":
         raise _reject("verified_fix must describe the actual fix, not simply 'resolved'")
+
+    confidence = payload.get("confidence", 1.0)
+    if not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise _reject("Incident confidence must be finite and between 0.0 and 1.0")
 
     affected_paths = payload.get("affected_paths", [])
     if not isinstance(affected_paths, list) or len(affected_paths) > 64:
@@ -89,13 +98,17 @@ def build_project_incident_record(
         h = hashlib.sha256(str(incident_data.get("signature_hash", "")).encode()).hexdigest()[:16]
         incident_id = f"inc-{h}"
 
+    resolved = incident_data.get("resolved", False)
+    if not isinstance(resolved, bool):
+        raise _reject("Incident resolved flag must be a boolean")
+
     manifest, _ = store.manifest()
     payload: dict[str, Any] = {
         "incident_id": incident_id,
         "operation_class": str(incident_data.get("operation_class", "agent")),
         "error_class": str(incident_data.get("error_class", "RuntimeError")),
         "signature_hash": str(incident_data.get("signature_hash", "")),
-        "resolved": bool(incident_data.get("resolved", False)),
+        "resolved": resolved,
         "redacted_message": str(incident_data.get("redacted_message", "") or ""),
         "root_cause": str(incident_data.get("root_cause", "") or ""),
         "verified_fix": str(incident_data.get("verified_fix", "") or ""),

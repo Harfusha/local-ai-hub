@@ -29,6 +29,7 @@ def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_pa
     repo_b.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = 39131\nstate_dir = "{state_dir.as_posix()}"\n\n'
         "[agent_state]\nenabled = true\n",
         encoding="utf-8",
@@ -263,6 +264,7 @@ def test_http_memory_rejects_retired_tenant_field(tmp_path, monkeypatch):
     repo.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = 39132\nstate_dir = "{state_dir.as_posix()}"\n\n'
         "[agent_state]\nenabled = true\n",
         encoding="utf-8",

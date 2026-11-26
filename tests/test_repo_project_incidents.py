@@ -68,3 +68,42 @@ def test_incident_rejects_trivial_resolved(tmp_path: Path):
     }
     with pytest.raises(RepoPlanValidationError, match="verified_fix must describe the actual fix"):
         build_project_incident_record(store, trivial_input)
+
+
+def test_incident_does_not_treat_string_false_as_resolved(tmp_path: Path):
+    store = _setup_repo(tmp_path)
+    with pytest.raises(RepoPlanValidationError):
+        build_project_incident_record(store, {
+            "incident_id": "inc-false-string",
+            "operation_class": "agent",
+            "error_class": "RuntimeError",
+            "signature_hash": "1122334455667788",
+            "resolved": "false",
+            "verified_fix": "This must not turn an unresolved incident into a resolved one",
+        })
+
+
+def test_incident_rejects_bearer_token_in_redacted_message(tmp_path: Path):
+    store = _setup_repo(tmp_path)
+    with pytest.raises(RepoPlanValidationError):
+        build_project_incident_record(store, {
+            "incident_id": "inc-leaked-token",
+            "operation_class": "mcp",
+            "error_class": "PermissionError",
+            "signature_hash": "1122334455667788",
+            "resolved": False,
+            "redacted_message": "Authorization: Bearer eyJhbGciOiJub25lIn0.private-session-token",
+        })
+
+
+def test_incident_rejects_nonfinite_confidence(tmp_path: Path):
+    store = _setup_repo(tmp_path)
+    with pytest.raises(RepoPlanValidationError, match="confidence must be finite"):
+        build_project_incident_record(store, {
+            "incident_id": "inc-invalid-confidence",
+            "operation_class": "verification",
+            "error_class": "RuntimeError",
+            "signature_hash": "1122334455667788",
+            "resolved": False,
+            "confidence": float("nan"),
+        })
