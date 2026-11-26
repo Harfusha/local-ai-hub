@@ -17,7 +17,7 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Plans" => (&["/plans", "/items"], &["id", "title", "lifecycle", "file_revision"]),
         "Worktrees" => (&["/worktrees", "/items"], &["path", "branch", "head", "status"]),
         "Model inventory" => (&["/data"], &["id", "owned_by", "object"]),
-        "Activity" => (&["/events", "/items"], &["seq", "kind", "agent", "action", "success", "duration_ms"]),
+        "Activity" | "Agent event stream" => (&["/events", "/items"], &["seq", "kind", "agent", "action", "success", "duration_ms"]),
         _ => return None,
     };
     let values = paths.iter().find_map(|p| response.pointer(p).and_then(Value::as_array))?;
@@ -59,6 +59,18 @@ pub fn progress(response: &Value) -> Option<(usize, usize, usize)> {
     Some((total, declared, verified))
 }
 
+pub fn merge_events(buffer: &mut Vec<Value>, incoming: &[Value], limit: usize) {
+    use std::collections::BTreeSet;
+    let mut ids: BTreeSet<i64> = buffer.iter().filter_map(|v| v["seq"].as_i64()).collect();
+    for event in incoming {
+        if let Some(id) = event["seq"].as_i64() {
+            if ids.insert(id) { buffer.push(event.clone()); }
+        }
+    }
+    buffer.sort_by_key(|v| v["seq"].as_i64().unwrap_or_default());
+    if buffer.len() > limit { buffer.drain(..buffer.len() - limit); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +84,12 @@ mod tests {
     fn verified_completion_is_not_declared_completion() {
         let board = json!({"columns":{"done":[{"verified":true},{"verified":false},{}],"blocked":[{}]}});
         assert_eq!(progress(&board), Some((4, 3, 1)));
+    }
+    #[test]
+    fn live_event_buffer_deduplicates_and_caps() {
+        let mut buffer = vec![json!({"seq": 1}), json!({"seq": 2})];
+        merge_events(&mut buffer, &[json!({"seq": 2}), json!({"seq": 3}), json!({"seq": 4})], 3);
+        assert_eq!(buffer, vec![json!({"seq": 2}), json!({"seq": 3}), json!({"seq": 4})]);
     }
     #[test]
     fn unavailable_fields_are_not_zero() {

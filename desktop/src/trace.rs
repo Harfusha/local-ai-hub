@@ -1,5 +1,5 @@
 //! Presentation rules for retained traces. The primary projection is redacted;
- //! the original server response remains separately accessible by explicit action.
+//! the original server response remains separately accessible by explicit action.
 use serde_json::{Map, Value};
 
 fn sensitive(key: &str) -> bool {
@@ -7,7 +7,7 @@ fn sensitive(key: &str) -> bool {
         .flat_map(char::to_lowercase).collect();
     ["password", "passwd", "secret", "apikey", "apitoken", "accesstoken",
      "refreshtoken", "authorization", "cookie", "privatekey", "clientsecret",
-     "sessiontoken", "credential", "bearer"].iter().any(|word| compact.contains(word))
+     "sessiontoken", "credential", "bearer"].iter().any(|word| compact.contains(*word))
 }
 
 fn sanitize_text(text: &str) -> String {

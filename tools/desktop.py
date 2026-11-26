@@ -316,8 +316,14 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                         controls.append({"kind": kind, **{k: event[k] for k in (
                             "next_seq", "last_seq", "first_retained_seq", "gap_ranges",
                             "cursor_reset", "requested_after_seq", "has_more") if k in event}})
-                        if kind in {"replay_cursor_reset", "cursor_reset"}:
-                            next_seq = int(event.get("next_seq", event.get("last_seq", 0)))
+                        checkpoint = event.get("next_seq", event.get("last_seq"))
+                        if type(checkpoint) is int and checkpoint >= 0:
+                            if kind in {"replay_cursor_reset", "cursor_reset"}:
+                                next_seq = checkpoint
+                                events.clear()
+                                size = 0
+                            elif kind != "replay_limit":
+                                next_seq = max(next_seq, checkpoint)
                         continue
                     seq = event.get("seq")
                     if type(seq) is not int or seq <= next_seq:

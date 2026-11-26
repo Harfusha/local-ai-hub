@@ -125,7 +125,7 @@ fn view_request(view: &str, root: &str, id: &str) -> Value {
     request(op, json!({"view": view, "root": root, "id": id}))
 }
 struct Pending { label: String, payload: Value }
-struct Completed { label: String, result: Result<Value, String>, probe: bool }
+struct Completed { label: String, result: Result<Value, String>, probe: bool, live: bool }
 struct Desktop {
     install: Install,
     page: usize,
@@ -154,6 +154,9 @@ struct Desktop {
     task_query: String,
     stream_id: String,
     event_cursor: i64,
+    live_events: Vec<Value>,
+    auto_live: bool,
+    last_live: Instant,
     update_version: String,
     update_revision: String,
     hardware_profile: String,
@@ -188,7 +191,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -199,6 +202,7 @@ impl Desktop {
     fn submit(&mut self, ctx: &egui::Context, label: String, payload: Value) {
         if self.busy.is_some() { return; }
         let probe = payload["op"] == "probe";
+        let live = payload["op"] == "event_stream";
         self.busy = Some(label.clone());
         let install = self.install.clone();
         let (tx, rx) = mpsc::channel();
@@ -206,7 +210,7 @@ impl Desktop {
         let ctx = ctx.clone();
         thread::spawn(move || {
             let result = install.call(&payload);
-            let _ = tx.send(Completed { label, result, probe });
+            let _ = tx.send(Completed { label, result, probe, live });
             ctx.request_repaint();
         });
     }
@@ -236,7 +240,19 @@ impl Desktop {
                         self.status = format!("Status check: {error}");
                         self.last_probe = Instant::now();
                     }
-                    Ok(value) => {
+                    Ok(mut value) => {
+                        if done.live {
+                            self.last_live = Instant::now();
+                            if value["controls"].as_array().is_some_and(|controls| controls.iter().any(|c|
+                                matches!(c["kind"].as_str(), Some("cursor_reset" | "replay_cursor_reset")))) {
+                                self.live_events.clear();
+                            }
+                            if let Some(events) = value["events"].as_array() {
+                                records::merge_events(&mut self.live_events, events, 500);
+                            }
+                            value["events"] = Value::Array(self.live_events.clone());
+                            value["desktop_event_buffer_limit"] = json!(500);
+                        }
                         self.rows.clear();
                         self.reveal_trace = false;
                         self.detail = None;
@@ -260,7 +276,8 @@ impl Desktop {
                             if self.rows.len() >= MAX_ROWS { " (display capped)" } else { "" });
                         self.last_probe = Instant::now() - Duration::from_secs(30);
                     }
-                    Err(error) => { self.status = format!("{}: {error} (previous response, if any, is not fresh)", done.label); }
+                    Err(error) => { if done.live { self.auto_live = false; self.last_live = Instant::now(); }
+                        self.status = format!("{}: {error} (previous response, if any, is not fresh)", done.label); }
                 }
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
@@ -278,6 +295,7 @@ impl Desktop {
     fn clear_response(&mut self) {
         self.rows.clear(); self.visible.clear(); self.detail = None; self.record_detail = None;
         self.snapshot = None; self.snapshot_view.clear(); self.reveal_trace = false;
+        self.live_events.clear(); self.auto_live = false;
     }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
@@ -550,14 +568,14 @@ impl Desktop {
                     if ui.text_edit_singleline(&mut self.stream_id).changed() { self.event_cursor = 0; self.clear_response(); }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Resume after sequence");
-                        ui.add(egui::DragValue::new(&mut self.event_cursor).range(0..=i64::MAX));
-                        if ui.button("Read history page").clicked() { self.refresh(ctx); }
+                        if ui.add(egui::DragValue::new(&mut self.event_cursor).range(0..=i64::MAX)).changed() { self.auto_live = false; self.live_events.clear(); }
+                        if ui.button("Read history page").clicked() { self.auto_live = false; self.live_events.clear(); self.refresh(ctx); }
                         if ui.button("Collect live SSE (5 seconds)").clicked() {
                             self.submit(ctx, "Agent event stream".into(), request("event_stream",
                                 json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})));
                         }
                     });
-                    ui.small("Retention gaps and cursor resets are reported in Raw fields. Collection is bounded and does not run in the background.");
+                    ui.small("Retention gaps and cursor resets are reported in Raw fields. Live follow is opt-in, pauses when hidden or unfocused, and retains at most 500 records.");
                 }
             }
             10 => {
@@ -593,6 +611,15 @@ impl eframe::App for Desktop {
         self.receive();
         // Only wake for health checks while focused, never continuously repaint an idle window.
         let focused = ctx.input(|i| i.focused);
+        if self.auto_live && self.current() == "Agent event stream" && focused && self.busy.is_none()
+            && self.pending.is_none() && !self.installation_open {
+            if self.last_live.elapsed() >= Duration::from_secs(1) {
+                self.submit(ctx, "Agent event stream".into(), request("event_stream",
+                    json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})));
+            } else {
+                ctx.request_repaint_after(Duration::from_secs(1).saturating_sub(self.last_live.elapsed()));
+            }
+        }
         if self.auto_probe && focused && self.busy.is_none() && self.pending.is_none() && !self.installation_open {
             if self.last_probe.elapsed() >= Duration::from_secs(30) {
                 self.last_probe = Instant::now();
@@ -628,6 +655,7 @@ impl eframe::App for Desktop {
             });
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
+                if self.current() == "Agent event stream" { ui.checkbox(&mut self.auto_live, "Follow live SSE while focused"); }
                 ui.label("Repository root");
                 if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
             });
