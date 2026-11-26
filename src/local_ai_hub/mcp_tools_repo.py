@@ -639,7 +639,8 @@ def _local_ai_repo_impl(
                           "outside_staged_paths", "outside_staged_omitted", "blockers", "selection_matches_observation",
                           "staging_preview_available", "stage_argv_preview", "index_scope_matches_selection",
                           "candidate_dependency_count", "requires_explicit_approval", "requires_post_stage_reinspection",
-                          "draft_summary", "summary_kind"])
+                          "draft_summary", "summary_kind", "semantic_group_proposals", "semantic_group_scope",
+                          "semantic_group_proposals_authoritative"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,

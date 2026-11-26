@@ -32,3 +32,34 @@ def test_model_advice_is_separate_and_invalid_output_fails_closed():
     rejected = project_change_plan(_result(), mode="semantic", limit=2, delegate=delegate)
     assert rejected["model_advice_status"] == "invalid"
     assert "model_commit_message" not in rejected["clusters"][0]
+
+
+
+def test_local_model_proposes_complete_nonoverlapping_partition():
+    import json
+
+    def delegate(args):
+        return {"success": True, "text": json.dumps({
+            "messages": [{"id": 0, "message": "chore: update payment"}, {"id": 1, "message": "test: update tests"}],
+            "groups": [{"ids": [0, 1], "summary": "Payment and test updates", "message": "chore: update payment and tests"}],
+        })}
+
+    result = project_change_plan(_result(), mode="semantic", limit=2, delegate=delegate)
+    assert result["model_advice_status"] == "available"
+    assert result["semantic_group_proposals"][0]["cluster_ids"] == [0, 1]
+    assert result["semantic_group_scope"] == "current_page_only"
+    assert not result["semantic_group_proposals"][0]["commit_ready"]
+
+
+def test_model_partition_rejects_missing_and_duplicate_ids():
+    import json
+
+    for ids in ([0], [0, 0], [0, 2]):
+        def delegate(args):
+            return {"success": True, "text": json.dumps({
+                "messages": [{"id": 0, "message": "chore: update payment"}, {"id": 1, "message": "test: update tests"}],
+                "groups": [{"ids": ids, "summary": "Payment updates", "message": "chore: update payment"}],
+            })}
+        result = project_change_plan(_result(), mode="semantic", limit=2, delegate=delegate)
+        assert result["model_advice_status"] == "invalid"
+        assert not result["semantic_group_proposals"]
