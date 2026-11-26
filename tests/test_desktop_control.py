@@ -195,3 +195,42 @@ def test_binary_transfer_requires_confirmation(operation):
     with pytest.raises(ValueError, match="confirmation"):
         desktop.dispatch(control, {"op": operation, "args": {"file": "test.zip"}})
     control._client.assert_not_called()
+
+
+def test_native_setting_rejects_retired_web_flags():
+    control = MagicMock()
+    with pytest.raises(ValueError, match="retired"):
+        desktop.dispatch(control, {"op": "setting", "args": {
+            "key": "features.dashboard", "value": True, "confirmed": True}})
+    control._client.assert_not_called()
+
+
+def test_native_plan_move_cannot_claim_done(tmp_path):
+    control = MagicMock()
+    with pytest.raises(ValueError, match="completion"):
+        desktop.dispatch(control, {"op": "plan_task_move", "args": {
+            "root": str(tmp_path), "id": "plan_1", "revision": "rev", "task_id": "task_1",
+            "status": "done", "confirmed": True}})
+    control._client.assert_not_called()
+
+
+def test_vision_rejects_non_image_before_transport(tmp_path):
+    image = tmp_path / "not-image.png"
+    image.write_bytes(b"not an image")
+    control = MagicMock()
+    with pytest.raises(ValueError, match="Unsupported image"):
+        desktop.dispatch(control, {"op": "vision_review", "args": {
+            "file": str(image), "prompt": "Describe", "confirmed": True}})
+    control._client.assert_not_called()
+
+
+def test_native_event_stream_requires_repository_and_stream():
+    with pytest.raises(ValueError, match="explicit"):
+        desktop.dispatch(MagicMock(), {"op": "event_stream", "args": {"stream": "task_1"}})
+
+
+def test_native_update_install_requires_confirmation():
+    control = MagicMock()
+    with pytest.raises(ValueError, match="confirmation"):
+        desktop.dispatch(control, {"op": "update_install", "args": {"version": "1.0.0"}})
+    control._client.assert_not_called()

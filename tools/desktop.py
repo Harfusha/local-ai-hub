@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+from contextlib import closing
 import json
 import http.client
 import uuid
@@ -29,7 +31,7 @@ VIEWS = {
     "Settings": "/api/config",
     "Trace index": "/api/debug-traces?limit=100",
     "Projects": "/api/preprocess/status",
-    "Tasks": "/api/agent-state/tasks?limit=100",
+    "Tasks": "/api/agent-state/tasks?limit=100&include_stale=true",
     "Memory": "/api/agent-state/memory",
     "Incidents": "/api/agent-state/incidents",
     "Activity": "/api/live?limit=50",
@@ -44,6 +46,9 @@ VIEWS = {
     "Benchmark": "/api/benchmark/summary",
     "Telemetry report": "/api/telemetry/report",
     "Capabilities": "/api/capabilities",
+    "Resident inventory": "/api/status?scope=process",
+    "GPU": "/api/hardware/gpu",
+    "Audit": "/api/audit/tail",
 }
 SCOPED = frozenset({"Tasks", "Memory", "Incidents"})
 MAINTENANCE = {
@@ -259,6 +264,136 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         raise ValueError("args must be an object")
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "task_page":
+        root = explicit_root(args.get("root"))
+        offset = args.get("offset", 0)
+        if type(offset) is not int or not 0 <= offset <= (1 << 31) - 1:
+            raise ValueError("Invalid task offset")
+        query = args.get("query", "")
+        if not isinstance(query, str) or len(query) > 4096:
+            raise ValueError("Invalid task query")
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            result = client.get("/api/agent-state/tasks?" + urlencode({
+                "root": root, "limit": 100, "offset": offset, "include_stale": "true", "query": query
+            }), timeout=15.0, requires_heavy_work=False)
+            if result.get("success") is not True:
+                raise RuntimeError(str(result.get("error") or "Task page unavailable"))
+            return result
+        finally:
+            client.close()
+    if op == "event_page" or op == "event_stream":
+        root = explicit_root(args.get("root"))
+        stream = text_field(args, "stream", 200)
+        cursor = args.get("after", 0)
+        if type(cursor) is not int or not 0 <= cursor <= (1 << 63) - 1:
+            raise ValueError("Invalid event cursor")
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            if op == "event_page":
+                result = client.get("/api/agent-state/events?" + urlencode({
+                    "root": root, "stream_id": stream, "after_seq": cursor, "limit": 100,
+                }), timeout=15.0, requires_heavy_work=False)
+                if result.get("success") is not True:
+                    raise RuntimeError(str(result.get("error") or "Event history unavailable"))
+                return result
+            events: list[dict[str, Any]] = []
+            controls: list[dict[str, Any]] = []
+            next_seq = cursor
+            size = 0
+            with closing(client.stream_events(stream_id=stream, after_seq=cursor,
+                                              timeout=5.0, root=root)) as stream_events:
+                for kind, event in stream_events:
+                    if kind in {"error", "replay_error"}:
+                        raise RuntimeError(str(event.get("error") or "Event stream disconnected; retry from prior cursor"))
+                    if kind in {"stream_timeout", "replay_page", "replay_limit", "replay_cursor_reset",
+                                "cursor_reset", "retention_gap", "stream.gap"}:
+                        # Keep compact control metadata; replay_page includes the replayed events again.
+                        controls.append({"kind": kind, **{k: event[k] for k in (
+                            "next_seq", "last_seq", "first_retained_seq", "gap_ranges",
+                            "cursor_reset", "requested_after_seq", "has_more") if k in event}})
+                        if kind in {"replay_cursor_reset", "cursor_reset"}:
+                            next_seq = int(event.get("next_seq", event.get("last_seq", 0)))
+                        continue
+                    seq = event.get("seq")
+                    if type(seq) is not int or seq <= next_seq:
+                        continue
+                    size += len(json.dumps(event, ensure_ascii=True))
+                    if size > 4_000_000:
+                        if not events:
+                            raise RuntimeError("Single event exceeds desktop response limit")
+                        break
+                    events.append(event)
+                    next_seq = seq
+                    if len(events) >= 100:
+                        break
+            return {"success": True, "events": events, "controls": controls, "next_seq": next_seq}
+        finally:
+            client.close()
+    if op in {"update_status", "update_check", "update_install"}:
+        # Native-only fixed local route, with a server-side loopback/non-browser guard.
+        if op != "update_status" and args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        body = None
+        if op == "update_check":
+            body = {"action": "check"}
+        if op == "update_install":
+            body = {"action": "install", "version": text_field(args, "version", 50),
+                    "revision": text_field(args, "revision", 40), "confirm_restart": True}
+        client = control._client()
+        connection = None
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            connection = http.client.HTTPConnection("127.0.0.1", client._http_port, timeout=30)
+            headers = {"X-LocalAI-Client": "desktop", "Content-Type": "application/json",
+                       "X-LocalAI-Agent": client.agent, "X-LocalAI-Request-ID": "req_" + uuid.uuid4().hex[:12]}
+            connection.request("GET" if body is None else "POST", "/api/updates",
+                               None if body is None else json.dumps(body).encode(), headers)
+            response = connection.getresponse()
+            raw = response.read(1_000_001)
+            if len(raw) > 1_000_000:
+                raise RuntimeError("Update response too large")
+            result = json.loads(raw)
+            if response.status not in {200, 202} or result.get("success") is not True:
+                raise RuntimeError(str(result.get("error") or "Update operation not confirmed"))
+            return result
+        finally:
+            if connection is not None:
+                connection.close()
+            client.close()
+    if op == "vision_review":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        prompt = text_field(args, "prompt", 12000)
+        file = Path(text_field(args, "file", 4096)).expanduser()
+        if not file.is_file() or file.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError("Choose an existing PNG or JPEG of at most 8 MiB")
+        with file.open("rb") as source:
+            raw = source.read(8 * 1024 * 1024 + 1)
+        if len(raw) > 8 * 1024 * 1024:
+            raise ValueError("Image exceeds 8 MiB")
+        mime = "image/png" if raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n") else (
+            "image/jpeg" if raw.startswith(b"\\xff\\xd8\\xff") else "")
+        if not mime:
+            raise ValueError("Unsupported image format; choose PNG or JPEG")
+        image = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+        return checked_post(control, "/api/vision/review", {"prompt": prompt, "source": "upload",
+                            "image": image}, timeout=360.0)
+    if op == "setting":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        key = text_field(args, "key", 100)
+        value = args.get("value")
+        from local_ai_hub.dashboard_contracts import dashboard_settings_patch
+        if key in {"monitoring.dashboard_enabled", "features.dashboard"}:
+            raise ValueError("Web UI has been retired")
+        dashboard_settings_patch({key: value})
+        return checked_post(control, "/api/config/update", {"action": "update", "settings": {key: value}})
     if op == "trace_detail":
         trace_id = text_field(args, "id", 200)
         if not all(c.isalnum() or c in "_-" for c in trace_id):
@@ -277,7 +412,7 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             return result
         finally:
             client.close()
-    if op in {"plan_update", "plan_task_edit", "plan_task_delete", "lease_release",
+    if op in {"plan_update", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
               "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release", "session_briefing"}:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
@@ -311,6 +446,12 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             if op == "plan_task_edit":
                 payload["task_data"] = {"title": text_field(args, "title", 240),
                     "description": str(args.get("description", ""))[:12000]}
+            if op == "plan_task_move":
+                status = text_field(args, "status", 30)
+                if status not in {"planned", "ready", "in_progress", "blocked"}:
+                    raise ValueError("Only ordinary work states may be changed here; completion requires evidence")
+                payload["task_data"] = {"work_status": status}
+                op = "plan_task_edit"
         return checked_post(control, "/api/coord/" + op, payload)
     if op == "probe":
         return {"online": control.online()}
@@ -403,7 +544,7 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             "root_cause": args.get("cause", ""), "verified_fix": args.get("fix", ""),
         })
     if op == "telemetry":
-        if args.get("confirmed") is not True or args.get("mode") not in {"minimal", "full"}:
+        if args.get("confirmed") is not True or args.get("mode") not in {"off", "minimal", "full"}:
             raise ValueError("Explicit confirmation and valid mode required")
         return checked_post(control, "/api/config/update",
                             {"settings": {"telemetry.mode": args["mode"]}})

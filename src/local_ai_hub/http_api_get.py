@@ -1014,8 +1014,14 @@ class HttpGetMixin:
                 pass
 
     def _handle_dashboard_updates(self, *, mutate: bool = False) -> None:
-        if self.headers.get("X-LocalAI-Client") != "dashboard" or not services_module._is_loopback_peer(self):
-            self._send(403, {"success": False, "error": "Update controls require the local dashboard."})
+        # Existing dashboard callers remain compatible until cutover; native callers
+        # must be loopback, authenticated by normal host/origin checks, and not a browser.
+        marker = self.headers.get("X-LocalAI-Client", "")
+        desktop = marker == "desktop" and not self.headers.get("Origin") and not any(
+            self.headers.get(name) for name in ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest")
+        )
+        if not services_module._is_loopback_peer(self) or not (marker == "dashboard" or desktop):
+            self._send(403, {"success": False, "error": "Update controls require the local desktop."})
             return
         controller = getattr(services_module.APP, "dashboard_updates", None)
         if controller is None:
