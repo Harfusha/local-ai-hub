@@ -79,8 +79,11 @@ class DeterministicEditingMixin:
             time_module=time,
         )
 
-    def split_changes(self, root: str, changed_files: list[str] | None = None) -> dict[str, Any]:
-        """Cluster modified repo files into atomic, cohesive commit or PR chunks."""
+    def split_changes(
+        self, root: str, changed_files: list[str] | None = None, *,
+        base: str | None = None, head: str = "HEAD",
+    ) -> dict[str, Any]:
+        """Propose read-only component groups for worktree or committed changes."""
         return run_split_changes(
             self,
             root,
@@ -88,6 +91,8 @@ class DeterministicEditingMixin:
             path_type=Path,
             subprocess_module=subprocess,
             hidden_run_kwargs_fn=hidden_run_kwargs,
+            base=base,
+            head=head,
         )
 
     def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:

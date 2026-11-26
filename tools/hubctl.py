@@ -361,6 +361,8 @@ def main() -> int:
         payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary"}
         if args.changed_path:
             payload["paths"] = args.changed_path
+        if args.base:
+            payload.update(base=args.base, head=args.head)
         result = HubClient(config_path=_config_arg(args.config)).post(
             "/api/repo/split_changes", payload, timeout=1800.0 if args.sub_arg == "semantic" else 180.0,
         )

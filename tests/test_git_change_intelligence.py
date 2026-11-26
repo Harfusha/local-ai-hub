@@ -11,11 +11,11 @@ def _git(root: Path, *args: str) -> bytes:
     return subprocess.check_output(["git", *args], cwd=root)
 
 
-def _plan(root: Path, paths=None, cache=None):
+def _plan(root: Path, paths=None, cache=None, **comparison):
     return run_split_changes(
         SimpleNamespace(_root=lambda value: value, git_status_timeout=10, _change_summary_cache=cache),
         str(root), paths, path_type=Path, subprocess_module=subprocess,
-        hidden_run_kwargs_fn=lambda: {},
+        hidden_run_kwargs_fn=lambda: {}, **comparison,
     )
 
 
@@ -211,3 +211,22 @@ def test_reconstruction_requires_exact_blob_identity():
     assert reconstruct_blob(before, patch, oid) == after
     assert reconstruct_blob(before, patch, "1" * 40) is None
     assert reconstruct_blob(b"different", patch, oid) is None
+
+
+def test_committed_comparison_ignores_dirty_worktree(tmp_path):
+    _repo(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD").strip().decode()
+    (tmp_path / "payment.py").write_text("committed\n", encoding="utf-8")
+    _git(tmp_path, "add", "payment.py")
+    _git(tmp_path, "commit", "-m", "payment")
+    (tmp_path / "cache.py").write_text("dirty only\n", encoding="utf-8")
+    result = _plan(tmp_path, base=base, head="HEAD")
+    assert result["success"]
+    assert result["total_files"] == 1
+    assert result["comparison"]["base"] == base
+    group = result["clusters"][0]
+    assert group["files"] == ["payment.py"]
+    assert set(group["line_totals"]) == {"committed"}
+    assert group["changes"][0]["atoms"][0]["scope"] == "committed"
+    assert result["commit_ready"] is False
+    assert not _plan(tmp_path, base="--help", head="HEAD")["success"]

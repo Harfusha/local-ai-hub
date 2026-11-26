@@ -24,6 +24,10 @@ For up to eight observed Python patch scopes per request, the existing bounded A
 
 `python tools/hubctl.py changes [summary|details|semantic] --root /absolute/repo` exposes the same read-only service; `--changed-path` can narrow it. Model output must be valid bounded JSON with exactly the supplied IDs and single-line conventional messages; deterministic facts are unchanged. Model text is advisory, not verified intent or commit authority. Managed project planner instructions now prefer the compact plan before commit.
 
+## Committed branch, PR and release comparison
+
+Supply `base` and `head` to `split_changes` (or `hubctl changes --root ... --base ... --head ...`) for a read-only comparison of exact committed trees. Refs are resolved to full commit IDs and all subsequent operations use those IDs. The dirty index/worktree is ignored. For a PR use its merge-base commit as the explicit base; for a release use the previous tag. This is not an implicit three-dot diff. Committed line counts and patch scopes are labeled separately. The same compact summaries and optional advisory messages apply; no publication or mutation occurs.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.

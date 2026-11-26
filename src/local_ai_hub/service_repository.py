@@ -880,6 +880,7 @@ class ServiceRepositoryMixin:
     def split_changes(
         self, root: str, changed_files: list[str] | None = None, *,
         mode: str = "full", limit: int = 8, offset: int = 0,
+        base: str | None = None, head: str = "HEAD",
     ) -> dict[str, Any]:
         from .change_plan_projection import project_change_plan
 
@@ -887,7 +888,8 @@ class ServiceRepositoryMixin:
             return {"success": False, "error": "invalid change plan mode"}
         if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return {"success": False, "error": "invalid change plan page"}
-        result = self.deterministic.split_changes(root, changed_files)
+        result = (self.deterministic.split_changes(root, changed_files, base=base, head=head)
+                  if base is not None else self.deterministic.split_changes(root, changed_files))
         if mode == "full":
             return result
         return project_change_plan(

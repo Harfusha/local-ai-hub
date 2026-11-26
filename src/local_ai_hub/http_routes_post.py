@@ -1069,10 +1069,11 @@ class HTTPPostRoutesMixin:
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths", payload.get("changed_files"))
-                if any(key in payload for key in ("mode", "limit", "offset")):
+                if any(key in payload for key in ("mode", "limit", "offset", "base", "head")):
                     result = services_module.APP.services.split_changes(
                         root, paths, mode=payload.get("mode", "summary"),
                         limit=payload.get("limit", 8), offset=payload.get("offset", 0),
+                        base=payload.get("base"), head=payload.get("head", "HEAD"),
                     )
                 else:
                     result = services_module.APP.services.split_changes(root, paths)

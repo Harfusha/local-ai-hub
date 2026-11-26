@@ -622,12 +622,13 @@ def _local_ai_repo_impl(
         return services_module._compact(services_module.CLIENT.post("/api/repo/split_changes", {
             "root": root, "paths": [path] if path else None,
             "mode": view, "limit": page_limit, "offset": offset,
+            **({"base": base, "head": head or "HEAD"} if base != "HEAD" or head else {}),
         }, timeout=services_module._timeout("model" if view == "semantic" else "quick")), "architecture",
             extra_fields=["clusters", "cluster_count", "total_files", "summary", "method",
                           "verification_status", "commit_ready", "limitations", "patch_coverage_complete",
                           "unavailable_patch_scopes", "unavailable_patch_scope_count", "unavailable_patch_scopes_omitted",
                           "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id",
-                          "projection_mode", "projection_partial", "offset", "limit", "has_more",
+                          "projection_mode", "projection_partial", "comparison", "offset", "limit", "has_more",
                           "next_offset", "model_advice_status"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {

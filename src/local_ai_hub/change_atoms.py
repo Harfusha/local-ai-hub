@@ -119,6 +119,7 @@ def inspect_change_atoms(
     git: Callable[..., bytes],
     *,
     persistent_cache: Any | None = None,
+    staged_scope: str = "staged",
 ) -> dict[str, Any]:
     """Inspect tracked textual patches twice and publish only matched observations.
 
@@ -136,7 +137,7 @@ def inspect_change_atoms(
         if xy == "??" or xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
             unavailable.append({"path": path, "scope": "worktree", "reason": "untracked_or_conflicted"})
             continue
-        for scope, changes, flag in (("staged", staged, xy[0]), ("unstaged", unstaged, xy[1])):
+        for scope, changes, flag in ((staged_scope, staged, xy[0]), ("unstaged", unstaged, xy[1])):
             if flag == " ":
                 continue
             counts = changes.get(path)
@@ -150,7 +151,7 @@ def inspect_change_atoms(
                 "diff", "--patch", "--full-index", "--no-renames", "--no-ext-diff",
                 "--no-textconv", "--no-color", "--unified=0", "--no-indent-heuristic",
                 "--diff-algorithm=myers", "--submodule=short", "--ignore-submodules=none",
-                *(("--cached",) if scope == "staged" else ()),
+                *(("--cached",) if scope == staged_scope else ()),
                 "--", ":(literal)" + path,
             )
             patch = git(*args)

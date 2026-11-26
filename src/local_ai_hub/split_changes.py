@@ -44,6 +44,33 @@ def _parse_status(raw: bytes) -> dict[str, str]:
     return result
 
 
+def _parse_committed_status(raw: bytes) -> dict[str, str]:
+    if raw and not raw.endswith(b"\0"):
+        raise ValueError("Incomplete Git name-status")
+    rows = raw.split(b"\0")[:-1]
+    if len(rows) % 2:
+        raise ValueError("Malformed Git name-status")
+    records = []
+    for index in range(0, len(rows), 2):
+        flag, path = rows[index:index + 2]
+        if flag not in {b"A", b"D", b"M", b"T"}:
+            raise ValueError("Unsupported committed change type")
+        records.append(flag + b"  " + path + b"\0")
+    return _parse_status(b"".join(records))
+
+
+def _resolve_commit(git: Any, revision: str) -> str:
+    if (
+        not isinstance(revision, str) or not revision or len(revision) > 512
+        or revision.startswith("-") or any(ord(c) < 32 or c.isspace() for c in revision)
+    ):
+        raise ValueError("Invalid Git revision")
+    resolved = git("rev-parse", "--verify", "--end-of-options", revision + "^{commit}").strip().decode("ascii")
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", resolved) is None:
+        raise ValueError("Invalid resolved Git commit")
+    return resolved
+
+
 def _parse_numstat(raw: bytes) -> dict[str, tuple[int | None, int | None]]:
     if raw and not raw.endswith(b"\0"):
         raise ValueError("Incomplete Git numstat")
@@ -185,6 +212,8 @@ def run_split_changes(
     path_type: Any,
     subprocess_module: Any,
     hidden_run_kwargs_fn: Any,
+    base: str | None = None,
+    head: str = "HEAD",
 ) -> dict[str, Any]:
     resolved_root = path_type(engine._root(root))
 
@@ -210,7 +239,7 @@ def run_split_changes(
         top_raw = git("rev-parse", "--show-toplevel")
     except ValueError:
         if (
-            isinstance(changed_files, list) and changed_files
+            base is None and isinstance(changed_files, list) and changed_files
             and all(isinstance(p, str) and p and not any(ord(c) < 32 for c in p) for p in changed_files)
             and not (resolved_root / ".git").exists()
         ):
@@ -224,20 +253,41 @@ def run_split_changes(
         if top != resolved_root.resolve():
             raise ValueError("Expected the Git worktree root")
         args = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=none")
-        before = git(*args)
-        statuses = _parse_status(before)
         diff_args = ("diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none")
-        staged = _parse_numstat(git(*diff_args, "--cached", "--"))
-        unstaged = _parse_numstat(git(*diff_args, "--"))
+        comparison = None
+        atom_git = git
+        if base is None:
+            before = git(*args)
+            statuses = _parse_status(before)
+            staged = _parse_numstat(git(*diff_args, "--cached", "--"))
+            unstaged = _parse_numstat(git(*diff_args, "--"))
+        else:
+            base_sha, head_sha = _resolve_commit(git, base), _resolve_commit(git, head)
+            comparison = {"base": base_sha, "head": head_sha, "kind": "exact_tree_comparison"}
+            statuses = _parse_committed_status(git(
+                "diff", "--name-status", "-z", "--no-renames", "--no-ext-diff",
+                "--no-textconv", "--ignore-submodules=none", base_sha, head_sha, "--",
+            ))
+            staged = _parse_numstat(git(*diff_args, base_sha, head_sha, "--"))
+            unstaged = {}
+            before = b""
+
+            def atom_git(*patch_args: str) -> bytes:
+                if patch_args[0] == "diff" and "--cached" in patch_args:
+                    args_without_cached = tuple(arg for arg in patch_args if arg != "--cached")
+                    boundary = args_without_cached.index("--")
+                    return git(*args_without_cached[:boundary], base_sha, head_sha, *args_without_cached[boundary:])
+                return git(*patch_args)
         if changed_files is not None:
             if not isinstance(changed_files, list) or any(not isinstance(p, str) or p not in statuses for p in changed_files):
                 raise ValueError("Requested path is not in the current dirty worktree")
             statuses = {p: statuses[p] for p in dict.fromkeys(changed_files)}
         observed = inspect_change_atoms(
-            str(top), statuses, staged, unstaged, git,
+            str(top), statuses, staged, unstaged, atom_git,
+            staged_scope="committed" if comparison else "staged",
             persistent_cache=getattr(engine, "_change_summary_cache", None),
         )
-        if git(*args) != before:
+        if comparison is None and git(*args) != before:
             raise ValueError("Worktree inventory changed during inspection")
         clusters = _group(statuses, staged, unstaged)
         by_path = observed["observations"]
@@ -250,7 +300,13 @@ def run_split_changes(
                 change["atoms"] = atoms
                 atom_ids.extend(atom["atom_id"] for atom in atoms)
                 hunk_count += sum(atom["hunk_count"] for atom in atoms)
-            cluster["group_key"] = identity("group-v1", str(top), *cluster["files"])
+            cluster["group_key"] = identity("group-v1", str(top), "committed" if comparison else "worktree", *cluster["files"])
+            if comparison:
+                for change in cluster["changes"]:
+                    change["status"] = change["status"][0]
+                    change["committed_lines"] = change.pop("staged_lines")
+                    change.pop("unstaged_lines")
+                cluster["line_totals"] = {"committed": cluster["line_totals"]["staged"]}
             cluster["observed_atom_ids"] = sorted(atom_ids)
             cluster["observed_hunk_count"] = hunk_count
             semantic_counts: dict[str, int] = {}
@@ -270,7 +326,7 @@ def run_split_changes(
             deleted = sum(scope["deleted"] for scope in totals.values())
             cluster["summary"] += (
                 f"; {hunk_count} observed text hunk(s), "
-                f"+{added}/-{deleted} tracked lines across staged and unstaged scopes"
+                f"+{added}/-{deleted} tracked lines across observed scopes"
             )
             if semantic_counts:
                 cluster["summary"] += "; AST: " + ", ".join(
@@ -304,16 +360,19 @@ def run_split_changes(
         "success": True,
         "root": str(resolved_root),
         "total_files": len(statuses),
+        "comparison": comparison,
         "cluster_count": len(clusters),
         "clusters": clusters,
-        "summary": f"{len(statuses)} dirty file(s), {len(clusters)} proposed component group(s)",
+        "summary": f"{len(statuses)} changed file(s), {len(clusters)} proposed component group(s)",
         "method": "component_name_heuristic_v2",
         "patch_coverage_complete": not observed["unavailable"],
         "unavailable_patch_scopes": observed["unavailable"],
         "summary_cache_hits": observed["cache_hits"],
         "persistent_summary_cache_hits": observed["persistent_cache_hits"],
         "observed_change_set_id": identity(
-            "observed-change-set-v1", str(top),
+            "observed-change-set-v2", str(top),
+            comparison["base"] if comparison else "worktree",
+            comparison["head"] if comparison else "worktree",
             *(atom["atom_id"] for path in sorted(observed["observations"])
               for atom in observed["observations"][path]),
         ),
