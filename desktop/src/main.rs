@@ -2,6 +2,7 @@
 
 mod records;
 mod trace;
+mod summary;
 
 use eframe::egui;
 use serde_json::{json, Value};
@@ -782,6 +783,7 @@ impl eframe::App for Desktop {
             }
             if !self.raw_view && self.snapshot_view == self.current() {
                 if let Some(snapshot) = &self.snapshot {
+                    summary::render(ui, self.current(), snapshot);
                     if self.current() == "Plan board" {
                         if let Some(columns) = records::board_columns(snapshot) {
                             if let Some((total, declared, verified)) = records::progress(snapshot) {
@@ -903,7 +905,7 @@ impl eframe::App for Desktop {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status"] {
+                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
                 }
                 ui.horizontal(|ui| {
