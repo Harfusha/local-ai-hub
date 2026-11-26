@@ -131,6 +131,14 @@ struct Desktop {
     reason: String,
     prompt: String,
     mode: String,
+    feature: String,
+    goal: String,
+    criteria: String,
+    memory_key: String,
+    memory_value: String,
+    incident_kind: String,
+    incident_message: String,
+    plan_title: String,
     filter: String,
     rows: Vec<Row>,
     visible: Vec<usize>,
@@ -155,7 +163,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), filter: String::new(),
             rows: Vec::new(), visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -235,6 +243,40 @@ impl Desktop {
     fn operations(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.page {
             2 => {
+                if self.view == 1 {
+                    ui.label("Repository fact key and value (text or JSON)");
+                    ui.text_edit_singleline(&mut self.memory_key);
+                    ui.text_edit_multiline(&mut self.memory_value);
+                    ui.horizontal(|ui| {
+                        for (title, op) in [("Record fact", "memory_record"), ("Delete fact", "memory_delete")] {
+                            if ui.button(title).clicked() {
+                                self.confirm(title, request(op, json!({"root": self.repo, "key": self.memory_key,
+                                    "value": self.memory_value, "confirmed": true})));
+                            }
+                        }
+                    });
+                    return;
+                }
+                if self.view == 2 {
+                    ui.label("Incident operation class and message");
+                    ui.text_edit_singleline(&mut self.incident_kind);
+                    ui.text_edit_multiline(&mut self.incident_message);
+                    if ui.button("Record incident").clicked() {
+                        self.confirm("Record incident", request("incident", json!({"root": self.repo,
+                            "kind": self.incident_kind, "message": self.incident_message, "confirmed": true})));
+                    }
+                    return;
+                }
+                ui.collapsing("Create task contract", |ui| {
+                    ui.label("Goal");
+                    ui.text_edit_multiline(&mut self.goal);
+                    ui.label("Acceptance criteria (one per line)");
+                    ui.text_edit_multiline(&mut self.criteria);
+                    if ui.button("Create task").clicked() {
+                        self.confirm("Create task", request("task_create", json!({"root": self.repo,
+                            "goal": self.goal, "criteria": self.criteria, "confirmed": true})));
+                    }
+                });
                 ui.label("Task ID and reason (repository required)");
                 ui.text_edit_singleline(&mut self.entity);
                 ui.text_edit_singleline(&mut self.reason);
@@ -254,6 +296,14 @@ impl Desktop {
                     ui.label("Plan ID");
                     ui.text_edit_singleline(&mut self.entity);
                 });
+                ui.horizontal(|ui| {
+                    ui.label("New plan title");
+                    ui.text_edit_singleline(&mut self.plan_title);
+                    if ui.button("Create plan").clicked() {
+                        self.confirm("Create plan", request("plan_create", json!({"root": self.repo,
+                            "id": self.entity, "title": self.plan_title, "confirmed": true})));
+                    }
+                });
             }
             4 => {
                 ui.horizontal_wrapped(|ui| {
@@ -262,6 +312,13 @@ impl Desktop {
                         if ui.button(title).clicked() {
                             self.confirm(title, request("project", json!({"root": self.repo,
                                 "action": action, "confirmed": true})));
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for (title, action) in [("Pause all", "pause"), ("Resume all", "resume"), ("Cleanup missing", "cleanup_deleted")] {
+                        if ui.button(title).clicked() {
+                            self.confirm(title, request("global_preprocess", json!({"action": action, "confirmed": true})));
                         }
                     }
                 });
@@ -288,6 +345,17 @@ impl Desktop {
                         if ui.button(title).clicked() {
                             self.confirm(&format!("{title} (may retain sensitive request content)"),
                                 request("telemetry", json!({"mode": mode, "confirmed": true})));
+                        }
+                    }
+                    egui::ComboBox::from_id_salt("feature").selected_text(&self.feature).show_ui(ui, |ui| {
+                        for feature in ["status", "repo", "tasks", "rag", "commands", "coord", "artifacts", "subagents", "agent_os"] {
+                            ui.selectable_value(&mut self.feature, feature.to_owned(), feature);
+                        }
+                    });
+                    for (title, enabled) in [("Enable feature", true), ("Disable feature", false)] {
+                        if ui.button(title).clicked() {
+                            self.confirm(&format!("{title}: {}", self.feature), request("feature",
+                                json!({"feature": self.feature, "enabled": enabled, "confirmed": true})));
                         }
                     }
                     if ui.button("Reset configuration overrides").clicked() {
