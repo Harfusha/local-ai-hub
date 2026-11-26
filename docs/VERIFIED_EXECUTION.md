@@ -1,4 +1,4 @@
-# Verified execution (first increment)
+# Verified execution
 
 Verified execution is an opt-in extension of Agent OS, not a separate task
 store or orchestration service. It supports audits, implementation, refactoring,
@@ -106,8 +106,14 @@ the manifest hash, resource count and partition count. Read the returned
 contract to obtain the remaining partition indices. Each task's obligations
 remain bounded (size × checks ≤ 512). All partitions recheck the entire
 manifest; even a change outside a partition invalidates its scope. The
-caller must create and verify every partition; aggregate plan-level
-completion is separate from an individual partition's gate.
+caller must create and verify every partition. Bind the tasks to a shared
+repository plan, then call `local_ai_coord(action="plan_validate", root=...,
+plan_id=..., include=["execution"])` for a read-only plan-wide preview.
+It checks current task bindings, criteria, receipt gates, completed status,
+pending deliveries and missing or duplicate partitions of each manifest/check
+matrix. A changed snapshot, missing binding, ambiguous attempt, or scan limit
+prevents an all-complete claim. The preview is bounded to 64 tasks and a
+15-second scan budget; it does not mutate plan or task state.
 
 Structured contract steering is additive: existing mandatory obligations
 cannot disappear in an ordinary criteria revision. This is deliberately
@@ -179,19 +185,23 @@ blocking for audit completion.
 
 ## Scope and follow-up
 
-This increment implements graph, declared inventory compilation, coverage,
-deterministic next action, opt-in blocker gating and durable problem reports. It does not prove that user intent was translated into
-complete criteria. Remaining acceptance work:
+This increment implements graph and inventory compilation (declared or bounded
+server-checked repository), partition manifests, coverage, deterministic next
+action, opt-in blocker gating, durable problem reports, additive steering
+protection, context recovery, CLI and bounded plan-level previews. It does not
+prove that user intent was translated into complete criteria or that model
+review found every defect. Remaining acceptance work:
 
-1. Compile repository inventory/impact into versioned, provenance-bound
-   obligations and explicit exclusions.
+1. Compile change-impact and semantic dependency information into additional
+   versioned obligations; support explicit exclusions and larger hierarchical
+   plans without the current bounded preview limit.
 2. Extend problem reports with authorized rejection/defer dispositions,
    independent resolution verification, and cross-task/Git knowledge sharing.
-3. Integrate graph revisions with authorized steering and replay.
+3. Extend additive criteria steering to full graph metadata revision and replay.
 4. Implement dependency-selective invalidation, conservative fallback,
    and context retrieval for each obligation.
 5. Integrate consistency guard, independent critic and seeded-defect benchmarks.
 6. Add host lifecycle hooks and no-progress detection where supported,
    preserving explicit cancellation. MCP cannot force an external agent to continue.
-7. Add Git policy templates, CLI and desktop Work Center through the same API.
+7. Add Git policy templates and desktop Work Center through the same API.
 8. Measure recall, precision, net tokens and runtime against a baseline.
