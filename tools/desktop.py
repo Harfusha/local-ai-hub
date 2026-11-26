@@ -1,17 +1,13 @@
-"""Native, source-checkout desktop control surface (incremental parity migration)."""
+"""Local, allowlisted JSON bridge for the Rust desktop. No GUI or listening socket."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import queue
 import subprocess
 import sys
-import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +20,12 @@ LIFECYCLE = frozenset({"start", "stop", "restart"})
 MODES = ("active", "gaming", "maintenance", "preprocessing")
 VIEWS = {
     "Overview": "/api/live/status?light=1&scope=1h",
+    "Requests": "/api/live/status?light=1&scope=1h",
+    "Commands": "/api/live/status?light=1&scope=1h",
+    "Models & search": "/api/live/status?light=1&scope=1h",
+    "Runtime health": "/api/live/status?light=1&scope=1h",
+    "Settings": "/api/config",
+    "Trace index": "/api/debug-traces?limit=100",
     "Projects": "/api/preprocess/status",
     "Tasks": "/api/agent-state/tasks?limit=100",
     "Memory": "/api/agent-state/memory",
@@ -41,6 +43,8 @@ MAINTENANCE = {
     "Optimize databases": ("/api/maintenance/optimize_db", {}),
     "Purge expired cache (7 days)": ("/api/maintenance/purge_cache", {"days": 7}),
     "Cleanup stale agent state": ("/api/agent-state/cleanup", {}),
+    "Purge detailed traces": ("/api/debug-traces/purge", {"confirm": True}),
+    "Reset all statistics": ("/api/telemetry/endpoint-stats/reset", {"root": "", "purge_telemetry": True}),
 }
 
 
@@ -124,205 +128,156 @@ class HubControl:
             client.close()
 
 
-class Desktop:
-    """Tk event loop owns all widgets; one background operation at a time."""
+def explicit_root(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Select an explicit repository root.")
+    path = Path(value).expanduser().resolve(strict=True)
+    if not path.is_dir():
+        raise ValueError("Repository root must be a directory.")
+    return str(path)
 
-    def __init__(self, window: tk.Tk, control: HubControl) -> None:
-        self.window, self.control = window, control
-        self.results: queue.Queue[tuple[str, Any, Exception | None]] = queue.Queue()
-        self.busy = False
-        self.closing = False
-        self.online: bool | None = None
-        self.view = "Overview"
-        window.title("Local AI Hub — Desktop")
-        window.geometry("1050x690")
-        window.minsize(760, 480)
-        window.protocol("WM_DELETE_WINDOW", self.close)
-        window.columnconfigure(1, weight=1)
-        window.rowconfigure(2, weight=1)
-        self.state = tk.StringVar(value="Hub: checking…")
-        self.notice = tk.StringVar(value="Desktop running.")
-        toolbar = ttk.Frame(window, padding=12)
-        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(toolbar, textvariable=self.state).pack(side="left", padx=(0, 16))
-        self.buttons: list[ttk.Button] = []
-        for action in ("start", "stop", "restart"):
-            button = ttk.Button(toolbar, text=action.title() + " Hub",
-                                command=lambda a=action: self.lifecycle(a))
-            button.pack(side="left", padx=3)
-            self.buttons.append(button)
-        ttk.Label(toolbar, text="Activity mode").pack(side="left", padx=(18, 4))
-        self.mode = tk.StringVar(value=MODES[0])
-        ttk.Combobox(toolbar, textvariable=self.mode, values=MODES,
-                     state="readonly", width=15).pack(side="left")
-        button = ttk.Button(toolbar, text="Apply mode", command=self.apply_mode)
-        button.pack(side="left", padx=4)
-        self.buttons.append(button)
 
-        filters = ttk.Frame(window, padding=(12, 0, 12, 8))
-        filters.grid(row=1, column=0, columnspan=2, sticky="ew")
-        ttk.Label(filters, text="Repository root (for scoped views)").pack(side="left")
-        self.root = tk.StringVar()
-        ttk.Entry(filters, textvariable=self.root).pack(side="left", fill="x", expand=True, padx=8)
-        button = ttk.Button(filters, text="Refresh view", command=self.refresh)
-        button.pack(side="right")
-        self.buttons.append(button)
-        self.maintenance_action = tk.StringVar(value=next(iter(MAINTENANCE)))
-        ttk.Combobox(filters, textvariable=self.maintenance_action, values=tuple(MAINTENANCE),
-                     state="readonly", width=27).pack(side="left", padx=3)
-        button = ttk.Button(filters, text="Run", command=self.run_maintenance)
-        button.pack(side="left")
-        self.buttons.append(button)
+def text_field(data: dict[str, Any], key: str, limit: int = 4096) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise ValueError(f"Invalid or missing {key}")
+    return value.strip()
 
-        nav = ttk.Frame(window, padding=(12, 0, 8, 12))
-        nav.grid(row=2, column=0, sticky="ns")
-        self.nav = tk.Listbox(nav, exportselection=False, width=22, height=12)
-        for view in VIEWS:
-            self.nav.insert("end", view)
-        self.nav.selection_set(0)
-        self.nav.pack(fill="both", expand=True)
-        self.nav.bind("<<ListboxSelect>>", self.select)
-        panel = ttk.Frame(window, padding=(0, 0, 12, 12))
-        panel.grid(row=2, column=1, sticky="nsew")
-        panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(1, weight=1)
-        self.title = ttk.Label(panel, text=self.view, font=("TkDefaultFont", 16))
-        self.title.grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self.output = tk.Text(panel, wrap="none", state="disabled", undo=False)
-        scroll = ttk.Scrollbar(panel, orient="vertical", command=self.output.yview)
-        horizontal = ttk.Scrollbar(panel, orient="horizontal", command=self.output.xview)
-        self.output.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
-        self.output.grid(row=1, column=0, sticky="nsew")
-        scroll.grid(row=1, column=1, sticky="ns")
-        horizontal.grid(row=2, column=0, sticky="ew")
-        ttk.Label(window, textvariable=self.notice, padding=8).grid(
-            row=3, column=0, columnspan=2, sticky="ew")
-        self.write("Select a view and refresh. Start Hub if the service is not reachable.")
-        window.after(50, self.drain)
-        window.after(100, self.probe)
 
-    def write(self, value: str) -> None:
-        self.output.configure(state="normal")
-        self.output.delete("1.0", "end")
-        self.output.insert("1.0", value)
-        self.output.configure(state="disabled")
+def checked_post(control: HubControl, route: str, payload: dict[str, Any],
+                 timeout: float = 120.0) -> dict[str, Any]:
+    client = control._client()
+    try:
+        if not client._online(timeout=2.0):
+            raise RuntimeError("Hub is not reachable. Start Hub first.")
+        result = client.post(route, payload, timeout=timeout)
+        if result.get("success") is False or result.get("outcome_unknown"):
+            raise RuntimeError(str(result.get("error") or "Hub did not confirm the outcome"))
+        return result
+    finally:
+        client.close()
 
-    def select(self, _event: object = None) -> None:
-        selection = self.nav.curselection()
-        if not selection:
-            return
-        self.view = tuple(VIEWS)[selection[0]]
-        self.title.configure(text=self.view)
-        self.write("Refresh to load this view.")
-        if not self.busy:
-            self.refresh()
 
-    def submit(self, kind: str, work: Callable[[], Any]) -> None:
-        if self.busy or self.closing:
-            return
-        self.busy = True
-        for button in self.buttons:
-            button.configure(state="disabled")
-        if kind != "probe":
-            self.notice.set(f"{kind}: running…")
+def scoped_read(control: HubControl, route: str, root: str) -> dict[str, Any]:
+    client = control._client()
+    try:
+        if not client._online(timeout=2.0):
+            raise RuntimeError("Hub is not reachable.")
+        result = client.get(route + "?" + urlencode({"root": root}), timeout=15.0,
+                            requires_heavy_work=False)
+        if result.get("success") is False:
+            raise RuntimeError(str(result.get("error") or "Hub request failed"))
+        return result
+    finally:
+        client.close()
 
-        def run() -> None:
-            try:
-                self.results.put((kind, work(), None))
-            except Exception as exc:
-                self.results.put((kind, None, exc))
 
-        # Closing is blocked while a command is running; the service owns its lifetime.
-        threading.Thread(target=run, daemon=True).start()
-
-    def probe(self) -> None:
-        if not self.busy:
-            self.submit("probe", self.control.online)
-        if not self.closing:
-            self.window.after(5000, self.probe)
-
-    def refresh(self) -> None:
-        view, root = self.view, self.root.get()
-        self.submit("view:" + view, lambda: self.control.read(view, root))
-
-    def lifecycle(self, action: str) -> None:
-        if action != "start" and not messagebox.askyesno(
-            "Confirm service operation", f"{action.title()} Hub? Active requests may be interrupted.",
-            parent=self.window,
-        ):
-            return
-        self.submit(action, lambda: self.control.lifecycle(action))
-
-    def apply_mode(self) -> None:
-        value = self.mode.get()
-        if messagebox.askyesno("Confirm mode", f"Switch Hub activity mode to {value}?",
-                               parent=self.window):
-            self.submit("mode", lambda: self.control.mode(value))
-
-    def run_maintenance(self) -> None:
-        action = self.maintenance_action.get()
-        if messagebox.askyesno("Confirm maintenance",
-                               f"{action}? This changes Hub state and may interrupt work.",
-                               parent=self.window):
-            self.submit("maintenance", lambda: self.control.maintenance(action))
-
-    def drain(self) -> None:
-        try:
-            kind, value, error = self.results.get_nowait()
-        except queue.Empty:
-            pass
-        else:
-            self.busy = False
-            for button in self.buttons:
-                button.configure(state="normal")
-            if kind == "probe":
-                self.online = None if error else bool(value)
-                label = "unknown (check configuration)" if error else (
-                    "online" if value else "unreachable / stopped")
-                self.state.set("Hub: " + label)
-                if value is False and not error:
-                    self.notice.set("Hub is not reachable. Select Start Hub to launch it.")
-            elif error:
-                self.notice.set(f"{kind}: failed — {error}")
-                if kind == "view:" + self.view:
-                    self.write(f"Unable to load view: {error}")
-            elif kind.startswith("view:"):
-                if kind == "view:" + self.view:
-                    if self.view == "Service health" and isinstance(value.get("lines"), list):
-                        output = "\n".join(map(str, value["lines"]))
-                    else:
-                        output = json.dumps(value, indent=2, ensure_ascii=False)
-                    self.write(output[:250_000] + ("\n[Display truncated; use CLI for full data.]" if len(output) > 250_000 else ""))
-                self.notice.set(f"{kind}: loaded")
-            elif kind == "maintenance":
-                self.notice.set("Maintenance completed. Refresh the selected view to update it.")
-                self.write(json.dumps(value, indent=2, ensure_ascii=False)[:250_000])
-            else:
-                self.notice.set(f"{kind}: {value or 'completed'}")
-            if kind in LIFECYCLE:
-                self.online = None
-                self.state.set("Hub: checking after operation…")
-                self.submit("probe", self.control.online)
-        if not self.closing:
-            self.window.after(100, self.drain)
-
-    def close(self) -> None:
-        if self.busy:
-            messagebox.showinfo("Operation running",
-                                "Finish the current operation before closing.", parent=self.window)
-            return
-        self.closing = True
-        self.window.destroy()
+def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
+    """No caller-supplied route, executable, shell, or arbitrary action payload."""
+    op = request.get("op")
+    args = request.get("args", {})
+    if not isinstance(args, dict):
+        raise ValueError("args must be an object")
+    if op == "probe":
+        return {"online": control.online()}
+    if op == "read":
+        return control.read(text_field(args, "view", 100), args.get("root", ""))
+    if op == "lifecycle":
+        return control.lifecycle(text_field(args, "action", 20))
+    if op == "mode":
+        return control.mode(text_field(args, "mode", 20))
+    if op == "maintenance":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        return control.maintenance(text_field(args, "action", 100))
+    if op in {"plans", "plan_board", "worktrees", "project_config"}:
+        root = explicit_root(args.get("root"))
+        if op == "plans":
+            return checked_post(control, "/api/coord/plan_list", {"root": root})
+        if op == "plan_board":
+            return checked_post(control, "/api/coord/plan_board_view",
+                                {"root": root, "plan_id": text_field(args, "id", 100)})
+        return scoped_read(control, "/api/coord/worktrees" if op == "worktrees"
+                           else "/api/project/config", root)
+    if op == "semaphores":
+        return checked_post(control, "/api/coord/semaphore_status", {})
+    if op == "project":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        action = text_field(args, "action", 30)
+        if action not in {"register", "refresh", "unregister", "pause", "resume"}:
+            raise ValueError("Unsupported project action")
+        return checked_post(control, "/api/preprocess",
+                            {"root": explicit_root(args.get("root")), "action": action,
+                             **({"purge_data": False} if action == "unregister" else {})})
+    if op == "task":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        action = text_field(args, "action", 20)
+        if action not in {"get", "complete", "fail"}:
+            raise ValueError("Unsupported task action")
+        payload = {"root": explicit_root(args.get("root")), "action": action,
+                   "task_id": text_field(args, "id", 200)}
+        if action != "get":
+            payload["reason"] = text_field(args, "reason")
+        return checked_post(control, "/api/agent-state/tasks", payload)
+    if op == "incident":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        return checked_post(control, "/api/agent-state/incidents", {
+            "root": explicit_root(args.get("root")), "action": "record",
+            "operation_class": text_field(args, "kind", 200),
+            "message": text_field(args, "message"),
+            "root_cause": args.get("cause", ""), "verified_fix": args.get("fix", ""),
+        })
+    if op == "telemetry":
+        if args.get("confirmed") is not True or args.get("mode") not in {"minimal", "full"}:
+            raise ValueError("Explicit confirmation and valid mode required")
+        return checked_post(control, "/api/config/update",
+                            {"settings": {"telemetry.mode": args["mode"]}})
+    if op == "config_reset":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        return checked_post(control, "/api/config/update", {"action": "reset"})
+    if op == "compare":
+        prompt = text_field(args, "prompt", 12000)
+        results = {}
+        for tier in ("auto", "high"):
+            import time
+            start = time.monotonic()
+            result = checked_post(control, "/api/delegate", {"task": prompt, "complexity": tier},
+                                  timeout=360.0)
+            results[tier] = {"elapsed_seconds": time.monotonic() - start, "result": result}
+        return results
+    raise ValueError("Unsupported desktop operation")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bridge", action="store_true", required=True)
     parser.add_argument("--config", default=os.environ.get("LOCAL_AI_CONFIG"))
     args = parser.parse_args()
-    config = str(Path(args.config).expanduser().resolve()) if args.config else None
-    window = tk.Tk()
-    Desktop(window, HubControl(config))
-    window.mainloop()
+    # One request per child: no resident Python GUI/runtime while desktop is idle.
+    # Never read arbitrary files or execute user-supplied commands.
+    try:
+        raw = sys.stdin.buffer.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("Request exceeds 64 KiB")
+        request = json.loads(raw)
+        if not isinstance(request, dict):
+            raise ValueError("Request must be an object")
+        config = str(Path(args.config).expanduser().resolve()) if args.config else None
+        result = dispatch(HubControl(config), request)
+        envelope = {"ok": True, "result": result}
+    except Exception as exc:
+        envelope = {"ok": False, "error": str(exc)[:4000]}
+    try:
+        output = json.dumps(envelope, ensure_ascii=True, allow_nan=False)
+        if len(output) > 8_000_000:
+            output = json.dumps({"ok": False, "error": "Response exceeds desktop limit; narrow scope."})
+    except (ValueError, TypeError):
+        output = json.dumps({"ok": False, "error": "Invalid Hub response"})
+    sys.stdout.write(output + "\n")
     return 0
 
 
