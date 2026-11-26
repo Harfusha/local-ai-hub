@@ -247,7 +247,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
@@ -265,7 +265,23 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=None, help="Repository root path (defaults to current working directory)")
     parser.add_argument("--scope", type=str, default="", help="Memory scope filter (task, session, branch, project, user, global)")
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
-    parser.add_argument("--query", type=str, default="", help="Memory search query")
+    parser.add_argument("--query", type=str, default="", help="Memory or knowledge search query")
+    parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
+    parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
+    parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
+    parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
+    parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
+    parser.add_argument("--preview-digest", default="", help="Exact reviewed handoff export digest")
+    parser.add_argument("--include-historical-verification", action="store_true", help="Include redacted historical receipt summaries in handoff export")
+    parser.add_argument("--after-task-id", default="", help="Offline migration continuation cursor")
+    parser.add_argument("--snapshot", default="", help="Expected offline task inventory snapshot")
+    parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
+    parser.add_argument("--base", default="", help="Base Git commit/ref for committed knowledge diff")
+    parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
+    parser.add_argument("--changed-path", action="append", default=[], help="Repository-relative path for knowledge impact (repeatable)")
+    parser.add_argument("--finding-id", default="", help="Knowledge quality finding ID")
+    parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
+    parser.add_argument("--decision", choices=["acceptable", "expected", "confirmed_issue", "false_positive", "deferred"])
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
     parser.add_argument("--compact", action="store_true", help="Compact older memory records into digest summaries")
     parser.add_argument("--vacuum", action="store_true", help="Run SQLite WAL checkpoint and VACUUM during cleanup")
@@ -281,6 +297,45 @@ def main() -> int:
         if args.sub_arg is not None:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
+    elif args.action == "knowledge":
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover, legacy-task-batch, legacy-memory-batch, legacy-incident-batch or projection-rebuild")
+        if args.root is None:
+            parser.error("knowledge requires an explicit --root")
+        if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
+            parser.error("knowledge mutations require explicit --apply (review content first)")
+        if args.sub_arg in {"batch-preview", "batch-apply", "batch-recover"}:
+            if args.record_file is None:
+                parser.error("knowledge batch requires --record-file")
+            if args.sub_arg == "batch-preview" and args.apply:
+                parser.error("batch-preview is read-only")
+            if args.sub_arg != "batch-preview" and (
+                not args.apply or args.dry_run or not args.preview_digest or not args.operation_id
+            ):
+                parser.error("batch-apply/recover requires --apply, --preview-digest and --operation-id")
+        if args.sub_arg == "init" and args.operation_id and not args.project_id:
+            parser.error("knowledge init with --operation-id requires --project-id for deterministic retry")
+        if args.sub_arg == "impact" and not args.changed_path:
+            parser.error("knowledge impact requires --changed-path")
+        if args.sub_arg == "remediate" and not all((args.finding_id, args.subject_digest)):
+            parser.error("knowledge remediate requires --finding-id and --subject-digest")
+        if args.sub_arg == "remediate" and args.apply and (args.dry_run or not args.task_id):
+            parser.error("knowledge remediate --apply requires explicit new --task-id and no --dry-run")
+        if args.sub_arg == "handoff-export" and not args.task_id:
+            parser.error("handoff-export requires --task-id")
+        if args.sub_arg == "handoff-export" and args.apply and (args.dry_run or args.expected_revision is None or not args.preview_digest):
+            parser.error("handoff-export --apply requires --expected-revision, --preview-digest and no --dry-run")
+        if args.sub_arg == "handoff-resume" and not args.handoff_id:
+            parser.error("handoff-resume requires --handoff-id")
+        if args.sub_arg == "handoff-resume" and args.apply and (args.dry_run or not args.expected_revision or not args.preview_digest or not args.task_id):
+            parser.error("handoff-resume --apply requires reviewed --expected-revision, --preview-digest and explicit new --task-id")
+        if args.sub_arg in {"save", "review"} and args.expected_revision is None:
+            parser.error("knowledge save/review requires --expected-revision (empty string for create)")
+        if args.sub_arg == "save" and args.record_file is None:
+            parser.error("knowledge save requires --record-file")
+        if args.sub_arg == "review" and not all((args.finding_id, args.subject_digest, args.decision, args.reason)):
+            parser.error("knowledge review requires --finding-id, --subject-digest, --decision and --reason")
+        requested_mode = None
     elif args.action == "client":
         if args.sub_arg is not None and args.sub_arg not in {"status", "detect", "inject", "remove", "config"}:
             parser.error("CLIENT_SUBCOMMAND must be one of: status, detect, inject, remove, config")
@@ -289,11 +344,291 @@ def main() -> int:
         if args.apply and args.root is None:
             parser.error("client config --apply requires an explicit --root workspace path")
         requested_mode = None
+    elif args.action == "agent-state" and args.sub_arg == "storage-inventory":
+        if args.apply:
+            parser.error("agent-state storage-inventory is read-only")
+        requested_mode = None
     elif args.sub_arg is not None:
         parser.error(f"Unrecognized argument '{args.sub_arg}' for action '{args.action}'")
     else:
         requested_mode = None
 
+    if args.action == "knowledge":
+        from local_ai_hub.repo_knowledge import (
+            RepoKnowledgeStore,
+            build_finding_review,
+            detect_declared_claim_conflicts,
+            query_declared_knowledge,
+        )
+        from local_ai_hub.repo_plan.schema_validation import RepoPlanError, parse_plan_json
+        from uuid import uuid4
+
+        try:
+            store = RepoKnowledgeStore(args.root)
+            if args.sub_arg in {"batch-preview", "batch-apply", "batch-recover"}:
+                from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
+
+                with args.record_file.open("rb") as stream:
+                    raw = stream.read(200001)
+                if len(raw) > 200000:
+                    raise ValueError("Knowledge batch input exceeds 200000 bytes")
+                batch = parse_plan_json(raw)
+                if set(batch) != {"records"}:
+                    raise ValueError("Knowledge batch input requires records")
+                if args.sub_arg == "batch-preview":
+                    result = preview_knowledge_batch(store, batch["records"])
+                else:
+                    result = apply_knowledge_batch(
+                        store, batch["records"], preview_digest=args.preview_digest,
+                        operation_id=args.operation_id,
+                        authorize_write=lambda: args.apply is True and not args.dry_run,
+                        recover=args.sub_arg == "batch-recover",
+                    )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["success"] else 1
+            if args.sub_arg == "diff":
+                from local_ai_hub.repo_knowledge_sync import compare_knowledge_revisions
+
+                if args.apply or not args.base:
+                    parser.error("knowledge diff is read-only and requires --base")
+                result = compare_knowledge_revisions(store.root, args.base, args.head)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] else 1
+            if args.sub_arg == "sync-status":
+                from local_ai_hub.repo_knowledge_sync import checkout_sync_status
+
+                result = checkout_sync_status(store.root)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
+            if args.sub_arg == "legacy-task-batch":
+                from local_ai_hub.agent_state_migration import preview_legacy_task_batch
+                from local_ai_hub.repository_scope import authorized_repository_root
+
+                if args.apply or not 1 <= args.limit <= 16:
+                    parser.error("legacy-task-batch is read-only; use --limit 1 through 16")
+                config = load_config(_config_arg(args.config))
+                authorized_repository_root(config, str(store.root))
+                result = preview_legacy_task_batch(
+                    config["server"]["state_dir"], store, limit=args.limit,
+                    after_task_id=args.after_task_id, expected_snapshot=args.snapshot,
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["inventory_complete"] and all(
+                    row["state"] in {"review_required", "already_published"} for row in result["states"]
+                ) else 1
+            if args.sub_arg == "legacy-memory-batch":
+                from local_ai_hub.agent_state_migration import preview_legacy_memory_batch
+                from local_ai_hub.repository_scope import authorized_repository_root
+
+                if args.apply or not 1 <= args.limit <= 16:
+                    parser.error("legacy-memory-batch is read-only; use --limit 1 through 16")
+                config = load_config(_config_arg(args.config))
+                authorized_repository_root(config, str(store.root))
+                result = preview_legacy_memory_batch(
+                    config["server"]["state_dir"], store, limit=args.limit,
+                    after_record_id=args.after_task_id, expected_snapshot=args.snapshot,
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["inventory_complete"] and all(
+                    row["state"] in {"review_required", "already_published"} for row in result["states"]
+                ) else 1
+            if args.sub_arg == "legacy-incident-batch":
+                from local_ai_hub.agent_state_migration import preview_legacy_incident_batch
+                from local_ai_hub.repository_scope import authorized_repository_root
+
+                if args.apply or not 1 <= args.limit <= 16:
+                    parser.error("legacy-incident-batch is read-only; use --limit 1 through 16")
+                config = load_config(_config_arg(args.config))
+                authorized_repository_root(config, str(store.root))
+                result = preview_legacy_incident_batch(
+                    config["server"]["state_dir"], store, limit=args.limit,
+                    after_incident_id=args.after_task_id, expected_snapshot=args.snapshot,
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["inventory_complete"] and all(
+                    row["state"] in {"review_required", "already_published"} for row in result["states"]
+                ) else 1
+            if args.sub_arg == "projection-rebuild":
+                from local_ai_hub.repo_agent_state import rebuild_agent_state_projection
+                from local_ai_hub.repository_scope import authorized_repository_root
+
+                config = load_config(_config_arg(args.config))
+                authorized_repository_root(config, str(store.root))
+                result = rebuild_agent_state_projection(store.root, config["server"]["state_dir"])
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") else 1
+            if args.sub_arg == "handoff-preflight":
+                from local_ai_hub.repo_task_handoff import preflight_task_handoffs
+
+                if args.apply or not 1 <= args.limit <= 64:
+                    parser.error("handoff-preflight is read-only; limit must be 1 through 64")
+                response = HubClient(config_path=_config_arg(args.config)).post(
+                    "/api/agent-state/tasks", {
+                        "action": "list", "root": str(store.root),
+                        "limit": args.limit + 1, "include_stale": True,
+                    },
+                )
+                tasks = response.get("tasks")
+                if response.get("success") is not True or not isinstance(tasks, list):
+                    print(json.dumps({"success": False, "error": "Scoped legacy task inventory unavailable"}))
+                    return 1
+                result = preflight_task_handoffs(
+                    store, tasks[:args.limit],
+                    inventory_complete=len(tasks) < args.limit + 1 and not response.get("query_truncated"),
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] and all(
+                    row["state"] in {"review_required", "already_published"} for row in result["records"]
+                ) else 1
+            if args.sub_arg == "handoff-list":
+                from local_ai_hub.repo_task_handoff import list_task_handoffs
+
+                result = list_task_handoffs(store, limit=args.limit)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result["complete"] else 1
+            if args.sub_arg in {"handoff-export", "handoff-resume"}:
+                from local_ai_hub.repo_task_handoff import build_task_handoff, preview_handoff_resume
+
+                target_root = str(store.root)
+                if args.sub_arg == "handoff-export":
+                    from local_ai_hub.repo_knowledge import _digest_value
+                    from local_ai_hub.repo_task_handoff import attach_historical_verification, attach_source_dependencies
+
+                    handoff_client = HubClient(config_path=_config_arg(args.config))
+                    response = handoff_client.get_task(args.task_id, root=target_root)
+                    if response.get("success") is not True or not isinstance(response.get("task"), dict):
+                        print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
+                        return 1
+                    task = response["task"]
+                    record = attach_source_dependencies(store, build_task_handoff(store, task))
+                    if args.include_historical_verification:
+                        exported = handoff_client.post("/api/agent-state/verification", {
+                            "action": "export", "root": target_root,
+                            "task_id": args.task_id, "format": "json",
+                        })
+                        if exported.get("success") is not True or not isinstance(exported.get("receipts"), list):
+                            print(json.dumps({"success": False, "error": "Scoped historical verification unavailable"}))
+                            return 1
+                        record = attach_historical_verification(record, task, exported["receipts"])
+                    manifest_revision = store.manifest()[1]
+                    try:
+                        current_revision = store.get("handoff", record["id"], verify_sources=False)["revision"]
+                    except FileNotFoundError:
+                        current_revision = ""
+                    preview_digest = _digest_value([manifest_revision, current_revision, record])
+                    if args.apply:
+                        if args.preview_digest != preview_digest or args.expected_revision != current_revision:
+                            print(json.dumps({"success": False, "error": "Handoff changed; preview again"}))
+                            return 1
+                        result = store.save(
+                            record, expected_revision=args.expected_revision, owner="local-operator",
+                            idempotency_key=args.operation_id or str(uuid4()),
+                            authorize_write=lambda: (
+                                args.apply is True and not args.dry_run
+                                and store.manifest()[1] == manifest_revision
+                            ),
+                        )
+                        print(json.dumps({**result, "handoff_id": record["id"]}, indent=2))
+                        return 0 if result.get("success") is True else 1
+                    print(json.dumps({"preview": True, "record": record, "expected_revision": current_revision,
+                                      "preview_digest": preview_digest}, indent=2, ensure_ascii=False))
+                    return 0
+                preview = preview_handoff_resume(store, args.handoff_id)
+                if not args.apply:
+                    print(json.dumps(preview, indent=2, ensure_ascii=False))
+                    return 0 if preview["resume_allowed"] else 1
+                if not preview["resume_allowed"]:
+                    print(json.dumps({"success": False, "error": "Handoff dependencies missing or changed",
+                                      "dependencies": preview["dependencies"]}, indent=2))
+                    return 1
+                if preview["revision"] != args.expected_revision or preview["preview_digest"] != args.preview_digest:
+                    print(json.dumps({"success": False, "error": "Handoff or dependencies changed; review again"}))
+                    return 1
+                result = HubClient(config_path=_config_arg(args.config)).post(
+                    "/api/agent-state/tasks", {
+                        "action": "create", "root": target_root, "task_id": args.task_id,
+                        "contract": preview["contract"],
+                        "handoff_resume": {
+                            "handoff_id": args.handoff_id, "revision": preview["revision"],
+                            "preview_digest": preview["preview_digest"],
+                        },
+                    },
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
+            if args.sub_arg in {"init", "save", "review"}:
+                operation_id = args.operation_id or str(uuid4())
+                # This is an explicit local operator command, not a remotely
+                # supplied actor or a permission granted by Git metadata.
+                def authorize_local_operator() -> bool:
+                    return args.apply is True and not args.dry_run
+
+                if args.sub_arg == "init":
+                    project_id = args.project_id or str(uuid4())
+                    result = store.bootstrap(project_id, mode=args.knowledge_mode,
+                                             owner="local-operator", idempotency_key=operation_id,
+                                             authorize_write=authorize_local_operator)
+                    result["project_id"] = project_id
+                else:
+                    if args.sub_arg == "save":
+                        with args.record_file.open("rb") as stream:
+                            record = parse_plan_json(stream.read(10001))
+                    else:
+                        record = build_finding_review(store.catalog(), args.finding_id,
+                                                      args.subject_digest, args.decision, args.reason)
+                    result = store.save(record, expected_revision=args.expected_revision,
+                                        owner="local-operator", idempotency_key=operation_id,
+                                        authorize_write=authorize_local_operator)
+                print(json.dumps({**result, "operation_id": operation_id}, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
+            catalog = store.catalog()
+            if args.sub_arg == "audit":
+                from local_ai_hub.repo_knowledge_quality import quality_report
+
+                result = quality_report(catalog)
+            elif args.sub_arg == "impact":
+                from local_ai_hub.repo_knowledge_quality import knowledge_impact
+
+                result = knowledge_impact(catalog, args.changed_path)
+            elif args.sub_arg == "remediate":
+                from local_ai_hub.repo_knowledge_quality import build_remediation_contract
+
+                contract = build_remediation_contract(catalog, args.finding_id, args.subject_digest)
+                if not args.apply:
+                    print(json.dumps({"preview": True, "contract": contract}, indent=2, ensure_ascii=False))
+                    return 0
+                result = HubClient(config_path=_config_arg(args.config)).create_task(
+                    contract, task_id=args.task_id, root=str(store.root),
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
+            elif args.sub_arg == "query":
+                result = query_declared_knowledge(catalog, args.query, limit=min(args.limit, 32))
+            elif args.sub_arg == "validate":
+                from local_ai_hub.repo_knowledge_graph import process_flow_findings
+                from local_ai_hub.repo_knowledge_quality import quality_report
+
+                quality = quality_report(catalog)
+                result = {
+                    "project_id": catalog["project_id"], "complete": catalog["complete"],
+                    "issues": catalog["issues"], "record_count": len(catalog["records"]),
+                    "stale_count": sum(item["freshness"] == "stale" for item in catalog["records"]),
+                    "unknown_count": sum(item["freshness"] == "unknown" for item in catalog["records"]),
+                    "conflict_candidates": detect_declared_claim_conflicts(catalog),
+                    "graph_issues": catalog.get("graph_issues", []),
+                    "process_candidates": process_flow_findings(catalog),
+                    "quality_complete": quality["complete"],
+                    "quality_candidates": quality["findings"],
+                }
+            else:
+                result = catalog
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            if args.sub_arg == "validate":
+                return 0 if result["complete"] and result["quality_complete"] and not result["quality_candidates"] else 1
+            return 0 if result["complete"] else 1
+        except (OSError, RepoPlanError, ValueError) as exc:
+            print(json.dumps({"success": False, "error": type(exc).__name__}))
+            return 1
     if args.action in {"pause", "resume", "mode"}:
         if args.action == "pause":
             requested_mode = "gaming"
@@ -594,6 +929,13 @@ def main() -> int:
         path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0
     if args.action == "agent-state":
+        if args.sub_arg == "storage-inventory":
+            from local_ai_hub.agent_state_inventory import inspect_agent_state_inventory
+
+            config = load_config(_config_arg(args.config))
+            report = inspect_agent_state_inventory(config["server"]["state_dir"])
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            return 0 if report["success"] and report["complete"] else 1
         c = client()
         print(json.dumps(c.status(detail="agent_state"), indent=2, ensure_ascii=False))
         return 0

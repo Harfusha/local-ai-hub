@@ -8,18 +8,20 @@
   "tasks": {
     "task_pr9_complete": {
       "acceptance_criteria": [
-        "PR #9 Git-first implementation remains in master.",
-        "Targeted PR, provider, packaging and security tests pass from a clean committed checkout.",
-        "Release checks, compile, lint, selftest and critical suite results recorded.",
-        "Inspected changes committed without losing user work.",
-        "Remote master updated and verified."
+        "Two project roots preserve distinct task, memory, and incident records; duplicate IDs across roots fail closed without overwriting existing records.",
+        "Task checkpoints and attempt ancestry survive canonical write/read; malformed or stale ancestry is rejected.",
+        "Shared memory supports reusable rules while session, credential, and private receipt data cannot be published.",
+        "Incident signatures remain stable; resolved records require a concrete verified fix.",
+        "A clean clone without an existing SQLite database can rebuild; repeated rebuild is idempotent; Git updates and deletions reconcile per project scope.",
+        "Offline legacy migration preview is bounded, read-only, snapshot-bound, and publishes only an explicitly reviewed record.",
+        "Projection rebuild CLI works on a clean project; critical HTTP/MCP acceptance and authorization boundaries pass."
       ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Inspect changes, correct regressions and provider bundle drift, validate exact revision, commit and push authorized work.",
+      "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified changes.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Commit and push verified practical acceptance fixes; confirm remote master.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
@@ -34,10 +36,17 @@
             "content_sha256": "efaf4aaa6628866d679523ea876fa14c38fcd80a30ae11c5db86b8cbcea56dfe",
             "kind": "working"
           }
+        },
+        {
+          "path": "docs/superpowers/specs/2026-11-26-pr9-practical-business-acceptance.md",
+          "revision": {
+            "content_sha256": "7863dd41c8eb67290b86d397f86d7aa18472847d67d84dce5b7f7c7894bbd65b",
+            "kind": "working"
+          }
         }
       ],
-      "title": "Complete PR #9 integration and publish",
-      "work_status": "completed"
+      "title": "Complete PR #9 practical business acceptance",
+      "work_status": "in_progress"
     }
   },
   "title": "PR #9 integration, repair, verification and publication"
