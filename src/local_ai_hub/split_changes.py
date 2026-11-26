@@ -99,13 +99,13 @@ def _group(
     components = {path: _component(path) for path in statuses}
     implementations: dict[str, list[str]] = {}
     for path, (key, role) in components.items():
-        if key and role == "implementation" and statuses[path] != "??":
+        if key and role == "implementation":
             implementations.setdefault(key, []).append(path)
     buckets: dict[str, list[str]] = {}
     for path, (key, role) in sorted(components.items()):
         status = statuses[path]
         candidates = implementations.get(key, [])
-        blocked = status in {"DD", "AU", "UD", "UA", "DU", "AA", "UU", "??"} or "D" in status
+        blocked = status in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"} or "D" in status
         anchor = (
             candidates[0]
             if role in {"test", "docs"} and len(candidates) == 1 and not blocked
@@ -121,7 +121,7 @@ def _group(
         for path in files:
             xy = statuses[path]
             if xy == "??":
-                risks.add("untracked_content_not_analyzed")
+                risks.add("untracked_requires_review")
             if xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
                 risks.add("unmerged")
             if xy not in {"??", "!!"} and xy[0] != " " and xy[1] != " ":
@@ -393,6 +393,10 @@ def run_split_changes(
         "summary": f"{len(statuses)} changed file(s), {len(clusters)} proposed component group(s)",
         "method": "component_name_heuristic_v2",
         "patch_coverage_complete": not observed["unavailable"],
+        "git_visible_observation_complete": (
+            not observed["unavailable"] and changed_files is None
+            and (comparison is not None or snapshot_before["head"] != "unavailable")
+        ),
         "unavailable_patch_scopes": observed["unavailable"],
         "summary_cache_hits": observed["cache_hits"],
         "persistent_summary_cache_hits": observed["persistent_cache_hits"],

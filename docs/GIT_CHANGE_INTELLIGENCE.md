@@ -6,7 +6,7 @@ Use existing `local_ai_repo(action="split_changes", root="/absolute/worktree")` 
 
 ## Incremental patch observation
 
-Tracked textual changes now expose separate staged/unstaged content-addressed patch IDs, hunk ranges, group keys and an observed change-set ID. A second read detects same-line-count edits during inspection. A bounded in-process LRU reuses only derived hunk metadata (no raw source, no verification). Untracked, conflicted, non-text, oversized or budget-limited scopes are explicitly unavailable. The observed change-set ID is **not** a full snapshot, and must not authorize staging, commit or receipt reuse. Scope and full-tree/dependency/environment validation remain required. Git commands now use the existing bounded subprocess runner; truncated inventories fail closed and truncated individual patches are marked unavailable. HEAD and the staged-entry digest are compared before/after observation. The change-set ID also binds status records, HEAD and index metadata. This remains an optimistic observation of Git-visible changes, not a complete filesystem snapshot or lease. A task-linked ledger remains follow-up work.
+Tracked textual changes now expose separate staged/unstaged content-addressed patch IDs, hunk ranges, group keys and an observed change-set ID. A second read detects same-line-count edits during inspection. A bounded in-process LRU reuses only derived hunk metadata (no raw source, no verification). Conflicted, unsupported, oversized or budget-limited scopes are explicitly unavailable. Small untracked regular files and symlinks now have bounded read-only identities, and tracked binary patches are hashed without exposing their bytes. The observed change-set ID is **not** a full snapshot, and must not authorize staging, commit or receipt reuse. Scope and full-tree/dependency/environment validation remain required. Git commands now use the existing bounded subprocess runner; truncated inventories fail closed and truncated individual patches are marked unavailable. HEAD and the staged-entry digest are compared before/after observation. The change-set ID also binds status records, HEAD and index metadata. This remains an optimistic observation of Git-visible changes, not a complete filesystem snapshot or lease. A task-linked ledger remains follow-up work.
 
 ## Persistent derived change summaries
 
@@ -27,6 +27,10 @@ For up to eight observed Python patch scopes per request, the existing bounded A
 ## Committed branch, PR and release comparison
 
 Supply `base` and `head` to `split_changes` (or `hubctl changes --root ... --base ... --head ...`) for a read-only comparison of exact committed trees. Refs are resolved to full commit IDs and all subsequent operations use those IDs. The dirty index/worktree is ignored. For a PR use its merge-base commit as the explicit base; for a release use the previous tag. This is not an implicit three-dot diff. Committed line counts and patch scopes are labeled separately. The same compact summaries and optional advisory messages apply; no publication or mutation occurs.
+
+## Untracked and binary observations
+
+Small regular untracked files (up to 512 KiB) and link metadata are observed and rechecked without following symlinks. Their scoped identities include content digest and mode. Python source is structurally summarized from an empty before-state when within the AST budget. Binary patches are captured with Git's binary format and hashed, but not semantically interpreted. Large, unreadable, conflicted, submodule and budget-limited scopes remain explicit gaps. No untracked file is staged; provenance and commit readiness remain unknown. The completeness flag means only Git-visible observations (not ignored/assume-unchanged paths or an atomic filesystem snapshot).
 
 ## Target architecture and remaining delivery
 

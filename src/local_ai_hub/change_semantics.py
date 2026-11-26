@@ -129,8 +129,20 @@ def summarize_python_patch(
             sources.append(content)
         except ValueError:
             return {"status": "unavailable", "reason": "blob_unavailable"}
+    return summarize_python_sources(*sources, cache=cache, key=key)
+
+
+def summarize_python_sources(
+    before: bytes, after: bytes, *, cache: Any | None = None, key: str,
+) -> dict[str, Any]:
+    if max(len(before), len(after)) > _MAX_SOURCE:
+        return {"status": "unavailable", "reason": "source_budget"}
+    if cache is not None:
+        stored = cache.get(key)
+        if _valid(stored):
+            return stored
     try:
-        decoded = [content.decode("utf-8") for content in sources]
+        decoded = [before.decode("utf-8"), after.decode("utf-8")]
     except UnicodeError:
         return {"status": "unavailable", "reason": "non_utf8_source"}
     result = ast_diff(*decoded)

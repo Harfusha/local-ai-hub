@@ -97,7 +97,7 @@ def test_patch_scopes_and_partial_coverage(tmp_path):
     path.write_text("first\n", encoding="utf-8")
     _git(tmp_path, "add", "payment.py")
     path.write_text("other\n", encoding="utf-8")
-    (tmp_path / "new.py").write_text("private content\n", encoding="utf-8")
+    (tmp_path / "new.py").write_bytes(b"private content\n" * 50000)
     result = _plan(tmp_path)
     assert not result["patch_coverage_complete"]
     group = next(g for g in result["clusters"] if "payment.py" in g["files"])
@@ -241,3 +241,35 @@ def test_observed_identity_binds_head_and_index(tmp_path):
     assert first["git_snapshot_metadata"]["head"] != second["git_snapshot_metadata"]["head"]
     assert first["observed_change_set_id"] != second["observed_change_set_id"]
     assert first["clusters"][0]["observed_atom_ids"] == second["clusters"][0]["observed_atom_ids"]
+
+
+def test_untracked_identity_and_structural_summary(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "new.py"
+    path.write_text("def new_feature():\n    return 1\n", encoding="utf-8")
+    first = _plan(tmp_path)
+    assert first["git_visible_observation_complete"]
+    atom = first["clusters"][0]["changes"][0]["atoms"][0]
+    assert atom["scope"] == "untracked"
+    assert atom["semantic"]["change_counts"] == {"added": 1}
+    assert "untracked_requires_review" in first["clusters"][0]["risks"]
+    path.write_text("def new_feature():\n    return 2\n", encoding="utf-8")
+    second = _plan(tmp_path)
+    assert first["observed_change_set_id"] != second["observed_change_set_id"]
+
+
+def test_binary_patch_identity(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "blob.bin"
+    path.write_bytes(b"\0before")
+    _git(tmp_path, "add", "blob.bin")
+    _git(tmp_path, "commit", "-m", "binary")
+    path.write_bytes(b"\0after")
+    first = _plan(tmp_path)
+    assert first["success"]
+    group = first["clusters"][0]
+    assert "binary_change" in group["risks"]
+    assert group["changes"][0]["atoms"][0]["content_kind"] == "binary"
+    assert first["git_visible_observation_complete"]
+    path.write_bytes(b"\0other")
+    assert _plan(tmp_path)["observed_change_set_id"] != first["observed_change_set_id"]

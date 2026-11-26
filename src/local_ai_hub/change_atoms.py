@@ -14,7 +14,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
-from .change_semantics import summarize_python_patch
+from .change_semantics import summarize_python_patch, summarize_python_sources
+from .change_untracked import observe_untracked
 
 _MAX_PATCH_BYTES = 512 * 1024
 _MAX_PATCHES = 64
@@ -133,26 +134,56 @@ def inspect_change_atoms(
     observations: dict[str, list[dict[str, Any]]] = {}
     unavailable: list[dict[str, str]] = []
     pending: list[tuple[str, str, tuple[str, ...], str]] = []
+    pending_untracked: list[tuple[str, dict[str, Any]]] = []
     cache_hits = 0
     persistent_hits = 0
     semantic_attempts = 0
     deadline = time.monotonic() + 10
     for path, xy in sorted(statuses.items()):
-        if xy == "??" or xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
-            unavailable.append({"path": path, "scope": "worktree", "reason": "untracked_or_conflicted"})
+        if xy == "??":
+            if len(pending) + len(pending_untracked) >= _MAX_PATCHES or time.monotonic() >= deadline:
+                unavailable.append({"path": path, "scope": "untracked", "reason": "analysis_budget"})
+                continue
+            try:
+                metadata, content = observe_untracked(root, path)
+            except (OSError, ValueError):
+                unavailable.append({"path": path, "scope": "untracked", "reason": "untracked_unavailable"})
+                continue
+            atom_id = identity("untracked-v1", root, path, json.dumps(metadata, sort_keys=True))
+            semantic = {"status": "unavailable", "reason": "unsupported_language_or_type"}
+            if path.lower().endswith(".py") and content is not None:
+                if semantic_attempts < 8 and time.monotonic() < deadline:
+                    semantic_attempts += 1
+                    semantic = summarize_python_sources(
+                        b"", content, cache=persistent_cache,
+                        key=identity("python-ast-summary-v1", atom_id),
+                    )
+                else:
+                    semantic = {"status": "unavailable", "reason": "analysis_budget"}
+            observations.setdefault(path, []).append({
+                "atom_id": atom_id, "scope": "untracked", "hunk_count": 0, "hunks": [],
+                "hunks_truncated": False, "semantic": semantic,
+                "content_kind": metadata["content_kind"], "content_size": metadata["content_size"],
+                "observed_mode": metadata["observed_mode"],
+            })
+            pending_untracked.append((path, metadata))
+            continue
+        if xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
+            unavailable.append({"path": path, "scope": "worktree", "reason": "unmerged"})
             continue
         for scope, changes, flag in ((staged_scope, staged, xy[0]), ("unstaged", unstaged, xy[1])):
             if flag == " ":
                 continue
             counts = changes.get(path)
-            if counts is None or any(n is None for n in counts):
-                unavailable.append({"path": path, "scope": scope, "reason": "non_text_or_missing_numstat"})
+            if counts is None:
+                unavailable.append({"path": path, "scope": scope, "reason": "missing_numstat"})
                 continue
-            if sum(n for n in counts if n is not None) > _MAX_LINES or len(pending) >= _MAX_PATCHES or time.monotonic() >= deadline:
+            binary = any(n is None for n in counts)
+            if sum(n for n in counts if n is not None) > _MAX_LINES or len(pending) + len(pending_untracked) >= _MAX_PATCHES or time.monotonic() >= deadline:
                 unavailable.append({"path": path, "scope": scope, "reason": "analysis_budget"})
                 continue
             args = (
-                "diff", "--patch", "--full-index", "--no-renames", "--no-ext-diff",
+                "diff", "--patch", "--binary", "--full-index", "--no-renames", "--no-ext-diff",
                 "--no-textconv", "--no-color", "--unified=0", "--no-indent-heuristic",
                 "--diff-algorithm=myers", "--submodule=short", "--ignore-submodules=none",
                 *(("--cached",) if scope == staged_scope else ()),
@@ -174,7 +205,7 @@ def inspect_change_atoms(
             cache_hits += int(source != "computed")
             persistent_hits += int(source == "persistent")
             semantic = {"status": "unavailable", "reason": "unsupported_language"}
-            if path.lower().endswith(".py"):
+            if not binary and not any(line.endswith(b"120000") for line in patch.split(b"\n", 5)[1:5]) and path.lower().endswith(".py"):
                 if semantic_attempts < 8 and time.monotonic() < deadline:
                     semantic_attempts += 1
                     semantic = summarize_python_patch(
@@ -185,6 +216,7 @@ def inspect_change_atoms(
                     semantic = {"status": "unavailable", "reason": "analysis_budget"}
             observations.setdefault(path, []).append({
                 "semantic": semantic,
+                "content_kind": "binary" if binary else "text",
                 "atom_id": atom_id,
                 "scope": scope,
                 "hunk_count": count,
@@ -212,6 +244,18 @@ def inspect_change_atoms(
             raise ValueError("Git patch exceeded budget during recheck") from exc
         if hashlib.sha256(current).hexdigest() != digest:
             raise ValueError("Git patch changed during inspection")
+
+    for path, expected in pending_untracked:
+        if time.monotonic() >= deadline:
+            observations.pop(path, None)
+            unavailable.append({"path": path, "scope": "untracked", "reason": "recheck_budget"})
+            continue
+        try:
+            current, _ = observe_untracked(root, path)
+        except (OSError, ValueError) as exc:
+            raise ValueError("Untracked file became unavailable during inspection") from exc
+        if current != expected:
+            raise ValueError("Untracked content changed during inspection")
 
     return {
         "observations": observations,
