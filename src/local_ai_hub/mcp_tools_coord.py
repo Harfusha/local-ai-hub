@@ -595,8 +595,10 @@ def local_ai_coord(
         return services_module.contract_error("format is only valid for action='verify_export' or 'curate_dataset'", status_code=400)
     if action == "curate_dataset" and type(min_receipts) is not int:
         return services_module.contract_error("min_receipts must be an integer for action='curate_dataset'", status_code=400)
-    if action == "curate_dataset" and laya_operation is not None and type(laya_operation) is not dict:
+    if action in {"curate_dataset", "laya_decision"} and laya_operation is not None and type(laya_operation) is not dict:
         return services_module.contract_error("laya_operation must be an object", status_code=400)
+    if action == "laya_decision" and type(laya_operation) is not dict:
+        return services_module.contract_error("laya_operation is required for action='laya_decision'", status_code=400)
     coord_canonical_inputs: dict[str, dict[str, services_module.Any]] = {
         "task_checkpoint": {
             "root": root, "task_id": task_id, "checkpoint": checkpoint,
@@ -644,6 +646,7 @@ def local_ai_coord(
             "format": "jsonl" if format is None else format,
             "laya_operation": laya_operation,
         },
+        "laya_decision": {"root": root, "laya_operation": laya_operation},
         "negative_knowledge_record": {"root": root, "record": record},
         "negative_knowledge_find": {
             "root": root, "query": query,
@@ -716,7 +719,7 @@ def local_ai_coord(
     if action == "worktree_release" and not worktree_path and not worktree_id:
         return services_module.contract_error("worktree_path or worktree_id is required for action='worktree_release'", status_code=400)
     requested_root = str(root or "").strip()
-    if action in {"curate_dataset", "task_budget_increase"} and not services_module.is_rooted_path(requested_root):
+    if action in {"curate_dataset", "laya_decision", "task_budget_increase"} and not services_module.is_rooted_path(requested_root):
         return services_module.contract_error(f"explicit absolute root is required for action='{action}'", status_code=400)
     root = services_module._client_root(root)
     if action.startswith("task_"):
@@ -1121,6 +1124,11 @@ def local_ai_coord(
         return services_module._compact(services_module.CLIENT.post(
             "/api/agent-state/tasks", payload, timeout=services_module._timeout("quick"),
         ), "status", ["service_available", "model_resident", "runtime"])
+    if action == "laya_decision":
+        payload = {"action": action, "root": root, "laya_operation": laya_operation}
+        return services_module._compact(services_module.CLIENT.post(
+            "/api/laya/decision", payload, timeout=services_module._timeout("quick"),
+        ), "general", ["service_available", "model_resident", "runtime", "baseline", "decision"])
     if action in {
         "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
         "session_briefing",

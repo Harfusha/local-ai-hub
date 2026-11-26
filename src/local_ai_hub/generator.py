@@ -611,7 +611,7 @@ Use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for previ
     # Full SKILL.md content
     return f"""---
 name: local-ai-orchestrator
-description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS Code/Copilot and MCP coding agents. Keeps the main agent as orchestrator and routes bounded work through Local AI Hub.
+description: Use when repository work, provider setup, or troubleshooting involves Local AI Hub, its MCP tools, or Laya across Codex, Antigravity, Gemini CLI, Claude, Cursor, Windsurf, VS Code/Copilot, Devin Local, OpenCode, or another MCP coding agent.
 ---
 
 # Local AI Hub routing
@@ -619,10 +619,14 @@ description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS
 Trigger map:
 {trigger_lines}
 
+The connected MCP server's current `tools/list` schema is authoritative. Some hosts expose lazy tools through a wrapper; use that host's exact server alias and the matching live-schema tool/action, then fetch exact source through bounded `local_ai_artifact` slices and use matching coordination or semantic actions as applicable.
+
 Active MCP tools and profile-enabled actions:
 {active_tool_surface}
 
 This generated surface reflects configuration and profile feature gates. Runtime authorization, task permissions, backend health, and quality gates are checked when an action runs.
+The connected MCP server's current `tools/list` schema is authoritative for tool availability. This bundled action list and `references/tools.md` are snapshots only; inspect the live schema before selecting an action.
+Laya actively advises eligible model-route, context-budget, and retrieval-strategy decisions when current repository evidence and a deterministic typed baseline exist. It may also advise eligible repository solve/delegate/review/reason/second_opinion/review_diff/generate_tests/speculative_draft requests, adaptive context-pack retrieval, and long repository-scoped narrative compression. The same typed decision surface accepts taskless request scope; task IDs are optional and are recorded only when supplied and verified. Explicit models, cascade stages, FIM latency, high-risk quality floors, deterministic/permission/mutation paths remain authoritative. Lifecycle, completion, watchdog, task-scoped memory, and supervised capture remain task-bound. Request-only decisions are telemetry-only and never become supervised candidates. For source selection, use `evaluate_context_source` with aligned verified evidence IDs; taskless memory choices require repository-scoped `source_record_ids`, and task-scoped `source_record_ids` require a verified task. Laya does not fetch evidence or grant permissions. Treat proposals as advisory and preserve deterministic Hub authority and host approvals. Use Laya only when its active runtime and decision surface report available; configuration alone does not verify that a model loaded successfully.
 {task_action_contract}
 
 Recommended Hub routes (apply the matching route by default):
@@ -665,6 +669,8 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 {repo_gate_section}
 
 For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+
+Use the trusted repository root for `local_ai_repo(action="find_files")`; do not search a home/profile root or another broad parent. If the result reports `repository_inventory_incomplete` or `time_limit`, treat it as incomplete, narrow the root or query, and never repeat the same broad root. Do not infer that omitted files are absent from a partial inventory.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -1068,7 +1074,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
                 "> - **Semantic Compression**: Use `local_ai_task(action=\"compress\")` to condense evidence after deterministic/indexed retrieval."
             )
     prioritization_bullets.append(
-        '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
+        '> - **Antigravity lazy tools**: When tools appear under `Lazy`, use `call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="<tool>", Arguments={<same arguments>})`; this is the plugin-namespaced server alias.'
     )
     prioritization_bullets.append(
         "> - **Native fallback**: Use authorized native tools when the schema has no matching Hub action; after an advertised action fails, fallback requires explicit `terminal=true` and `retryable=false`. Full routing and scope rules are in `local-ai-orchestrator`."
@@ -1229,7 +1235,7 @@ def generate_antigravity_skill_policy() -> str:
         ANTIGRAVITY_POLICY_BEGIN,
         "## Antigravity automatic skill activation",
         "",
-        "At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Call applicable endpoints directly from the main agent; managing native subagents does not replace Hub retrieval, artifact, or coordination calls. For every non-trivial repository task, start with indexed `local_ai_repo` evidence; use `local_ai_artifact` for exact source after locating it; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer; use exposed `local_ai_task` semantic actions for matching bounded review, reasoning, exploration or compression tasks after evidence. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.",
+        "At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. If Antigravity shows the server tools under `Lazy`, invoke them through `call_mcp_tool(ServerName=\"local-ai-hub_local-ai\", ToolName=\"local_ai_repo\", Arguments={\"action\":\"search\",\"query\":\"<task-specific query>\",\"root\":\"<absolute workspace root>\"})`; replace the tool and arguments with the matching live-schema operation. This plugin-scoped name combines plugin ID `local-ai-hub` and server key `local-ai`. Do this before repository reads or shell exploration for every non-trivial repository task. Do not assume `force_all_tools_eager` changes Antigravity behavior. Call applicable endpoints from the main agent; native subagents do not replace Hub retrieval, artifact, or coordination calls. For exact source after locating it, use `local_ai_artifact`; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer; use exposed `local_ai_task` semantic actions for matching bounded review, reasoning, exploration or compression tasks after evidence. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.",
         "If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.",
         ANTIGRAVITY_POLICY_END,
     ))
@@ -1256,9 +1262,6 @@ def generate_mcp_configs(
             },
         }
     }
-    if agent == "gemini":
-        entries["local-ai"]["force_all_tools_eager"] = True
-        entries["local-ai"]["skip_tool_name_prefix"] = True
     if bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
         if serena is not None and cfg.get("code_intelligence", {}).get("serena_enabled", True):
             context = "codex" if agent == "codex" else "claude-code" if agent == "claude" else "ide-assistant"
@@ -1390,10 +1393,7 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
         lines.append("- **Exact file slices & artifacts**: Call local_ai_artifact actions available in the current schema.")
     lines.extend([
         "",
-        "When calling via call_mcp_tool (if tools are lazily loaded):",
-        '- ServerName: "local-ai"',
-        "- ToolName: exact tool name (e.g. local_ai_repo)",
-        '- Arguments: parameter dictionary (e.g. {"action": "search", "query": "symbol", "root": "/absolute/project"})',
+        "If this host exposes lazy MCP tools through a wrapper, use the server alias and exact arguments shown by that host's live MCP surface.",
     ])
     return "\n".join(lines) + "\n"
 
@@ -1426,7 +1426,7 @@ def write_all_generated(
     references = generate_skill_references(cfg)
     for ref_name, ref_content in references.items():
         ref_path = refs_dir / ref_name
-        ref_path.write_text(ref_content, encoding="utf-8")
+        ref_path.write_text(ref_content.rstrip() + "\n", encoding="utf-8")
         results["skill"].append(str(ref_path))
 
     tok_skill_dir = target_root / "skills" / "token-economizer"

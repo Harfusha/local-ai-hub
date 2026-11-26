@@ -137,14 +137,15 @@ def _redact_laya_training_text(value: str) -> str:
     return redacted
 
 
-_STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_DEPENDENCY_TIMEOUT_SECONDS = 1.0
 _STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS = 2.0
 _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
-_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS = 1.0
+_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS = 3.0
+_STATUS_VRAM_BALANCER_TIMEOUT_SECONDS = 9.0
 _STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS = 2.0
-_STATUS_SCHEDULER_TIMEOUT_SECONDS = 1.0
+_STATUS_SCHEDULER_TIMEOUT_SECONDS = 3.0
 _STATUS_AGENT_STATE_TIMEOUT_SECONDS = 2.0
-_STATUS_RECOVERY_TIMEOUT_SECONDS = 1.0
+_STATUS_RECOVERY_TIMEOUT_SECONDS = 3.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
@@ -161,7 +162,9 @@ def _status_dependency_timeout_seconds(key: str) -> float:
         timeout = max(timeout, float(_STATUS_RECOVERY_TIMEOUT_SECONDS))
     elif key == "ollama_profile":
         timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
-    elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:
+    elif key == "vram_balancer":
+        timeout = max(timeout, float(_STATUS_VRAM_BALANCER_TIMEOUT_SECONDS))
+    elif key in {"preprocessing", "preprocessing.status", "preprocessing.stats", "background_gpu"}:
         timeout = max(timeout, float(_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS))
     elif key == "scheduler":
         timeout = max(timeout, float(_STATUS_SCHEDULER_TIMEOUT_SECONDS))
@@ -223,7 +226,7 @@ def _status_probe_key(view: str, scope: str, key: str) -> str:
     return f"{view}:{scope}:{key}" if key in {"telemetry.summary", "preprocessing.status"} else key
 
 
-_CORE_STATUS_PROBES = frozenset({"headless", "runtime.online", "ollama_profile", "scheduler"})
+_CORE_STATUS_PROBES = frozenset({"headless", "runtime.online", "ollama_profile", "scheduler", "recovery"})
 
 
 def _status_probe_affects_core_health(key: str, *, healthy: bool) -> bool:

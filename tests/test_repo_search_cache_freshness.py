@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.service_repo_search_lexical import _repo_search_lexical
 from local_ai_hub.services import LocalAIServices
 
 
@@ -21,6 +24,18 @@ def _search_service(tmp_path, _preprocessor):
     services._repo_cache_state = lambda _root: {'fingerprint': 'rev-1', 'kind': 'test'}
     services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     return services
+
+
+def test_invalid_project_root_has_client_error_contract(tmp_path):
+    result = _repo_search_lexical(
+        SimpleNamespace(config={}), str(tmp_path / "missing-root"), "needle",
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_project_configuration"
+    assert result["status_code"] == 400
+    assert result["terminal"] is True
+    assert result["retryable"] is False
 
 
 def _service_with_rag_candidates(tmp_path, candidates):

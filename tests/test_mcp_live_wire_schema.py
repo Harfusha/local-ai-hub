@@ -153,6 +153,8 @@ def _isolated_config(tmp_path: Path) -> tuple[Path, Path, int]:
     state_dir = tmp_path / "hub-state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\n"
+        "config_schema_version = 1\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         f"port = {port}\n"
@@ -302,6 +304,15 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
                 "arguments": {"detail": "brief"},
             },
         },
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "local_ai_coord",
+                "arguments": {"action": "gpu_reservation_status"},
+            },
+        },
     ]
     assert not (state_dir / "hub.pid").exists()
     with socket.socket() as probe:
@@ -387,6 +398,17 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
                 if block.get("type") == "text"
             )
         assert payload.get("success") is True, payload
+        gpu_response = next((item for item in responses if item.get("id") == 3), None)
+        assert gpu_response is not None, completed.stdout[-1400:]
+        gpu_result = gpu_response.get("result", {})
+        gpu_payload = gpu_result.get("structuredContent")
+        if not isinstance(gpu_payload, dict):
+            gpu_payload = next(
+                json.loads(block["text"])
+                for block in gpu_result.get("content", [])
+                if block.get("type") == "text"
+            )
+        assert gpu_payload.get("success") is True, gpu_payload
         assert (state_dir / "hub.pid").is_file()
         assert child_log.is_file()
     finally:

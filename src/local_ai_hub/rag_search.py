@@ -236,10 +236,15 @@ class RAGSearchMixin:
             result["deterministic_postprocess"] = {"deduplicated": removed}
         return result
 
-    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, semantic_only: bool = False) -> dict[str, Any]:
+    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, semantic_only: bool = False, lexical_only: bool = False) -> dict[str, Any]:
         clean_query = normalize_query(query)
+        if semantic_only and lexical_only:
+            return {"success": False, "terminal": True, "retryable": False,
+                    "error": "semantic_only and lexical_only cannot both be enabled"}
         embedding_query = _semantic_embedding_query(clean_query) if semantic_only else clean_query
-        semantic_search_options = (
+        retrieval_options = (
+            {"lexical_only": True}
+            if lexical_only else
             {"semantic_only": True, "embedding_query": embedding_query}
             if semantic_only else {}
         )
@@ -258,7 +263,8 @@ class RAGSearchMixin:
         def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
             return stable_hash({
                 "workspace": workspace, "revision": revision, "generation": index_generation,
-                "query": clean_query, "top_k": top_k, "reranker": use_reranker, "semantic_only": semantic_only,
+                "query": clean_query, "top_k": top_k, "reranker": use_reranker,
+                "semantic_only": semantic_only, "lexical_only": lexical_only,
                 "semantic_query": embedding_query,
                 "scope_path": scope_path,
                 "chunker_version": RAG_CHUNKER_VERSION,
@@ -281,12 +287,12 @@ class RAGSearchMixin:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
                     deadline=deadline, cancel_event=cancel_event,
-                    allow_cpu_fallback=False, **semantic_search_options,
+                    allow_cpu_fallback=False, **retrieval_options,
                 )
             else:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    allow_cpu_fallback=False, **semantic_search_options,
+                    allow_cpu_fallback=False, **retrieval_options,
                 )
             if search_execution_stopped(raw_result):
                 return {**raw_result, "success": False, "_cacheable": False}
@@ -331,13 +337,13 @@ class RAGSearchMixin:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
                     deadline=deadline, cancel_event=cancel_event,
-                    allow_cpu_fallback=False, **semantic_search_options,
+                    allow_cpu_fallback=False, **retrieval_options,
                 )
             else:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
                     deadline=deadline, cancel_event=cancel_event,
-                    allow_cpu_fallback=False, **semantic_search_options,
+                    allow_cpu_fallback=False, **retrieval_options,
                 )
             hit, coalesced = False, False
         if search_execution_stopped(raw):
@@ -359,7 +365,7 @@ class RAGSearchMixin:
             raw = self._search_uncached(
                 clean_query, workspace, top_k, use_reranker, priority, scope_path,
                 deadline=deadline, cancel_event=cancel_event,
-                allow_cpu_fallback=False, **semantic_search_options,
+                allow_cpu_fallback=False, **retrieval_options,
             )
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
@@ -379,6 +385,17 @@ class RAGSearchMixin:
                 result["reindex_scheduled"] = False
         result["index_revision"] = revision
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
+        # LAH-025: Explicitly mark lexical fallback as degraded and report fully_indexed=False
+        if (
+            result.get("retrieval_mode") == "lexical_fallback"
+            or result.get("result_source") == "lexical_fallback"
+            or result.get("fallback") in ("embedding_backend", "embedding_space_mismatch", "missing_vectors", "bm25_fts", "lexical")
+            or result.get("fallback_used") is True
+        ):
+            result["degraded"] = True
+            result["fully_indexed"] = False
+        elif "fully_indexed" not in result:
+            result["fully_indexed"] = True
         if not latest_chunker_index_current:
             result["degraded"] = True
             result["reindex_required"] = True

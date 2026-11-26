@@ -2,7 +2,7 @@
 
 Provides active inline advisory routing for Local AI Hub operations:
 1. Retrieval Strategy Dispatcher (AST, BM25, HNSW, GraphRAG, Hybrid).
-2. Model Tier Router (Fast 1.5B/3B, Smart 7B, Reasoning 9B).
+2. Model Tier Router (hardware-profile `fast_code`, `heavy_code`, and `reasoning`).
 3. Context Pruning Gate (Full, AST Skeleton, Drop).
 4. Pre-Verification Fast-Reject Gate.
 
@@ -33,9 +33,9 @@ class RetrievalStrategy(StrEnum):
 
 
 class ModelTier(StrEnum):
-    FAST = "fast"          # 1.5B / 3B
-    SMART = "smart"        # 7B
-    REASONING = "reasoning"# 9B+
+    FAST = "fast"
+    SMART = "smart"
+    REASONING = "reasoning"
 
 
 class ContextAction(StrEnum):
@@ -78,10 +78,16 @@ class LayaActiveGateway:
         self,
         laya_runtime_adapter: Any = None,
         rl_feedback_recorder: Any = None,
+        model_roles: Mapping[str, Any] | None = None,
     ) -> None:
         self._adapter = laya_runtime_adapter
         self._rl_recorder = rl_feedback_recorder
         self._decision_counter = 0
+        self.model_roles = dict(model_roles or {})
+
+    def _model_for(self, role: str, fallback: str) -> str:
+        model = self.model_roles.get(role)
+        return model.strip() if isinstance(model, str) and model.strip() else fallback
 
     def route_retrieval(
         self,
@@ -171,7 +177,7 @@ class LayaActiveGateway:
         if any(pat in p_lower for pat in reasoning_patterns) or context_token_count > 24000:
             return ModelRouteRecommendation(
                 tier=ModelTier.REASONING,
-                model_name="qwen3.5:9b",
+                model_name=self._model_for("reasoning", "qwen2.5-coder:7b"),
                 confidence=0.92,
                 reasons=("Complex reasoning or large context requirements detected",),
                 speculative_window=2,
@@ -186,17 +192,17 @@ class LayaActiveGateway:
         if any(pat in p_lower for pat in fast_patterns) and context_token_count < 4000:
             return ModelRouteRecommendation(
                 tier=ModelTier.FAST,
-                model_name="qwen2.5-coder:1.5b",
+                model_name=self._model_for("fast_code", "qwen2.5-coder:3b"),
                 confidence=0.94,
                 reasons=("Task matched low-complexity localized code transform pattern",),
                 speculative_window=6,
                 suggested_temperature=0.0,
             )
 
-        # Default standard coding & refactoring: smart 7B
+        # Default standard coding & refactoring uses the active heavy_code route.
         return ModelRouteRecommendation(
             tier=ModelTier.SMART,
-            model_name="qwen2.5-coder:7b",
+            model_name=self._model_for("heavy_code", "qwen2.5-coder:7b"),
             confidence=0.90,
             reasons=("Standard software engineering implementation and validation",),
             speculative_window=4,

@@ -203,6 +203,38 @@ class ServiceReviewMixin:
                 det_hint = (fit_text(det_hint, metadata_budget).text if det_hint and metadata_budget else "") + "\n\n" + knowledge_text
 
         diff_text = str(diff["diff"])
+        laya_evidence_ids = args.get("evidence_ids")
+        if isinstance(laya_evidence_ids, (list, tuple)):
+            laya_evidence_ids = list(dict.fromkeys(
+                item.strip() for item in laya_evidence_ids
+                if isinstance(item, str) and item.strip()
+            ))[:64]
+        else:
+            laya_evidence_ids = []
+        review_root = args.get("root")
+        if not laya_evidence_ids and isinstance(review_root, str) and review_root.strip():
+            pack_context = getattr(self, "_hybrid_context", None)
+            if callable(pack_context):
+                try:
+                    packed_context = pack_context(
+                        review_root,
+                        instructions[:2048],
+                        workspace=args.get("workspace"),
+                        max_tokens=512,
+                        changed_paths=tuple(
+                            path for path in diff.get("changed_files", [])
+                            if isinstance(path, str)
+                        )[:64],
+                    )
+                    evidence = packed_context.get("evidence", []) if isinstance(packed_context, dict) else []
+                    laya_evidence_ids = list(dict.fromkeys(
+                        row.get("evidence_id") for row in evidence
+                        if isinstance(row, dict)
+                        and isinstance(row.get("evidence_id"), str)
+                        and row.get("evidence_id")
+                    ))[:64] if isinstance(evidence, list) else []
+                except Exception:
+                    laya_evidence_ids = []
         complexity_hint = review_diff_complexity(args, det_diff, diff)
         full_route = self.router.classify(
             instructions + det_hint, diff_text, "review", complexity_hint
@@ -267,6 +299,8 @@ class ServiceReviewMixin:
             return {
                 "success": False,
                 "error": "The selected model's prompt budget is too small for a safe diff review.",
+                "error_code": "review_prompt_budget_too_small",
+                "status_code": 422,
                 "terminal": True,
                 "retryable": False,
                 "changed_files": diff.get("changed_files", []),
@@ -278,6 +312,8 @@ class ServiceReviewMixin:
         if largest_review_chunk_tokens > review_chunk_token_budget:
             return {
                 "success": False,
+                "error_code": "review_diff_fragment_exceeds_budget",
+                "status_code": 422,
                 "error": (
                     f"A diff fragment exceeds the {review_chunk_token_budget}-token review budget and cannot be split safely. "
                     "Narrow the diff or exclude generated/minified files."
@@ -303,6 +339,8 @@ class ServiceReviewMixin:
             )
             return {
                 "success": False,
+                "error_code": "review_diff_segment_limit_exceeded",
+                "status_code": 422,
                 "error": (
                     f"Review requires {len(review_chunks)} segments; the safe limit is "
                     f"{max_review_chunks}. {scope_guidance}"
@@ -359,6 +397,8 @@ class ServiceReviewMixin:
                 "operation": "review_diff",
                 "task": task,
                 "context": review_code,
+                **({"root": review_root} if isinstance(review_root, str) and review_root.strip() else {}),
+                **({"evidence_ids": laya_evidence_ids} if laya_evidence_ids else {}),
                 "changed_paths": diff.get("changed_files", []),
                 "static_facts": det_hint,
                 "complexity": complexity,

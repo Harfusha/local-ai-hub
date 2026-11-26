@@ -34,6 +34,34 @@ def test_readiness_preserves_valid_hardware_profile(monkeypatch):
     assert result["hardware_profile"] == "high"
 
 
+def test_minimal_status_profile_preserves_declared_readiness_identity(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_server, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda *_args, **_kwargs: {
+        "hub_online": True,
+        "version": "7.0.0",
+        "ollama_online": True,
+        "hardware_profile": "integrated",
+        "scheduler": {"active_model": None, "gpu_admission_state": "available"},
+        "capabilities": {
+            "search_summaries": {"available": False, "state": "profile_blocked", "minimum_profile": "balanced",
+                                  "reason": "requires_balanced_profile"},
+        },
+    })
+
+    result = mcp_server.local_ai_status(detail="brief", response_profile="minimal")
+
+    assert result["success"] is True
+    assert result["version"] == "7.0.0"
+    assert result["ollama_online"] is True
+    assert result["active_model"] is None
+    assert result["degraded"] is False
+    assert result["hardware_profile"] == "integrated"
+    assert "capabilities" in result
+    assert mcp_server.validate_operation_output("local_ai_status", "brief", result) is None
+
+
 @pytest.mark.parametrize("delay", [0.25, 10])
 def test_rate_limit_preserves_server_retry_after(monkeypatch, delay):
     routes = []

@@ -108,6 +108,33 @@ def test_coord_task_create_accepts_only_one_contract_object():
         ) is not None
 
 
+def test_coord_task_create_non_empty_contract_uses_object_constraint():
+    schema = operation_parameters_schema("local_ai_coord")
+    task_create = next(
+        rule["then"] for rule in schema["allOf"]
+        if rule.get("if", {}).get("properties", {}).get("action", {}).get("enum") == ["task_create"]
+    )
+    assert task_create["properties"]["contract"] == {"minProperties": 1}
+
+
+def test_coord_laya_decision_is_base_action_and_requires_only_repository_root():
+    schema = operation_input_schema("local_ai_coord", "laya_decision")
+    assert {"root", "laya_operation"} <= set(schema["properties"])
+    assert "task_id" not in schema["properties"]
+    assert validate_operation_arguments(
+        "local_ai_coord",
+        "laya_decision",
+        {
+            "action": "laya_decision",
+            "root": "C:/fixture",
+            "laya_operation": {"action": "evaluate_decision"},
+        },
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "laya_decision", {"action": "laya_decision", "laya_operation": {"action": "evaluate_decision"}},
+    ) is not None
+
+
 def test_rag_docsets_require_explicit_canonical_workspace_and_query():
     index_schema = operation_input_schema("local_ai_rag", "docset_index")
     search_schema = operation_input_schema("local_ai_rag", "docset_search")
@@ -1256,10 +1283,40 @@ def test_mcp_tools_list_scopes_artifact_list_arguments():
     input_schema = tool.inputSchema
     list_rule = next(
         rule for rule in input_schema["then"]["allOf"]
-        if rule.get("if", {}).get("properties", {}).get("action", {}).get("const") == "list"
+        if (
+            rule.get("if", {}).get("properties", {}).get("action", {}).get("const") == "list"
+            or "list" in rule.get("if", {}).get("properties", {}).get("action", {}).get("enum", [])
+        )
+        and rule.get("then", {}).get("not", {}).get("required") == ["artifact_id"]
     )
 
-    assert {"required": ["artifact_id"]} in list_rule["then"]["not"]["anyOf"]
+    assert list_rule["if"]["properties"]["action"].get("const", "list") == "list"
+    assert list_rule["then"]["not"] == {"required": ["artifact_id"]}
+
+
+def test_public_mcp_input_schemas_stay_bounded_after_action_scoping():
+    import json
+
+    tools = (
+        "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
+        "local_ai_coord", "local_ai_work", "local_ai_artifact",
+    )
+    size = sum(
+        len(json.dumps(operation_tool_input_schema(tool), separators=(",", ":")))
+        for tool in tools
+    )
+
+    assert size < 100_000
+    assert validate_operation_arguments(
+        "local_ai_task",
+        "hardware_benchmark",
+        {
+            "action": "hardware_benchmark",
+            "model": "qwen2.5-coder:0.5b",
+            "prompt": "bounded validation",
+            "task": "must remain server-rejected",
+        },
+    ) == "task is not valid for action='hardware_benchmark'"
 
 
 def test_receipt_schema_conditionally_requires_evidence_only_when_passed():

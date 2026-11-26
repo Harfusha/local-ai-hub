@@ -1585,6 +1585,13 @@ class HubClient:
                 root=kwargs.get("root", "."),
                 laya_operation=kwargs.get("laya_operation"),
             )
+        if act == "laya_decision":
+            payload = {
+                "action": "laya_decision",
+                "root": kwargs.get("root", "."),
+                "laya_operation": kwargs.get("laya_operation"),
+            }
+            return self.post("/api/laya/decision", payload)
         if act == "negative_knowledge_record":
             record = kwargs.get("record")
             if not isinstance(record, dict):

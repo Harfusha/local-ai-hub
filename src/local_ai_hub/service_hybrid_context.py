@@ -214,6 +214,111 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
         base = {"success": False, "context": "", "evidence": []}
     else:
         base = dict(base)
+    laya_retrieval_choice = None
+    laya_retrieval_fallback = None
+    laya_cfg = getattr(self, "config", {}).get("laya", {})
+    if mode == "adaptive" and isinstance(laya_cfg, dict) and laya_cfg.get("enabled") is True:
+        raw_rows = base.get("evidence")
+        evidence_ids = list(dict.fromkeys(
+            row.get("evidence_id") for row in raw_rows
+            if isinstance(row, dict)
+            and isinstance(row.get("evidence_id"), str)
+            and row.get("evidence_id")
+        ))[:64] if isinstance(raw_rows, list) else []
+        evidence_store = getattr(self, "evidence_store", None)
+        get_many = getattr(evidence_store, "get_many", None)
+        evaluate_laya = getattr(self, "evaluate_laya_advisory", None)
+        if evidence_ids and callable(get_many) and callable(evaluate_laya):
+            try:
+                root_value = canonical_root(request.root)
+                rows = get_many(evidence_ids, verify=True, root=root_value)
+                verified = (
+                    type(rows) is list and len(rows) == len(evidence_ids)
+                    and all(
+                        type(row) is dict
+                        and row.get("success") is True
+                        and row.get("evidence_id") == evidence_id
+                        and row.get("root") == root_value
+                        and row.get("stale") is False
+                        for row, evidence_id in zip(rows, evidence_ids, strict=True)
+                    )
+                )
+                features = getattr(self, "config", {}).get("features", {})
+                rag_available = (
+                    getattr(self, "rag", None) is not None
+                    and (not isinstance(features, dict) or features.get("rag", True) is True)
+                )
+                code_available = getattr(self, "code_index", None) is not None
+                options = ["lexical_bm25", "hybrid"]
+                if code_available:
+                    options.insert(0, "ast_graph")
+                if rag_available:
+                    options.insert(-1, "dense_rag")
+                if verified and len(options) >= 2:
+                    operation = {
+                        "action": "evaluate_decision",
+                        **({"task_id": request.task_id.strip()} if request.task_id.strip() else {}),
+                        "decision": {
+                            "category": "retrieval_strategy",
+                            "evidence_ids": evidence_ids,
+                            "options": options,
+                            "state": {
+                                "context_source": "hybrid",
+                                "rag_available": "true" if rag_available else "false",
+                                "code_index_available": "true" if code_available else "false",
+                                "mode": mode,
+                            },
+                            "training_content": {
+                                "task_input": request.query.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore"),
+                            },
+                        },
+                    }
+                    suggestion = evaluate_laya(
+                        operation,
+                        root=root_value,
+                        baseline={
+                            "method": "adaptive_context_hybrid_default",
+                            "suggestion": "hybrid",
+                            "evidence_id": evidence_ids[0],
+                        },
+                    )
+                    internal_strategy = {
+                        "ast_graph": "ast_symbol",
+                        "lexical_bm25": "lexical_bm25",
+                        "dense_rag": "semantic_hnsw",
+                        "hybrid": "hybrid",
+                    }.get(suggestion)
+                    if internal_strategy is not None and suggestion in options:
+                        if suggestion == "hybrid":
+                            laya_retrieval_choice = suggestion
+                        else:
+                            rerun = self._hybrid_context(
+                                request.root,
+                                request.query,
+                                workspace=request.workspace or None,
+                                max_tokens=request.token_budget,
+                                quality_first=True,
+                                context_identity={
+                                    **context_cache_identity,
+                                    "laya_retrieval_strategy": suggestion,
+                                },
+                                path_hints=effective_path_hints,
+                                directory_hints=request_directory_hints,
+                                exclude_paths=request_exclude_paths,
+                                force_include_paths=request_force_include_paths,
+                                focus=request.focus,
+                                changed_paths=request.changed_paths,
+                                retrieval_weights=retrieval_weights,
+                                laya_retrieval_strategy=internal_strategy,
+                            )
+                            if isinstance(rerun, dict) and rerun.get("success") is True:
+                                base = dict(rerun)
+                                laya_retrieval_choice = suggestion
+                            else:
+                                laya_retrieval_fallback = "retrieval_rerun_unavailable"
+            except Exception as exc:
+                laya_retrieval_fallback = "advisory_unavailable"
+                logger.debug("Laya adaptive context strategy fallback: %s", type(exc).__name__)
     raw_evidence = base.get("evidence")
     if isinstance(raw_evidence, list):
         normalized_evidence = []
@@ -250,7 +355,14 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             changed_paths=tuple(request.changed_paths), preload_profile=request.preload_profile,
             memory_revision=memory_revision, warnings=preload_warnings,
         ).to_dict()
-        return {**base, "guarded": False, "context_id": context_id, "context_pack": pack}
+        return {
+            **base,
+            **({"laya_retrieval_strategy": laya_retrieval_choice} if laya_retrieval_choice else {}),
+            **({"laya_retrieval_fallback": laya_retrieval_fallback} if laya_retrieval_fallback else {}),
+            "guarded": False,
+            "context_id": context_id,
+            "context_pack": pack,
+        }
 
     revision = ""
     fresh_fingerprint = False
@@ -399,6 +511,8 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
     result = dict(base)
     result.update({
         "query": request.query,
+        **({"laya_retrieval_strategy": laya_retrieval_choice} if laya_retrieval_choice else {}),
+        **({"laya_retrieval_fallback": laya_retrieval_fallback} if laya_retrieval_fallback else {}),
         "guarded": True,
         "delivery_mode": mode,
         "adaptive_context_pack": pack_data,
@@ -469,6 +583,33 @@ def fast_context(self, root: str, query: str, max_tokens: int) -> dict[str, Any]
             "hint": "Retry the adaptive context pack when deterministic-only context is insufficient.",
         }
     return packed
+
+
+def recommend_direct_rag_strategy(
+    self, root: str, query: str, *, workspace: str,
+) -> str | None:
+    """Reuse the adaptive pack's verified retrieval advisory for direct RAG search."""
+    if not isinstance(query, str) or not query.strip():
+        return None
+    available = getattr(self, "laya_advisory_available", None)
+    if not callable(available) or available() is not True:
+        return None
+    try:
+        request = ConsistencyRequest(
+            root=canonical_root(root),
+            query=query,
+            phase="discover",
+            workspace=workspace,
+            token_budget=512,
+        )
+        packed = self.adaptive_context_pack(request, mode="adaptive")
+    except Exception as exc:
+        logger.debug("Laya direct RAG strategy fallback: %s", type(exc).__name__)
+        return None
+    if not isinstance(packed, dict) or packed.get("success") is not True:
+        return None
+    strategy = packed.get("laya_retrieval_strategy")
+    return strategy if strategy in {"dense_rag", "lexical_bm25"} else None
 
 def _hybrid_context(
     self,

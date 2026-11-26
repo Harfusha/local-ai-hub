@@ -16,6 +16,8 @@ high-performance entrypoint (<5ms latency):
 from __future__ import annotations
 
 import logging
+import threading
+import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -31,6 +33,8 @@ from .laya_training_collector import LayaTrainingCollector
 
 logger = logging.getLogger(__name__)
 
+VALID_LAYA_MODES = frozenset({"off", "shadow", "advisory", "active"})
+
 
 @dataclass(frozen=True)
 class UnifiedLayaPlan:
@@ -42,6 +46,12 @@ class UnifiedLayaPlan:
     overall_confidence: float
     total_latency_saved_est_ms: float
     cached_match: SemanticMatchResult | None = None
+    mode: str = "advisory"
+    provenance: str = "laya_advisory"
+    is_actionable: bool = False
+    abstained: bool = False
+    abstention_reason: str | None = None
+    calibrated_head_confidences: dict[str, float] | None = None
 
 
 class LayaUnifiedCoordinator:
@@ -54,9 +64,15 @@ class LayaUnifiedCoordinator:
         laya_runtime_adapter: Any = None,
         training_collector: LayaTrainingCollector | None = None,
         training_capture_enabled: bool = False,
+        model_roles: Mapping[str, Any] | None = None,
+        active_confidence_threshold: float = 0.65,
     ) -> None:
-        self.mode = mode
-        self.gateway = LayaActiveGateway(laya_runtime_adapter=laya_runtime_adapter)
+        self.mode = mode if mode in VALID_LAYA_MODES else "advisory"
+        self.active_confidence_threshold = float(active_confidence_threshold)
+        self.gateway = LayaActiveGateway(
+            laya_runtime_adapter=laya_runtime_adapter,
+            model_roles=model_roles,
+        )
         self.reranker = LayaCrossLingualReranker()
         self.intent_classifier = LayaEditIntentClassifier()
         self.budget_allocator = LayaBudgetAllocator(default_budget=default_budget)
@@ -66,6 +82,7 @@ class LayaUnifiedCoordinator:
         self.semantic_dedup = LayaSemanticDeduplicator()
         self.collector = training_collector or LayaTrainingCollector(enabled=training_capture_enabled)
         self._total_inferences = 0
+        self._lock = threading.Lock()
 
     def analyze_task(
         self,
@@ -74,13 +91,81 @@ class LayaUnifiedCoordinator:
         affected_paths: Sequence[str] = (),
         incoming_context_tokens: int = 0,
         max_budget: int | None = None,
+        *,
+        repo_root: str | None = None,
+        worktree_id: str | None = None,
+        revision: str | None = None,
+        operation: str = "query",
+        is_mutation: bool = False,
     ) -> UnifiedLayaPlan:
-        """Run complete multi-signal decision suite and automatically record training samples in <5ms."""
-        self._total_inferences += 1
+        """Run complete multi-signal decision suite respecting state machine and strict replay admissibility."""
+        with self._lock:
+            self._total_inferences += 1
+
         effective_query = query if query is not None else instruction
 
-        # 0. Check semantic deduplication cache
-        cached_match = self.semantic_dedup.find_match(effective_query)
+        # State machine mode: "off" -> Zero neural/heuristic inference, zero training capture, instant deterministic baseline
+        if self.mode == "off":
+            expansion = CrossLingualExpansion(
+                original_query=effective_query,
+                detected_language="en",
+                expanded_terms=(),
+                composite_query=effective_query,
+            )
+            retrieval_rec = RetrievalRecommendation(
+                strategy="ast_symbol",
+                confidence=1.0,
+                reasons=("laya_mode_off",),
+                skip_branches=(),
+                estimated_latency_saved_ms=0.0,
+            )
+            model_rec = ModelRouteRecommendation(
+                tier="fast",
+                model_name="deterministic",
+                confidence=1.0,
+                reasons=("laya_mode_off",),
+                speculative_window=0,
+                suggested_temperature=0.0,
+            )
+            intent_res = IntentAnalysisResult(
+                intent="unknown",
+                blast_radius="single_file",
+                validation_level="syntax",
+                confidence=1.0,
+                reasons=("laya_mode_off",),
+                target_files_hint=(),
+            )
+            budget_plan = self.budget_allocator.allocate(
+                requested_budget=max_budget,
+                task_complexity="standard",
+                incoming_context_tokens=incoming_context_tokens,
+            )
+            return UnifiedLayaPlan(
+                crosslingual_expansion=expansion,
+                retrieval_recommendation=retrieval_rec,
+                model_recommendation=model_rec,
+                intent_analysis=intent_res,
+                budget_plan=budget_plan,
+                overall_confidence=1.0,
+                total_latency_saved_est_ms=0.0,
+                cached_match=None,
+                mode="off",
+                provenance="deterministic_default_mode_off",
+                is_actionable=False,
+                abstained=False,
+                abstention_reason=None,
+                calibrated_head_confidences={"retrieval": 1.0, "model": 1.0, "intent": 1.0},
+            )
+
+        # 0. Check semantic deduplication cache with scope and replay admissibility checks
+        cached_match = self.semantic_dedup.find_match(
+            effective_query,
+            repo_root=repo_root,
+            worktree_id=worktree_id,
+            revision=revision,
+            operation=operation,
+            allow_mutation=not is_mutation,
+        )
 
         # 1. Cross-Lingual expansion
         expansion = self.reranker.expand_query(effective_query)
@@ -105,31 +190,46 @@ class LayaUnifiedCoordinator:
             incoming_context_tokens=incoming_context_tokens,
         )
 
-        overall_conf = (
-            retrieval_rec.confidence * 0.35 +
-            model_rec.confidence * 0.35 +
-            intent_res.confidence * 0.30
+        # 6. Per-head confidence calibration & OOD detection (LAH-032)
+        cal_r = min(1.0, max(0.0, round(retrieval_rec.confidence * 0.95 + 0.02, 3)))
+        cal_m = min(1.0, max(0.0, round(model_rec.confidence * 0.95 + 0.02, 3)))
+        cal_i = min(1.0, max(0.0, round(intent_res.confidence * 0.95 + 0.02, 3)))
+        head_calibrations = {"retrieval": cal_r, "model": cal_m, "intent": cal_i}
+
+        clean_text = effective_query.strip()
+        is_ood = (
+            len(clean_text) < 2
+            or len(clean_text) > 8000
+            or (cal_r < 0.35 and cal_m < 0.35 and cal_i < 0.35)
         )
 
-        # 6. Automatic Training Data Capture (if enabled)
-        if self.collector.enabled:
-            try:
-                self.collector.record_laya_decision(
-                    category="task_routing",
-                    state={
-                        "instruction_len": len(instruction),
-                        "context_tokens": incoming_context_tokens,
-                        "blast_radius": str(intent_res.blast_radius),
-                    },
-                    question_text=effective_query,
-                    expected_choice=str(retrieval_rec.strategy),
-                    confidence_distribution={
-                        str(retrieval_rec.strategy): retrieval_rec.confidence,
-                        "model_tier": model_rec.confidence,
-                    },
-                )
-            except Exception as exc:
-                logger.debug("Failed recording laya decision sample: %s", exc)
+        overall_conf = round(cal_r * 0.35 + cal_m * 0.35 + cal_i * 0.30, 3)
+
+        # Mode-specific execution and actionability
+        if self.mode == "shadow":
+            plan_mode = "shadow"
+            provenance = "laya_shadow_evaluation_only"
+            is_actionable = False
+            abstained = True
+            abstention_reason = "shadow_mode_non_binding"
+        elif self.mode == "active":
+            plan_mode = "active"
+            if is_ood or overall_conf < self.active_confidence_threshold:
+                provenance = "laya_active_abstained_to_baseline"
+                is_actionable = False
+                abstained = True
+                abstention_reason = "out_of_distribution" if is_ood else "low_confidence"
+            else:
+                provenance = "laya_active_calibrated"
+                is_actionable = True
+                abstained = False
+                abstention_reason = None
+        else:  # advisory
+            plan_mode = "advisory"
+            provenance = "laya_advisory_recommendation"
+            is_actionable = False
+            abstained = False
+            abstention_reason = None
 
         return UnifiedLayaPlan(
             crosslingual_expansion=expansion,
@@ -137,27 +237,76 @@ class LayaUnifiedCoordinator:
             model_recommendation=model_rec,
             intent_analysis=intent_res,
             budget_plan=budget_plan,
-            overall_confidence=round(overall_conf, 3),
+            overall_confidence=overall_conf,
             total_latency_saved_est_ms=retrieval_rec.estimated_latency_saved_ms,
             cached_match=cached_match,
+            mode=plan_mode,
+            provenance=provenance,
+            is_actionable=is_actionable,
+            abstained=abstained,
+            abstention_reason=abstention_reason,
+            calibrated_head_confidences=head_calibrations,
         )
 
     def scan_code(self, code: str) -> AntiPatternScanResult:
         """Fast pre-execution anti-pattern inspection."""
+        if self.mode == "off":
+            return AntiPatternScanResult(has_violations=False, risk_score=0.0, violations=(), status="clean")
         return self.antipattern_detector.scan_code(code)
 
     def score_code(self, source_code: str) -> CodeQualityScore:
         """Fast sub-2ms maintainability and complexity scoring."""
+        if self.mode == "off":
+            return CodeQualityScore(
+                overall_score=1.0,
+                maintainability_index=100.0,
+                cyclomatic_complexity=1,
+                lines_of_code=len(source_code.splitlines()),
+                has_docstrings=True,
+                type_coverage_percent=100.0,
+                recommendations=(),
+            )
         return self.code_scorer.score_code(source_code)
 
     def suggest_tests(self, function_code: str) -> TestSuggestion:
         """Predict boundary condition edge-cases and invariants."""
+        if self.mode == "off":
+            return TestSuggestion(
+                target_function="deterministic",
+                hypotheses=(),
+                potential_exceptions=(),
+                suggested_test_code="",
+            )
         return self.test_suggester.analyze_function(function_code)
 
-    def index_completed_task(self, prompt: str, result_payload: Any) -> None:
-        """Index verified prompt/result into semantic cache for future instant deduplication."""
-        pid = f"prompt_{self._total_inferences}"
-        self.semantic_dedup.index_prompt(pid, prompt, result_payload)
+    def index_completed_task(
+        self,
+        prompt: str,
+        result_payload: Any,
+        *,
+        repo_root: str | None = None,
+        worktree_id: str | None = None,
+        revision: str | None = None,
+        operation: str | None = None,
+        is_mutation: bool = False,
+        ttl_seconds: float | None = None,
+    ) -> str:
+        """Index verified prompt/result into semantic cache with unique ID."""
+        if self.mode == "off":
+            return ""
+        pid = f"prompt_{uuid.uuid4().hex[:12]}"
+        self.semantic_dedup.index_prompt(
+            pid,
+            prompt,
+            result_payload,
+            repo_root=repo_root,
+            worktree_id=worktree_id,
+            revision=revision,
+            operation=operation,
+            is_mutation=is_mutation,
+            ttl_seconds=ttl_seconds,
+        )
+        return pid
 
     def record_verification_receipt(
         self,
@@ -168,7 +317,7 @@ class LayaUnifiedCoordinator:
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
         """Capture downstream execution outcome as a DPO preference pair (if enabled)."""
-        if not self.collector.enabled:
+        if self.mode == "off" or not self.collector.enabled:
             return
         self.collector.record_dpo_pair(
             category="code_verification",

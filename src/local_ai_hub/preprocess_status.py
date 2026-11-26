@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from .process_utils import canonical_root
 
 logger = logging.getLogger(__name__)
+_STATUS_CACHE_TTL_SECONDS = 3.0
 
 __all__ = [
     "_project_git_identity",
@@ -478,7 +479,7 @@ def derive_preprocess_status(
     if not hasattr(preprocessor, "_status_cache"):
         preprocessor._status_cache = {}
     cached = preprocessor._status_cache.get(key)
-    if cached and cached.get("mode_paused") == mode_paused and now_mono - cached["time"] < 0.5:
+    if cached and cached.get("mode_paused") == mode_paused and now_mono - cached["time"] < _STATUS_CACHE_TTL_SECONDS:
         return dict(cached["data"])
 
     with closing(preprocessor._connect()) as con:

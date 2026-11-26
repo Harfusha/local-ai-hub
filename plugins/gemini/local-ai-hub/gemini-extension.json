@@ -1,13 +1,19 @@
 {
   "name": "local-ai-hub",
-  "version": "6.1.0",
+  "version": "8.2.0",
   "description": "Local AI Hub MCP, shared skills, and Gemini CLI lifecycle and tool hooks.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
     "local-ai": {
       "command": "python",
-      "args": ["${extensionPath}/scripts/run_hub.py", "mcp_server"],
-      "env": { "LOCAL_AI_AGENT": "gemini_cli", "LOCAL_AI_AGENT_PROFILE": "gemini" }
+      "args": [
+        "${extensionPath}/scripts/run_hub.py",
+        "mcp_server"
+      ],
+      "env": {
+        "LOCAL_AI_AGENT": "gemini_cli",
+        "LOCAL_AI_AGENT_PROFILE": "gemini"
+      }
     }
   }
 }

@@ -153,3 +153,56 @@ def test_readiness_http_error_closes_response(supervisor_probe, monkeypatch):
     monkeypatch.setattr(module, "urlopen", initializing)
     assert instance.hub_ready() is False
     assert body.closed
+
+
+def test_terminate_child_stops_verified_interpreter_worker_before_launcher(
+    tmp_path: Path, monkeypatch
+) -> None:
+    events: list[str] = []
+
+    class Child:
+        pid = 10
+
+        def __init__(self) -> None:
+            self.running = True
+
+        def poll(self):
+            return None if self.running else 0
+
+        def wait(self, timeout):
+            events.append("wait")
+            self.running = False
+
+    child = Child()
+    instance = module.Supervisor.__new__(module.Supervisor)
+    instance.child = child
+    instance.child_pidfd = None
+    instance.child_owner = {"pid": 10}
+    instance.child_ready = True
+    instance.state_dir = tmp_path
+    instance.config = {"server": {"port": 11435}}
+    instance.hub_owner_path = tmp_path / "hub.owner.json"
+    instance.hub_pid_path = tmp_path / "hub.pid"
+    instance.log = lambda _message: None
+    instance._log_child_exit = lambda *_args, **_kwargs: None
+    instance._remove_stale_owner = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(module, "find_listening_pid", lambda _port: 11)
+    monkeypatch.setattr(instance, "_listener_is_owned", lambda pid: pid == 11)
+    monkeypatch.setattr(module, "process_owner_record", lambda *_args: {"pid": 11})
+
+    def stop_worker(owner, *_args, **_kwargs):
+        assert owner == {"pid": 11}
+        events.append("worker")
+        return True
+
+    def stop_launcher(process, *_args, **_kwargs):
+        assert process is child
+        events.append("launcher")
+        child.running = False
+        return True
+
+    monkeypatch.setattr(module, "terminate_owned_process", stop_worker)
+    monkeypatch.setattr(module, "terminate_process_handle", stop_launcher)
+
+    assert instance.terminate_child() is True
+    assert events == ["worker", "launcher", "wait"]

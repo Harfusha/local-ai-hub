@@ -1,17 +1,19 @@
+import hashlib
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 import pytest
 
+import local_ai_hub.preprocess as preprocess_module
 from local_ai_hub.preprocess import ProjectPreprocessor
 
 
 def test_rag_pending_batch_does_not_enumerate_entire_inventory(tmp_path):
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, centrality_score REAL NOT NULL DEFAULT 0.0)")
-        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size) VALUES(?, 'pending.py', 'abc', 0, NULL, 0, 10)", (str(tmp_path),))
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL DEFAULT 0, centrality_score REAL DEFAULT 0.0)")
+        con.execute("INSERT INTO file_refs VALUES(?, 'pending.py', 'abc', 0, NULL, 0, 10, 0, 0.0)", (str(tmp_path),))
         con.commit()
     statements = []
 
@@ -46,9 +48,9 @@ def test_rag_completion_does_not_mark_a_new_version_as_indexed(tmp_path, change)
     (root / "file.py").write_text("new", encoding="utf-8")
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
-        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0, 0.0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old')", (str(root),))
         con.commit()
 
@@ -83,9 +85,9 @@ def test_rag_uses_current_text_and_only_reuses_source_text_from_other_roots(tmp_
     (root / "file.py").write_text("new", encoding="utf-8")
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)")
-        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'file.py', 'new', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'new', 0, NULL, 0, 3, 0, 0.0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old', 'source')", (str(root),))
         con.execute("INSERT INTO source_index VALUES('donor', 'file.py', 'new', 'new', ?)", (donor_origin,))
         con.commit()
@@ -115,10 +117,10 @@ def test_recreated_file_is_not_removed_by_old_rag_batch(tmp_path, recreate):
     root.mkdir()
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
-        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs VALUES(?, 'file.py', 'old', 0, NULL, 0, 3, 0, 0.0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'file.py', 'old', 'old')", (str(root),))
         con.execute("INSERT INTO source_fts VALUES(?, 'file.py', 'old')", (str(root),))
         con.commit()
@@ -156,6 +158,93 @@ def test_recreated_file_is_not_removed_by_old_rag_batch(tmp_path, recreate):
         else:
             assert row is None
             assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
+
+
+def test_stale_rag_refs_are_invalidated_in_bounded_write_batches(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    old_hash = hashlib.sha256(b"old").hexdigest()
+    new_hash = hashlib.sha256(b"new").hexdigest()
+    count = 17
+    names = [f"file_{index:02}.py" for index in range(count)]
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("new", encoding="utf-8")
+    assert preprocess_module.checked_relative_source(root, names[0]) == "inside_regular_file"
+    assert hashlib.sha256((root / names[0]).read_bytes()).hexdigest() != old_hash
+
+    db = tmp_path / "index.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
+        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
+        con.executemany(
+            "INSERT INTO file_refs VALUES(?, ?, ?, 0, ?, 0, 3, 0)",
+            [(str(root), name, old_hash, None) for name in names],
+        )
+        con.executemany(
+            "INSERT INTO source_index VALUES(?, ?, ?, 'old')",
+            [(str(root), name, old_hash) for name in names],
+        )
+        con.executemany(
+            "INSERT INTO source_fts VALUES(?, ?, 'old')",
+            [(str(root), name) for name in names],
+        )
+        con.commit()
+
+    statements = []
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        con.set_trace_callback(statements.append)
+        return con
+
+    class Rag:
+        def index_paths_step(self, *args, **kwargs):
+            return {"success": True, "processed_paths": []}
+
+        def remove_paths(self, **kwargs):
+            return None
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock, pre._stats_lock = threading.RLock(), threading.RLock()
+    pre._stats = {"rag_steps": 0}
+    pre._connect, pre._yield = connect, lambda: False
+    pre._record_progress = lambda *args: None
+    pre.repo_tools = type("RepoTools", (), {"_read_snapshot": lambda self, path: (new_hash, None)})()
+    pre.cfg, pre.deterministic, pre.rag = {"rag_files_per_step": count}, None, Rag()
+    pre._audit_rag_sync_batch = lambda *args, **kwargs: None
+
+    with closing(connect()) as con:
+        pending_count = con.execute(
+            "SELECT COUNT(*) FROM file_refs WHERE root=? AND needs_hash=0 "
+            "AND content_hash<>'' AND COALESCE(rag_hash,'')<>content_hash",
+            (str(root),),
+        ).fetchone()[0]
+    assert pending_count == count
+
+    batch_sizes = []
+    write_transaction = preprocess_module.write_transaction
+
+    @contextmanager
+    def track_write_transaction(con, **kwargs):
+        start = len(statements)
+        with write_transaction(con, **kwargs) as active_con:
+            yield active_con
+        if kwargs.get("rollback_label") == "preprocessor stale unwatched refs":
+            batch_sizes.append(sum("UPDATE file_refs SET needs_hash=1" in sql for sql in statements[start:]))
+
+    monkeypatch.setattr(preprocess_module, "write_transaction", track_write_transaction)
+
+    assert pre._step_rag({"root": str(root), "workspace": "fixture"})
+    with closing(connect()) as con:
+        refs = con.execute("SELECT needs_hash,rag_hash FROM file_refs ORDER BY path").fetchall()
+        assert [tuple(row) for row in refs] == [(1, None)] * count
+        assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM source_fts").fetchone()[0] == 0
+    assert batch_sizes == [8, 8, 1]
 
 
 def test_checked_relative_source_classifications(tmp_path):
@@ -198,10 +287,10 @@ def test_rag_cleanup_escaped_path_removes_ref_safely(tmp_path):
 
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
-        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'escaped.py', 'old', 0, NULL, 0, 3, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs VALUES(?, 'escaped.py', 'old', 0, NULL, 0, 3, 0, 0.0)", (str(root),))
         con.execute("INSERT INTO source_index VALUES(?, 'escaped.py', 'old', 'old')", (str(root),))
         con.execute("INSERT INTO source_fts VALUES(?, 'escaped.py', 'old')", (str(root),))
         con.commit()
@@ -241,10 +330,10 @@ def test_rag_idle_skips_full_inventory_scan_when_digest_matches(tmp_path):
     root.mkdir()
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)")
         con.execute("CREATE TABLE projects(root TEXT, phase TEXT, status TEXT, updated_at REAL)")
-        con.execute("INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0, 0.0)", (str(root),))
         con.execute("INSERT INTO file_refs_revision VALUES(?, 1)", (str(root),))
         con.execute("INSERT INTO projects VALUES(?, 'rag', 'running', 0)", (str(root),))
         con.commit()
@@ -351,11 +440,11 @@ def test_rag_marks_policy_excluded_paths_complete_to_avoid_retry_loop(tmp_path):
     with closing(sqlite3.connect(db)) as con:
         con.execute(
             "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, "
-            "rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)"
+            "rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)"
         )
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT, text_origin TEXT)")
         con.execute(
-            "INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?, 'excluded.py', 'hash', 0, NULL, 0, 8, 0)",
+            "INSERT INTO file_refs VALUES(?, 'excluded.py', 'hash', 0, NULL, 0, 8, 0, 0.0)",
             (str(root),),
         )
         con.commit()

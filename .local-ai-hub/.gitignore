@@ -1,5 +1,6 @@
 # Local AI Hub workspace ignores
 local/
+telemetry/
 .tmp_*
 *.tmp
 plans/*smoke*.plan.json

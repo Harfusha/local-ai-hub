@@ -18,7 +18,7 @@ def test_unified_coordinator_end_to_end(tmp_path):
         training_collector=collector,
     )
 
-    # 1. Analyze Task with automatic training sample collection
+    # 1. Analyze Task without promoting model/heuristic output to a training label
     instruction = "Oprav paměťový leak a inicializaci sdílené paměti napříč systémem"
     affected = ["src/ipc.py", "src/shm.py", "src/engine.py"]
 
@@ -34,9 +34,9 @@ def test_unified_coordinator_end_to_end(tmp_path):
     assert "memory" in plan.crosslingual_expansion.composite_query
     assert plan.intent_analysis.intent in ("bugfix", "performance")
 
-    # Verify that training collector automatically captured this decision
+    # Runtime proposals are not labels; collection requires an explicit verified source.
     stats = collector.get_stats()
-    assert stats["laya_samples_collected"] == 1
+    assert stats["laya_samples_collected"] == 0
 
     # 2. Code Quality Scoring
     sample_code = """
@@ -76,6 +76,6 @@ def multiply_matrices(a: list[list[float]], b: list[list[float]]) -> list[list[f
         passed=True,
     )
     updated_stats = collector.get_stats()
-    assert updated_stats["laya_samples_collected"] == 2
+    assert updated_stats["laya_samples_collected"] == 0
     assert updated_stats["dpo_pairs_collected"] == 1
-    assert updated_stats["total_samples"] == 3
+    assert updated_stats["total_samples"] == 1

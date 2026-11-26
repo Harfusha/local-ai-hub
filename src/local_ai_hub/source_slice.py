@@ -88,8 +88,10 @@ def read_source_slice(
         except ValueError:
             return failure("source path must remain within the workspace")
         current = current_target.stat()
-        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-        same_file_identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+        def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+            return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        def same_file_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+            return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
         if (
             current_target != target
             or identity(path_before) != identity(current)

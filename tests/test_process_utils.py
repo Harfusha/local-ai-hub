@@ -206,6 +206,50 @@ def test_process_identity_windows_uses_creation_filetime_and_executable(monkeypa
     assert kernel32.closed == [0x1234]
 
 
+def test_terminate_owned_windows_process_uses_handle_identity_after_command_precheck(monkeypatch, tmp_path):
+    class ApiFunction:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class Kernel32:
+        def __init__(self):
+            self.closed = []
+            self.OpenProcess = ApiFunction(lambda *_args: 0x1234)
+            self.TerminateProcess = ApiFunction(lambda *_args: 1)
+            self.WaitForSingleObject = ApiFunction(lambda *_args: 0)
+            self.CloseHandle = ApiFunction(lambda handle: self.closed.append(handle) or 1)
+
+    owner = {
+        "pid": 4321,
+        "executable": r"c:\windows\system32\python.exe",
+        "creation_identity": 123456,
+        "creation_identity_type": "windows_creation_filetime_100ns",
+        "command": '"C:\\Windows\\System32\\python.exe" -m local_ai_hub.api',
+    }
+    kernel32 = Kernel32()
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(process_utils.ctypes, "WinDLL", lambda *_a, **_k: kernel32, raising=False)
+    monkeypatch.setattr(
+        process_utils,
+        "process_owner_state",
+        lambda checked_owner, _state_dir, _role: "owned" if checked_owner == owner else "stale",
+    )
+    monkeypatch.setattr(
+        process_utils,
+        "_windows_process_identity_from_handle",
+        lambda pid, _handle, _kernel: {
+            key: value for key, value in owner.items() if key != "command"
+        } | {"pid": pid},
+    )
+
+    assert process_utils.terminate_owned_process(owner, tmp_path, "hub") is True
+    assert owner["command"]
+    assert kernel32.closed == [0x1234]
+
+
 @pytest.mark.skipif(
     not (sys.platform == "linux" or os.name == "nt"),
     reason="live process identity supported on Linux and Windows",

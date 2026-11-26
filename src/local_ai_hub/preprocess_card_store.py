@@ -88,32 +88,36 @@ class PreprocessCardStoreMixin:
         })
 
     def _file_card_fallbacks(self, model: str) -> tuple[str, ...]:
+        graph = self._role_graph()
+        if not graph.fallback_enabled:
+            return ()
+        if model == graph.primary_model:
+            return graph.fallback_models
         fallback_models = getattr(getattr(self, "services", None), "_fallback_models", None)
         configured = fallback_models(model) if callable(fallback_models) else ()
         if not isinstance(configured, (list, tuple)):
             return ()
-        candidates = [candidate for candidate in configured if isinstance(candidate, str) and candidate]
-        models = self.config.get("models", {})
-        if model == self._configured_preprocessing_model() and isinstance(models, dict):
-            for role in ("fast_code", "heavy_code"):
-                candidate = models.get(role)
-                if isinstance(candidate, str) and candidate and candidate != model and candidate not in candidates:
-                    candidates.append(candidate)
-        prep_cfg = self.config.get("preprocessing", {}) if isinstance(self.config.get("preprocessing"), dict) else {}
-        for prep_role in ("refiner_model", "draft_model"):
-            candidate = prep_cfg.get(prep_role)
-            if isinstance(candidate, str) and candidate and candidate != model and candidate not in candidates:
-                candidates.append(candidate)
-        return tuple(candidates)
+        return tuple(c for c in configured if isinstance(c, str) and c and c != model)
 
     def _file_card_pipeline_version(self) -> str:
         from . import preprocess as services_module
+        graph = self._role_graph()
         return services_module.stable_hash({
             "analyzer": services_module.PREPROCESS_ANALYZER_VERSION,
             "prompt_version": services_module.FILE_CARD_PROMPT_VERSION,
             "schema": services_module.CARD_SCHEMA,
+            "primary_model": graph.primary_model,
+            "cascade_enabled": graph.cascade_enabled,
+            "draft_model": graph.draft_model,
+            "refiner_model": graph.refiner_model,
+            "fallback_enabled": graph.fallback_enabled,
+            "fallback_models": graph.fallback_models,
+            "effective_phases": graph.effective_phases,
             "temperature": 0.2,
-            "fallback_models": self._file_card_fallbacks(self._configured_preprocessing_model()),
+            "output_tokens": int(self.cfg.get("file_card_output_tokens", 3072)),
+            "max_lines": int(self.cfg.get("file_card_max_lines", 900)),
+            "max_chars": int(self.cfg.get("file_card_max_chars", 18000)),
+            "evidence_policy": "source_quote_required",
         })
 
     def _reusable_file_card(self, row: sqlite3.Row, models: set[str], *, allow_deterministic: bool = False) -> bool:
@@ -438,8 +442,9 @@ class PreprocessCardStoreMixin:
             grounded_items: list[str] = []
             seen_items: set[str] = set()
 
-            # Always preserve deterministic baseline facts first
-            if isinstance(baseline_values, list):
+            # Always preserve deterministic baseline facts first (only if true deterministic fact)
+            is_deterministic = baseline.get("epistemic_class") != "llm_draft"
+            if is_deterministic and isinstance(baseline_values, list):
                 for val in baseline_values:
                     if isinstance(val, str) and val.strip() and val.casefold() not in seen_items:
                         grounded_items.append(val.strip())
@@ -486,6 +491,8 @@ class PreprocessCardStoreMixin:
             data["symbols"] = []
             data["dependencies"] = []
         data["evidence"] = valid_evidence
+        data["epistemic_class"] = "llm_enriched"
+        data["confidence"] = 0.95
         try:
             from .preprocess_ast import extract_ast_symbol_chunks, enrich_card_with_ast_symbols
             chunks = extract_ast_symbol_chunks(path, source_text)
@@ -502,7 +509,7 @@ class PreprocessCardStoreMixin:
         def store(con: sqlite3.Connection) -> bool:
             source_hash = expected_hash or str(item["content_hash"])
             current = con.execute(
-                "SELECT content_hash FROM file_refs WHERE root=? AND path=?",
+                "SELECT content_hash, card_key FROM file_refs WHERE root=? AND path=?",
                 (root, str(item["path"])),
             ).fetchone()
             if current is None or str(current[0]) != source_hash:

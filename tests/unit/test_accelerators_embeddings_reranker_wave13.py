@@ -28,6 +28,23 @@ def test_accelerator_status_malformed_config() -> None:
     assert openvino_cache_dir({"openvino": None}) is None
 
 
+def test_intel_only_accelerator_status_does_not_import_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(accelerators, "openvino_runtime", lambda: {"available": True, "devices": ["NPU"]})
+    monkeypatch.setattr(accelerators, "openvino_device_candidates", lambda *_args: ["NPU"])
+    monkeypatch.setattr(accelerators, "_onnx_providers", lambda: set())
+    monkeypatch.setattr("local_ai_hub.hardware.detect_hardware", lambda *_args, **_kwargs: {
+        "gpus": [{"vendor": "intel", "integrated": True}], "npus": []
+    })
+    monkeypatch.setattr(accelerators, "_torch_gpu_route", lambda: pytest.fail("Torch probe should be skipped"))
+
+    status = accelerator_status({"models": {"embedding_backend": "auto", "embedding_device": "auto"}})
+
+    assert status["embedding"]["torch_gpu_available"] is False
+    assert status["embedding"]["candidates"] == [
+        ("openvino", "NPU"), ("sentence-transformers", "cpu"),
+    ]
+
+
 def test_embedding_model_init_malformed_config() -> None:
     # All sub-tables None should not raise AttributeError
     emb = EmbeddingModel({"models": None, "server": None, "features": None, "cpu_retrieval": None, "cache": None})

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
+
 from .services import (
     Any as Any,
     MAX_PAGE_SIZE as MAX_PAGE_SIZE,
@@ -24,6 +26,18 @@ from .services import (
 )
 
 
+# OpenVINO's first SentenceTransformers load can take minutes on Windows. Keep
+# that cold load outside the HTTP request thread, and allow only one model call
+# to own the device while it warms up.
+_EMBEDDING_LOAD_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hub-embedding")
+_EMBEDDING_LOAD_CAPACITY = threading.BoundedSemaphore(1)
+# A completed future may invoke its callback inline while add_done_callback is
+# called below, so the callback must be able to reacquire this lock.
+_EMBEDDING_LOAD_LOCK = threading.RLock()
+_EMBEDDING_LOADS: dict[str, Future[Any]] = {}
+_EMBEDDING_LOAD_WAIT_CAP_SECONDS = 8.0
+
+
 class ServiceRepositoryMixin:
     @staticmethod
     def _embedding_key(text: str, *, backend: str, model: str, query: bool) -> str:
@@ -41,6 +55,52 @@ class ServiceRepositoryMixin:
         if hasattr(vector, "tolist"):
             vector = vector.tolist()
         return [float(value) for value in vector]
+
+    def _encode_openvino_bounded(
+        self, texts: list[str], *, model: str, query: bool, priority: int, wait_timeout: float,
+    ) -> dict[str, Any]:
+        key = stable_hash({
+            "service": id(self), "embedder": id(self.embeddings), "model": model,
+            "texts": texts, "query": query,
+        })
+        with _EMBEDDING_LOAD_LOCK:
+            future = _EMBEDDING_LOADS.get(key)
+            if future is None:
+                if not _EMBEDDING_LOAD_CAPACITY.acquire(blocking=False):
+                    return {
+                        "success": False, "error_code": "embedding_busy",
+                        "error": "OpenVINO embedding model is warming up; retry shortly",
+                        "operation_not_started": True, "retryable": True, "terminal": False,
+                    }
+                try:
+                    future = _EMBEDDING_LOAD_EXECUTOR.submit(
+                        self.embeddings.encode, texts, query=query, priority=priority,
+                        wait_timeout_seconds=wait_timeout,
+                    )
+                except Exception:
+                    _EMBEDDING_LOAD_CAPACITY.release()
+                    raise
+                _EMBEDDING_LOADS[key] = future
+
+                def forget_finished(done: Future[Any]) -> None:
+                    with _EMBEDDING_LOAD_LOCK:
+                        if _EMBEDDING_LOADS.get(key) is done:
+                            _EMBEDDING_LOADS.pop(key, None)
+                    _EMBEDDING_LOAD_CAPACITY.release()
+
+                future.add_done_callback(forget_finished)
+
+        bounded_wait = max(0.05, min(float(wait_timeout), _EMBEDDING_LOAD_WAIT_CAP_SECONDS))
+        try:
+            result = future.result(timeout=bounded_wait)
+        except FutureTimeout:
+            return {
+                "success": False, "error_code": "embedding_warming",
+                "error": "OpenVINO embedding model is still warming up",
+                "timed_out": True, "outcome_unknown": True, "retryable": True,
+                "terminal": False,
+            }
+        return result if isinstance(result, dict) else {"success": False, "error": "embedding failed"}
 
     def embed(self, texts: list[str], *, priority: int = 3, query: bool = False,
               background: bool | None = None, wait_timeout: float | None = None,
@@ -67,6 +127,10 @@ class ServiceRepositoryMixin:
         def encode_uncached(batch: list[str]) -> dict[str, Any]:
             if backend in {"auto", "sentence-transformers", "openvino"}:
                 encode_options = {} if wait_timeout is None else {"wait_timeout_seconds": wait_timeout}
+                if backend == "openvino" and wait_timeout is not None:
+                    return reject_uncertain(self._encode_openvino_bounded(
+                        batch, model=model, query=query, priority=priority, wait_timeout=wait_timeout,
+                    ))
                 return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority, **encode_options))
             batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
             job_cancel = None
@@ -221,7 +285,17 @@ class ServiceRepositoryMixin:
                 cache_degraded = bool(state.get("degraded", False))
                 cache_reason = state.get("degraded_reason")
         except (FileNotFoundError, ValueError) as exc:
-            return {"success": False, "stale_root": True, "error": str(exc), "error_type": type(exc).__name__, "operation": operation}
+            return {
+                "success": False,
+                "stale_root": True,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "error_code": "stale_repository_input",
+                "status_code": 409,
+                "terminal": True,
+                "retryable": False,
+                "operation": operation,
+            }
         if operation in {"hybrid-context", "deterministic-context"} and not self._context_evidence_current(raw):
             if hit or coalesced:
                 raw = compute()

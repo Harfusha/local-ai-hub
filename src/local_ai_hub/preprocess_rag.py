@@ -289,38 +289,41 @@ class PreprocessRAGMixin:
                 continue
 
         if stale_paths:
-            with self._db_lock, services_module.closing(self._connect()) as con:
-                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-                has_fts = "source_fts" in tables
-                has_index = "source_index" in tables
-                with services_module.write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor stale unwatched refs"):
-                    stale_fts_paths: list[str] = []
-                    for rel in stale_paths:
-                        expected_hash = pending_hashes[rel]
-                        changed = con.execute(
-                            "UPDATE file_refs SET needs_hash=1, rag_hash=NULL "
-                            "WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                            (root, rel, expected_hash),
-                        ).rowcount
-                        # A newer source generation is never invalidated by an
-                        # older RAG batch, including the FTS view of that path.
-                        if changed:
+            write_batch_size = services_module._MISSING_REF_WRITE_BATCH_SIZE
+            for offset in range(0, len(stale_paths), write_batch_size):
+                stale_batch = stale_paths[offset:offset + write_batch_size]
+                with self._db_lock, services_module.closing(self._connect()) as con:
+                    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                    has_fts = "source_fts" in tables
+                    has_index = "source_index" in tables
+                    with services_module.write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor stale unwatched refs"):
+                        stale_fts_paths: list[str] = []
+                        for rel in stale_batch:
+                            expected_hash = pending_hashes[rel]
+                            changed = con.execute(
+                                "UPDATE file_refs SET needs_hash=1, rag_hash=NULL "
+                                "WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                (root, rel, expected_hash),
+                            ).rowcount
+                            # A newer source generation is never invalidated by an
+                            # older RAG batch, including the FTS view of that path.
+                            if changed:
+                                if has_index:
+                                    con.execute(
+                                        "DELETE FROM source_index WHERE root=? AND path=? AND content_hash=?",
+                                        (root, rel, expected_hash),
+                                    )
+                                if has_fts:
+                                    stale_fts_paths.append(rel)
+                        if stale_fts_paths:
+                            placeholders = ",".join("?" for _ in stale_fts_paths)
+                            delete_filter = f"root=? AND path IN ({placeholders})"
                             if has_index:
-                                con.execute(
-                                    "DELETE FROM source_index WHERE root=? AND path=? AND content_hash=?",
-                                    (root, rel, expected_hash),
+                                delete_filter += (
+                                    " AND NOT EXISTS (SELECT 1 FROM source_index s "
+                                    "WHERE s.root=published.root AND s.path=published.path)"
                                 )
-                            if has_fts:
-                                stale_fts_paths.append(rel)
-                    if stale_fts_paths:
-                        placeholders = ",".join("?" for _ in stale_fts_paths)
-                        delete_filter = f"root=? AND path IN ({placeholders})"
-                        if has_index:
-                            delete_filter += (
-                                " AND NOT EXISTS (SELECT 1 FROM source_index s "
-                                "WHERE s.root=published.root AND s.path=published.path)"
-                            )
-                        self._delete_fts_rows(con, delete_filter, (root, *stale_fts_paths))
+                            self._delete_fts_rows(con, delete_filter, (root, *stale_fts_paths))
             stale_set = set(stale_paths)
             paths = [p for p in paths if p not in stale_set]
             if not paths:
@@ -376,14 +379,47 @@ class PreprocessRAGMixin:
             return False
         if not result.get("success"):
             message = str(result.get("error", "RAG preprocessing failed"))
+            error_code = result.get("error_code")
+            error_code = error_code if isinstance(error_code, str) else ""
+            # NEW-001: Graceful auto-recovery for embedding_space_rebuild_required
+            if result.get("rebuild_required") is True or message == "embedding_space_rebuild_required":
+                reindex_fn = getattr(self.rag, "_request_workspace_reindex", None)
+                target_space = getattr(self.rag, "_embedding_space_id", lambda: None)()
+                if callable(reindex_fn) and target_space:
+                    reindex_fn(workspace, target_space)
+                    if hasattr(self.rag, "_connect"):
+                        try:
+                            with services_module.closing(self.rag._connect()) as rag_con:
+                                with services_module.write_transaction(
+                                    rag_con, max_duration_seconds=5.0, rollback_label="clear legacy vectors for rebuild"
+                                ):
+                                    rag_con.execute(
+                                        "UPDATE chunks SET embedding='[]', embedding_space='' WHERE workspace=? AND (embedding<>'[]' OR embedding_space<>?)",
+                                        (workspace, target_space),
+                                    )
+                        except Exception as rag_exc:
+                            services_module.logger.debug("RAG legacy vector reset yielded: %s", rag_exc)
+                    with self._db_lock, services_module.closing(self._connect()) as con:
+                        con.execute("UPDATE file_refs SET rag_hash=NULL WHERE root=?", (root,))
+                        con.commit()
+                    services_module.logger.info("Automatically scheduled RAG embedding space rebuild for workspace %s into %s", workspace, target_space)
+                    return False
             if result.get("retryable") is True:
                 retry_after = result.get("retry_after_seconds", 60.0)
                 try:
                     retry_after = float(retry_after)
                 except (TypeError, ValueError):
                     retry_after = 60.0
-                raise services_module._RetryablePreprocessingError(message, retry_after)
-            raise RuntimeError(message)
+                raise services_module._RetryablePreprocessingError(
+                    message, retry_after, error_code=error_code,
+                )
+            if result.get("retryable") is False:
+                raise services_module._NonRetryablePreprocessingError(
+                    message, error_code=error_code,
+                )
+            error = RuntimeError(message)
+            error.error_code = error_code
+            raise error
         if result.get("skipped") is True and result.get("reason") == "project phase disabled":
             self._set_project(root, phase="files")
             return True

@@ -69,6 +69,7 @@ def test_rag_index_gpu_reservation_denial_is_known_failure_not_unknown(tmp_path)
             "success": False,
             "error": "GPU admission is unavailable",
             "error_code": "gpu_reserved",
+            "gpu_admission_reason": "capacity_telemetry_unavailable",
             "retryable": True,
         }
 
@@ -85,6 +86,7 @@ def test_rag_index_gpu_reservation_denial_is_known_failure_not_unknown(tmp_path)
         assert result["terminal"] is True
         stored = json.loads(manager._row(submitted["job_id"])["result_json"])
         assert stored["error_code"] == "gpu_reserved"
+        assert stored["gpu_admission_reason"] == "capacity_telemetry_unavailable"
     finally:
         manager.close()
 
@@ -120,6 +122,51 @@ def test_failed_rag_job_exposes_only_bounded_sqlite_timeout_detail(tmp_path):
         assert "error_detail" not in manager.result(job_id)
     finally:
         manager.close()
+
+
+def test_failed_async_job_preserves_safe_error_metadata_across_lifecycle_reads(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        payload = {"root": "C:/project", "workspace": "workspace-1", "request_id": "failed-gpu-metadata"}
+        submitted = manager.submit("rag_index", payload, dispatch_delay_seconds=30.0)
+        job_id = submitted["job_id"]
+        failed = {
+            "success": False,
+            "error": "GPU admission is unavailable",
+            "error_code": "gpu_reserved",
+            "status_code": 503,
+            "terminal": True,
+            "retryable": False,
+        }
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET state='failed',error=?,result_json=? WHERE job_id=?",
+                (failed["error"], json.dumps(failed), job_id),
+            )
+            con.commit()
+
+        responses = (
+            manager.status(job_id),
+            manager.wait(job_id, 0.01),
+            manager.result(job_id),
+            manager.submit("rag_index", payload, dispatch_delay_seconds=30.0),
+        )
+        for response in responses:
+            assert response["error_code"] == "gpu_reserved"
+            assert response["status_code"] == 503
+            assert response["terminal"] is True
+            assert response["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_async_failure_metadata_rejects_untrusted_or_invalid_values():
+    metadata = AsyncJobManager._safe_failure_metadata(json.dumps({
+        "error_code": "private/path with spaces",
+        "status_code": True,
+    }))
+
+    assert metadata == {}
 
 
 def test_rag_timeout_detail_survives_async_failure_finalization(tmp_path):
@@ -542,6 +589,22 @@ def test_async_job_payload_rejects_nested_retired_fields_and_preserves_scope_ids
         "worktree_id": "worktree-1",
         "branch": "feature/example",
     }
+
+
+def test_async_review_diff_payload_preserves_supplied_diff():
+    diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # Title\n+Description\n"
+
+    clean = AsyncJobManager._safe_payload({
+        "root": "C:/repo",
+        "diff": diff,
+        "request_id": "request-1",
+        "untrusted_extra": "must be discarded",
+    })
+
+    assert clean["diff"] == diff
+    assert clean["root"] == "C:/repo"
+    assert clean["request_id"] == "request-1"
+    assert "untrusted_extra" not in clean
 
 
 def test_async_job_task_validation_bounds_depth_and_rejects_cycles():

@@ -31,11 +31,15 @@ def find_circular_dependencies(
         return {"success": False, "error": "Python import index API unavailable", "index_state": "unindexed"}
     indexed_graph = graph_reader(str(p_root))
     if not indexed_graph.get("success"):
-        return {
+        result = {
             "success": False,
             "error": indexed_graph.get("error", "Python import index unavailable"),
             "index_state": indexed_graph.get("state", "unindexed"),
         }
+        for field in ("error_code", "status_code", "terminal", "retryable", "retry_after_seconds"):
+            if field in indexed_graph:
+                result[field] = indexed_graph[field]
+        return result
     py_files = sorted(
         p_root / Path(relative)
         for relative in indexed_graph.get("paths", [])

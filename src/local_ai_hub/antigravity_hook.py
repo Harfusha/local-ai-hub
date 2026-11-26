@@ -56,6 +56,25 @@ WHITELIST_FILENAMES = {
     ".gitignore",
 }
 
+SOURCE_CODE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html",
+    ".java", ".js", ".jsx", ".kt", ".php", ".py", ".rb", ".rs", ".sh",
+    ".sql", ".swift", ".ts", ".tsx", ".vue", ".svelte", ".ps1",
+}
+
+
+def _is_hub_online() -> bool:
+    """Use Hub-first navigation only while the local Hub is actually reachable."""
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:11435/health",
+            headers={"User-Agent": "AntigravityHook"},
+        )
+        with urllib.request.urlopen(req, timeout=0.15) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 400
+    except Exception:
+        return False
+
 # Regex to detect unconstrained search commands
 UNCONSTRAINED_SEARCH_PATTERNS = [
     re.compile(r"\bdir\s+.*(?:\/s|\/S)", re.IGNORECASE),
@@ -181,7 +200,12 @@ def handle_session_start(payload: dict[str, Any]) -> dict[str, Any]:
         "injectSteps": [{"systemMessage": {
             "systemMessage": (
                 "For repository or code tasks, use the connected Local AI Hub MCP tools and "
-                "follow the local-ai-orchestrator workflow. Laya is active advisory inside the "
+                "follow the local-ai-orchestrator workflow. Antigravity may expose Hub tools as Lazy: "
+                "call them with call_mcp_tool(ServerName=\"local-ai-hub_local-ai\", ToolName=\"local_ai_repo\", "
+                "Arguments={\"action\":\"search\",\"query\":\"<task query>\","
+                "\"root\":\"<absolute workspace root>\"}) before native repository reads or commands. "
+                "Use the matching live-schema tool/action and its exact arguments; do not guess fields. "
+                "Laya is active advisory inside the "
                 "Hub: it may guide bounded retrieval, context and model routing after Hub validation. "
                 "The Hub and host retain tool permissions, approvals, task-state changes and "
                 "completion decisions. Ignore this guidance for unrelated tasks."
@@ -215,6 +239,16 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
     if _is_path_whitelisted(path_str):
         return {"decision": "allow"}
 
+    source_path = Path(path_str)
+    if _is_hub_online() and source_path.suffix.lower() in SOURCE_CODE_SUFFIXES:
+        return {
+            "decision": "deny",
+            "reason": (
+                "Direct source reads are disabled while Local AI Hub is online. "
+                "Use local_ai_repo for discovery and local_ai_artifact for exact source."
+            ),
+        }
+
     start_line = args.get("StartLine")
     end_line = args.get("EndLine")
     max_lines = _get_max_direct_read_lines()
@@ -243,7 +277,7 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
                     "reason": (
                         f"Requested line range ({s}-{e}, {diff} lines) exceeds the {max_lines}-line limit "
                         f"(Local AI Hub Token Economy policy).{total_note} Specify a narrower slice (<= {max_lines} lines) "
-                        f'or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "context", "query": "...", "root": "..."}}).'
+                        f'or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "context", "query": "...", "root": "..."}}).'
                     ),
                 }
         except (ValueError, TypeError):
@@ -256,7 +290,7 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
             "reason": (
                 f"Full read of '{p.name}' ({line_count} lines > {max_lines}) prohibited by "
                 f"Local AI Hub Token Economy policy. Specify targeted slice with StartLine and EndLine "
-                f'(<= {max_lines} lines) or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", '
+                f'(<= {max_lines} lines) or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", '
                 f'Arguments={{"action": "context", "query": "...", "root": "..."}}).'
             ),
         }
@@ -292,10 +326,24 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
                 "decision": "deny",
                 "reason": (
                     f"Unconstrained repository search '{cmd}' prohibited by Local AI Hub policy. "
-                    f'Use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "search"|"code_index", "query": "...", "root": "..."}}) '
+                    f'Use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "search"|"code_index", "query": "...", "root": "..."}}) '
                     f"or add bounded limits (e.g. -m 5)."
                 ),
             }
+
+    if (
+        _is_hub_online()
+        and re.search(r"\b(?:rg|ripgrep|grep|findstr|find|select-string|sls)\b", cmd, re.IGNORECASE)
+        and not re.search(r"--(?:version|help)\b|(?:^|\s)/(?:\?|help)(?:\s|$)", cmd, re.IGNORECASE)
+    ):
+        return {
+            "decision": "deny",
+            "reason": (
+                "Repository searches must use Local AI Hub while it is online. "
+                'Call call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", '
+                'Arguments={"action":"search","query":"<task query>","root":"<absolute workspace root>"}).'
+            ),
+        }
 
     # ripgrep check
     if re.search(r"\b(?:rg|ripgrep)\b", cmd, re.IGNORECASE):
@@ -306,7 +354,7 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
                     "decision": "deny",
                     "reason": (
                         f"Unbounded ripgrep command '{cmd}' prohibited by Local AI Hub policy. "
-                        f'Add bounded limit (e.g. rg -m 5) or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "search", "query": "...", "root": "..."}}).'
+                        f'Add bounded limit (e.g. rg -m 5) or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "search", "query": "...", "root": "..."}}).'
                     ),
                 }
 
@@ -334,6 +382,18 @@ def _check_run_command(args: dict[str, Any]) -> dict[str, Any]:
             match = re.search(r"\b(?:Get-Content|gc|cat|type)\s+['\"]?([^'\"\s|;>]+)['\"]?", cmd, re.IGNORECASE)
             if match:
                 target_file = Path(match.group(1))
+                if (
+                    _is_hub_online()
+                    and target_file.suffix.lower() in SOURCE_CODE_SUFFIXES
+                    and not _is_path_whitelisted(str(target_file))
+                ):
+                    return {
+                        "decision": "deny",
+                        "reason": (
+                            "Direct source reads are disabled while Local AI Hub is online. "
+                            "Use local_ai_repo for discovery and local_ai_artifact for exact source."
+                        ),
+                    }
                 if target_file.is_file() and target_file.name.lower() not in WHITELIST_FILENAMES:
                     try:
                         with target_file.open("r", encoding="utf-8", errors="ignore") as f:

@@ -165,3 +165,83 @@ def test_pytest_collection_ignores_inherited_operator_gaming(tmp_path: Path) -> 
     assert operator_state_path.read_bytes() == operator_state_bytes
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
     assert "2 passed" in result.stdout
+
+
+def test_test_result_cache_invalidation_and_guards(tmp_path: Path) -> None:
+    """LAH-037: Verify test result cache opt-in, strict invalidation, and CI/env guards."""
+    root = Path(__file__).resolve().parents[1]
+    child_dir = tmp_path / "cache-test-root"
+    child_dir.mkdir()
+    tests_dir = child_dir / "tests"
+    tests_dir.mkdir()
+    src_dir = child_dir / "src" / "local_ai_hub"
+    src_dir.mkdir(parents=True)
+
+    # Copy real conftest.py
+    shutil.copyfile(root / "tests" / "conftest.py", tests_dir / "conftest.py")
+    (child_dir / "pyproject.toml").write_text("[project]\nname='test'\nversion='1.0'\n", encoding="utf-8")
+    (src_dir / "__init__.py").write_text("", encoding="utf-8")
+    (src_dir / "shared_feature.py").write_text("VALUE = 10\n", encoding="utf-8")
+
+    test_file = tests_dir / "test_feature.py"
+    test_file.write_text(
+        textwrap.dedent("""
+            from local_ai_hub.shared_feature import VALUE
+            def test_val():
+                assert VALUE == 10
+        """),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.pop("CI", None)
+    env.pop("NO_TEST_CACHE", None)
+    env.pop("RUN_ALL_TESTS", None)
+    env.pop("RUN_FULL_SUITE", None)
+    env.pop("COVERAGE_FILE", None)
+    env["PYTHONPATH"] = str(child_dir / "src")
+
+    def run_pytest(*args: str, extra_env: dict[str, str] | None = None) -> tuple[int, str]:
+        run_env = env.copy()
+        if extra_env:
+            run_env.update(extra_env)
+        p = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--rootdir", str(child_dir), str(test_file), *args],
+            cwd=child_dir,
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return p.returncode, p.stdout + "\n" + p.stderr
+
+    # 1. First run with --test-result-cache -> runs test and passes (1 passed)
+    code1, out1 = run_pytest("--test-result-cache")
+    assert code1 == 0, out1
+    assert "1 passed" in out1
+
+    # 2. Second run without file change -> deselected, cached
+    code2, out2 = run_pytest("--test-result-cache")
+    assert code2 == 0, out2
+    assert "1 deselected" in out2
+
+    # 3. Guard: NO_TEST_CACHE=1 disables cache -> test runs fresh
+    code3, out3 = run_pytest("--test-result-cache", extra_env={"NO_TEST_CACHE": "1"})
+    assert code3 == 0, out3
+    assert "1 passed" in out3
+    assert "deselected" not in out3
+
+    # 4. Guard: CI=true disables cache -> test runs fresh
+    code4, out4 = run_pytest("--test-result-cache", extra_env={"CI": "true"})
+    assert code4 == 0, out4
+    assert "1 passed" in out4
+    assert "deselected" not in out4
+
+    # 5. Invalidation: Mutating shared source module invalidates cached result
+    (src_dir / "shared_feature.py").write_text("VALUE = 10  # modified comment\n", encoding="utf-8")
+    code5, out5 = run_pytest("--test-result-cache")
+    assert code5 == 0, out5
+    assert "1 passed" in out5
+    assert "deselected" not in out5
+

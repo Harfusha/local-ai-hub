@@ -4,9 +4,32 @@ Credentials authorize operations; repository roots delimit filesystem access.
 Neither agents nor repositories introduce a separate owner identity.
 """
 
+import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+
+def _is_junction(path: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        if hasattr(path, "is_junction") and path.is_junction():
+            return True
+        info = path.lstat()
+    except OSError:
+        return False
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+    mount_point_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+    return (
+        bool(int(getattr(info, "st_file_attributes", 0) or 0) & reparse_attribute)
+        and int(getattr(info, "st_reparse_tag", 0) or 0) == mount_point_tag
+    )
+
+
+def _is_redirecting_link(path: Path) -> bool:
+    return path.is_symlink() or _is_junction(path)
 
 
 class RepositoryScopeError(ValueError):
@@ -22,9 +45,9 @@ def canonical_repository_root(raw: Any) -> Path:
     candidate = Path(raw.strip()).expanduser()
     try:
         if not candidate.is_absolute() or any(
-            item.is_symlink() for item in (candidate, *candidate.parents)
+            _is_redirecting_link(item) for item in (candidate, *candidate.parents)
         ):
-            raise RepositoryScopeError("root must be absolute and contain no symlinks", "invalid_root")
+            raise RepositoryScopeError("root must be absolute and contain no symlinks or junctions", "invalid_root")
         resolved = candidate.resolve(strict=True)
         if not resolved.is_dir():
             raise RepositoryScopeError("root must be a directory", "invalid_root")
@@ -33,6 +56,33 @@ def canonical_repository_root(raw: Any) -> Path:
         raise
     except (OSError, RuntimeError, ValueError) as exc:
         raise RepositoryScopeError("root is unavailable", "invalid_root") from exc
+
+
+def confine_child_path(root: Path | str, relative_child: Path | str) -> Path:
+    """Resolve and confine a child path strictly within canonical root."""
+    canonical_root = canonical_repository_root(root) if not isinstance(root, Path) else root
+    child_str = os.fspath(relative_child)
+    if not child_str or "\x00" in child_str:
+        raise RepositoryScopeError("path is invalid or contains null bytes", "invalid_path", 400)
+    child_path = Path(child_str)
+    if child_path.is_absolute():
+        resolved = child_path.resolve(strict=False)
+    else:
+        resolved = (canonical_root / child_path).resolve(strict=False)
+    try:
+        resolved.relative_to(canonical_root)
+    except (ValueError, OSError) as exc:
+        raise RepositoryScopeError(f"path {child_str} escapes repository root", "path_escape", 403) from exc
+    curr = resolved
+    while curr != canonical_root and curr != curr.parent:
+        if _is_redirecting_link(curr):
+            try:
+                target = curr.resolve(strict=True)
+                target.relative_to(canonical_root)
+            except (ValueError, OSError) as exc:
+                raise RepositoryScopeError(f"link component {curr} escapes repository root", "link_escape", 403) from exc
+        curr = curr.parent
+    return resolved
 
 
 def authorized_repository_root(config: Mapping[str, Any], raw: Any) -> str:

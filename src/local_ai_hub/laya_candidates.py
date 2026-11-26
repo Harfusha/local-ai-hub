@@ -48,11 +48,12 @@ _RUNTIME_BASELINE_METHODS = {
     DecisionCategory.MODEL_ROUTE: "model_router_classify",
     DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
     DecisionCategory.DELEGATION: "pipeline_worker_escalation",
-    DecisionCategory.SUBAGENT_BUDGET: "agent_os_delegation_budget",
+    DecisionCategory.SUBAGENT_BUDGET: "request_delegation_budget",
     DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
     DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
     DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
     DecisionCategory.NEXT_STEP: "pipeline_step_progress",
+    DecisionCategory.RETRIEVAL_STRATEGY: "hybrid_context_default",
 }
 _MAX_CANDIDATES_PER_EXPORT = 20_000
 _MAX_SPLIT_SHINGLES = 1_000_000
@@ -629,19 +630,21 @@ class LayaCandidateStore:
         memory_indices = [index for index, code in enumerate(source_codes) if code == "memory"]
         if memory_indices:
             find_memory = getattr(memory_store, "find", None)
-            if not callable(find_memory) or not task_id or not session_id:
+            if not callable(find_memory):
                 raise ValueError("context_source memory source provenance is unavailable")
             try:
                 from .agent_identity import AgentScope
                 from .agent_memory import MemoryStatus
 
-                scoped_queries = [
-                    (AgentScope.TASK, {"root": canonical_root, "task_id": task_id}),
-                    (
-                        AgentScope.SESSION,
-                        {"root": canonical_root, "task_id": task_id, "session_id": session_id},
-                    ),
-                ]
+                scoped_queries = []
+                if task_id and session_id:
+                    scoped_queries.extend([
+                        (AgentScope.TASK, {"root": canonical_root, "task_id": task_id}),
+                        (
+                            AgentScope.SESSION,
+                            {"root": canonical_root, "task_id": task_id, "session_id": session_id},
+                        ),
+                    ])
                 if coordination_id:
                     scoped_queries.append((
                         AgentScope.REPOSITORY,

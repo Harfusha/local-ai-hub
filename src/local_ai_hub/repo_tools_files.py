@@ -76,7 +76,8 @@ class RepoToolsFilesMixin:
         if git_inventory is not None and not git_inventory.complete:
             return {
                 "success": False,
-                "status_code": 503,
+                "error_code": "repository_inventory_incomplete",
+                "status_code": 422,
                 "error": "file inventory exceeded its path limit; narrow the pattern",
                 "terminal": True,
                 "retryable": False,
@@ -131,7 +132,8 @@ class RepoToolsFilesMixin:
         if git_inventory is None and inventory_status["reasons"]:
             return {
                 "success": False,
-                "status_code": 503,
+                "error_code": "repository_inventory_incomplete",
+                "status_code": 422,
                 "error": "file inventory was incomplete: " + ", ".join(inventory_status["reasons"]),
                 "terminal": True,
                 "retryable": False,

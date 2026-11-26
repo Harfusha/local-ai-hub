@@ -8,11 +8,18 @@ Debug traces can contain complete prompts, model output, tool arguments, and res
 
 Retired `security.api_token`, `security.supervisor_token`, `security.action_tokens`, and `security.api_token_permissions` keys reject by presence. Retired user, tenant, and principal fields also reject by presence. OpenCode's separate nonce-scoped provider-session credential authenticates only that provider bridge; it is not a Hub credential.
 
-## Identity and shared state
+## Identity, local process trust boundaries, and shared state
+
+The Hub's single-owner loopback architecture assumes that all processes with access to local network sockets belong to the host operator. The network boundary strictly rejects non-loopback socket peers before request routing. However, within the local operating system, loopback TCP sockets do not provide kernel-level process or user isolation without additional OS controls (such as Unix domain socket permissions or Windows Named Pipe ACLs). 
+
+To prevent privilege escalation across concurrent agents or local processes:
+- **Server-side ownership and fencing:** Agent tasks, worktrees, and write leases are tracked by durable server-side ownership. An agent cannot complete, mutate, or clean up another agent's task without explicit adoption or ownership transfer.
+- **Denial of text-claimed privilege:** Caller-supplied headers such as `X-LocalAI-Actor`, `X-LocalAI-Role`, `X-LocalAI-Permissions`, or `X-LocalAI-Privilege` are rejected as spoofed headers. Payload fields asserting administrative or reserved identities (`actor: "admin"`, `"system"`, `"root"`, `"*"`) are rejected by server-side state machines and cannot bypass ownership or authorization fences.
+- **Admin and destructive operation boundaries:** Destructive actions (trace purges, configuration changes, model removals, migration resets, worktree purges) require explicit owner confirmation, same-origin validation, and audit recording.
 
 Repository/RAG MCP actions reject omitted or `.` roots at the adapter boundary, and preprocessing requires an explicit absolute root. Configured `allowed_roots` confines repository roots; the root is a physical path boundary, separate from logical coordination IDs. Source behavior does not establish installed-runtime acceptance.
 
-The HTTP server rejects retired `X-LocalAI-Tenant` and `X-Tenant-ID` headers, and retired tenant fields in bodies and queries reject by presence. Loopback is the network trust boundary; caller-supplied headers do not grant authority.
+The HTTP server rejects retired `X-LocalAI-Tenant` and `X-Tenant-ID` headers, spoofed authorization headers, and retired tenant fields in bodies and queries reject by presence. Loopback is the network trust boundary; caller-supplied headers do not grant authority.
 
 Workspace memos are shared by canonical workspace and key. A later write replaces the earlier value when no expected version is supplied; writers may provide the per-key generation they read to reject a stale overwrite. Deletion retains and advances that generation to prevent stale delete-and-recreate writes. Agent leases use explicit actual writer owners and preserve conflict and fencing checks.
 

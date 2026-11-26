@@ -112,6 +112,7 @@ def test_app_wires_scoped_broker_lookup_into_completion(tmp_path: Path):
     state_dir = tmp_path / "app-state"
     config_path = tmp_path / "hub.toml"
     config_path.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         f'[server]\nbind = "127.0.0.1"\nport = 11499\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",

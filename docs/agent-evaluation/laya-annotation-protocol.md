@@ -1,13 +1,13 @@
 # Laya Annotation and Evaluation Protocol
 
-**Status:** Laya runs only for an explicitly invoked active typed decision. When capture is enabled, it records actual runtime outcomes for that decision, scoped to repository/task/session and validated evidence provenance. Ordinary context retrieval, routing, completion, delegation, and watchdog events do not start background Laya inference. Human labels, deterministic outcomes, and Laya outputs remain separate. Model-weight training, benchmarking, card generation, and rollout remain deferred until separately requested.
+**Status:** Laya runs only for an explicitly invoked active typed decision. Request-scoped decisions require a server-authorized repository and verified evidence; a real Agent OS task/session is optional. When capture is enabled, it records actual runtime outcomes as supervised candidates only for a verified task/session with validated evidence provenance. Taskless outcomes remain request telemetry and never become candidates. Ordinary context packing, completion, delegation, and watchdog processing do not start background inference; eligible request entrypoints may explicitly invoke typed advice. Human labels, deterministic outcomes, and Laya outputs remain separate. Model-weight training, benchmarking, card generation, and rollout remain deferred until separately requested.
 
 ## Paired snapshot evaluation
 
 `local_ai_coord(action="curate_dataset", laya_operation={"action":"evaluate_snapshot","snapshot_id":...})`
 compares persisted Laya outputs with their recorded deterministic baselines on
 the same locally operator-labeled, verified `test` split rows. It rechecks
-snapshot fingerprint/status, group isolation, candidate hashes, task/session identity,
+snapshot fingerprint/status, group isolation, candidate hashes, candidate task/session identity,
 evidence provenance, and the current human-label rubric before scoring. Output
 contains aggregate per-category accuracy, paired count, end-to-end latency
 percentiles, adapter lock-wait percentiles, pure `predict()` latency percentiles,
@@ -23,7 +23,9 @@ separate decision.
 
 Laya decisions are explicit advisory requests with closed typed options. They may use the current deterministic result as a baseline; an advisory cannot authorize actions, alter task state, or replace deterministic evidence and authorization checks. Capture stores only actual outputs from active runtime calls when enabled. It does not enqueue evaluations from ordinary context, routing, budget, completion, delegation, or watchdog processing.
 
-Every request requires server-bound repository/task/session identity and verified evidence. Raw training content is bounded, redacted, stored separately from typed state, and never treated as a human label. Candidates without a recorded deterministic baseline are excluded from paired quality metrics.
+Every active request requires server-bound repository identity and verified evidence. A supplied task/session is accepted only after server verification. Raw training content is bounded, redacted, stored separately from typed state, and never treated as a human label. Taskless outcomes can be counted as request telemetry but cannot enter the supervised candidate lifecycle. Candidates without a recorded deterministic baseline are excluded from paired quality metrics.
+
+An Laya output is never written to the training collector or backfilled from telemetry as its own expected label. Runtime telemetry compares a successful typed suggestion with the server-derived baseline where both share the same option set; agreement or divergence measures decision alignment only, not correctness or utility. Human-confirmed labels and matched held-out evaluation remain required for quality claims.
 
 ## Candidate handling
 

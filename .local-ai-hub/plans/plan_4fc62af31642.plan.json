@@ -1,21 +1,21 @@
 {
   "default_target_ref": "refs/heads/master",
-  "description": "Fix evidence-backed endpoint underuse across both agent platforms. Keep native command execution and ownership rules intact; make deterministic/indexed Hub calls the normal route when applicable and semantic calls explicitly conditional.",
+  "description": "User requests active Laya advisories across all Hub entrypoints where typed decisions can materially affect requests, and removal of unnecessary task_id requirements. Wire the shared runtime into repository solve, context-source selection, context shaping and model/retrieval routing where the Hub has current repository-verified evidence and a deterministic baseline. Ordinary request scope has no required or fabricated task/session identity. Keep actual task lifecycle, completion, watchdog, task-scoped memory, and supervised candidates bound to verified Agent OS tasks. Exclude deterministic-only, administrative, mutation, permission and high-impact paths; retain host approval, privacy, and deterministic fallback. Dashboard must separate request/task scope and runtime evidence. Keep provider parity/runtime status and RAG migration tracked separately.",
   "id": "plan_4fc62af31642",
   "lifecycle": "active",
   "schema_version": 1,
   "spec_refs": [
     {
-      "path": "docs/superpowers/plans/2026-11-18-antigravity-policy-size.md",
+      "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
       "revision": {
-        "content_sha256": "8a675e61c59dac9f12b135a94a4f5ff602f06611ad8262125b2663ade72a5679",
+        "content_sha256": "4435eee8ece6a6725e9e13b29a12aa006595c35fd52c8f5eaf05b755e1193c7a",
         "kind": "working"
       }
     },
     {
-      "path": "docs/FINAL_COMPLETION_PLAN.md",
+      "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
       "revision": {
-        "content_sha256": "670fb6750d9a1263a41bf64f0d050aafb0eca89f4ebfeef0e6d24b4c2b63d5c9",
+        "content_sha256": "a585e46a83fe59291b08a46857a74a3d4d7c15e5876e459635fc73678c9ff3dd",
         "kind": "working"
       }
     }
@@ -39,9 +39,26 @@
         "Codex, Antigravity/Gemini, Claude, Cursor, Windsurf, VS Code/Copilot, OpenCode when enabled, and extra configured MCP providers have source-backed surface, install, trust, and verification coverage.",
         "Codex plugins/hooks and all provider-specific packages use currently documented layouts; setup preserves user configuration and never auto-trusts host hooks.",
         "Generated API coverage and agent instructions match actual enabled provider/tool inventory; no provider is described as supported beyond its implemented surface.",
-        "Focused checks cover changed decision paths and host adapters; live handshake status is recorded separately for each available provider."
+        "Focused checks cover changed decision paths and host adapters; live handshake status is recorded separately for each available provider.",
+        "Repository solve and direct repository delegate apply typed model-route advice only when current evidence, at least two digest-verified distinct routes, and an unambiguous deterministic role baseline exist. Map request types to Hub roles; preserve explicit model selection; keep risk/quality gates.",
+        "Repository solve can return typed low-risk delegation advice as metadata. It does not alter deterministic worker/critic planning or start delegated work.",
+        "Request-scoped context-source decisions need no task_id/session_id. Verify repository evidence and source provenance; taskless memory must be repository-scoped, and taskless outcomes never become supervised candidates.",
+        "Only task lifecycle, completion, watchdog, task-scoped memory, and supervised candidate capture require verified Agent OS task/session identity.",
+        "Eligible low-risk repository solve requests with verified evidence run taskless subagent-budget advice using deterministic single_agent baseline. Suggestion is metadata only; it never starts or changes worker/agent planning.",
+        "Repository-bound delegate, review, reason, and second_opinion apply typed model-route advice without task_id when canonical-root EvidenceStore evidence is current, at least two distinct digest-verified routes exist, and the deterministic role baseline is unambiguous.",
+        "review_diff carries authorized root and current verified evidence into bounded review calls, allowing the shared delegate route to apply eligible Laya advice without task identity.",
+        "Explicit model selection, missing or stale evidence, ambiguous baseline, high-risk quality floors, deterministic-only operations, mutation/permission paths, and FIM latency contracts retain current authoritative behavior.",
+        "Request-scoped typed decisions may influence eligible low-risk route/context choices; telemetry remains request-scoped and never creates task-bound supervised candidates.",
+        "Repository-bound generate_tests and non-cascade speculative_draft may apply quality-preserving typed model-route upgrades from current verified source evidence without task_id; explicit draft models and cascade stages stay authoritative.",
+        "Long repository-scoped narrative compression may use typed context_budget advice after deterministic compression declines; text remains outside training capture.",
+        "Adaptive repository context packs apply typed retrieval_strategy advice without task_id when initial current EvidenceStore evidence supports it; apply a bounded rerun only for valid choices and keep the hybrid baseline on failure.",
+        "Direct /api/rag/search reuses only verified typed dense_rag or lexical_bm25 advice, preserves semantic baseline and deterministic fallbacks, and requires no task_id.",
+        "Laya dashboard reports uncalibrated model estimates and does not present decision volume, latency, or fallback rate as proof of value.",
+        "Request inference is exposed as local_ai_coord(action=laya_decision) through POST /api/laya/decision; it does not require Agent OS task storage but requires a canonical authorized repository and verified evidence.",
+        "Candidate review, human labels, snapshots and export remain under curate_dataset; supervised candidate capture requires a verified task/session.",
+        "Dashboard reports scope, eligibility, latency, fallback and baseline alignment; baseline agreement is not quality or utility, which require independent matched labeled evaluation."
       ],
-      "blocker": "No actual provider handshake has been verified in this task. The prior Hub plan explicitly deferred concrete adapters; current user steering overrides that deferral. The local Laya service is available but the runtime status read reports model_resident=false.",
+      "blocker": "Historical endpoint reliability evidence remains incomplete; Codex cache and live MCP now both verify at 8.2.1.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -50,44 +67,88 @@
             {
               "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
               "revision": {
-                "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
+                "content_sha256": "a8a058c6b3cae8b7ed8d2a3b93e722f452c5effb9589dfdf07b98512df183f3a",
                 "kind": "working"
               }
             },
             {
               "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
               "revision": {
-                "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+                "content_sha256": "15f8b709294fa65c7ef51053a38e98b217e80f9167e66706f6e2d03ca0d33c37",
                 "kind": "working"
               }
             }
           ],
-          "summary": "User directs completion of Codex and all other supported providers (including Antigravity and Claude) and explicitly rejects Laya remaining shadow-only.",
+          "summary": "User directs completion of Codex and all other supported providers (including Antigravity and Claude) and rejects Laya remaining shadow-only. References revalidated against current worktree.",
+          "supersedes": []
+        },
+        {
+          "adoption": "adopted",
+          "id": "change_2026_11_24_laya_request_scope",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "a8a058c6b3cae8b7ed8d2a3b93e722f452c5effb9589dfdf07b98512df183f3a",
+                "kind": "working"
+              }
+            },
+            {
+              "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "15f8b709294fa65c7ef51053a38e98b217e80f9167e66706f6e2d03ca0d33c37",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User expands Laya to all appropriate Local AI Hub request paths and explicitly removes unnecessary task_id requirements, including subagent-budget advice. Request-only decisions use repository-scoped identity; lifecycle, task-scoped provenance and supervised capture retain verified task/session identity.",
+          "supersedes": []
+        },
+        {
+          "adoption": "adopted",
+          "id": "change_2026_11_25_laya_request_api",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "4435eee8ece6a6725e9e13b29a12aa006595c35fd52c8f5eaf05b755e1193c7a",
+                "kind": "working"
+              }
+            },
+            {
+              "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
+              "revision": {
+                "content_sha256": "a585e46a83fe59291b08a46857a74a3d4d7c15e5876e459635fc73678c9ff3dd",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User scope requires request-scoped Laya inference callable outside Agent OS task actions; task_id optional for ordinary decisions, while supervised capture remains task-bound. Eligible typed suggestions affect low-risk route/context choices and dashboard distinguishes alignment from quality.",
           "supersedes": []
         }
       ],
       "depends_on": [],
-      "description": "User explicitly expanded scope from Codex/Antigravity endpoint routing to full active Laya use and complete integration of every provider enabled/advertised by Local AI Hub. Implement one shared local Laya service, consistent MCP and generated instruction routes, current provider plugin/hook/setup formats, truthful per-provider capability and handshake status. Concrete client adapters are now in scope. Preserve deterministic permissions, host trust/approval, bounded privacy, and fallback contracts.",
+      "description": "Checkpoint 2026-11-25: Gemini CLI workspace root was trusted with explicit user approval; gemini mcp list from Hub root now reports local-ai Connected. Cursor installed native plugin refreshed to 8.1.0 and its live MCP wrapper completed initialize/tools/list with 7 tools. Handshake verifier now compares Antigravity/Cursor native plugin versions against the source release; stale Cursor 6.1.0 regression was observed failing before the fix. Focused provider/setup suite: 194 passed; release_check --allow-installed passed; full provider verifier reports all configured provider bundles current, Codex runtime current, Hub ready, and stdio handshake 7/7. GPU reservation unknown fence was released through the authorized endpoint and rechecked free. Remaining work: investigate unattributed admin.action.result 500 telemetry; do not claim active app windows reloaded from wrapper evidence. Checkpoint 2026-11-25 21:42 CET: durable inventory recovery guidance now lives in tracked src/local_ai_hub/generator.py; provider bundle parity and runtime/release version consistency are regression-tested. Bumped package/runtime/manifests/docs to 8.2.1, refreshed Gemini extension, Cursor, and Antigravity/Multigravity profiles, restarted Hub; health and doctor both report 8.2.1. Fifteen source/installed MCP launchers plus four Multigravity profiles completed initialize/tools/list with 7 tools. Focused suites passed: 251 + 125; release_check, compileall and diff-check passed. Codex global skill and active cached launcher work, but plugin cache still reports 8.2.0: plugin inventory exceeded 30s and official cache refresh failed Access denied under running Codex app. Historical 8 admin.action.result 500s remain unattributed; current 8.2.1 runtime has no failures in its active preprocessing/scheduler status. Continue only after safe Codex host cache refresh and attributable historical failure evidence.",
       "kind": "code",
-      "next_action": "Inventory provider setup/manifests/hooks/skills and all Laya callers; then implement active Laya routing and current provider packaging in independently verifiable units.",
+      "next_action": "Attribute historical HTTP failures and slow endpoints from retained traces; fix verified causes, then audit remaining provider/Laya acceptance criteria.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "content_sha256": "8df45234676361dd9bebe5a9531438403919daeccea27d5d18dae0cae03b6ca8",
+            "content_sha256": "4435eee8ece6a6725e9e13b29a12aa006595c35fd52c8f5eaf05b755e1193c7a",
             "kind": "working"
           }
         },
         {
           "path": "docs/superpowers/plans/2026-11-23-laya-full-provider-integration.md",
           "revision": {
-            "content_sha256": "e74d6d31e977b58cb882d8dcdebc75bd094a697c2d28f78afb448e071727cf4d",
+            "content_sha256": "a585e46a83fe59291b08a46857a74a3d4d7c15e5876e459635fc73678c9ff3dd",
             "kind": "working"
           }
         }
       ],
       "title": "Plná integrace Laya a všech podporovaných providerů",
-      "work_phase": "implementation",
+      "work_phase": "verification",
       "work_status": "in_progress"
     }
   },

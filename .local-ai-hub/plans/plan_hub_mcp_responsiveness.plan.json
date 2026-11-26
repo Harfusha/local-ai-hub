@@ -1,0 +1,61 @@
+{
+  "accountable_role": "codex",
+  "default_target_ref": "refs/heads/master",
+  "description": "Fix the observed stale RAG reference cleanup transaction timeout, add focused regression coverage, then diagnose and verify the MCP status HTTP 500 and request responsiveness.",
+  "id": "plan_hub_mcp_responsiveness",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-23-preprocessor-stale-rag-cleanup.md",
+      "revision": {
+        "content_sha256": "558230ef2df958c765ccac241e0b05c64fd82496214584f783e7792668c8a197",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-23-preprocessor-stale-rag-cleanup.md",
+      "revision": {
+        "content_sha256": "70b4298e3d4a1369b69367c2023469413270f4fe76681bc46883f92a28c23cba",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_repair_stale_rag_cleanup": {
+      "acceptance_criteria": [
+        "Each stale-reference write transaction is bounded to the conservative preprocessing batch size and remains within the 5 second write budget under the regression fixture.",
+        "Existing stale-file generation guards and FTS cleanup behavior remain correct.",
+        "Targeted preprocessing tests pass and live Hub/MCP checks no longer show the observed timeout or status 500."
+      ],
+      "accountable_role": "codex",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Bound stale RAG reference metadata and FTS cleanup to small SQLite write transactions while preserving generation/hash compare-and-swap behavior.",
+      "kind": "code",
+      "next_action": "Update stale-path cleanup to use eight-path write batches, add the 17-path regression case, and run targeted validation.",
+      "order": 1,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-23-preprocessor-stale-rag-cleanup.md",
+          "revision": {
+            "content_sha256": "558230ef2df958c765ccac241e0b05c64fd82496214584f783e7792668c8a197",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-23-preprocessor-stale-rag-cleanup.md",
+          "revision": {
+            "content_sha256": "70b4298e3d4a1369b69367c2023469413270f4fe76681bc46883f92a28c23cba",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Batch stale RAG reference invalidation",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Bound stale RAG cleanup and restore MCP responsiveness"
+}

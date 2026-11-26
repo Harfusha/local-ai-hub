@@ -18,8 +18,8 @@ from collections import deque
 import hashlib
 import json
 import logging
-import os
 import queue
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -27,6 +27,32 @@ from pathlib import Path
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
+
+_SENSITIVE_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"bearer\s+[A-Za-z0-9._~+/-]{20,}", re.IGNORECASE),
+    re.compile(r"ghp_[A-Za-z0-9]{30,}"),
+    re.compile(r"gho_[A-Za-z0-9]{30,}"),
+    re.compile(r"password\s*[:=]\s*[^\s,;]+", re.IGNORECASE),
+]
+
+
+def _redact_sensitive(text: str) -> str:
+    if not text or not isinstance(text, str):
+        return text
+    res = text
+    for pat in _SENSITIVE_PATTERNS:
+        res = pat.sub("[REDACTED_SECRET]", res)
+    return res
+
+
+def _determine_split(key: str) -> str:
+    val = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % 10
+    if val == 9:
+        return "test"
+    if val == 8:
+        return "val"
+    return "train"
 
 
 @dataclass(frozen=True)
@@ -37,6 +63,14 @@ class LayaTrainingSample:
     questions: dict[str, str]
     expected: str
     gold: dict[str, float]
+    label_source: str = "verified_receipt"
+    prediction: str | None = None
+    observed_outcome: str | None = None
+    verification_receipt: dict[str, Any] | None = None
+    human_label: str | None = None
+    teacher_model: str | None = None
+    split: str = "train"
+    schema_version: int = 2
     timestamp: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,6 +86,8 @@ class DPOPairSample:
     rejected: str
     verification_passed: bool
     metadata: dict[str, Any]
+    split: str = "train"
+    schema_version: int = 2
     timestamp: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,6 +101,8 @@ class RetrievalTripletSample:
     positive: str
     negative: str
     metadata: dict[str, Any]
+    split: str = "train"
+    schema_version: int = 2
     timestamp: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,15 +178,61 @@ class LayaTrainingCollector:
         question_text: str,
         expected_choice: str,
         confidence_distribution: Mapping[str, float] | None = None,
+        *,
+        label_source: str | None = None,
+        prediction: str | None = None,
+        observed_outcome: str | None = None,
+        verification_receipt: Mapping[str, Any] | None = None,
+        human_label: str | None = None,
+        teacher_model: str | None = None,
+        split: str | None = None,
     ) -> LayaTrainingSample | None:
         """Record one typed routing/context decision for Laya ModernBERT fine-tuning."""
         if not self.enabled:
             return None
 
-        state_dict = dict(state)
-        gold = dict(confidence_distribution or {expected_choice: 1.0})
+        clean_question = _redact_sensitive(question_text)
+        state_dict = {
+            k: _redact_sensitive(v) if isinstance(v, str) else v
+            for k, v in state.items()
+        }
+        receipt_dict = dict(verification_receipt) if verification_receipt is not None else None
 
-        raw_repr = f"{category}:{question_text}:{expected_choice}:{sorted(state_dict.items())}"
+        # Determine effective split (deterministic across repos/tasks)
+        effective_split = split or _determine_split(f"{category}:{clean_question}")
+
+        # LAH-014: Ground-truth contamination prevention.
+        # Populate gold labels ONLY from verified test/retrieval-oracle/human correction.
+        # Failed predictions or unverified model outputs must NEVER become gold truth.
+        if receipt_dict is not None:
+            if receipt_dict.get("passed", False):
+                effective_source = label_source or "verified_receipt"
+                effective_gold = dict(confidence_distribution or {expected_choice: 1.0})
+                pred = prediction or expected_choice
+                outcome = observed_outcome or "passed_verification"
+            else:
+                effective_source = label_source or "failed_verification"
+                effective_gold = {}
+                pred = prediction or expected_choice
+                outcome = observed_outcome or "failed_verification"
+        elif human_label:
+            effective_source = label_source or "human_correction"
+            effective_gold = {human_label: 1.0}
+            expected_choice = human_label
+            pred = prediction or expected_choice
+            outcome = observed_outcome or "human_verified"
+        elif label_source in ("retrieval_oracle", "oracle", "ground_truth", "synthetic_oracle"):
+            effective_source = label_source
+            effective_gold = dict(confidence_distribution or {expected_choice: 1.0})
+            pred = prediction or expected_choice
+            outcome = observed_outcome or "oracle_verified"
+        else:
+            effective_source = label_source or "model_prediction"
+            pred = prediction or expected_choice
+            outcome = observed_outcome or "unverified_prediction"
+            effective_gold = {}
+
+        raw_repr = f"{category}:{clean_question}:{expected_choice}:{effective_source}:{sorted(state_dict.items())}"
         h = hashlib.sha256(raw_repr.encode("utf-8")).hexdigest()
         sid = f"laya_{h[:16]}"
 
@@ -156,9 +240,17 @@ class LayaTrainingCollector:
             sample_id=sid,
             category=category,
             state=state_dict,
-            questions={"category": category, "query": question_text},
+            questions={"category": category, "query": clean_question},
             expected=expected_choice,
-            gold=gold,
+            gold=effective_gold,
+            label_source=effective_source,
+            prediction=pred,
+            observed_outcome=outcome,
+            verification_receipt=receipt_dict,
+            human_label=human_label,
+            teacher_model=teacher_model,
+            split=effective_split,
+            schema_version=2,
             timestamp=time.time(),
         )
 
@@ -183,24 +275,34 @@ class LayaTrainingCollector:
         rejected: str,
         verification_passed: bool = True,
         metadata: Mapping[str, Any] | None = None,
+        split: str | None = None,
     ) -> DPOPairSample | None:
         """Record a chosen vs rejected code pair derived from verification receipts."""
         if not self.enabled:
             return None
 
+        clean_prompt = _redact_sensitive(prompt)
+        clean_chosen = _redact_sensitive(chosen)
+        clean_rejected = _redact_sensitive(rejected)
         meta = dict(metadata or {})
-        raw_repr = f"{category}:{prompt[:100]}:{chosen[:100]}:{rejected[:100]}"
+        if not verification_passed:
+            meta["failed_verification"] = True
+        effective_split = split or _determine_split(clean_prompt)
+
+        raw_repr = f"{category}:{clean_prompt[:100]}:{clean_chosen[:100]}:{clean_rejected[:100]}"
         h = hashlib.sha256(raw_repr.encode("utf-8")).hexdigest()
         pid = f"dpo_{h[:16]}"
 
         sample = DPOPairSample(
             pair_id=pid,
             category=category,
-            prompt=prompt,
-            chosen=chosen,
-            rejected=rejected,
+            prompt=clean_prompt,
+            chosen=clean_chosen,
+            rejected=clean_rejected,
             verification_passed=verification_passed,
             metadata=meta,
+            split=effective_split,
+            schema_version=2,
             timestamp=time.time(),
         )
 
@@ -223,22 +325,30 @@ class LayaTrainingCollector:
         positive: str,
         negative: str,
         metadata: Mapping[str, Any] | None = None,
+        split: str | None = None,
     ) -> RetrievalTripletSample | None:
         """Record (query, positive, hard_negative) triplet for Reranker and Embeddings fine-tuning."""
         if not self.enabled:
             return None
 
+        clean_query = _redact_sensitive(query)
+        clean_pos = _redact_sensitive(positive)
+        clean_neg = _redact_sensitive(negative)
         meta = dict(metadata or {})
-        raw_repr = f"triplet:{query[:100]}:{positive[:100]}:{negative[:100]}"
+        effective_split = split or _determine_split(clean_query)
+
+        raw_repr = f"triplet:{clean_query[:100]}:{clean_pos[:100]}:{clean_neg[:100]}"
         h = hashlib.sha256(raw_repr.encode("utf-8")).hexdigest()
         tid = f"trip_{h[:16]}"
 
         sample = RetrievalTripletSample(
             triplet_id=tid,
-            query=query,
-            positive=positive,
-            negative=negative,
+            query=clean_query,
+            positive=clean_pos,
+            negative=clean_neg,
             metadata=meta,
+            split=effective_split,
+            schema_version=2,
             timestamp=time.time(),
         )
 
@@ -327,49 +437,11 @@ class LayaTrainingCollector:
                 pass
             self._worker_thread.join(timeout=1.0)
 
-    def backfill_from_telemetry(self, db_path: str | Path, limit: int = 50000) -> int:
-        """Backfill historical successful Laya decisions from telemetry snapshots."""
-        if not os.path.exists(db_path):
-            return 0
-        import sqlite3
-        con = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
-        cur = con.cursor()
-        cur.execute(
-            "SELECT metrics_json FROM snapshots WHERE name='laya_decision' AND (metrics_json LIKE '%\"status\":\"success\"%' OR metrics_json LIKE '%\"status\": \"success\"%') LIMIT ?",
-            (limit,),
-        )
-        count = 0
-        for row in cur.fetchall():
-            try:
-                data = json.loads(row[0])
-                category = data.get("category")
-                suggestion = data.get("suggestion")
-                if not category or not suggestion:
-                    continue
-                state_dict = {
-                    "task_id": data.get("task_id"),
-                    "session_id": data.get("session_id"),
-                    "reason_codes": data.get("reason_codes"),
-                }
-                sample = self.record_laya_decision(
-                    category=category,
-                    state=state_dict,
-                    question_text=f"Decision for {category} in task {data.get('task_id')}",
-                    expected_choice=suggestion,
-                    confidence_distribution={suggestion: 1.0},
-                )
-                if sample:
-                    count += 1
-            except Exception:
-                continue
-        con.close()
-        self.flush()
-        return count
-
     def get_stats(self) -> dict[str, Any]:
         """Return cumulative training samples collected in session."""
         with self._lock:
             return {
+                "enabled": self.enabled,
                 "laya_samples_collected": self._laya_count,
                 "dpo_pairs_collected": self._dpo_count,
                 "retrieval_triplets_collected": self._triplet_count,

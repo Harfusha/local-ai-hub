@@ -146,8 +146,10 @@ class TaskTrainingMixin:
                 "format": "jsonl",
                 "dataset_kind": "laya_candidates",
             }
+        listed = self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
+        candidate_tasks = getattr(listed, "tasks", listed)
         tasks = [
-            task for task in self.list_tasks(status=TaskStatus.COMPLETED, limit=5000).tasks
+            task for task in candidate_tasks
             if _task_matches_scope(task, str(scoped_root), task_id)
         ]
         samples: list[dict[str, Any]] = []

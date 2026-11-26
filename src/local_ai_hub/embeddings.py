@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import importlib.metadata
 import json
 import hashlib
+import logging
 import math
 import os
+import shutil
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
@@ -19,6 +24,8 @@ from .accelerators import automatic_embedding_candidates, openvino_cache_dir, op
 from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
 from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
@@ -31,6 +38,84 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
         return max(min_val, i)
     except (ValueError, TypeError, OverflowError):
         return default
+
+
+def _openvino_export_cache_path(
+    config: dict[str, Any], model_name: str, *, revision: str | None,
+    max_seq_length: int, device: str,
+) -> Path:
+    """Return a versioned local path for a reusable SentenceTransformers OpenVINO IR."""
+    root = configured_state_dir(config, create=True) / "openvino-models"
+    versions: dict[str, str] = {}
+    for package in ("sentence-transformers", "transformers", "optimum-intel", "openvino"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "missing"
+    key = stable_hash({
+        "format": 1,
+        "model": str(model_name),
+        "revision": revision,
+        "max_seq_length": int(max_seq_length),
+        "device": str(device).upper(),
+        "packages": versions,
+    })
+    return root / key
+
+
+def _openvino_export_cache_ready(path: Path) -> bool:
+    """Require the SentenceTransformers manifest and a complete OpenVINO IR."""
+    try:
+        modules = json.loads((path / "modules.json").read_text(encoding="utf-8"))
+        if not isinstance(modules, list):
+            return False
+        root = path.resolve()
+        for module in modules:
+            relative = module.get("path") if isinstance(module, dict) else None
+            if not isinstance(relative, str):
+                continue
+            module_path = (path / relative).resolve()
+            if module_path != root and root not in module_path.parents:
+                continue
+            xml = module_path / "openvino" / "openvino_model.xml"
+            if xml.is_file() and (xml.with_suffix(".bin").is_file() or xml.with_suffix(".BIN").is_file()):
+                return True
+        return False
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def _persist_openvino_export(model: Any, path: Path) -> bool:
+    """Save a successful in-memory export atomically; cache failure stays non-fatal."""
+    if _openvino_export_cache_ready(path):
+        return True
+    root = path.parent.resolve()
+    target = path.resolve()
+    if target.parent != root:
+        return False
+    temp_path: Path | None = None
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        temp_path = Path(tempfile.mkdtemp(prefix=f".{path.name}.tmp-", dir=root))
+        model.save(str(temp_path), create_model_card=False)
+        if not _openvino_export_cache_ready(temp_path):
+            raise RuntimeError("SentenceTransformers save did not produce a complete OpenVINO IR")
+        if _openvino_export_cache_ready(path):
+            return True
+        if path.exists():
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        os.replace(temp_path, path)
+        temp_path = None
+        return True
+    except Exception as exc:
+        logger.warning("OpenVINO export cache save failed (%s)", type(exc).__name__)
+        return False
+    finally:
+        if temp_path is not None:
+            shutil.rmtree(temp_path, ignore_errors=True)
 
 
 def _uses_gpu_route(backend: Any, device: Any) -> bool:
@@ -77,7 +162,14 @@ class EmbeddingModel:
         self._st_candidate_index = -1
         self.ollama_url = str(server_cfg.get("ollama_url", "http://127.0.0.1:11434")).replace("\x00", "").rstrip("/")
         self.enabled = bool(features_cfg.get("rag", True))
-        self.trust_remote_code = bool(cpu_cfg.get("embedding_trust_remote_code", False))
+        raw_trust_remote_code = bool(cpu_cfg.get("embedding_trust_remote_code", False))
+        models_cfg = cfg.get("models", {})
+        has_pinned_review = bool(
+            models_cfg.get("embedding_sha256")
+            or models_cfg.get("embedding_revision")
+            or models_cfg.get("trusted_remote_code_operator_override")
+        )
+        self.trust_remote_code = raw_trust_remote_code and has_pinned_review
         self.max_seq_length = _safe_int(cpu_cfg.get("embedding_max_seq_length"), 8192, 128)
         self.batch_size = _safe_int(cpu_cfg.get("embedding_batch_size"), 32, 1)
         self._model = None
@@ -510,6 +602,27 @@ class EmbeddingModel:
                         raise
                     return SentenceTransformer(name, **kw)
 
+            def _load_openvino_or_source(name: str, kw: dict[str, Any]) -> tuple[Any, Path | None, bool]:
+                if backend != "openvino":
+                    return _load_st(name, kw), None, False
+                revision = kw.get("revision")
+                cache_path = _openvino_export_cache_path(
+                    self.config,
+                    name,
+                    revision=revision if isinstance(revision, str) else None,
+                    max_seq_length=self.max_seq_length,
+                    device=str(device),
+                )
+                if _openvino_export_cache_ready(cache_path):
+                    local_kwargs = dict(kw)
+                    local_kwargs.pop("revision", None)
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                        return SentenceTransformer(str(cache_path), local_files_only=True, **local_kwargs), cache_path, True
+                    except Exception as exc:
+                        logger.warning("OpenVINO export cache load failed (%s); loading source model", type(exc).__name__)
+                return _load_st(name, kw), cache_path, False
+
             def create_model():
                 nonlocal loaded_model_name
                 if uses_torch_cuda(backend, device):
@@ -521,7 +634,7 @@ class EmbeddingModel:
                     loaded_model_name = model.model_name
                     return model
                 try:
-                    model = _load_st(self.model_name, kwargs)
+                    model, export_cache_path, loaded_from_export_cache = _load_openvino_or_source(self.model_name, kwargs)
                 except Exception:
                     if resolved_model_name != self.model_name or self.model_name == "BAAI/bge-small-en-v1.5" or configured_revision:
                         raise
@@ -529,7 +642,7 @@ class EmbeddingModel:
                     fallback_kwargs["trust_remote_code"] = False
                     fallback_kwargs.pop("revision", None)
                     loaded_model_name = "BAAI/bge-small-en-v1.5"
-                    model = _load_st(loaded_model_name, fallback_kwargs)
+                    model, export_cache_path, loaded_from_export_cache = _load_openvino_or_source(loaded_model_name, fallback_kwargs)
                 if hasattr(model, "max_seq_length"):
                     max_pos = getattr(model, "max_seq_length", 512) or 512
                     try:
@@ -543,6 +656,8 @@ class EmbeddingModel:
                             raise RuntimeError("OpenVINO NPU model does not expose a reshapeable transformer")
                         ov_model.reshape(1, int(model.max_seq_length))
                         ov_model.compile()
+                if backend == "openvino" and export_cache_path is not None and not loaded_from_export_cache:
+                    _persist_openvino_export(model, export_cache_path)
                 return model
 
             model = load_model(
@@ -765,10 +880,19 @@ class EmbeddingModel:
         return embeddings.detach().cpu().numpy()
 
     def _claim_embedding_gpu(self) -> tuple[str, str] | bool | None:
+        execution_local = getattr(self, "_execution_local", None)
+        if execution_local is not None:
+            execution_local.gpu_admission_reason = None
+
+        def denied(reason: str) -> bool:
+            if execution_local is not None:
+                execution_local.gpu_admission_reason = reason
+            return False
+
         store = getattr(self, "_gpu_reservation_store", None)
         if store is None:
             if getattr(self, "_gpu_reservation_path", None) is not None:
-                return False
+                return denied("reservation_store_unavailable")
             return None
         digest = hashlib.sha256(os.urandom(32)).hexdigest()
         try:
@@ -776,7 +900,7 @@ class EmbeddingModel:
 
             owner_budget = conservative_gpu_capacity_budget_bytes()
             if owner_budget is None:
-                return False
+                return denied("capacity_telemetry_unavailable")
             record = store.reserve(
                 digest,
                 owner=f"embedding:{os.getpid()}:{threading.get_ident()}",
@@ -784,12 +908,14 @@ class EmbeddingModel:
             )
             generation = record.get("generation") if isinstance(record, dict) else None
             if not isinstance(generation, str) or not generation:
-                return False
+                return denied("reservation_generation_missing")
             if not store.renew(digest, generation, state="active"):
                 store.release(digest, generation)
-                return False
-        except (OSError, ValueError):
-            return False
+                return denied("reservation_activation_failed")
+        except OSError:
+            return denied("reservation_io_error")
+        except ValueError:
+            return denied("reservation_data_invalid")
         return digest, generation
 
     def _release_embedding_gpu(self, reservation: tuple[str, str]) -> bool:
@@ -862,6 +988,7 @@ class EmbeddingModel:
     ) -> dict[str, Any]:
         self._execution_local.snapshot = None
         self._execution_local.ollama_gpu_fenced = False
+        self._execution_local.gpu_admission_reason = None
         backend = getattr(self, "backend", "")
         device = getattr(self, "device", None)
         candidate_specs: list[tuple[str, str]] | None = None
@@ -971,8 +1098,18 @@ class EmbeddingModel:
                     output.setdefault("embedding_backend", self.active_backend)
                     output.setdefault("embedding_device", self.active_device)
                     output.setdefault("fallback_reason", "GPU admission unavailable; used CPU fallback")
+                    admission_reason = getattr(self._execution_local, "gpu_admission_reason", None)
+                    if admission_reason:
+                        output.setdefault("gpu_admission_reason", admission_reason)
                     return output
-            return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
+            return {
+                "success": False,
+                "error_code": "gpu_reserved",
+                "error": "GPU admission is unavailable",
+                "gpu_admission_reason": getattr(self._execution_local, "gpu_admission_reason", None)
+                    or "reservation_denied",
+                "retryable": True,
+            }
         digest = reservation[0] if isinstance(reservation, tuple) else None
         self._execution_local.gpu_fence_digest = digest
         terminal_response = False

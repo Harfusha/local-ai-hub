@@ -81,7 +81,7 @@ class Supervisor:
         self._signal_wake_reader: socket.socket | None = None
         self._signal_wake_writer: socket.socket | None = None
         self._signal_wake_thread: threading.Thread | None = None
-        self._mixed_cuda_worker: threading.Thread | None = None
+        self._managed_llama_worker: threading.Thread | None = None
         self.started_at = time.time()
         self.restarts = 0
         self.spawns = 0
@@ -92,47 +92,55 @@ class Supervisor:
     def is_supervisor_stopping(self) -> bool:
         return bool(self.stopping)
 
-    def _start_mixed_cuda(self) -> None:
+    def _start_managed_llama_cpp(self) -> None:
         llama = self.config.get("llama_cpp", {})
-        if not isinstance(llama, dict) or llama.get("managed_with_ollama") is not True:
+        if not isinstance(llama, dict) or not (
+            llama_cpp_managed_selected(self.config) or llama.get("managed_with_ollama") is True
+        ):
             return
         if self.stopping or self._stop_event.is_set():
             return
-        if self._mixed_cuda_worker is not None and self._mixed_cuda_worker.is_alive():
+        if self._managed_llama_worker is not None and self._managed_llama_worker.is_alive():
             return
+        owner = self.runtime.llama_cpp_managed
+        if getattr(self, "_managed_llama_last_report", None) == ("ready", ""):
+            is_online = getattr(owner, "is_online", None)
+            try:
+                if callable(is_online) and is_online():
+                    return
+            except Exception:
+                pass
 
         def start_owned() -> None:
             try:
-                started = self.runtime.llama_cpp_managed.ensure_running(
+                started = owner.ensure_running(
                     should_stop=lambda: self.stopping or self._stop_event.is_set()
                 )
                 if started:
-                    self._managed_cuda_last_report = ("ready", "")
+                    self._managed_llama_last_report = ("ready", "")
                 elif not self.stopping and not self._stop_event.is_set():
-                    owner = self.runtime.llama_cpp_managed
                     reason = str(getattr(owner, "_last_error", "") or "ensure_running_returned_false")
                     report = ("incomplete", reason)
-                    if getattr(self, "_managed_cuda_last_report", None) != report:
-                        self.log(f"managed CUDA startup incomplete: {reason}")
-                        self._managed_cuda_last_report = report
+                    if getattr(self, "_managed_llama_last_report", None) != report:
+                        self.log(f"managed llama.cpp startup incomplete: {reason}")
+                        self._managed_llama_last_report = report
             except Exception as exc:
-                self.log(f"managed CUDA startup failed: {type(exc).__name__}")
+                self.log(f"managed llama.cpp startup failed: {type(exc).__name__}")
             finally:
-                owner = self.runtime.llama_cpp_managed
                 if (self.stopping or self._stop_event.is_set()) and getattr(owner, "_managed_process", None) is not None:
                     owner.stop()
 
-        self._mixed_cuda_worker = threading.Thread(target=start_owned, name="managed-cuda-start", daemon=True)
-        self._mixed_cuda_worker.start()
+        self._managed_llama_worker = threading.Thread(target=start_owned, name="managed-llama-start", daemon=True)
+        self._managed_llama_worker.start()
 
-    def _stop_mixed_cuda(self) -> None:
-        worker = getattr(self, "_mixed_cuda_worker", None)
+    def _stop_managed_llama_cpp(self) -> None:
+        worker = getattr(self, "_managed_llama_worker", None)
         if worker is None:
             return
         self._stop_event.set()
         worker.join(timeout=5.0)
         if worker.is_alive():
-            self.log("managed CUDA startup is still cancelling")
+            self.log("managed llama.cpp startup is still cancelling")
             return
         owner = self.runtime.llama_cpp_managed
         if getattr(owner, "_managed_process", None) is not None:
@@ -668,6 +676,19 @@ class Supervisor:
         child = self.child
         was_running = child is not None and child.poll() is None
         if was_running:
+            try:
+                listener_pid = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+            except Exception:
+                self.log("hub listener identity unavailable; retained child left running")
+                return False
+            if listener_pid is not None and int(listener_pid) != int(child.pid) and self._listener_is_owned(listener_pid):
+                worker_owner = process_owner_record(int(listener_pid), self.state_dir, "hub")
+                if worker_owner is None or not self._listener_is_owned(listener_pid):
+                    self.log("hub interpreter identity changed; retained child left running")
+                    return False
+                if not terminate_owned_process(worker_owner, self.state_dir, "hub", grace_seconds=5.0):
+                    self.log("hub interpreter not signaled; safe process handle unavailable")
+                    return False
             self.log(f"hub termination requested pid={child.pid}")
             if not terminate_process_handle(child, self.child_pidfd, grace_seconds=5.0):
                 self.log("hub child not signaled; safe retained process handle unavailable")
@@ -745,11 +766,16 @@ class Supervisor:
                             self.log("hub listener retained; safe termination unavailable")
                             self._wait_interruptibly(interval)
                             continue
-                now = time.time()
+                now = time.monotonic()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
                 manage_llama_cpp = llama_cpp_managed_selected(self.config)
-                self._start_mixed_cuda()
-                ollama_online = self.runtime.ensure_running() if manage_ollama or manage_llama_cpp else None
+                llama = self.config.get("llama_cpp", {})
+                managed_with_ollama = isinstance(llama, dict) and llama.get("managed_with_ollama") is True
+                if manage_llama_cpp or managed_with_ollama:
+                    # Model loading can take minutes; keep the Hub HTTP process
+                    # available while the managed llama.cpp backend warms up.
+                    self._start_managed_llama_cpp()
+                ollama_online = self.runtime.ensure_running() if manage_ollama and not manage_llama_cpp else None
                 if self.child_ready and self.hub_online():
                     unhealthy_since = 0.0
                     backoff = initial_backoff
@@ -793,8 +819,8 @@ class Supervisor:
                 # Cold startup may initialize several local derived stores and model
                 # metadata. Do not recycle a live child using the much shorter runtime
                 # unhealthy grace; that creates a self-sustaining restart storm.
-                deadline = time.time() + startup_grace
-                while not self.stopping and time.time() < deadline:
+                deadline = time.monotonic() + startup_grace
+                while not self.stopping and time.monotonic() < deadline:
                     if self.hub_ready():
                         self.child_ready = True
                         break
@@ -817,7 +843,7 @@ class Supervisor:
             self.log(f"supervisor exception pid={os.getpid()}\n{traceback.format_exc()}")
             raise
         finally:
-            self._stop_mixed_cuda()
+            self._stop_managed_llama_cpp()
             self._stop_signal_wakeup()
             try:
                 self._stop_mcp_http()

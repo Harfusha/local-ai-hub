@@ -97,6 +97,7 @@ fast_code = "qwen2.5-coder:3b"
 heavy_code = "qwen2.5-coder:7b"
 reasoning = "qwen3.5:9b"
 general = "qwen2.5-coder:7b"
+compression_fallback = "qwen2.5-coder:1.5b"
 vision = "qwen3-vl:4b"
 context_relevance_model = "qwen2.5-coder:3b"
 embedding = "Harfusha/local-ai-hub-bge-small-en-v1-5-code"
@@ -257,8 +258,8 @@ module_batch_size = 4
 [scheduler]
 # Balanced baseline; the hardware profile overlays this before explicit user values.
 # Optional conservative per-model VRAM upper bounds for cold-start admission.
-# shortcut: measured Q4_K_M runner at 8192 context; 3B max observed at 32768; refresh on digest, quantization, or context change.
-model_vram_estimates_bytes = {"qwen2.5-coder:1.5b" = 1266606406, "qwen2.5-coder:3b" = 3075452435, "qwen2.5-coder:3b-instruct-q4_K_M" = 3075452435, "qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-q4_K_M" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:7b-instruct-q4_K_M" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:14b-instruct-q4_K_M" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "qwen2.5-coder:32b-instruct-q4_K_M" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944}
+# shortcut: measured Q4_K_M baselines at 8192 context; 3B max observed at 32768. Same-shape Qwen2 preprocessing finetunes reuse these conservative bounds; 0.5B uses the larger 1.5B bound. These aliases are configured estimates, not per-tag measurements; refresh on digest, quantization, or context changes.
+model_vram_estimates_bytes = {"qwen2.5-coder:0.5b" = 1266606406, "qwen2.5-coder-prep-v3:0.5b" = 1266606406, "qwen2.5-coder:1.5b" = 1266606406, "qwen2.5-coder-prep-v3:1.5b" = 1266606406, "qwen2.5-coder-prep-v4:3b" = 3075452435, "qwen2.5-coder:3b" = 3075452435, "qwen2.5-coder:3b-instruct-q4_K_M" = 3075452435, "qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-q4_K_M" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:7b-instruct-q4_K_M" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:14b-instruct-q4_K_M" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "qwen2.5-coder:32b-instruct-q4_K_M" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
@@ -369,7 +370,7 @@ never_create_worktrees = true
 never_bypass_sandbox = true
 
 [ollama_subagents.profiles.qwen-explorer]
-model = "qwen2.5-coder:1.5b"
+model = "qwen2.5-coder:3b"
 role = "explorer"
 max_steps = 8
 max_tool_calls = 16
@@ -423,7 +424,7 @@ max_queue_age_ms = 30000
 foreground_priority = 3
 # Runs outside the GPU scheduler. These limits bound CPU/RAM contention while the
 # foreground model is active; both layers retain their own persistent caches.
-embedding_trust_remote_code = true
+embedding_trust_remote_code = false
 embedding_max_seq_length = 8192
 embedding_batch_size = 16
 reranker_batch_size = 4
@@ -1048,8 +1049,9 @@ enabled = true
 install_service = true
 manage_ollama = false
 health_check_interval_seconds = 2.0
-health_probe_timeout_seconds = 2.0
-unhealthy_grace_seconds = 15.0
+health_probe_timeout_seconds = 5.0
+# Keep a live Hub through transient model/preprocessing pressure before recycling.
+unhealthy_grace_seconds = 60.0
 startup_grace_seconds = 180.0
 restart_backoff_initial_seconds = 1.0
 restart_backoff_max_seconds = 30.0

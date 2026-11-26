@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import get_args
 
 from local_ai_hub import mcp_server
@@ -27,6 +28,38 @@ def test_successful_gpu_release_response_satisfies_mcp_output_contract(monkeypat
     assert seen["path"] == "/api/gpu-reservation"
     assert seen["payload"]["action"] == "release"
     assert validate_operation_output("local_ai_coord", "gpu_reservation_release", result) is None
+
+
+def test_mcp_wire_strips_injected_repository_root_for_global_gpu_status(monkeypatch):
+    seen = {}
+
+    def post(path, payload, **kwargs):
+        if path == "/api/gpu-reservation":
+            seen.update(path=path, payload=payload)
+        return {"success": True, "present": False, "reaped": False}
+
+    class Tool:
+        async def run(self, arguments, convert_result=False):
+            return mcp_server.local_ai_coord(**arguments)
+
+    class TextContent:
+        def __init__(self, *, type, text):
+            self.type = type
+            self.text = text
+
+        def model_dump(self, mode="json", exclude_none=True):
+            return {"type": self.type, "text": self.text}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    monkeypatch.setattr(mcp_server, "_ALL_REGISTERED_TOOLS", {"local_ai_coord": Tool()})
+    monkeypatch.setattr(mcp_server, "mcp_types", type("MCPTypes", (), {"TextContent": TextContent})())
+    _, result = asyncio.run(mcp_server._compact_mcp_call_tool("local_ai_coord", {
+        "action": "gpu_reservation_status",
+        "root": "C:\\Users\\halfar\\.local-ai-hub",
+    }))
+
+    assert result["success"] is True, result
+    assert seen == {"path": "/api/gpu-reservation", "payload": {"action": "status", "generation": "", "consent": False, "audit_reason": ""}}
 
 
 def test_authorized_current_release_response_satisfies_mcp_output_contract(monkeypatch):

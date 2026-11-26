@@ -19,7 +19,7 @@ def _make_config(tmp_path: Path) -> dict:
 def _write_config(tmp_path: Path) -> Path:
     cfg_file = tmp_path / "hub-config.toml"
     cfg_file.write_text(
-        f'''[server]\nbind="127.0.0.1"\nport=11435\nstate_dir="{(tmp_path / 'state').as_posix()}"\nauto_start_ollama=false\n\n[hardware]\nprofile="cpu"\nauto_tune=false\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\n\n[code_intelligence]\nenabled=false\n\n''',
+        f'''[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind="127.0.0.1"\nport=11435\nstate_dir="{(tmp_path / 'state').as_posix()}"\nauto_start_ollama=false\n\n[hardware]\nprofile="cpu"\nauto_tune=false\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\n\n[code_intelligence]\nenabled=false\n\n''',
         encoding="utf-8",
     )
     return cfg_file

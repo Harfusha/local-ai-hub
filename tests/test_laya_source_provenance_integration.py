@@ -260,7 +260,6 @@ def test_typed_retrieval_advisory_accepts_pipeline_hybrid_baseline(tmp_path, mon
     checkpoint.mkdir()
     evidence_id = "E" + "a" * 20
     app = LocalAIApp.__new__(LocalAIApp)
-    task = SimpleNamespace(task_id="task-retrieval")
     app._laya_inference_enabled = lambda: True
     app.config = {
         "laya": {
@@ -274,15 +273,15 @@ def test_typed_retrieval_advisory_accepts_pipeline_hybrid_baseline(tmp_path, mon
         "models": {},
         "server": {"state_dir": str(tmp_path / "state")},
     }
-    app.agent_tasks = object()
+    app.agent_tasks = SimpleNamespace()
     app.evidence = object()
     app.laya_lifecycle = object()
     app.laya_candidates = SimpleNamespace(
-        _find_task=lambda *_args: task,
-        _session_for_task=lambda _task: "session-retrieval",
+        _find_task=lambda *_args: pytest.fail("request scope must not resolve an Agent OS task"),
+        _session_for_task=lambda _task: pytest.fail("request scope must not resolve a task session"),
         _candidate_input=lambda value: value,
         _validate_context_source_evidence=lambda *_args, **_kwargs: None,
-        capture_runtime_outcome=lambda *_args, **_kwargs: {"candidate_id": "candidate-1"},
+        capture_runtime_outcome=lambda *_args, **_kwargs: pytest.fail("request decisions are not training candidates"),
     )
     app._record_laya_decision_eligibility = lambda _request: True
     app._record_laya_runtime_decision = lambda *_args: None
@@ -313,7 +312,6 @@ def test_typed_retrieval_advisory_accepts_pipeline_hybrid_baseline(tmp_path, mon
     )
     operation = {
         "action": "evaluate_decision",
-        "task_id": "task-retrieval",
         "decision": {
             "category": "retrieval_strategy",
             "evidence_ids": [evidence_id],
@@ -336,6 +334,85 @@ def test_typed_retrieval_advisory_accepts_pipeline_hybrid_baseline(tmp_path, mon
     assert result["success"] is True
     assert result["baseline"]["method"] == "hybrid_context_default"
     assert result["decision"]["suggestion"] == "hybrid"
+    assert result["capture_status"] == "not_eligible"
+    assert "candidate_id" not in result["candidate"]
+
+
+def test_taskless_context_source_uses_repository_scope_and_skips_supervised_capture(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    evidence_ids = ("E" + "a" * 20, "F" + "b" * 20)
+    app = LocalAIApp.__new__(LocalAIApp)
+    app._laya_inference_enabled = lambda: True
+    app.config = {
+        "laya": {"runtime": {"checkpoint_path": str(checkpoint), "revision": "revision-1",
+                               "expected_sha256": {"model.safetensors": "a" * 64}}},
+        "models": {}, "server": {"state_dir": str(tmp_path / "state")},
+    }
+    app.agent_tasks = SimpleNamespace()
+    app.agent_memory = object()
+    app.evidence = object()
+    app.laya_lifecycle = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda *_args: pytest.fail("taskless context source must not resolve a task"),
+        _session_for_task=lambda *_args: pytest.fail("taskless context source must not derive a session"),
+        _candidate_input=lambda candidate: candidate,
+        _validate_context_source_evidence=lambda candidate, **kwargs: (
+            pytest.fail("taskless memory must remain repository-scoped")
+            if "task_id" in kwargs and kwargs["task_id"] is not None else None
+        ),
+        capture_runtime_outcome=lambda *_args, **_kwargs: pytest.fail("request outcomes are not candidates"),
+    )
+    app._record_laya_decision_eligibility = lambda request: True
+    observed = []
+    app._record_laya_runtime_decision = lambda request, *_args: observed.append(
+        (request.task_id, request.session_id)
+    )
+    app._record_laya_capture_observation = lambda *_args, **_kwargs: True
+
+    class Adapter:
+        def evaluate_context_source(self, request, _evidence, **kwargs):
+            decision = SimpleNamespace(
+                success=True, status=SimpleNamespace(value="success"), suggestion="indexed",
+                reason_codes=("EVIDENCE_SUFFICIENT",),
+            )
+            outcome = SimpleNamespace(
+                decision=decision,
+                runtime=SimpleNamespace(provider="stub", revision="revision-1", latency_ms=1),
+                capture_status="recorded",
+            )
+            kwargs["outcome_recorder"](request, _evidence, outcome)
+            return outcome
+
+    app._get_laya_runtime_adapter = lambda *_args, **_kwargs: Adapter()
+    monkeypatch.setattr(
+        "local_ai_hub.trained_models.resolve_laya_checkpoint",
+        lambda *_args, **_kwargs: (checkpoint, "revision-1", {"model.safetensors": "a" * 64}),
+    )
+    monkeypatch.setattr(
+        "local_ai_hub.project_config.resolve_project_context",
+        lambda *_args, **_kwargs: SimpleNamespace(coordination_id="repo-request"),
+    )
+    operation = {
+        "action": "evaluate_context_source",
+        "evidence": {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["indexed", "rag"],
+            "freshness_codes": ["current", "unknown"],
+            "coverage_codes": ["complete", "partial"],
+            "evidence_ids": list(evidence_ids),
+        },
+    }
+
+    result = app.evaluate_laya_context_source(operation, root=str(tmp_path))
+
+    assert result["success"] is True
+    assert result["baseline"] == {
+        "method": "retrieval_rank_order", "suggestion": "indexed", "evidence_id": evidence_ids[0],
+    }
+    assert result["capture_status"] == "not_eligible"
+    assert "candidate_id" not in result["candidate"]
+    assert observed == [(None, None)]
 
 
 def test_laya_decision_operation_rejects_caller_supplied_baseline():

@@ -11,6 +11,7 @@ from local_ai_hub import http_server
 def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
     docs_path = Path(__file__).resolve().parents[1] / "docs" / "MCP_AND_AGENTS.md"
     docs = docs_path.read_text(encoding="utf-8")
+    http_api_docs = (docs_path.parent / "HTTP_API.md").read_text(encoding="utf-8")
 
     action_line = re.search(r"^Durable async actions: (.+)$", docs, re.MULTILINE)
     assert action_line is not None
@@ -22,6 +23,8 @@ def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
     assert "fewer than 5 telemetry samples" in docs
     assert "`cold_start_review_diff`" in docs
     assert "`cold_start_rag_index`" in docs
+    assert "`POST /api/review/diff` defaults to `delivery=auto` with a 20-second latency budget" in http_api_docs
+    assert "explicit `delivery=sync` remains synchronous" in http_api_docs
 
 
 def test_install_and_update_prompts_cover_async_and_conversation_contracts():
@@ -235,14 +238,25 @@ def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
     handler.headers = {}
     status, response = handler._async_delivery(
         "/api/review/diff",
-        {"delivery": "auto", "latency_budget_ms": 5_000, "instructions": "find defects", "context": "large diff"},
+        {
+            "delivery": "auto",
+            "latency_budget_ms": 5_000,
+            "instructions": "find defects",
+            "root": "C:/repo",
+            "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # Title\n+Description\n",
+        },
     )
 
     assert status == 200
     assert response["job_id"] == "job-review"
     assert submitted == {
         "action": "review_diff",
-        "payload": {"instructions": "find defects", "context": "large diff", "_async_job": True},
+        "payload": {
+            "instructions": "find defects",
+            "root": "C:/repo",
+            "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # Title\n+Description\n",
+            "_async_job": True,
+        },
     }
 
 
@@ -273,6 +287,44 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
     assert status == 200
     assert response["job_id"] == "job-cold-review"
     assert submitted["action"] == "review_diff"
+
+
+def test_review_diff_defaults_to_auto_and_defers_slow_history_but_keeps_explicit_sync(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 69, "p95_duration_ms": 900_236, "p99_duration_ms": 900_402}
+
+    class _Jobs:
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
+            return {"success": True, "job_id": "job-review-diff", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+        config = {}
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {}
+
+    status, response = handler._async_delivery(
+        "/api/review/diff", {"instructions": "find defects", "context": "large diff"}
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-review-diff"
+    assert response["delivery"]["mode"] == "async"
+    assert submitted["action"] == "review_diff"
+    assert submitted["payload"]["_async_job"] is True
+
+    submitted.clear()
+    assert handler._async_delivery(
+        "/api/review/diff", {"delivery": "sync", "instructions": "find defects", "context": "diff"}
+    ) is None
+    assert submitted == {}
 
 
 def test_review_endpoint_automatically_defers_over_budget_latency(monkeypatch):

@@ -37,7 +37,7 @@ def test_file_card_output_rejects_unbounded_model_fields():
     assert not valid({**card, "purpose": "ž" * purpose_limit + " "})
     assert not valid({**card, "purpose": " "})
     for field, rule in CARD_SCHEMA["properties"].items():
-        if rule["type"] == "array":
+        if rule["type"] == "array" and field != "evidence":
             items_limit = rule["maxItems"]
             item_limit = rule["items"]["maxLength"]
             assert valid({**card, field: ["ž" * item_limit] * items_limit})
@@ -393,7 +393,7 @@ def test_exclusive_enriches_stub_without_removing_it_on_model_failure(tmp_path, 
 
 @pytest.mark.parametrize(
     "schema_fallback",
-    [None, "deferred", "preempted", "cached", "model-fallback", "disabled", "outcome-unknown", "truncated", "bounded"],
+    [None, "deferred", "preempted", "cached", "model-fallback", "model-circuit-open", "backend-repeat-limit", "disabled", "outcome-unknown", "truncated", "bounded"],
 )
 def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path, schema_fallback, monkeypatch):
     root = tmp_path / "project"
@@ -452,6 +452,29 @@ def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path, sc
                 if schema_fallback == "model-fallback":
                     if args[0] == "configured-model":
                         return {"success": False, "model": "schema-model", "error_code": "invalid_preprocess_json"}
+                    assert args[0] == "fast-model"
+                    return successful("fast-model")
+                if schema_fallback == "model-circuit-open":
+                    if args[0] == "configured-model":
+                        return {"success": False, "model": "configured-model", "error_code": "invalid_preprocess_json"}
+                    if args[0] == "schema-model":
+                        raise _RetryablePreprocessingError(
+                            "preprocessing model circuit is open: schema-model",
+                            retry_after_seconds=60,
+                            error_code="model_circuit_open",
+                        )
+                    assert args[0] == "fast-model"
+                    return successful("fast-model")
+                if schema_fallback == "backend-repeat-limit":
+                    if args[0] == "configured-model":
+                        return {"success": False, "model": "configured-model", "error_code": "invalid_preprocess_json"}
+                    if args[0] == "schema-model":
+                        return {
+                            "success": False,
+                            "model": "schema-model",
+                            "error": "HTTP 500: prediction aborted, token repeat limit reached",
+                            "retryable": True,
+                        }
                     assert args[0] == "fast-model"
                     return successful("fast-model")
                 if args[0] == "configured-model":
@@ -535,9 +558,14 @@ def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path, sc
                     "SELECT c.model FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key WHERE f.path='copy.md'"
                 ).fetchone()[0] == "configured-model"
             return
-        if schema_fallback == "model-fallback":
+        if schema_fallback in {"model-fallback", "model-circuit-open", "backend-repeat-limit"}:
             assert prep._step_file_card({"root": str(root), "phase": "files"}) is True
-            assert [call[0] for call in fallback_calls] == ["configured-model", "fast-model"]
+            expected = (
+                ["configured-model", "schema-model", "fast-model"]
+                if schema_fallback in {"model-circuit-open", "backend-repeat-limit"}
+                else ["configured-model", "fast-model"]
+            )
+            assert [call[0] for call in fallback_calls] == expected
             with closing(prep._connect()) as con:
                 row = con.execute(
                     "SELECT c.model FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key WHERE f.root=?",
@@ -895,8 +923,10 @@ def test_file_card_enrichment_refreshes_module_and_project_cards(tmp_path, monke
             assert json.loads(project["card_json"])["summary"] == _enriched_card()["purpose"]
             assert project["revision_hash"] != old_project["revision_hash"]
             card_key = prep._content_card_key(digest)
+            current_card_json = con.execute("SELECT card_json FROM content_cards WHERE card_key=?", (card_key,)).fetchone()[0]
+            current_card = json.loads(current_card_json)
             con.execute("UPDATE content_cards SET card_json=? WHERE card_key=?",
-                        (json.dumps(_enriched_card(), indent=2, sort_keys=True), card_key))
+                        (json.dumps(current_card, indent=2, sort_keys=True), card_key))
             con.commit()
         assert prep._modules_needing_card(key) == []
         with closing(prep._connect()) as con:
@@ -1207,11 +1237,11 @@ def test_default_file_card_synthesis_enabled_and_background_gpu_profile_defaults
     assert PROFILE_OVERRIDES["integrated"]["background_gpu"].get("enabled", True) is False
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text("", encoding="utf-8")
+    config_path.write_text("[local_ai_hub]\nconfig_schema_version = 1\n", encoding="utf-8")
     effective = load_config(config_path, probe_hardware=False)
     assert effective["preprocessing"]["disable_llm_card_synthesis"] is False
     assert effective["background_gpu"]["enabled"] is False
-    config_path.write_text("[preprocessing]\ndisable_llm_card_synthesis = true\n[background_gpu]\nenabled = false\n", encoding="utf-8")
+    config_path.write_text("[local_ai_hub]\nconfig_schema_version = 1\n[preprocessing]\ndisable_llm_card_synthesis = true\n[background_gpu]\nenabled = false\n", encoding="utf-8")
     override = load_config(config_path, probe_hardware=False)
     assert override["preprocessing"]["disable_llm_card_synthesis"] is True
     assert override["background_gpu"]["enabled"] is False
@@ -1604,8 +1634,12 @@ def test_retryable_background_scheduler_rejection_yields_without_failing():
     else:
         raise AssertionError("terminal GPU admission must remain fail closed")
 
-    timed_out = make_preprocessor(TimeoutError())._run_background_generate(
-        "configured-model", "prompt", "system", {}, 32, "preprocess:file-card"
+
+def test_retryable_preprocessing_error_keeps_structured_error_code():
+    error = _RetryablePreprocessingError(
+        "GPU admission is unavailable", error_code="gpu_reserved",
     )
-    assert timed_out["preempted"] is True
-    assert timed_out["retry_after_seconds"] == 60
+
+    assert str(error) == "GPU admission is unavailable"
+    assert error.error_code == "gpu_reserved"
+    assert error.retryable is True

@@ -142,6 +142,55 @@ def test_unknown_vram_caps_large_smart_context() -> None:
     assert profile.num_ctx <= 16384
 
 
+def test_execution_policy_respects_configured_llama_runtime_context() -> None:
+    policy = ModelExecutionPolicy(
+        {
+            "models": {"background_code": "qwen2.5-coder:1.5b"},
+            "model_execution": {
+                "background": {
+                    "context_tokens": 8192,
+                    "large_context_tokens": 16384,
+                    "max_context_tokens": 16384,
+                    "background_context_tokens": 8192,
+                    "max_prompt_tokens": 12000,
+                    "context_reserve_tokens": 2048,
+                }
+            },
+            "llama_cpp": {
+                "mode": "on",
+                "models": {"qwen2.5-coder:1.5b": {"context_length": 4096}},
+            },
+        }
+    )
+
+    profile = policy.profile(
+        "qwen2.5-coder:1.5b", role="background", output_tokens=512, background=True
+    )
+    payload, applied = policy.apply_payload(
+        "qwen2.5-coder:1.5b", {}, role="background", output_tokens=512, background=True
+    )
+
+    assert profile.num_ctx == 4096
+    assert profile.max_ctx == 4096
+    assert profile.prompt_budget_tokens + 512 + 2048 <= 4096
+    assert payload["options"]["num_ctx"] == applied.num_ctx == 4096
+
+
+def test_execution_policy_ignores_llama_context_when_runtime_is_off() -> None:
+    policy = ModelExecutionPolicy(
+        {
+            "models": {"background_code": "qwen2.5-coder:1.5b"},
+            "model_execution": {"background": {"context_tokens": 8192}},
+            "llama_cpp": {
+                "mode": "off",
+                "models": {"qwen2.5-coder:1.5b": {"context_length": 4096}},
+            },
+        }
+    )
+
+    assert policy.profile("qwen2.5-coder:1.5b", role="background", background=True).num_ctx == 8192
+
+
 def test_small_model_size_parser_rejects_multidigit_parameter_counts() -> None:
     is_small = ModelExecutionPolicy._is_small_model
 

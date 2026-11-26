@@ -50,7 +50,7 @@ class HardwareBenchmarkRunner:
         self._file_lock = threading.Lock()
 
     def _default_model(self) -> str:
-        return str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        return str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
 
     def run_t12_case(
         self,

@@ -334,6 +334,41 @@ def test_scheduler_releases_old_job_lease_only_without_live_job_or_ollama_runner
     assert store.capacity_snapshot()["leases"] == []
 
 
+def test_scheduler_stale_capacity_release_failure_has_conflict_status(tmp_path):
+    import threading
+
+    from local_ai_hub.scheduler import AffinityScheduler
+
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    created_at = time.time()
+    store._clock = lambda: created_at
+    lease = store.acquire_capacity_lease(
+        owner="scheduler-job:8", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=16 * 1024**3,
+    )
+    assert lease is not None
+    scheduler = object.__new__(AffinityScheduler)
+    scheduler._external_gpu_store = store
+    scheduler._cond = threading.Condition()
+    scheduler._pending = []
+    scheduler._inflight_jobs = {}
+    scheduler._started_at = created_at - 1
+
+    result = scheduler.gpu_reservation_operation(
+        action="release_scheduler_capacity_lease", lease_id=lease["lease_id"],
+        owner=lease["owner"], generation=lease["generation"], consent=True,
+        audit_reason="operator approved exact stale scheduler lease",
+        ollama_runner_probe=lambda: False,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "gpu_lease_conflict"
+    assert result["status_code"] == 409
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert store.capacity_snapshot()["leases"] == [lease]
+
+
 def test_ollama_runner_probe_requires_a_valid_bounded_api_ps_response(monkeypatch):
     from local_ai_hub import http_server
 

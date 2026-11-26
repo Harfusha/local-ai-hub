@@ -639,3 +639,49 @@ def test_embedding_cpu_thread_cap_is_best_effort(monkeypatch):
     monkeypatch.setattr(embeddings.os, "cpu_count", lambda: 8)
 
     embeddings._limit_embedding_cpu_threads("sentence-transformers", "cpu")
+
+
+def test_embedding_trust_remote_code_default_is_false():
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    defaults = tomllib.loads((root / "defaults.toml").read_text(encoding="utf-8"))
+    pkg_defaults = tomllib.loads((root / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8"))
+
+    assert defaults["cpu_retrieval"]["embedding_trust_remote_code"] is False
+    assert pkg_defaults["cpu_retrieval"]["embedding_trust_remote_code"] is False
+
+
+def test_embedding_trust_remote_code_fails_closed_without_pinned_review():
+    cfg = {
+        "cpu_retrieval": {"embedding_trust_remote_code": True},
+        "models": {"embedding": "some/unverified-model"},
+    }
+    model = EmbeddingModel(cfg)
+    assert model.trust_remote_code is False
+
+
+def test_embedding_trust_remote_code_enabled_with_pinned_hash():
+    cfg = {
+        "cpu_retrieval": {"embedding_trust_remote_code": True},
+        "models": {
+            "embedding": "some/verified-model",
+            "embedding_sha256": "abc1234567890abcdef1234567890abcdef1234567890abcdef1234567890def",
+        },
+    }
+    model = EmbeddingModel(cfg)
+    assert model.trust_remote_code is True
+
+
+def test_embedding_trust_remote_code_enabled_with_operator_override():
+    cfg = {
+        "cpu_retrieval": {"embedding_trust_remote_code": True},
+        "models": {
+            "embedding": "some/model",
+            "trusted_remote_code_operator_override": True,
+        },
+    }
+    model = EmbeddingModel(cfg)
+    assert model.trust_remote_code is True
+

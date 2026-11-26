@@ -1463,11 +1463,12 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
         list_calls.append({
             "status": status, "limit": limit, "offset": offset,
             "include_stale": include_stale, "query": query,
+            "repo_root": repo_root,
         })
         return http_server.TaskPage()
 
-    def count_tasks(status=None, *, repo_root=None):
-        count_calls.append((status, repo_root))
+    def count_tasks(status=None, **kwargs):
+        count_calls.append(status)
         return 0
 
     app = SimpleNamespace(
@@ -1496,13 +1497,9 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
     assert list_calls == [{
         "status": None, "limit": 8, "offset": 3,
         "include_stale": True, "query": "security",
+        "repo_root": canonical_root,
     }]
-    assert count_calls == [
-        (None, canonical_root),
-        (http_server.TaskStatus.ACTIVE, canonical_root),
-        (None, None),
-        (http_server.TaskStatus.ACTIVE, None),
-    ]
+    assert count_calls == [None, http_server.TaskStatus.ACTIVE, None, http_server.TaskStatus.ACTIVE]
     assert responses[0][1]["total_count"] == 0
     assert responses[0][1]["active_count"] == 0
     assert responses[0][1]["offset"] == 3
@@ -1939,11 +1936,12 @@ def test_get_internal_error_does_not_disclose_exception(monkeypatch):
     assert "private traceback payload" not in str(responses[0][1])
     assert "private traceback payload" not in str(log_calls)
     arguments = log_calls[0][0]
-    assert arguments[0] == "%s request failed path=%s pid=%s error_type=%s traceback=\n%s"
+    assert arguments[0] == "%s request failed path=%s request_id=%s pid=%s error_type=%s traceback=\n%s"
     assert arguments[1:3] == ("GET", "/api/doctor")
-    assert isinstance(arguments[3], int)
-    assert arguments[4] == "RuntimeError"
-    assert "test_shared_runtime_security_lifecycle.py" in arguments[5]
+    assert isinstance(arguments[3], str)
+    assert isinstance(arguments[4], int)
+    assert arguments[5] == "RuntimeError"
+    assert "test_shared_runtime_security_lifecycle.py" in arguments[6]
 
 
 def test_post_internal_error_does_not_disclose_exception(monkeypatch):
@@ -1962,11 +1960,12 @@ def test_post_internal_error_does_not_disclose_exception(monkeypatch):
     assert "private post payload" not in str(responses[0][1])
     assert "private post payload" not in str(log_calls)
     arguments = log_calls[0][0]
-    assert arguments[0] == "%s request failed path=%s pid=%s error_type=%s traceback=\n%s"
+    assert arguments[0] == "%s request failed path=%s request_id=%s pid=%s error_type=%s traceback=\n%s"
     assert arguments[1:3] == ("POST", "/api/doctor")
-    assert isinstance(arguments[3], int)
-    assert arguments[4] == "RuntimeError"
-    assert "test_shared_runtime_security_lifecycle.py" in arguments[5]
+    assert isinstance(arguments[3], str)
+    assert isinstance(arguments[4], int)
+    assert arguments[5] == "RuntimeError"
+    assert "test_shared_runtime_security_lifecycle.py" in arguments[6]
 
 
 def test_config_route_exposes_file_labels_without_host_paths(monkeypatch, tmp_path):

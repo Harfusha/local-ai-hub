@@ -6,7 +6,10 @@ import json
 import os
 import sys
 import argparse
+import subprocess
 import tomllib
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +78,95 @@ def check_codex_config(path: Path) -> tuple[str, str]:
         return status, "; ".join(routes)
     return "CONFIG_PRESENT_NO_HUB_ROUTE", "Valid TOML; no enabled Hub plugin or mcp_servers.local-ai route"
 
+
+def check_codex_plugin_cache(codex_home: Path, expected_version: str) -> tuple[str, str]:
+    """Detect an installed Codex plugin snapshot older than the source bundle."""
+    cache_root = codex_home / "plugins" / "cache"
+    versions: set[str] = set()
+    for manifest_path in cache_root.glob("*/local-ai-hub/*/plugin.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(manifest, dict) and manifest.get("name") == "local-ai-hub":
+            version = manifest.get("version")
+            if isinstance(version, str) and version.strip():
+                versions.add(version.strip())
+    if not versions:
+        return "PLUGIN_CACHE_NOT_OBSERVED", "No installed Local AI Hub Codex plugin cache found"
+    if expected_version in versions:
+        return "PLUGIN_CACHE_CURRENT", f"Codex plugin cache includes source version {expected_version}"
+    rendered = ", ".join(sorted(versions))
+    return (
+        "STALE_PLUGIN_CACHE",
+        f"Codex plugin cache version(s) {rendered} differ from source {expected_version}; reload the Local AI Hub plugin",
+    )
+
+
+def check_codex_active_mcp_processes(
+    codex_home: Path,
+    expected_version: str,
+    *,
+    process_commands: list[str] | None = None,
+) -> tuple[str, str]:
+    """Compare live Codex Hub MCP launch paths with the installed source version."""
+    if process_commands is None:
+        if os.name != "nt":
+            return "RUNTIME_PROCESS_UNKNOWN", "Live Codex MCP process inspection is supported on Windows only"
+        powershell = shutil.which("powershell")
+        if not powershell:
+            return "RUNTIME_PROCESS_UNKNOWN", "PowerShell is unavailable; live Codex MCP version was not inspected"
+        env = os.environ.copy()
+        env["LOCAL_AI_CODEX_HOME"] = str(codex_home.expanduser().resolve())
+        script = r"""
+$prefix = [regex]::Escape($env:LOCAL_AI_CODEX_HOME + '\plugins\cache\local-ai-hub\local-ai-hub\')
+$pattern = $prefix + '([^\\/]+)[\\/]+scripts[\\/]+run_hub\.py\s+mcp_server'
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match $pattern } | ForEach-Object {
+  $match = [regex]::Match($_.CommandLine, $pattern)
+  if ($match.Success) { $match.Groups[1].Value }
+}
+"""
+        try:
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=10, env=env, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return "RUNTIME_PROCESS_UNKNOWN", f"Live Codex MCP process inspection failed: {type(exc).__name__}"
+        if result.returncode != 0:
+            return "RUNTIME_PROCESS_UNKNOWN", "Live Codex MCP process inspection failed"
+        process_commands = result.stdout.splitlines()
+
+    if all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", value.strip()) for value in process_commands):
+        versions = sorted({
+            version for value in process_commands
+            if (version := value.strip())
+        })
+    else:
+        parts = [part for part in re.split(r"[\\/]+", str(codex_home.expanduser().resolve())) if part]
+        home_pattern = r"[\\/]+".join(re.escape(part) for part in parts)
+        pattern = re.compile(
+            home_pattern
+            + r"[\\/]+plugins[\\/]+cache[\\/]+local-ai-hub[\\/]+local-ai-hub[\\/]+"
+            + r"([^\\/]+)[\\/]+scripts[\\/]+run_hub\.py\s+mcp_server",
+            re.IGNORECASE,
+        )
+        versions = sorted({
+            match.group(1).strip()
+            for command in process_commands
+            for match in [pattern.search(command)]
+            if match and match.group(1).strip()
+        })
+    if not versions:
+        return "RUNTIME_NOT_OBSERVED", "No running Codex Local AI Hub MCP subprocess was observed"
+    if any(version != expected_version for version in versions):
+        return (
+            "STALE_ACTIVE_MCP_PROCESS",
+            f"Running Codex MCP cache version(s) {', '.join(versions)} differ from source {expected_version}; restart Codex to reload",
+        )
+    return "ACTIVE_MCP_PROCESS_CURRENT", f"Running Codex MCP process uses source cache version {expected_version}"
+
 def check_claude_settings(path: Path) -> tuple[str, str]:
     if not path.is_file():
         return "MISSING", "File does not exist"
@@ -89,6 +181,18 @@ def check_claude_settings(path: Path) -> tuple[str, str]:
         return "PLUGIN_ENABLED_CONFIGURED", "Hub plugin enabled in config: enabledPlugins.local-ai-hub@local-ai-hub"
     return "CONFIG_PRESENT_NO_HUB_ROUTE", "Valid Claude settings; Hub plugin is not enabled"
 
+def source_hub_version() -> str | None:
+    """Read the release version used to generate provider plugin bundles."""
+    project_file = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    try:
+        project = tomllib.loads(project_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return None
+    project_data = project.get("project")
+    version = project_data.get("version") if isinstance(project_data, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
 def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str, str]:
     if not manifest_path.is_file():
         return "MISSING", "Native Hub plugin manifest is not installed"
@@ -98,10 +202,73 @@ def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str,
         return "INVALID_CONFIG", f"Plugin manifest JSON error: {exc}"
     if not isinstance(data, dict) or data.get("name") != expected_name:
         return "INVALID_CONFIG", f"Plugin manifest does not identify {expected_name}"
+    expected_version = source_hub_version()
+    if expected_version is None:
+        return "SOURCE_VERSION_UNAVAILABLE", "Cannot verify plugin version without the Hub source version"
+    installed_version = data.get("version")
+    if not isinstance(installed_version, str) or not installed_version.strip():
+        return "INVALID_CONFIG", "Plugin manifest does not declare a version"
+    if installed_version.strip() != expected_version:
+        return (
+            "STALE_PLUGIN_VERSION",
+            f"Installed plugin version {installed_version.strip()} differs from Hub source {expected_version}; refresh the provider bundle",
+        )
     return "PLUGIN_MANIFEST_PRESENT", f"Native Hub plugin manifest present: {manifest_path}"
 
 def check_antigravity_plugin(plugin_dir: Path) -> tuple[str, str]:
     return check_plugin_manifest(plugin_dir / "plugin.json", "local-ai-hub")
+
+
+def check_antigravity_plugin_bundle(gemini_dir: Path) -> tuple[str, str]:
+    """Verify the generated MCP, hook, and skill files behind an installed manifest."""
+    plugin_dir = gemini_dir / "config" / "plugins" / "local-ai-hub"
+    status, detail = check_antigravity_plugin(plugin_dir)
+    if status != "PLUGIN_MANIFEST_PRESENT":
+        return status, detail
+    mcp_status, mcp_detail = check_mcp_json_file(plugin_dir / "mcp_config.json")
+    if mcp_status != "HUB_ROUTE_CONFIGURED":
+        return "INVALID_CONFIG", f"Plugin manifest present but its MCP route is invalid: {mcp_detail}"
+    try:
+        hooks = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return "INVALID_CONFIG", f"Plugin manifest present but hooks are invalid: {exc}"
+    hook_group = hooks.get("local-ai-hub") if isinstance(hooks, dict) else None
+    required_events = {"SessionStart", "PreToolUse", "PostToolUse"}
+    if (
+        not isinstance(hook_group, dict)
+        or not required_events.issubset(hook_group)
+        or any(not isinstance(hook_group[event], list) or not hook_group[event] for event in required_events)
+    ):
+        return "INVALID_CONFIG", "Plugin manifest present but required Hub hook events are missing"
+    runner = plugin_dir / "scripts" / "run_hub.py"
+    skill = plugin_dir / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    missing = [str(path) for path in (runner, skill) if not path.is_file()]
+    if missing:
+        return "INVALID_CONFIG", "Plugin bundle files missing: " + ", ".join(missing)
+    return "PLUGIN_MANIFEST_PRESENT", "Native plugin bundle present: MCP route, 3 hook events, runner, and orchestrator skill"
+
+
+def discover_multigravity_profile_homes(user_home: Path) -> list[tuple[str, Path]]:
+    """Find isolated MultiGravity profile homes for config-only verification."""
+    configured = os.environ.get("MULTIGRAVITY_PROFILES") or os.environ.get("MULTIGRAVITY_HOME")
+    profiles_dir: Path | None = None
+    if configured:
+        candidate = Path(configured).expanduser()
+        profiles_dir = candidate if candidate.name.casefold() == "profiles" else candidate / "profiles"
+    else:
+        for parent in (user_home, *user_home.parents):
+            candidate = parent / "Desktop" / "Multigravity" / "profiles"
+            if candidate.is_dir():
+                profiles_dir = candidate
+                break
+    if profiles_dir is None or not profiles_dir.is_dir():
+        return []
+    found: list[tuple[str, Path]] = []
+    for profile in sorted((item for item in profiles_dir.iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
+        home = profile / "home" if (profile / "home").is_dir() else profile
+        if home.is_dir():
+            found.append((profile.name, home / ".gemini"))
+    return found
 
 
 def check_gemini_cli_extension(extension_dir: Path) -> tuple[str, str]:
@@ -116,6 +283,26 @@ def check_gemini_cli_extension(extension_dir: Path) -> tuple[str, str]:
     if not isinstance(data, dict) or data.get("name") != "local-ai-hub":
         return "INVALID_CONFIG", "Gemini CLI extension manifest does not identify local-ai-hub"
     return "EXTENSION_MANIFEST_PRESENT", f"Gemini CLI Hub extension manifest present: {manifest_path}"
+
+
+def check_gemini_cli_mcp_route(settings_path: Path, extension_dir: Path) -> tuple[str, str]:
+    """Accept either a settings MCP route or the Hub route declared by its extension."""
+    status, detail = check_mcp_json_file(settings_path)
+    if status != "CONFIG_PRESENT_NO_HUB_ROUTE":
+        return status, detail
+    manifest_path = extension_dir / "gemini-extension.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return status, detail
+    servers = manifest.get("mcpServers") if isinstance(manifest, dict) else None
+    route = servers.get("local-ai") if isinstance(servers, dict) else None
+    if isinstance(route, dict) and route.get("command"):
+        return (
+            "EXTENSION_ROUTE_CONFIGURED",
+            "Standalone mcpServers.local-ai route is not required; Gemini extension declares the Hub MCP server",
+        )
+    return status, detail
 
 def opencode_config_dirs() -> list[Path]:
     """Use OpenCode's canonical global root or its explicit override."""
@@ -153,12 +340,81 @@ def check_opencode_config(config_dir: Path) -> tuple[str, str]:
         return "HUB_ROUTE_CONFIGURED", "Hub MCP route configured: " + "; ".join(hub_routes)
     return "CONFIG_PRESENT_NO_HUB_ROUTE", ", ".join(path.name for path in files)
 
+
+def probe_mcp_stdio(repo_root: Path, *, timeout_seconds: float = 15.0) -> tuple[bool, str]:
+    """Launch the bundled MCP server and verify the real initialize/tools/list exchange."""
+    root = repo_root.resolve()
+    env = os.environ.copy()
+    source_path = str(root / "src")
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (source_path, existing_pythonpath) if part
+    )
+    env.setdefault("LOCAL_AI_CONFIG", str(root / "config.toml"))
+    messages = (
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "local-ai-hub-handshake-check", "version": "1"},
+        }},
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    payload = "".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "local_ai_hub.mcp_server"],
+            cwd=root,
+            env=env,
+            input=payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"MCP stdio handshake could not complete ({type(exc).__name__})"
+
+    responses: dict[int, dict[str, Any]] = {}
+    for line in result.stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(message, dict) and isinstance(message.get("id"), int):
+            responses[message["id"]] = message
+
+    initialized = responses.get(1, {}).get("result")
+    listing = responses.get(2, {}).get("result")
+    tools = listing.get("tools") if isinstance(listing, dict) else None
+    if result.returncode != 0:
+        return False, f"MCP server exited with code {result.returncode}"
+    if not isinstance(initialized, dict) or not isinstance(tools, list):
+        return False, "MCP server did not complete initialize and tools/list"
+    names = sorted(
+        item["name"] for item in tools
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+    required = {
+        "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
+        "local_ai_coord", "local_ai_artifact",
+    }
+    missing = sorted(required - set(names))
+    if missing:
+        return False, f"MCP handshake omitted required tools: {', '.join(missing)}"
+    return True, f"MCP stdio handshake OK ({len(names)} tools: {', '.join(names)})"
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Inspect configured agent MCP files and optionally probe Hub readiness.")
+    parser = argparse.ArgumentParser(description="Inspect provider configuration and optionally probe Hub/MCP readiness.")
     parser.add_argument(
         "--probe-hub",
         action="store_true",
         help="Make an HTTP readiness request to the local Hub at 127.0.0.1:11435.",
+    )
+    parser.add_argument(
+        "--probe-mcp",
+        action="store_true",
+        help="Launch the bundled MCP stdio server and require initialize plus the six core tools.",
     )
     args = parser.parse_args(sys.argv[1:])
 
@@ -173,25 +429,52 @@ def main() -> int:
     g_dir = user_home / ".gemini"
     antigravity_mcp = g_dir / "config" / "mcp_config.json"
     status_mcp, msg_mcp = check_mcp_json_file(antigravity_mcp)
-    plugin_status, plugin_detail = check_antigravity_plugin(g_dir / "config" / "plugins" / "local-ai-hub")
+    plugin_status, plugin_detail = check_antigravity_plugin_bundle(g_dir)
     if plugin_status == "PLUGIN_MANIFEST_PRESENT":
         status_mcp, msg_mcp = plugin_status, plugin_detail
-    elif plugin_status == "INVALID_CONFIG" and status_mcp != "HUB_ROUTE_CONFIGURED":
+    elif plugin_status in {"INVALID_CONFIG", "STALE_PLUGIN_VERSION", "SOURCE_VERSION_UNAVAILABLE"}:
         status_mcp, msg_mcp = plugin_status, plugin_detail
     results.append({"agent": "Antigravity", "status": status_mcp, "detail": msg_mcp})
+    for profile_name, profile_gemini_dir in discover_multigravity_profile_homes(user_home):
+        profile_status, profile_detail = check_antigravity_plugin_bundle(profile_gemini_dir)
+        if profile_status == "MISSING":
+            profile_status, profile_detail = check_mcp_json_file(
+                profile_gemini_dir / "config" / "mcp_config.json"
+            )
+        results.append({
+            "agent": f"Antigravity (MultiGravity: {profile_name})",
+            "status": profile_status,
+            "detail": profile_detail,
+        })
     gemini_settings = g_dir / "settings.json"
-    gemini_status, gemini_detail = check_mcp_json_file(gemini_settings)
-    results.append({"agent": "Gemini CLI (settings.json)", "status": gemini_status, "detail": gemini_detail})
-    extension_status, extension_detail = check_gemini_cli_extension(
-        g_dir / "extensions" / "local-ai-hub"
+    gemini_extension_dir = g_dir / "extensions" / "local-ai-hub"
+    gemini_status, gemini_detail = check_gemini_cli_mcp_route(
+        gemini_settings, gemini_extension_dir
     )
+    results.append({"agent": "Gemini CLI (settings.json)", "status": gemini_status, "detail": gemini_detail})
+    extension_status, extension_detail = check_gemini_cli_extension(gemini_extension_dir)
     results.append({"agent": "Gemini CLI extension", "status": extension_status, "detail": extension_detail})
 
     # 2. Codex
     codex_home = Path(os.environ.get("CODEX_HOME", user_home / ".codex"))
     codex_cfg = codex_home / "config.toml"
     codex_status, msg_codex = check_codex_config(codex_cfg)
+    source_version = None
+    if codex_status == "PLUGIN_ENABLED_CONFIGURED":
+        source_manifest = Path(__file__).resolve().parents[1] / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
+        try:
+            source_data = json.loads(source_manifest.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            source_data = {}
+        source_version = source_data.get("version") if isinstance(source_data, dict) else None
+        if isinstance(source_version, str) and source_version.strip():
+            cache_status, cache_detail = check_codex_plugin_cache(codex_home, source_version.strip())
+            if cache_status == "STALE_PLUGIN_CACHE":
+                codex_status, msg_codex = cache_status, cache_detail
     results.append({"agent": "Codex (config.toml)", "status": codex_status, "detail": msg_codex})
+    if codex_status == "PLUGIN_ENABLED_CONFIGURED" and isinstance(source_version, str) and source_version.strip():
+        runtime_status, runtime_detail = check_codex_active_mcp_processes(codex_home, source_version.strip())
+        results.append({"agent": "Codex MCP runtime", "status": runtime_status, "detail": runtime_detail})
 
     # 3. Claude Code
     claude_mcp = user_home / ".claude.json"
@@ -211,7 +494,7 @@ def main() -> int:
     )
     if cursor_plugin_status == "PLUGIN_MANIFEST_PRESENT":
         cursor_status, msg_cursor = cursor_plugin_status, cursor_plugin_detail
-    elif cursor_plugin_status == "INVALID_CONFIG" and cursor_status != "HUB_ROUTE_CONFIGURED":
+    elif cursor_plugin_status in {"INVALID_CONFIG", "STALE_PLUGIN_VERSION", "SOURCE_VERSION_UNAVAILABLE"}:
         cursor_status, msg_cursor = cursor_plugin_status, cursor_plugin_detail
     results.append({"agent": "Cursor", "status": cursor_status, "detail": msg_cursor})
 
@@ -240,7 +523,7 @@ def main() -> int:
 
     # Print table: file presence and syntax do not prove host trust or a live MCP connection.
     for r in results:
-        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT"} else "[-]"
+        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT", "EXTENSION_ROUTE_CONFIGURED"} else "[-]"
         print(f"{status_sym} {r['agent']:<32} | {r['status']:<32} | {r['detail']}")
 
     print("-" * 60)
@@ -256,8 +539,16 @@ def main() -> int:
     else:
         print("[SKIP] Hub readiness probe skipped; pass --probe-hub to opt in.")
 
+    mcp_failed = False
+    if args.probe_mcp:
+        ok, detail = probe_mcp_stdio(Path(__file__).resolve().parents[1])
+        print(f"[{'OK' if ok else 'FAIL'}] {detail}")
+        mcp_failed = not ok
+    else:
+        print("[SKIP] MCP stdio handshake skipped; pass --probe-mcp to opt in.")
+
     print("=" * 60)
-    return 0
+    return 1 if mcp_failed else 0
 
 if __name__ == "__main__":
     sys.exit(main())

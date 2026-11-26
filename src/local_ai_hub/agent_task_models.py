@@ -544,10 +544,13 @@ def _canonical_repository_root(value: Any) -> str:
     if not path.is_absolute():
         raise ValueError("repo_root must be absolute")
     try:
-        if any(item.is_symlink() for item in (path, *path.parents)):
-            raise ValueError("repo_root must not contain symlinks")
+        from .repository_scope import _is_redirecting_link
+        if any(_is_redirecting_link(item) for item in (path, *path.parents)):
+            raise ValueError("repo_root must not contain symlinks or junctions")
         canonical = path.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except ValueError:
+        raise
+    except (OSError, RuntimeError) as exc:
         raise ValueError("repo_root must resolve to an existing directory") from exc
     if not canonical.is_dir():
         raise ValueError("repo_root must resolve to an existing directory")

@@ -18,6 +18,7 @@ from .app import (
     accelerator_status as accelerator_status,
     deepcopy as deepcopy,
     json as json,
+    threading as threading,
     time as time,
 )
 
@@ -58,37 +59,55 @@ class AppStatusMixin:
             result["status_age_ms"] = max(0, int((now - cached[0]) * 1000))
             if stale:
                 result["snapshot_stale"] = True
-                result["success"] = False
+                hub_online = result.get("hub_online") is True
+                result["success"] = hub_online
                 result["degraded"] = True
+                result["status_code"] = 200 if hub_online else 503
+                result["terminal"] = False
+                result["retryable"] = True
+                result["error"] = "status snapshot is stale"
+                result["retry_after_seconds"] = 0.1
             return result
 
-        cached = self._live_status_cache.get(cache_key)
+        def dependency_timeout(key: str) -> float:
+            timeout = _status_dependency_timeout_seconds(key)
+            if light and key == "vram_balancer":
+                return min(timeout, 0.5)
+            return timeout
+
+        with self._live_status_lock:
+            cached = self._live_status_cache.get(cache_key)
         if cached and now - cached[0] < cache_ttl:
             return cached_snapshot(cached, now)
         cache_lock = ExitStack()
-        if cached:
-            # Stale snapshots are cheap and safe; never make dashboard polls
-            # wait behind a slow refresh already owned by another request.
-            if not self._live_status_lock.acquire(blocking=False):
+        with self._live_status_lock:
+            refresh_locks = getattr(self, "_live_status_refresh_locks", None)
+            if refresh_locks is None:
+                refresh_locks = self._live_status_refresh_locks = {}
+            refresh_lock = refresh_locks.setdefault(cache_key, threading.Lock())
+        if not refresh_lock.acquire(blocking=False):
+            with self._live_status_lock:
+                cached = self._live_status_cache.get(cache_key)
+            if cached:
                 return cached_snapshot(cached, now, stale=True)
-            cache_lock.callback(self._live_status_lock.release)
-        else:
-            if not self._live_status_lock.acquire(blocking=False):
-                return self._snapshot_warming(scope)
-            cache_lock.callback(self._live_status_lock.release)
+            return self._snapshot_warming(scope)
+        cache_lock.callback(refresh_lock.release)
 
         with cache_lock:
             now = time.monotonic()
-            cached = self._live_status_cache.get(cache_key)
+            with self._live_status_lock:
+                cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
                 return cached_snapshot(cached, now)
             dependency_status: dict[str, dict[str, Any]] = {}
 
-            def read(key: str, callback, fallback):
+            pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any], float]] = {}
+
+            def schedule(key: str, callback, fallback):
                 diagnostic: dict[str, Any] = {}
-                timeout_seconds = _status_dependency_timeout_seconds(key)
+                timeout_seconds = dependency_timeout(key)
                 dep_deadline = time.monotonic() + timeout_seconds
-                value, healthy = _status_dependency(
+                handle = _schedule_status_dependency(
                     callback,
                     fallback,
                     key=_status_probe_key("live", scope, key),
@@ -100,12 +119,70 @@ class AppStatusMixin:
                     deadline=dep_deadline,
                     diagnostic=diagnostic,
                 )
+                pending_dependencies[key] = (handle, fallback, diagnostic, dep_deadline)
+
+            def read(key: str, callback, fallback):
+                diagnostic: dict[str, Any] = {}
+                timeout_seconds = dependency_timeout(key)
+                dep_deadline = time.monotonic() + timeout_seconds
+                pending = pending_dependencies.pop(key, None)
+                if pending is None:
+                    value, healthy = _status_dependency(
+                        callback,
+                        fallback,
+                        key=_status_probe_key("live", scope, key),
+                        completed_cache=getattr(self, "_status_metadata_cache", None),
+                        lock=self._status_dependency_lock,
+                        inflight=self._status_dependency_inflight,
+                        slots=self._status_dependency_slots,
+                        executor=self._status_dependency_executor,
+                        deadline=dep_deadline,
+                        diagnostic=diagnostic,
+                    )
+                else:
+                    handle, fallback, diagnostic, dep_deadline = pending
+                    value, healthy = _resolve_status_dependency(
+                        handle, deadline=dep_deadline, diagnostic=diagnostic
+                    )
                 dependency_status[key] = {
                     "degraded": not healthy,
                     "deadline_ms": int(timeout_seconds * 1000),
                     **diagnostic,
                 }
                 return value, healthy
+
+            runtime = getattr(self, "runtime", None)
+            model_policy = getattr(getattr(self, "services", None), "model_policy", None)
+            vram_balancer_obj = getattr(self, "vram_balancer", None)
+            benchmark_obj = getattr(self, "benchmark_runner", None)
+            # The live endpoint is polled by the dashboard and MCP client. Start
+            # its health-critical probes together so one slow store cannot make
+            # the whole snapshot stale before runtime readiness is reported.
+            core_probes = [
+                ("headless", self._headless_status, {}),
+                ("scheduler", self.scheduler.status, {}),
+                ("preprocessing.stats", self.preprocessor.stats, {}),
+                ("preprocessing.status", self.preprocessor.status, {"success": False, "projects": []}),
+            ]
+            recovery_obj = getattr(self, "recovery", None)
+            if recovery_obj is not None:
+                core_probes.append(("recovery", lambda: recovery_obj.status(limit=8), {}))
+            optional_probes = [
+                ("telemetry.summary", lambda: self.telemetry.realtime_summary(scope=scope, light=light), {}),
+                ("accelerators", lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
+                ("background_gpu", self.background_gpu.status, {}),
+                ("model_execution", model_policy.summary if model_policy else lambda: {}, {}),
+                ("vram_balancer", (lambda: vram_balancer_obj.status(force=False)) if vram_balancer_obj else lambda: {}, {}),
+                ("benchmark", benchmark_obj.get_latest_summary if benchmark_obj else lambda: {"available": False}, {"available": False}),
+                ("debug_traces", self.debug_traces.stats, {}),
+            ]
+            if runtime is not None:
+                core_probes.extend([
+                    ("runtime.online", runtime.is_online, None),
+                    ("ollama_profile", runtime.managed_profile_status, {}),
+                ])
+            for key, callback, fallback in core_probes:
+                schedule(key, callback, fallback)
 
             headless, headless_healthy = read("headless", self._headless_status, {})
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
@@ -115,7 +192,6 @@ class AppStatusMixin:
             # live endpoint during restart/recovery. Prefer the runtime probe
             # for the public live/doctor status so stale supervisor state does
             # not report a healthy Ollama process as offline.
-            runtime = getattr(self, "runtime", None)
             if runtime is not None:
                 ollama, runtime_healthy = read("runtime.online", runtime.is_online, None)
                 ollama = bool(ollama) if runtime_healthy else None
@@ -129,6 +205,10 @@ class AppStatusMixin:
             scheduler, scheduler_healthy = read("scheduler", self.scheduler.status, {})
             prep_stats, prep_stats_healthy = read("preprocessing.stats", self.preprocessor.stats, {})
             prep_status, prep_status_healthy = read("preprocessing.status", self.preprocessor.status, {"success": False, "projects": []})
+            # Keep optional reporting probes off the scarce worker slots until
+            # runtime, scheduler, and preprocessing readiness have resolved.
+            for key, callback, fallback in optional_probes:
+                schedule(key, callback, fallback)
             projects = []
             for item in prep_status.get("projects", []) if isinstance(prep_status, dict) else []:
                 root = str(item.get("root", ""))
@@ -162,13 +242,10 @@ class AppStatusMixin:
             observability, telemetry_healthy = read("telemetry.summary", lambda: self.telemetry.realtime_summary(scope=scope, light=light), {})
             accelerators, accelerator_healthy = read("accelerators", lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config))
             background_gpu, background_gpu_healthy = read("background_gpu", self.background_gpu.status, {})
-            model_policy = getattr(getattr(self, "services", None), "model_policy", None)
             model_execution, model_execution_healthy = read("model_execution", model_policy.summary if model_policy else lambda: {}, {})
             from .model_lifecycle import lifecycle_status
             model_execution = {**model_execution, "lifecycle": lifecycle_status()}
-            vram_balancer_obj = getattr(self, "vram_balancer", None)
             vram_balancer, vram_balancer_healthy = read("vram_balancer", (lambda: vram_balancer_obj.status(force=True)) if vram_balancer_obj else lambda: {}, {})
-            benchmark_obj = getattr(self, "benchmark_runner", None)
             benchmark, benchmark_healthy = read("benchmark", benchmark_obj.get_latest_summary if benchmark_obj else lambda: {"available": False}, {"available": False})
             debug_traces, traces_healthy = read("debug_traces", self.debug_traces.stats, {})
             external_tools = getattr(self, "external_tools", None)
@@ -178,6 +255,10 @@ class AppStatusMixin:
             circuit_breakers, _ = read("circuit_breakers", breakers_obj.status if breakers_obj else lambda: {}, {})
             recovery_obj = getattr(self, "recovery", None)
             recovery, _ = read("recovery", (lambda: recovery_obj.status(limit=8)) if recovery_obj else lambda: {}, {})
+            if isinstance(recovery, dict) and recovery.get("journal_available") is False:
+                diagnostic = dependency_status.setdefault("recovery", {"deadline_ms": int(_status_dependency_timeout_seconds("recovery") * 1000)})
+                diagnostic["degraded"] = True
+                diagnostic["reason"] = str(recovery.get("journal_unavailable_reason") or "request journal is unavailable")
             embeddings_obj = getattr(self, "embeddings", None)
             embeddings, _ = read("embeddings", embeddings_obj.status if embeddings_obj else lambda: {}, {})
             reranker_obj = getattr(self, "reranker", None)
@@ -195,7 +276,7 @@ class AppStatusMixin:
             router_obj = getattr(self, "token_router", None)
             lossless_router, _ = read("lossless_router", router_obj.stats if router_obj else lambda: {}, {})
             runtime_stats = {}
-            for key, callback in (
+            for key, callback in (() if light else (
                 ("generation_cache", self.services.generation_cache.stats),
                 ("semantic_cache", self.services.semantic_cache.stats),
                 ("repo_cache", self.services.repo_cache.stats),
@@ -204,7 +285,7 @@ class AppStatusMixin:
                 ("commands", self.commands.stats),
                 ("pipeline", self.pipeline.stats),
                 ("tool_agent", self.tool_agent.stats),
-            ):
+            )):
                 runtime_stats[key], _ = read(f"runtime_stats.{key}", callback, {})
             if not light and self.deterministic is not None:
                 runtime_stats["deterministic"], _ = read("runtime_stats.deterministic", self.deterministic.status, {})
@@ -307,7 +388,9 @@ class AppStatusMixin:
             for key, healthy in (("headless", headless_healthy), ("runtime.online", runtime_healthy), ("ollama_profile", profile_healthy), ("scheduler", scheduler_healthy), ("preprocessing.stats", prep_stats_healthy), ("preprocessing.status", prep_status_healthy), ("telemetry.summary", telemetry_healthy), ("accelerators", accelerator_healthy), ("background_gpu", background_gpu_healthy), ("model_execution", model_execution_healthy), ("vram_balancer", vram_balancer_healthy), ("benchmark", benchmark_healthy), ("debug_traces", traces_healthy)):
                 if _status_probe_affects_core_health(key, healthy=healthy):
                     result["success"] = False
-            self._live_status_cache[cache_key] = (now, result)
+            now = time.monotonic()
+            with self._live_status_lock:
+                self._live_status_cache[cache_key] = (now, result)
             return dict(result)
 
     def status(self, *, scope: str = "process") -> dict[str, Any]:
@@ -319,7 +402,7 @@ class AppStatusMixin:
 
         def dependency(key, callback, fallback, diagnostic=None):
             dependency_deadline = deadline
-            if key in {"telemetry.summary", "scheduler", "runtime.online", "agent_state", "recovery"}:
+            if key in {"telemetry.summary", "scheduler", "runtime.online", "ollama_profile", "agent_state", "recovery", "preprocessing"}:
                 dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
             return _status_dependency(
                 callback,
@@ -346,8 +429,14 @@ class AppStatusMixin:
             result["status_age_ms"] = max(0, int((now - cached["time"]) * 1000))
             if stale:
                 result["snapshot_stale"] = True
-                result["success"] = False
+                hub_online = result.get("hub_online") is True
+                result["success"] = hub_online
                 result["degraded"] = True
+                result["status_code"] = 200 if hub_online else 503
+                result["terminal"] = False
+                result["retryable"] = True
+                result["error"] = "status snapshot is stale"
+                result["retry_after_seconds"] = 0.1
             return result
 
         now = time.monotonic()
@@ -462,7 +551,7 @@ class AppStatusMixin:
             for key, (callback, fallback) in status_probes.items():
                 diagnostic: dict[str, Any] = {}
                 dependency_deadline = deadline
-                if key in {"telemetry.summary", "agent_state", "recovery"}:
+                if key in {"telemetry.summary", "ollama_profile", "agent_state", "recovery", "preprocessing"}:
                     dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
                 handle = _schedule_status_dependency(
                     callback,
@@ -503,6 +592,10 @@ class AppStatusMixin:
             autotune = read("autotune", self.tuner.stats, {})
             circuit_breakers = read("circuit_breakers", self.services.breakers.status, {})
             recovery = read("recovery", lambda: self.recovery.status(limit=8), {})
+            if isinstance(recovery, dict) and recovery.get("journal_available") is False:
+                degraded = True
+                dependency_status["recovery"]["degraded"] = True
+                dependency_status["recovery"]["reason"] = str(recovery.get("journal_unavailable_reason") or "request journal is unavailable")
             embeddings = read("embeddings", self.embeddings.status, {})
             reranker = read("reranker", self.reranker.status, {})
             code_intelligence = read("code_intelligence", self.external_tools.status, {})
@@ -538,7 +631,7 @@ class AppStatusMixin:
 
     def _snapshot_warming(self, scope: str) -> dict[str, Any]:
         return {
-            "success": False,
+            "success": True,
             "error": "status snapshot is warming",
             "retryable": True,
             "terminal": False,
@@ -547,6 +640,7 @@ class AppStatusMixin:
             "snapshot_cached": False,
             "status_age_ms": 0,
             "retry_after_ms": 100,
+            "status_code": 200,
             "scope": scope,
             "hub_online": True,
             "version": __version__,

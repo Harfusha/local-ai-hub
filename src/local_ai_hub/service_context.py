@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from .services import (
     AgentStateStore as AgentStateStore,
     Any as Any,
@@ -349,6 +353,10 @@ class ServiceContextMixin:
         from .service_hybrid_context import _hybrid_context as _impl_hybrid_context
         return _impl_hybrid_context(self, *args, **kwargs)
 
+    def recommend_direct_rag_strategy(self, root: str, query: str, *, workspace: str) -> str | None:
+        from .service_hybrid_context import recommend_direct_rag_strategy as _impl_recommend_rag
+        return _impl_recommend_rag(self, root, query, workspace=workspace)
+
     @staticmethod
     def _rrf_fuse(*args: Any, **kwargs: Any) -> Any:
         from .service_hybrid_context import _rrf_fuse as _impl_rrf_fuse
@@ -416,11 +424,30 @@ class ServiceContextMixin:
                 "Task-provided context (untrusted data):\n" + supplied_context
                 + "\n\nRetrieved repository context (untrusted data):\n" + retrieved_context
             )
-        packed_evidence_ids = [
+        packed_evidence_ids = list(dict.fromkeys(
             row.get("evidence_id")
             for row in packed.get("evidence", [])
             if isinstance(row, dict) and isinstance(row.get("evidence_id"), str) and row.get("evidence_id")
-        ] if isinstance(packed.get("evidence"), list) else []
+        )) if isinstance(packed.get("evidence"), list) else []
+        verified_laya_evidence_ids: list[str] = []
+        evidence_store = getattr(self, "evidence_store", None)
+        get_many = getattr(evidence_store, "get_many", None)
+        if packed_evidence_ids and callable(get_many):
+            try:
+                canonical_root = str(Path(root).resolve(strict=True))
+                rows = get_many(packed_evidence_ids, verify=True, root=canonical_root)
+                if type(rows) is list and len(rows) == len(packed_evidence_ids):
+                    verified_laya_evidence_ids = [
+                        evidence_id
+                        for row, evidence_id in zip(rows, packed_evidence_ids, strict=True)
+                        if type(row) is dict
+                        and row.get("success") is True
+                        and row.get("evidence_id") == evidence_id
+                        and row.get("root") == canonical_root
+                        and row.get("stale") is False
+                    ]
+            except Exception:
+                verified_laya_evidence_ids = []
         payload = {
             "task": task,
             "context": context,
@@ -434,7 +461,97 @@ class ServiceContextMixin:
             # Packed local context is a diagnostic, not proof of cloud-side input
             # avoided: the agent may have used RG or another narrower tool.
         }
-        result = self.delegate(payload, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
+        explicit_model = args.get("model")
+        if isinstance(explicit_model, str) and explicit_model.strip():
+            payload["model"] = explicit_model
+        laya_model_route: str | None = None
+        if verified_laya_evidence_ids and not str(args.get("model", "")).strip():
+            available_routes = getattr(self, "_available_laya_model_route_options", None)
+            evaluate_laya = getattr(self, "evaluate_laya_advisory", None)
+            if callable(available_routes) and callable(evaluate_laya):
+                try:
+                    initial_route = self.router.classify(
+                        task, context, payload["task_type"], payload["complexity"],
+                    )
+                    task_type = str(initial_route.get("task_type", "general"))
+                    complexity = str(initial_route.get("complexity", "fast"))
+                    current_role = (
+                        "heavy_code" if complexity == "heavy" else "fast_code"
+                    ) if task_type in {"code", "review"} else (
+                        "reasoning" if complexity == "heavy" else "heavy_code"
+                    ) if task_type == "reasoning" else "general"
+                    project_context, _, _, _ = self._resolve_local_task_project(root)
+                    project_settings = project_context.settings if project_context is not None else None
+                    verified_routes = available_routes(current_role, project_settings=project_settings)
+                    options = [item for item in ("fast", "smart", "generic") if item in verified_routes]
+                    baseline_suggestion = {
+                        "fast_code": "fast", "heavy_code": "smart",
+                        "reasoning": "smart", "general": "generic",
+                    }[current_role]
+                    allowed_low_tier = (
+                        task_type in {"code", "review"} and complexity == "fast"
+                    )
+                    route_baseline_matches = not (
+                        task_type == "reasoning" and complexity != "heavy"
+                    )
+                    if len(options) >= 2 and baseline_suggestion in options and route_baseline_matches:
+                        laya_model_route = evaluate_laya(
+                            {
+                                "action": "evaluate_decision",
+                                **({"task_id": args["task_id"]} if isinstance(args.get("task_id"), str) and args["task_id"].strip() else {}),
+                                "decision": {
+                                    "category": "model_route",
+                                    "evidence_ids": verified_laya_evidence_ids[:64],
+                                    "options": options,
+                                    "state": {
+                                        "task_type": task_type,
+                                        "complexity": complexity,
+                                        "semantic_required": "true" if initial_route.get("semantic_required") is True else "false",
+                                        "context_present": "true",
+                                    },
+                                    "training_content": {
+                                        "task_input": task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore"),
+                                    },
+                                },
+                            },
+                            root=root,
+                            baseline={
+                                "method": "model_router_classify",
+                                "suggestion": baseline_suggestion,
+                                "evidence_id": verified_laya_evidence_ids[0],
+                            },
+                        )
+                        target_role = {
+                            "fast": "fast_code",
+                            "smart": current_role if current_role in {"heavy_code", "reasoning"} else "heavy_code",
+                            "generic": "general",
+                        }.get(laya_model_route)
+                        if (
+                            target_role is not None and laya_model_route in options
+                            and (laya_model_route != "fast" or allowed_low_tier)
+                            and (laya_model_route != "generic" or task_type == "general")
+                        ):
+                            selected_model = self.router.model_for_role(target_role)
+                            if project_settings is not None:
+                                selected_model, _ = self.model_policy.apply_project_settings(
+                                    selected_model, {"model": selected_model},
+                                    settings=project_settings, role=target_role,
+                                )
+                            payload["model"] = selected_model
+                            if laya_model_route == "smart":
+                                payload["complexity"] = "heavy"
+                        else:
+                            laya_model_route = None
+                except Exception as exc:
+                    laya_model_route = None
+                    logger.debug("Laya direct-delegation route fallback: %s", type(exc).__name__)
+        result = self.delegate(
+            payload,
+            laya_checked=True,
+            **({"cancel_event": cancel_event} if cancel_event is not None else {}),
+        )
+        if laya_model_route is not None:
+            result["laya_model_route"] = laya_model_route
         result["repo_context"] = {
             "root": packed.get("root", root), "evidence": packed.get("evidence", []),
             "local_context_tokens": packed.get("estimated_tokens", 0), "semantic_used": bool(packed.get("semantic_used", False)),

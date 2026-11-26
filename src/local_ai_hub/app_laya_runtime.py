@@ -254,9 +254,11 @@ class AppLayaRuntimeMixin:
         """Run one typed context-source decision and capture its runtime outcome."""
         if not self._laya_inference_enabled():
             raise RuntimeError("Laya inference is disabled")
-        if type(operation) is not dict or set(operation) != {
-            "action", "task_id", "session_id", "evidence",
-        }:
+        if type(operation) is not dict or set(operation) not in (
+            {"action", "evidence"},
+            {"action", "task_id", "evidence"},
+            {"action", "task_id", "session_id", "evidence"},
+        ):
             raise ValueError("Laya context-source evaluation fields invalid")
         if operation["action"] != "evaluate_context_source":
             raise ValueError("unsupported Laya runtime action")
@@ -287,10 +289,16 @@ class AppLayaRuntimeMixin:
         repository_id = getattr(project, "coordination_id", None)
         if not isinstance(repository_id, str) or not repository_id:
             raise ValueError("Laya context-source evaluation requires resolved repository identity")
-        task_id = operation["task_id"]
-        task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
-        session_id = self.laya_candidates._session_for_task(task)
-        if operation["session_id"] != session_id:
+        task_id = operation.get("task_id")
+        if task_id is not None and (not isinstance(task_id, str) or not task_id.strip()):
+            raise ValueError("task_id must be a real Agent OS task ID when supplied")
+        task = (
+            self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
+            if isinstance(task_id, str) else None
+        )
+        session_id = self.laya_candidates._session_for_task(task) if task is not None else None
+        supplied_session_id = operation.get("session_id")
+        if supplied_session_id is not None and supplied_session_id != session_id:
             raise ValueError("Laya session identity does not match its scoped task")
         evidence = ContextSourceEvidence.from_mapping(operation["evidence"])
         request = DecisionRequest.from_mapping(
@@ -326,6 +334,24 @@ class AppLayaRuntimeMixin:
             coordination_id=repository_id,
         )
 
+        if baseline is None:
+            # Stable server baseline: prefer current, complete sources, then
+            # current partial sources; preserve source order for ties.
+            ranks = {("current", "complete"): 0, ("current", "partial"): 1,
+                     ("unknown", "complete"): 2, ("unknown", "partial"): 3}
+            selected_index = min(
+                range(len(evidence.source_codes)),
+                key=lambda index: ranks.get((
+                    evidence.freshness_codes[index].value,
+                    evidence.coverage_codes[index].value,
+                ), 4),
+            )
+            baseline = {
+                "method": "retrieval_rank_order",
+                "suggestion": evidence.source_codes[selected_index],
+                "evidence_id": evidence.evidence_ids[selected_index],
+            }
+
         adapter = self._get_laya_runtime_adapter(
             runtime_cfg,
             checkpoint_path=checkpoint_path,
@@ -336,6 +362,9 @@ class AppLayaRuntimeMixin:
         captured: dict[str, Any] = {}
 
         def record_outcome(actual_request: Any, actual_evidence: Any, outcome: Any) -> None:
+            if actual_request.task_id is None or actual_request.session_id is None:
+                captured["capture_status"] = "not_eligible"
+                return
             captured.update(self.laya_candidates.capture_runtime_outcome(
                 actual_request,
                 actual_evidence,
@@ -354,7 +383,7 @@ class AppLayaRuntimeMixin:
             outcome_recorder=record_outcome,
         )
         decision = outcome.decision
-        self._record_laya_runtime_decision(request, decision, outcome.runtime)
+        self._record_laya_runtime_decision(request, decision, outcome.runtime, baseline)
         runtime = outcome.runtime
         return {
             "success": decision.success,
@@ -366,8 +395,12 @@ class AppLayaRuntimeMixin:
                 "suggestion": decision.suggestion,
                 "reason_codes": list(decision.reason_codes),
             },
+            "baseline": baseline,
             "runtime": vars(runtime) if runtime is not None else None,
-            "capture_status": outcome.capture_status,
+            "capture_status": (
+                "not_eligible" if request.task_id is None else
+                captured.get("capture_status", outcome.capture_status)
+            ),
             "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
         }
 
@@ -381,7 +414,9 @@ class AppLayaRuntimeMixin:
         """Run a scoped typed Laya advisory decision."""
         if not self._laya_inference_enabled():
             raise RuntimeError("Laya inference is disabled")
-        if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
+        if type(operation) is not dict or set(operation) not in (
+            {"action", "decision"}, {"action", "task_id", "decision"},
+        ):
             raise ValueError("Laya decision fields invalid")
         if operation["action"] != "evaluate_decision":
             raise ValueError("unsupported Laya decision action")
@@ -417,9 +452,14 @@ class AppLayaRuntimeMixin:
         repository_id = getattr(project, "coordination_id", None)
         if not isinstance(repository_id, str) or not repository_id:
             raise ValueError("Laya decision requires resolved repository identity")
-        task_id = operation["task_id"]
-        task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
-        session_id = self.laya_candidates._session_for_task(task)
+        task_id = operation.get("task_id")
+        if task_id is not None and (not isinstance(task_id, str) or not task_id.strip()):
+            raise ValueError("task_id must be a real Agent OS task ID when supplied")
+        task = (
+            self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
+            if isinstance(task_id, str) else None
+        )
+        session_id = self.laya_candidates._session_for_task(task) if task is not None else None
         request = DecisionRequest.from_mapping(
             {key: decision_data[key] for key in ("category", "evidence_ids", "options")},
             decision_id="laya_" + uuid.uuid4().hex,
@@ -448,6 +488,11 @@ class AppLayaRuntimeMixin:
         self.laya_candidates._validate_context_source_evidence(
             candidate, evidence_store=self.evidence, canonical_root=canonical_root
         )
+        if task is None and request.category in {
+            DecisionCategory.WATCHDOG,
+            DecisionCategory.COMPLETION_GAP,
+        }:
+            raise ValueError("this Laya decision category requires a verified Agent OS task")
         baseline = self._derive_laya_decision_baseline(request, task)
         if _server_baseline is not None:
             expected_method = {
@@ -456,7 +501,7 @@ class AppLayaRuntimeMixin:
                 DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
                 DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
                 DecisionCategory.DELEGATION: "pipeline_worker_escalation",
-                DecisionCategory.SUBAGENT_BUDGET: "agent_os_delegation_budget",
+                DecisionCategory.SUBAGENT_BUDGET: "request_delegation_budget",
                 DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
                 DecisionCategory.NEXT_STEP: "pipeline_step_progress",
                 DecisionCategory.RETRIEVAL_STRATEGY: "hybrid_context_default",
@@ -487,6 +532,9 @@ class AppLayaRuntimeMixin:
         captured: dict[str, Any] = {}
 
         def record_outcome(actual_request: Any, actual_input: Any, outcome: Any) -> None:
+            if actual_request.task_id is None:
+                captured["capture_status"] = "not_eligible"
+                return
             try:
                 captured.update(self.laya_candidates.capture_runtime_outcome(
                     actual_request,
@@ -515,8 +563,8 @@ class AppLayaRuntimeMixin:
             outcome_recorder=record_outcome,
         )
         decision = outcome.decision
-        self._record_laya_runtime_decision(request, decision, outcome.runtime)
-        capture_status = captured.get("capture_status")
+        self._record_laya_runtime_decision(request, decision, outcome.runtime, baseline)
+        capture_status = "not_eligible" if request.task_id is None else captured.get("capture_status")
         if capture_status is None:
             capture_status = "failed"
             reason = "runtime_error" if outcome.runtime is None else "outcome_not_captured"

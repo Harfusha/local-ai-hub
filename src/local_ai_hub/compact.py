@@ -22,16 +22,16 @@ def _json_projection(value: Any, max_chars: int) -> str:
             used += needed
         return "{" + ",".join(parts) + "}" if used <= max_chars else "0"
     if isinstance(value, list):
-        parts: list[str] = []
+        list_parts: list[str] = []
         used = 2  # brackets
         for item in value:
             part = encode(item)
-            needed = len(part) + (1 if parts else 0)
+            needed = len(part) + (1 if list_parts else 0)
             if used + needed > max_chars:
                 break
-            parts.append(part)
+            list_parts.append(part)
             used += needed
-        return "[" + ",".join(parts) + "]" if used <= max_chars else "0"
+        return "[" + ",".join(list_parts) + "]" if used <= max_chars else "0"
     if isinstance(value, str):
         low, high = 0, len(value)
         while low < high:

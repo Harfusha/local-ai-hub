@@ -8,11 +8,12 @@ import os
 import sqlite3
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from local_ai_hub.state_lifecycle import (
     BOOTSTRAP_STATE_ENTRIES,
@@ -27,6 +28,7 @@ from local_ai_hub.telemetry_contracts import (
     _LAYA_DECISION_FIELDS,
     _LAYA_DECISION_PRE_RUNTIME_FIELDS,
     load_telemetry_json,
+    normalize_laya_decision_metadata,
 )
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -253,7 +255,7 @@ def _migrate_preprocess_schema_6_to_7(state: Path) -> None:
         # while the update owns the state. Startup refuses to perform this work.
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='source_fts'").fetchone() is None:
             initialize_fts_rows(con)
-        while advance_fts_migration(con):
+        while advance_fts_migration(con, write_timeout_seconds=30.0):
             pass
         if fts_layout(con) != SHARED_FTS_ROWS or not has_canonical_shared_fts(con):
             raise RuntimeError("preprocess FTS migration did not reach the canonical schema")
@@ -339,7 +341,7 @@ def _telemetry_snapshots_are_v10(con: sqlite3.Connection) -> bool:
         return False
     for (raw,) in con.execute("SELECT metrics_json FROM snapshots WHERE name='laya_decision'"):
         try:
-            metadata = load_telemetry_json(raw)
+            metadata = normalize_laya_decision_metadata(load_telemetry_json(raw))
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
         if isinstance(metadata, dict) and frozenset(metadata) == _LAYA_DECISION_PRE_RUNTIME_FIELDS:
@@ -583,7 +585,7 @@ def _migrate_laya_telemetry_9_to_10(state: Path) -> None:
         converted: list[tuple[int, str, str]] = []
         for row_id, raw in rows:
             try:
-                metadata = load_telemetry_json(raw)
+                metadata = normalize_laya_decision_metadata(load_telemetry_json(raw))
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if not isinstance(metadata, dict) or frozenset(metadata) != _LAYA_DECISION_PRE_RUNTIME_FIELDS:
@@ -647,40 +649,173 @@ def _reject_link_components(path: Path) -> None:
         raise ValueError(f"state migration path contains a symlink or junction: {absolute}")
 
 
-def discard_stale_migration_artifacts(state_dir: Path | str) -> list[str]:
-    """Delete only sibling backups and staging dirs created by state migrations."""
+def _is_process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if handle:
+                try:
+                    exit_code = ctypes.c_ulong()
+                    if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                        return exit_code.value == 259  # STILL_ACTIVE
+                    return False
+                finally:
+                    kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _estimate_required_space(source: Path) -> int:
+    total = 0
+    if source.is_dir():
+        for item in source.rglob("*"):
+            if item.is_file() and not _is_link(item):
+                try:
+                    total += item.stat().st_size
+                except OSError:
+                    pass
+    return max(10 * 1024 * 1024, int(total * 2.5))
+
+
+def _check_disk_space(path: Path, required_bytes: int) -> None:
+    usage = None
+    try:
+        usage = shutil.disk_usage(path)
+    except Exception:
+        pass
+    if usage is not None and usage.free < required_bytes:
+        raise OSError(
+            f"insufficient disk space at {path}: {usage.free} bytes free, "
+            f"{required_bytes} bytes required"
+        )
+
+
+def _is_sqlite_database(path: Path) -> bool:
+    if path.suffix in {".sqlite", ".sqlite3", ".db"}:
+        return True
+    try:
+        if path.is_file() and path.stat().st_size >= 16:
+            with path.open("rb") as f:
+                return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        pass
+    return False
+
+
+def discard_stale_migration_artifacts(
+    state_dir: Path | str,
+    *,
+    retention_count: int = 1,
+) -> list[str]:
+    """Delete stale staging dirs and verified migration backups exceeding retention.
+
+    Never deletes:
+    - The last functional recovery snapshot (keeps at least 1 verified backup).
+    - Unverified or unknown directories (spoofed prefix, missing or invalid manifest).
+    - Active migration staging directories with running processes.
+    - Symlinks or junctions (raises ValueError).
+    """
     state = Path(state_dir).absolute()
     _reject_link_components(state)
     if not state.exists():
         return []
     if not state.is_dir():
         raise ValueError(f"state migration cleanup requires an existing directory: {state}")
-    current_version = read_state_version(state)
+
+    _ = read_state_version(state)
     removed: list[str] = []
+
+    # 1. Clean up stale staging directories (.{state.name}.migration-*)
     for candidate in sorted(state.parent.iterdir()):
-        if candidate.name.startswith(f"{state.name}.backup-v"):
+        if candidate.name.startswith(f".{state.name}.migration-") and candidate.is_dir():
+            _reject_links(candidate)
+            lock_file = candidate / ".migration_lock.json"
+            if lock_file.is_file():
+                try:
+                    lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
+                    pid = lock_data.get("pid")
+                    if isinstance(pid, int) and _is_process_alive(pid):
+                        # Migration process is actively running, do not touch
+                        continue
+                    # Process is confirmed dead, lock is stale -> delete
+                    shutil.rmtree(candidate, ignore_errors=True)
+                    removed.append(str(candidate))
+                    continue
+                except Exception:
+                    pass
+            # If no lock file, skip if modified within last 10 seconds to prevent race
+            try:
+                if time.time() - candidate.stat().st_mtime < 10:
+                    continue
+            except OSError:
+                pass
+            shutil.rmtree(candidate, ignore_errors=True)
+            removed.append(str(candidate))
+
+    # 2. Inspect candidate backups ({state.name}.backup-v*)
+    verified_backups: list[tuple[int, int, Path]] = []  # (version, timestamp_ns, path)
+    for candidate in sorted(state.parent.iterdir()):
+        if candidate.name.startswith(f"{state.name}.backup-v") and candidate.is_dir():
+            _reject_links(candidate)
             suffix = candidate.name.removeprefix(f"{state.name}.backup-v")
-            version_text, separator, timestamp = suffix.partition("-")
-            if not separator or not version_text.isdigit() or not timestamp.isdigit():
+            version_text, separator, timestamp_text = suffix.partition("-")
+            if not separator or not version_text.isdigit() or not timestamp_text.isdigit():
                 continue
-            if not candidate.is_dir() or read_state_version(candidate) != current_version:
+            manifest_file = candidate / "manifest.json"
+            if not manifest_file.is_file():
                 continue
-        elif candidate.name.startswith(f".{state.name}.migration-"):
-            if not candidate.is_dir():
+            try:
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+                if manifest.get("format") != 1 or manifest.get("kind") != "state_migration_backup":
+                    continue
+                manifest_files = manifest.get("files", {})
+                if not isinstance(manifest_files, dict) or not manifest_files:
+                    continue
+                files_ok = True
+                for rel_path, file_meta in manifest_files.items():
+                    target_file = candidate / rel_path
+                    if not target_file.is_file() or target_file.stat().st_size != file_meta.get("size_bytes"):
+                        files_ok = False
+                        break
+                if not files_ok:
+                    continue
+                verified_backups.append((int(version_text), int(timestamp_text), candidate))
+            except Exception:
                 continue
-        else:
-            continue
-        _reject_links(candidate)
-        shutil.rmtree(candidate)
-        removed.append(str(candidate))
+
+    # 3. Apply retention policy:
+    # Always keep at least 1 functional recovery snapshot
+    keep_count = max(1, retention_count)
+    verified_backups.sort(key=lambda item: item[1])  # sort by timestamp_ns ascending
+
+    if len(verified_backups) > keep_count:
+        to_prune = verified_backups[:-keep_count]
+        for _, _, backup_path in to_prune:
+            _reject_links(backup_path)
+            shutil.rmtree(backup_path, ignore_errors=True)
+            removed.append(str(backup_path))
+
     return removed
 
 
-def _tree_digest(root: Path) -> str:
+def _tree_digest(root: Path, *, exclude_names: set[str] | None = None) -> str:
     digest = hashlib.sha256()
+    exclude = exclude_names or set()
     for item in sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()):
         if _is_link(item):
             raise ValueError(f"state migration refuses symlink or junction: {item}")
+        if item.name in exclude or item.name.endswith("-shm"):
+            continue
         relative = item.relative_to(root).as_posix().encode("utf-8")
         if item.is_dir():
             digest.update(b"D\0" + relative + b"\0")
@@ -696,12 +831,75 @@ def _tree_digest(root: Path) -> str:
 
 
 def _make_backup(source: Path, version: int) -> Path:
-    backup = source.with_name(f"{source.name}.backup-v{version}-{time.time_ns()}")
-    shutil.copytree(source, backup, symlinks=False)
-    if _tree_digest(source) != _tree_digest(backup):
+    _reject_link_components(source)
+    _reject_links(source)
+    _check_disk_space(source.parent, _estimate_required_space(source))
+
+    timestamp_ns = time.time_ns()
+    backup = source.with_name(f"{source.name}.backup-v{version}-{timestamp_ns}")
+    backup.mkdir(parents=False, exist_ok=False)
+
+    try:
+        # Copy files: use SQLite backup API for databases to produce clean, consistent snapshots
+        for root_dir, dirnames, filenames in os.walk(source, followlinks=False):
+            rel_dir = Path(root_dir).relative_to(source)
+            target_dir = backup / rel_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            for fn in filenames:
+                src_file = Path(root_dir) / fn
+                dst_file = target_dir / fn
+
+                # SQLite WAL sidecars (-wal, -shm) are integrated via backup API into main DB, skip loose sidecars
+                if fn.endswith("-wal") or fn.endswith("-shm"):
+                    base_db = Path(root_dir) / fn.removesuffix("-wal").removesuffix("-shm")
+                    if base_db.is_file() and _is_sqlite_database(base_db):
+                        continue
+
+                if _is_sqlite_database(src_file):
+                    # Historical `.corrupt-*` snapshots are retained as evidence,
+                    # not migrated databases. SQLite's backup API refuses damaged
+                    # files, so preserve these byte-for-byte in the verified archive.
+                    if ".corrupt-" in fn.casefold():
+                        shutil.copy2(src_file, dst_file)
+                        continue
+                    with closing(sqlite3.connect(f"file:{src_file.resolve()}?mode=ro", uri=True)) as src_con, \
+                         closing(sqlite3.connect(dst_file)) as dst_con:
+                        src_con.backup(dst_con)
+                        row = dst_con.execute("PRAGMA quick_check").fetchone()
+                        if row != ("ok",):
+                            raise OSError(f"SQLite backup failed quick check: {src_file} ({row})")
+                else:
+                    shutil.copy2(src_file, dst_file)
+
+        # Record verified file manifest
+        manifest_files: dict[str, dict[str, Any]] = {}
+        for item in sorted(backup.rglob("*"), key=lambda p: p.relative_to(backup).as_posix()):
+            if item.is_file():
+                rel = item.relative_to(backup).as_posix()
+                hasher = hashlib.sha256()
+                with item.open("rb") as f:
+                    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                manifest_files[rel] = {
+                    "sha256": hasher.hexdigest(),
+                    "size_bytes": item.stat().st_size,
+                }
+
+        import datetime as dt
+        manifest = {
+            "format": 1,
+            "kind": "state_migration_backup",
+            "source_version": version,
+            "timestamp_ns": timestamp_ns,
+            "created_at_iso": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "files": manifest_files,
+        }
+        (backup / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return backup
+    except Exception:
         shutil.rmtree(backup, ignore_errors=True)
-        raise OSError(f"state backup verification failed: {backup}")
-    return backup
+        raise
 
 
 def _apply_chain(
@@ -710,23 +908,32 @@ def _apply_chain(
     current: int,
 ) -> tuple[Path, list[str]]:
     backup = _make_backup(state_dir, current)
+    source_digest = _tree_digest(state_dir, exclude_names={"manifest.json", ".migration_lock.json"})
     stage: Path | None = None
     try:
         stage = Path(tempfile.mkdtemp(prefix=f".{state_dir.name}.migration-", dir=state_dir.parent))
-        stage.rmdir()
-        shutil.copytree(backup, stage, symlinks=False)
+        (stage / ".migration_lock.json").write_text(
+            json.dumps({"pid": os.getpid(), "timestamp_ns": time.time_ns(), "state": str(state_dir)}),
+            encoding="utf-8",
+        )
+        stage_work = stage / "work"
+        shutil.copytree(backup, stage_work, symlinks=False)
+        (stage_work / "manifest.json").unlink(missing_ok=True)
+
+        step_version = current
         for migration in migrations:
-            if migration.source_version != current or migration.target_version != current + 1:
+            if migration.source_version != step_version or migration.target_version != step_version + 1:
                 raise ValueError("state migrations must be consecutive N-to-N+1 steps")
-            migration.migrate(stage)
-            if migration.verify(stage) is not True:
-                raise ValueError(f"state migration verification failed for {current}->{current + 1}")
-            write_state_version(stage, version=current + 1, migrated_from=current)
-            _reject_links(stage)
-            if migration.verify(stage) is not True:
-                raise ValueError(f"state migration post-marker verification failed for {current}->{current + 1}")
-            current += 1
-        if _tree_digest(state_dir) != _tree_digest(backup):
+            migration.migrate(stage_work)
+            if migration.verify(stage_work) is not True:
+                raise ValueError(f"state migration verification failed for {step_version}->{step_version + 1}")
+            write_state_version(stage_work, version=step_version + 1, migrated_from=step_version)
+            _reject_links(stage_work)
+            if migration.verify(stage_work) is not True:
+                raise ValueError(f"state migration post-marker verification failed for {step_version}->{step_version + 1}")
+            step_version += 1
+
+        if _tree_digest(state_dir) != source_digest:
             raise OSError(
                 f"state changed after verified backup {backup}; "
                 "refusing to replace the original state"
@@ -734,7 +941,7 @@ def _apply_chain(
         swap = state_dir.with_name(f".{state_dir.name}.pre-migration-{time.time_ns()}")
         os.replace(state_dir, swap)
         try:
-            os.replace(stage, state_dir)
+            os.replace(stage_work, state_dir)
         except OSError as install_error:
             try:
                 os.replace(swap, state_dir)
@@ -751,9 +958,11 @@ def _apply_chain(
             cleanup_warnings.append(f"old-state swap retained at {swap}: {exc}")
         return backup, cleanup_warnings
     except Exception as exc:
-        if stage is not None:
-            shutil.rmtree(stage, ignore_errors=True)
         raise StateMigrationError(backup, exc) from exc
+    finally:
+        if stage is not None and stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
+
 
 
 def _apply_chain_in_place(
@@ -865,10 +1074,24 @@ def restore_state_backup(state_dir: Path, backup: Path) -> Path | None:
     _reject_link_components(state_dir)
     _reject_link_components(backup)
     _reject_links(backup)
+    manifest_file = backup / "manifest.json"
+    if manifest_file.is_file():
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if manifest.get("format") == 1 and manifest.get("kind") == "state_migration_backup":
+                files = manifest.get("files", {})
+                for rel, meta in files.items():
+                    target_file = backup / rel
+                    if not target_file.is_file() or target_file.stat().st_size != meta.get("size_bytes"):
+                        raise OSError(f"state backup verification failed for {rel}: corrupt or missing file")
+        except (json.JSONDecodeError, KeyError) as exc:
+            raise OSError(f"state backup manifest is corrupt: {backup}: {exc}") from exc
+
     with tempfile.TemporaryDirectory(prefix=f".{state_dir.name}.restore-", dir=state_dir.parent) as temporary:
         restored = Path(temporary) / "state"
         shutil.copytree(backup, restored, symlinks=False)
-        if _tree_digest(backup) != _tree_digest(restored):
+        (restored / "manifest.json").unlink(missing_ok=True)
+        if _tree_digest(backup, exclude_names={"manifest.json"}) != _tree_digest(restored, exclude_names={"manifest.json"}):
             raise OSError(f"state restore staging failed verification: {backup}")
         failed = None
         if state_dir.exists():

@@ -364,7 +364,7 @@ class DecisionRequest:
             raise ValueError("mode and category must use their closed enums")
         _identifier(self.decision_id, "decision_id")
         _identifier(self.repository_id, "repository_id")
-        _identifier(self.session_id, "session_id")
+        _identifier(self.session_id, "session_id", optional=True)
         _identifier(self.task_id, "task_id", optional=True)
         _identifier(self.provider_label, "provider_label")
         if not isinstance(self.evidence_ids, tuple) or len(self.evidence_ids) > 64:
@@ -389,7 +389,7 @@ class DecisionRequest:
         mode: DecisionMode,
         repository_id: str,
         task_id: str | None,
-        session_id: str,
+        session_id: str | None,
         provider_label: str = "generic_mcp",
     ) -> "DecisionRequest":
         """Build request from closed caller data and server-bound identity.
@@ -406,7 +406,7 @@ class DecisionRequest:
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid decision category") from exc
         repository_id = _identifier(repository_id, "repository_id")
-        session_id = _identifier(session_id, "session_id")
+        session_id = _identifier(session_id, "session_id", optional=True)
         task_id = _identifier(task_id, "task_id", optional=True)
         provider_label = _identifier(provider_label, "provider_label")
         decision_id = _identifier(decision_id, "decision_id")

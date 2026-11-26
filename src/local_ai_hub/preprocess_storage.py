@@ -306,6 +306,14 @@ class PreprocessStorageMixin:
             self._ensure_file_ref_centrality(con)
             services_module.initialize_fts_rows(con)
             services_module._ensure_file_refs_revision_tracking(con)
+            enrichment_columns = {
+                row[1] for row in con.execute("PRAGMA table_info(file_card_enrichment)").fetchall()
+            }
+            if "claim_id" not in enrichment_columns:
+                try:
+                    con.execute("ALTER TABLE file_card_enrichment ADD COLUMN claim_id TEXT")
+                except services_module.sqlite3.OperationalError:
+                    pass
             con.commit()
 
     def _invalidate_rag_sync_state(self) -> None:

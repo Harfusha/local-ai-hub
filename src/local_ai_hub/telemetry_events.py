@@ -12,6 +12,7 @@ from typing import Any
 
 from .json_utils import dumps as json_dumps
 from .trace_context import current as current_trace_context
+from .telemetry_contracts import normalize_laya_decision_metadata
 from .telemetry import (
     _LAYA_DECISION_FIELDS,
     _LAYA_DECISION_OPTIONS,
@@ -522,7 +523,7 @@ class TelemetryEventMixin:
         *,
         repository_id: str,
         task_id: str | None,
-        session_id: str,
+        session_id: str | None,
         provider_label: str = "generic_mcp",
     ) -> bool:
         """Persist one validated Laya decision projection in existing snapshots.
@@ -531,24 +532,34 @@ class TelemetryEventMixin:
         intentionally not an inference or candidate-text API. Identity arguments
         must come from the server-bound request context, never from caller payload.
         """
+        metadata = normalize_laya_decision_metadata(metadata)
         if not isinstance(metadata, dict) or set(metadata) != _LAYA_DECISION_FIELDS:
             raise ValueError("invalid Laya decision metadata fields")
         server_task_id = task_id
         for field, value in (
             ("repository_id", repository_id),
-            ("session_id", session_id),
             ("provider_label", provider_label),
         ):
             if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
                 raise ValueError(f"invalid server-bound Laya {field}")
+        if session_id is not None and (
+            not isinstance(session_id, str) or not _LAYA_IDENTIFIER.fullmatch(session_id)
+        ):
+            raise ValueError("invalid server-bound Laya session_id")
         if server_task_id is not None and (
             not isinstance(server_task_id, str) or not _LAYA_IDENTIFIER.fullmatch(server_task_id)
         ):
             raise ValueError("invalid server-bound Laya task_id")
-        for field in ("decision_id", "repository_id", "session_id"):
+        for field in ("decision_id", "repository_id"):
             value = metadata[field]
             if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
                 raise ValueError(f"invalid Laya {field}")
+        metadata_session_id = metadata["session_id"]
+        if metadata_session_id is not None and (
+            not isinstance(metadata_session_id, str)
+            or not _LAYA_IDENTIFIER.fullmatch(metadata_session_id)
+        ):
+            raise ValueError("invalid Laya session_id")
         task_id = metadata["task_id"]
         if task_id is not None and (
             not isinstance(task_id, str) or not _LAYA_IDENTIFIER.fullmatch(task_id)
@@ -578,6 +589,16 @@ class TelemetryEventMixin:
             raise ValueError("invalid Laya model_estimate flag")
         if metadata["model_estimate"] is not (status in {"success", "abstain"}):
             raise ValueError("inconsistent Laya model_estimate status")
+        if type(metadata["baseline_available"]) is not bool:
+            raise ValueError("invalid Laya baseline_available flag")
+        if metadata["baseline_match"] is not None and type(metadata["baseline_match"]) is not bool:
+            raise ValueError("invalid Laya baseline_match flag")
+        if metadata["baseline_match"] is not None and not metadata["baseline_available"]:
+            raise ValueError("Laya baseline match requires an available baseline")
+        if metadata["baseline_match"] is not None and (
+            status != "success" or not isinstance(metadata["suggestion"], str)
+        ):
+            raise ValueError("Laya baseline match requires a successful suggestion")
         expected_uncertainty = "UNCALIBRATED" if metadata["model_estimate"] else "NOT_APPLICABLE"
         if metadata["uncertainty"] != expected_uncertainty:
             raise ValueError("invalid Laya uncertainty")

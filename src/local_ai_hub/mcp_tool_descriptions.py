@@ -226,10 +226,11 @@ def describe_coord(
         " If no exposed coordination action covers the requested operation, skip Hub and use the authorized native tool directly; do not call a nearby Hub action to check support."
     )
     laya_note = (
-        " Typed Laya advisories use curate_dataset with laya_operation={action:'evaluate_decision', task_id, decision:{category,evidence_ids,options,state,training_content}}. The authorized Agent OS task must carry a real session_id; Hub verifies evidence and returns decision.suggestion plus the deterministic baseline. Active routing accepts only validated low-risk advisory suggestions."
-        " For explicit decomposition advice, category 'subagent_budget' may return single_agent, parallel_split, or swarm; its deterministic baseline is single_agent. The result is advisory metadata only and never launches agents or bypasses explicit delegation/profile gates."
-        " For an unresolved context gap, evaluate_context_source uses laya_operation={action:'evaluate_context_source',task_id,session_id,evidence:{gap_code:'unresolved_evidence_gap',source_codes,freshness_codes,coverage_codes,evidence_ids,source_record_ids?,training_content?}}. Source/status/evidence arrays must align; memory choices require matching task-scoped source_record_ids. Hub verifies repository, task, session, and evidence provenance. This result is advisory only: retrieve the selected source through its authorized path and keep host permission checks. Laya does not fetch sources or grant access."
-        if "curate_dataset" in supported else ""
+        " Request-scoped typed Laya inference uses local_ai_coord(action='laya_decision', root, laya_operation={action:'evaluate_decision'|'evaluate_context_source'|'runtime_status', ...}) and POST /api/laya/decision. It does not require Agent OS or task_id; task_id is accepted only when a real task is supplied. Ordinary model-route, context-budget, retrieval-strategy, next-step, bounded-delegation, and subagent-budget advice requires current evidence verified for the authorized repository plus a server-derived deterministic baseline. Lifecycle, completion, and watchdog decisions still require a real task. Request-only decisions emit operational telemetry, not supervised candidates. Active routing accepts only validated low-risk advisory suggestions."
+        " Repository solve and explicit decomposition requests may return subagent_budget advice: single_agent, parallel_split, or swarm, with single_agent deterministic baseline. The result is request-scoped metadata only and never launches agents or bypasses explicit delegation/profile gates."
+        " For an unresolved context gap, evaluate_context_source uses laya_operation={action:'evaluate_context_source',evidence:{gap_code:'unresolved_evidence_gap',source_codes,freshness_codes,coverage_codes,evidence_ids,source_record_ids?,training_content?}}. Source/status/evidence arrays must align; taskless memory choices require matching repository-scoped source_record_ids, while task-scoped memory is available only with a verified task. Hub verifies repository, optional task/session, and evidence provenance. This result is advisory only: retrieve the selected source through its authorized path and keep host permission checks. Laya does not fetch sources or grant access."
+        " curate_dataset remains for candidate capture and lifecycle; candidate creation requires an actual task and verified evidence."
+        if "laya_decision" in supported else ""
     )
     if lean_schemas:
         actions = sorted(supported)
@@ -301,9 +302,9 @@ def describe_repo(
     argument_note = (
         " Action arguments are strict despite the shared schema: `solve` takes `task`, `context` takes `query`,"
         " `find_symbol` takes `query` with optional `limit`/`offset` like `code_index`; `definition` requires `query` and accepts optional `path` like `declaration`; `git_diff` takes `path` or revision fields;"
-        " `solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, and `staged`. Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`; put the complete semantic request in `task`."
+        " `solve` accepts only `root`, `task`, `workspace`, `mode`, `max_tokens`, `base`, `staged`, and optional real Agent OS `task_id`. Do not pass `phase`, `focus`, `evidence`, or `context` to `solve`; put the complete semantic request in `task`."
         " do not pass `focus` or `changed_paths` unless that action allows them."
-        " When Laya advisory evaluation is requested, use an existing Agent OS task with verified evidence and real server-bound identity; never invent identity."
+        " Laya automatically advises eligible repository solve/delegate/review/reason/second_opinion/review_diff/generate_tests/speculative_draft requests and adaptive context packs when current repository evidence and a deterministic typed baseline exist. Long repository-scoped narrative compression may receive context-budget advice after deterministic compression declines. Request decisions need no Agent OS task_id; explicit models, cascade stages, FIM latency, high-risk quality floors, and deterministic/permission/mutation paths remain authoritative. Request-only decisions are telemetry-only and never become supervised task candidates."
         " Each `path_hints` item requires non-empty `path`, `purpose`, and `scope`; provide only verified values, otherwise omit hints."
     )
     if not local_enabled:

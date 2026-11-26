@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import sys
 import struct
@@ -11,7 +12,7 @@ import time
 import tomllib
 import wave
 import zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,11 @@ _FORBIDDEN_FILE_NAMES = {
 }
 _FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".sqlite3", ".whl"}
 _ALLOWED_RUNTIME_PLACEHOLDERS = {"data/.gitkeep", "generated/.gitkeep"}
+# Canonical source files that are intentionally tracked inside otherwise-forbidden directories.
+# These exact relative paths are always permitted even in strict-tree mode.
+_CANONICAL_TRACKED_IN_FORBIDDEN = frozenset({
+    ".agents/plugins/marketplace.json",  # Codex local marketplace — canonical source, not runtime data
+})
 
 
 def _live_smoke_png() -> bytes:
@@ -152,84 +158,159 @@ def _iter_release_hygiene_violations(
     if allow_installed:
         post_test = True
 
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root).as_posix()
-        parts = path.relative_to(root).parts
-        if ".git" in parts:
-            continue
-        if (
-            "__pycache__" in parts or ".pytest_cache" in parts
-            or (path.is_file() and path.suffix in {".pyc", ".pyo"})
-        ):
-            continue
-        if allow_installed:
-            if parts and parts[0] in _INSTALLED_ENV_DIRS:
+    verified_reset_backups: set[str] = set()
+    if allow_installed:
+        for candidate in root.iterdir():
+            if candidate.name.startswith("state.embedding-reset-v8.0-") and _is_verified_embedding_reset_backup(candidate):
+                verified_reset_backups.add(candidate.name)
+
+    def _is_canonical_agents_tree(agents_dir: Path) -> bool:
+        if agents_dir.is_symlink() or not agents_dir.is_dir():
+            return False
+        allowed_dirs = {".agents", ".agents/plugins"}
+        found_files: set[str] = set()
+        for dp, dns, fns in os.walk(agents_dir, topdown=True, followlinks=False):
+            dp_path = Path(dp)
+            dns[:] = sorted(d for d in dns if d != ".git")
+            for d in dns:
+                sub = dp_path / d
+                rel_d = sub.relative_to(root).as_posix()
+                if sub.is_symlink() or rel_d not in allowed_dirs:
+                    return False
+            for f in fns:
+                fp = dp_path / f
+                if fp.is_symlink():
+                    return False
+                found_files.add(fp.relative_to(root).as_posix())
+        return bool(found_files) and found_files <= _CANONICAL_TRACKED_IN_FORBIDDEN
+
+    violations: list[str] = []
+    skipped_dirnames = {".git", "__pycache__", ".pytest_cache"}
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dir_p = Path(dirpath)
+        rel_dir = dir_p.relative_to(root)
+        dir_parts = () if rel_dir == Path(".") else rel_dir.parts
+
+        pruned_dirs: list[str] = []
+        for d in sorted(dirnames):
+            if d in skipped_dirnames:
                 continue
-            if parts and parts[0] == "build":
+            if not dir_parts:
+                if d in verified_reset_backups:
+                    continue
+                if allow_installed and (d in _INSTALLED_ENV_DIRS or d in {"build", "generated", "data"}):
+                    continue
+                if post_test and d.endswith(".egg-info"):
+                    continue
+                if d in _TOP_LEVEL_FORBIDDEN_DIRS:
+                    if d == ".agents" and _is_canonical_agents_tree(dir_p / d):
+                        continue
+                    violations.append(f"forbidden directory: {d}/")
+                    continue
+            else:
+                if post_test and d.endswith(".egg-info"):
+                    continue
+                if d in _FORBIDDEN_DIR_NAMES or d.endswith(".egg-info"):
+                    rel_d = (rel_dir / d).as_posix()
+                    violations.append(f"forbidden directory: {rel_d}/")
+            pruned_dirs.append(d)
+        dirnames[:] = pruned_dirs
+
+        for fn in sorted(filenames):
+            path = dir_p / fn
+            rel = (Path(fn) if not dir_parts else (rel_dir / fn)).as_posix()
+            parts = (*dir_parts, fn)
+            if path.suffix in {".pyc", ".pyo"}:
                 continue
-            if parts and parts[0] in {"generated", "data"}:
+            if allow_installed:
+                if parts[0] in _INSTALLED_ENV_DIRS or parts[0] == "build" or parts[0] in {"generated", "data"}:
+                    continue
+                if fn in {"config.toml", ".local-ai-hub.zip", "setup-report.json", ".local-ai-hub-install-ownership.json"}:
+                    continue
+                if fn.startswith("setup-report") and fn.endswith(".json"):
+                    continue
+                if fn.endswith("-ownership.json"):
+                    continue
+                if ".local-ai-hub-backup-" in fn or fn.startswith("config.toml.bak"):
+                    continue
+                if parts[0] == ".local-ai-hub" and len(parts) > 1 and parts[1] == "telemetry":
+                    continue
+            if post_test and fn.startswith(".coverage"):
                 continue
-            if path.name in {"config.toml", ".local-ai-hub.zip", "setup-report.json", ".local-ai-hub-install-ownership.json"}:
+            if not dir_parts and fn in _TOP_LEVEL_FORBIDDEN_DIRS:
+                # Top-level regular file sharing a forbidden directory name.
+                violations.append(f"forbidden directory: {rel}/")
                 continue
-            if path.name.startswith("setup-report") and path.name.endswith(".json"):
+            if any(part in _FORBIDDEN_DIR_NAMES for part in parts):
+                violations.append(f"compiled cache payload: {rel}")
                 continue
-            if path.name.endswith("-ownership.json"):
+            if any(part == "telemetry" for part in parts) or fn == "agents.jsonl":
+                violations.append(f"telemetry payload: {rel}")
                 continue
-            if ".local-ai-hub-backup-" in path.name:
+            if rel in _ALLOWED_RUNTIME_PLACEHOLDERS:
                 continue
-            if path.name.startswith("config.toml.bak"):
+            if parts[0] in {"data", "generated"}:
+                violations.append(f"generated/runtime payload: {rel}")
                 continue
-        if post_test:
-            if ".pytest_cache" in parts or "__pycache__" in parts or any(part.endswith(".egg-info") for part in parts):
+            if fn in _FORBIDDEN_FILE_NAMES or fn.startswith("config.toml.bak"):
+                violations.append(f"local-only file: {rel}")
                 continue
-            if path.is_file() and path.name.startswith(".coverage"):
+            if fn.startswith("setup-report") and fn.endswith(".json"):
+                violations.append(f"local install report: {rel}")
                 continue
-        # The tracked Codex marketplace descriptor is source, not an installed
-        # agent workspace. Allow only its exact real directory/file hierarchy.
-        if rel in {".agents", ".agents/plugins", ".agents/plugins/marketplace.json"}:
-            expected_file = rel.endswith(".json")
-            if (not path.is_symlink() and not getattr(path, "is_junction", lambda: False)()
-                    and (path.is_file() if expected_file else path.is_dir())):
+            if fn.endswith("-ownership.json") and not fn.startswith("test_"):
+                violations.append(f"local ownership state: {rel}")
                 continue
-        if parts and parts[0] == ".agents" and len(parts) > 1:
-            yield f"forbidden agent workspace payload: {rel}"
-            continue
-        if parts and parts[0] in _TOP_LEVEL_FORBIDDEN_DIRS:
-            if len(parts) == 1:
-                yield f"forbidden directory: {rel}/"
-            continue
-        if path.is_dir():
-            if path.name in _FORBIDDEN_DIR_NAMES or path.name.endswith(".egg-info"):
-                yield f"forbidden directory: {rel}/"
-            continue
-        if any(part in _FORBIDDEN_DIR_NAMES for part in parts):
-            yield f"compiled cache payload: {rel}"
-            continue
-        if rel in _ALLOWED_RUNTIME_PLACEHOLDERS:
-            continue
-        if parts and parts[0] in {"data", "generated"}:
-            yield f"generated/runtime payload: {rel}"
-            continue
-        if path.name in _FORBIDDEN_FILE_NAMES:
-            yield f"local-only file: {rel}"
-            continue
-        if path.name.startswith("setup-report") and path.name.endswith(".json"):
-            yield f"local install report: {rel}"
-            continue
-        if path.name.endswith("-ownership.json") and not path.name.startswith("test_"):
-            yield f"local ownership state: {rel}"
-            continue
-        if path.name.startswith("config.toml.bak"):
-            yield f"local-only file: {rel}"
-            continue
-        if path.name.startswith(".coverage"):
-            yield f"coverage payload: {rel}"
-            continue
-        if ".local-ai-hub-backup-" in path.name:
-            yield f"backup payload: {rel}"
-            continue
-        if path.suffix in _FORBIDDEN_SUFFIXES or ".sqlite3-" in path.name:
-            yield f"runtime/build payload: {rel}"
+            if fn.startswith(".coverage"):
+                violations.append(f"coverage payload: {rel}")
+                continue
+            if ".local-ai-hub-backup-" in fn:
+                violations.append(f"backup payload: {rel}")
+                continue
+            if path.suffix in _FORBIDDEN_SUFFIXES or ".sqlite3-" in fn:
+                violations.append(f"runtime/build payload: {rel}")
+
+    yield from sorted(violations)
+
+
+def _is_verified_embedding_reset_backup(path: Path) -> bool:
+    """Allow only complete, manifest-bound v8 migration backups in live checkouts."""
+    if path.is_symlink() or not path.is_dir():
+        return False
+    manifest_path = path / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(manifest, dict) or manifest.get("format") != 1 or manifest.get("migration") != "8.0":
+        return False
+    entries = manifest.get("databases")
+    if not isinstance(entries, list) or not entries:
+        return False
+    expected: set[str] = set()
+    allowed_names = {"rag.sqlite3", "cache.sqlite", "cache.sqlite3", "semantic-cache.sqlite3", "agent_state.sqlite", "agent_state.sqlite3"}
+    for entry in entries:
+        if not isinstance(entry, str) or "\\" in entry:
+            return False
+        relative = PurePosixPath(entry)
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts) or relative.name not in allowed_names:
+            return False
+        normalized = relative.as_posix()
+        if normalized in expected:
+            return False
+        expected.add(normalized)
+    actual: set[str] = set()
+    try:
+        for item in path.rglob("*"):
+            if item.is_symlink():
+                return False
+            if item.is_file():
+                actual.add(item.relative_to(path).as_posix())
+    except OSError:
+        return False
+    return actual == expected | {"manifest.json"}
 
 
 def run_checks(root: Path, *, expected_version: str | None = None, post_test: bool = False, allow_installed: bool = False, strict_tree: bool = False) -> dict[str, object]:
@@ -340,6 +421,8 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
                         tracked_violations.append(f"tracked ownership state: {line}")
                     elif line in {"config.toml", ".local-ai-hub.zip", "ORIGINAL_REQUEST.md"}:
                         tracked_violations.append(f"tracked local payload: {line}")
+                    elif fn == "agents.jsonl" or "telemetry/" in line.replace("\\", "/") or line.replace("\\", "/").startswith(".local-ai-hub/telemetry"):
+                        tracked_violations.append(f"tracked telemetry payload: {line}")
                 checks.append({"name": "tracked-file-hygiene", "ok": not tracked_violations, "violations": tracked_violations})
                 errors.extend(tracked_violations)
         except Exception as exc:

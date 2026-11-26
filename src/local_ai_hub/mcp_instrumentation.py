@@ -333,6 +333,10 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     services_module = _get_services_module()
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
+    if not detail_enabled:
+        detailed_checker = getattr(services_module, "detailed_diagnostics_enabled", None)
+        if detailed_checker and detailed_checker(services_module.CFG):
+            detail_enabled = True
     projector = (services_module.project_status_response if tool == "local_ai_status"
                  else services_module.project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"
@@ -360,7 +364,9 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
                     mem.pop("instruction", None)
 
     profile = str(arguments.get("response_profile") or "").strip().lower()
-    if profile == "minimal" and isinstance(result, dict) and result.get("success") is True:
+    # local_ai_status already has a dedicated compact projection above. The
+    # generic minimal projection drops its required readiness identity fields.
+    if profile == "minimal" and tool != "local_ai_status" and isinstance(result, dict) and result.get("success") is True:
         result = _project_minimal_agent_response(result, tool=tool, action=str(arguments.get("action", "")))
 
     return services_module._reconcile_existing_budget(result) or result

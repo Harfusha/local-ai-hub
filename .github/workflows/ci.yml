@@ -50,6 +50,7 @@ jobs:
       - run: pyflakes src tools
       - run: ruff check src tools tests
       - run: npm run typecheck
+      - run: python tools/validate_ci_selectors.py
 
   typing:
     runs-on: ubuntu-latest
@@ -153,7 +154,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     env:
-      RUN_FULL_SUITE: ${{ inputs.full_matrix || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') || ((github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v')) && matrix.os == 'windows-latest' && (matrix.python-version == '3.11' || matrix.python-version == '3.14')) }}
+      RUN_FULL_SUITE: ${{ inputs.full_matrix || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') || (matrix.os == 'windows-latest' && (matrix.python-version == '3.11' || matrix.python-version == '3.14')) }}
       COVERAGE_FILE: ${{ github.workspace }}/.coverage-ci
     steps:
       - uses: actions/checkout@v7
@@ -246,7 +247,7 @@ jobs:
           if-no-files-found: warn
       - name: Export measured branch coverage
         if: ${{ always() && env.RUN_FULL_SUITE != 'true' }}
-        run: python -m coverage json -o "${{ runner.temp }}/coverage.json"
+        run: python -m tools.ci_diagnostics --export-coverage "${{ runner.temp }}/coverage.json"
       - name: Retain per-platform coverage baseline
         if: ${{ always() && env.RUN_FULL_SUITE != 'true' }}
         uses: actions/upload-artifact@v7
@@ -276,7 +277,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     env:
-      RUN_FULL_SUITE: ${{ inputs.full_matrix || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') || ((github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v')) && matrix.os == 'windows-latest' && (matrix.python-version == '3.11' || matrix.python-version == '3.14')) }}
+      RUN_FULL_SUITE: ${{ inputs.full_matrix || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14') || (matrix.os == 'windows-latest' && (matrix.python-version == '3.11' || matrix.python-version == '3.14')) }}
       COVERAGE_FILE: ${{ github.workspace }}/.coverage-integration
     steps:
       - uses: actions/checkout@v7
@@ -321,13 +322,16 @@ jobs:
           if-no-files-found: warn
       - name: Export integration coverage
         if: ${{ always() && env.RUN_FULL_SUITE == 'true' }}
-        run: python -m coverage json -o "${{ runner.temp }}/integration-coverage.json"
+        run: python -m tools.ci_diagnostics --export-coverage "${{ runner.temp }}/integration-coverage.json"
       - uses: actions/upload-artifact@v7
         if: ${{ always() && env.RUN_FULL_SUITE == 'true' }}
         with:
           name: integration-coverage-${{ matrix.os }}-py${{ matrix.python-version }}
           path: ${{ runner.temp }}/integration-coverage.json
           if-no-files-found: warn
+      - name: Note skipped integration run
+        if: ${{ env.RUN_FULL_SUITE != 'true' }}
+        run: echo "::notice title=Integration suite skipped::Integration suite was not scheduled for ${{ matrix.os }}-py${{ matrix.python-version }} in this run."
 
   critical-coverage:
     needs: [lint, typing, fast-contract]
@@ -422,7 +426,7 @@ jobs:
           name: junit-critical-coverage-windows-py3.13
           path: ${{ runner.temp }}/critical-junit.xml
           if-no-files-found: warn
-      - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
+      - run: python -m tools.ci_diagnostics --export-coverage "${{ runner.temp }}/critical-coverage.json"
       - name: Reject per-module branch coverage regression
         run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json
       - name: Check fresh source-symbol and citation goldset

@@ -922,6 +922,12 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   <div class="split"><section class="section"><h2>Model statistics <span class="tiny">Selected metrics period · retained samples</span></h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>Load</th><th>Fails</th></tr></thead><tbody id="models"></tbody></table></div></section><section class="section"><h2>Cache layers</h2><div class="table-wrap"><table><thead><tr><th>Layer</th><th>Calls</th><th>Avg</th><th>Context tokens avoided</th></tr></thead><tbody id="cacheLayers"></tbody></table></div></section></div>
   <div class="split"><section class="section"><h2>Agents</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Requests</th><th>Local AI</th><th>Avg</th><th>Fails</th></tr></thead><tbody id="agents"></tbody></table></div></section><section class="section"><h2>Execution routes</h2><div class="table-wrap"><table><thead><tr><th>Route</th><th>Task</th><th>Complexity</th><th>Calls</th><th>Avg</th><th>Fails</th></tr></thead><tbody id="routes"></tbody></table></div></section></div>
   <section class="section"><h2>HTTP tail latency <span class="tiny">per action · excludes policy rejections</span></h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Fails</th></tr></thead><tbody id="httpTail"></tbody></table></div></section>
+  <div class="split">
+    <section class="section"><h2>Provider token usage <span class="tiny">Selected period · reported provider counts</span></h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Task type</th><th>Model</th><th>Input</th><th>Cache read</th><th>Output</th></tr></thead><tbody id="providerTokenUsage"></tbody></table></div></section>
+    <section class="section"><h2>Agent tail latency <span class="tiny">Selected period · HTTP request samples</span></h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Samples</th><th>p50</th><th>p95</th><th>p99</th></tr></thead><tbody id="agentSlo"></tbody></table></div></section>
+  </div>
+  <section class="section"><h2>Matched evaluation <span class="tiny">Same tasks with Hub on and off</span><span id="evaluationGate" class="pill tiny">No evaluation evidence</span></h2><div class="table-wrap"><table><thead><tr><th>Cohort</th><th>Matched tasks</th><th>Avg duration</th><th>Quality pass</th><th>Tests pass</th></tr></thead><tbody id="evaluationCohorts"></tbody></table></div></section>
+  <section class="section"><h2>Latest runtime benchmark &amp; managed profile</h2><div class="grid grid-3" style="padding:12px"><div class="card"><div class="label">Latest benchmark</div><div id="latestBenchmark" class="sub">Unavailable</div></div><div class="card"><div class="label">Managed Ollama profile</div><div id="managedProfile" class="sub">Unavailable</div></div><div class="card"><div class="label">Laya training capture</div><div id="trainingCaptureSummary" class="sub">Unavailable</div></div></div></section>
   <section class="section"><h2>Active Multi-Agent File Leases <span class="tiny">Prevents conflicting agent edits</span></h2><div class="table-wrap"><table><thead><tr><th>Lease ID</th><th>Paths</th><th>Purpose</th><th>Expires</th><th>Actions</th></tr></thead><tbody id="activeLeasesBody"></tbody></table></div></section>
   <section class="section" id="layaSection" style="margin-top:12px">
     <h2>Laya typed decisions &amp; runtime <span id="layaStatusPill" class="pill tiny">Loading Laya…</span></h2>
@@ -953,13 +959,14 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
           <h2>Decisions by Category <span class="tiny">Typed proposal status and counts</span></h2>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Category</th><th>Mode</th><th>Records</th><th>Abstain</th><th>Errors</th><th>Skips</th></tr></thead>
+              <thead><tr><th>Category</th><th>Mode</th><th>Eligible</th><th>Request</th><th>Task</th><th>Records</th><th>Baseline match</th><th>Abstain</th><th>Errors</th><th>Skips</th></tr></thead>
               <tbody id="layaDecisionsBody"></tbody>
             </table>
           </div>
         </div>
         <div class="section" style="margin-top:0">
           <h2>Capture Pipeline <span class="tiny">Training data collection stages</span></h2>
+          <div id="trainingCaptureDetail" class="tiny muted" style="padding:10px 14px 0">Collector status unavailable</div>
           <div class="table-wrap">
             <table>
               <thead><tr><th>Stage</th><th>Reason / Error</th><th>Calls</th><th>Failures</th></tr></thead>
@@ -5451,6 +5458,23 @@ function render(s){
   const ep=(rp.execution||{}).models||(s.model_execution||{}).models||[];
   const httpTail=o.http_tail_latency||{};
   rows('httpTail',httpTail.by_action||[],x=>clickableRow(x,`<td>${esc(x.action)}</td><td>${n(x.events)}</td><td>${ms(x.p50_duration_ms)}</td><td>${ms(x.p95_duration_ms)}</td><td>${ms(x.p99_duration_ms)}</td><td>${n(x.failures)}</td>`,'http_tail'),6);
+  rows('providerTokenUsage',o.provider_token_usage||[],x=>`<tr><td>${esc(x.action||'—')}</td><td>${esc(x.task_type||'—')}</td><td><code>${esc(x.model||'—')}</code></td><td>${n(x.input_tokens)}</td><td>${n(x.cache_read_tokens)}</td><td>${n(x.output_tokens)}</td></tr>`,6,'No provider token counts recorded');
+  rows('agentSlo',o.agent_slo||[],x=>`<tr><td><strong>${esc(x.agent)}</strong></td><td>${n(x.events)}</td><td>${x.p50_duration_ms==null?'—':ms(x.p50_duration_ms)}</td><td>${x.p95_duration_ms==null?'—':ms(x.p95_duration_ms)}</td><td>${x.p99_duration_ms==null?'—':ms(x.p99_duration_ms)}</td></tr>`,5,'No agent HTTP latency samples');
+  const evaluation=o.evaluation||{},evaluationCohorts=evaluation.cohorts||{},evaluationGate=evaluation.gate||{};
+  const evaluationPill=$('evaluationGate');
+  if(evaluationPill){evaluationPill.textContent=`${evaluationGate.verdict||evaluation.verdict||'insufficient evidence'} · ${n(evaluation.matched_tasks)} matched`;evaluationPill.className='pill tiny '+(evaluationGate.verdict==='promote'?'ok':'warn-t');}
+  const evaluationRows=['hub_on','hub_off'].filter(name=>evaluationCohorts[name]).map(name=>({cohort:name,...evaluationCohorts[name]}));
+  const rateText=value=>value==null?'—':`${(Number(value)*100).toFixed(1)}%`;
+  rows('evaluationCohorts',evaluationRows,x=>`<tr><td><strong>${esc(x.cohort)}</strong></td><td>${n(x.records)}</td><td>${x.avg_duration_ms?ms(x.avg_duration_ms):'—'}</td><td>${rateText(x.quality_pass_rate)} <span class="tiny muted">(${n(x.quality_evaluated)} measured)</span></td><td>${rateText(x.test_pass_rate)} <span class="tiny muted">(${n(x.tests_evaluated)} measured)</span></td></tr>`,5,'No matched Hub on/off evaluation tasks');
+  const latestBenchmark=s.benchmark||{};
+  if($('latestBenchmark')){
+    $('latestBenchmark').textContent=latestBenchmark.available?`${latestBenchmark.model||'Model unavailable'} · ${latestBenchmark.call_latency_ms!=null?ms(latestBenchmark.call_latency_ms):latestBenchmark.ttft_ms!=null?`TTFT ${ms(latestBenchmark.ttft_ms)}`:'latency unavailable'} · ${Number(latestBenchmark.tokens_per_second||0).toFixed(1)} tokens/s · ${latestBenchmark.timestamp?new Date(Number(latestBenchmark.timestamp)*1000).toLocaleString():'time unavailable'}`:'No benchmark recorded';
+  }
+  const managed=s.ollama_profile||{};
+  if($('managedProfile'))$('managedProfile').textContent=managed.managed?`${managed.managed_name||'Managed runtime'} · ${managed.profile_verifiable?'profile verified':'profile mismatch or unverified'} · PID ${managed.pid||'—'}`:'No managed Ollama process';
+  const captureStats=s.training_capture||{};
+  if($('trainingCaptureSummary'))$('trainingCaptureSummary').textContent=captureStats.enabled===false?'Collector disabled':`${n(captureStats.total_samples)} samples · ${n(captureStats.queue_pending)} queued`;
+  if($('trainingCaptureDetail'))$('trainingCaptureDetail').textContent=captureStats.enabled===false?'Collector disabled':`Collector this session: ${n(captureStats.laya_samples_collected)} Laya · ${n(captureStats.dpo_pairs_collected)} DPO · ${n(captureStats.retrieval_triplets_collected)} retrieval · ${n(captureStats.queue_pending)} queued`;
 
   $('fgQueue').textContent=n(q.foreground_queued)+' queued / '+n(q.foreground_inflight)+' running';
   $('bgQueue').textContent='background '+n(q.background_queued)+' queued / '+n(q.inflight_background)+' running · '+(q.background_allowed?'idle work allowed':'yielding');
@@ -5616,21 +5640,22 @@ function render(s){
   rows('routes',o.execution_routes||[],x=>clickableRow(x,`<td>${esc(x.route)}</td><td>${esc(x.task_type)}</td><td>${esc(x.complexity)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.failures)}</td>`,'route_stat'),6);
 
   const lr=s.laya_runtime||{},layaCfg=s.laya||{},layaEnabled=feat.laya!==false&&layaCfg.enabled!==false;
-  const layaMode='advisory',layaStatusPill=$('layaStatusPill');
+  const layaMode='advisory',layaVerified=lr.runtime_verification==='VERIFIED',layaStatusPill=$('layaStatusPill');
   if(layaStatusPill){
     if(!layaEnabled){layaStatusPill.textContent='disabled';layaStatusPill.className='pill tiny bad-t';}
-    else if(lr.available){layaStatusPill.textContent=`${layaMode} · resident`;layaStatusPill.className='pill tiny ok';}
+    else if(lr.available){layaStatusPill.textContent=`${layaMode} · resident · ${layaVerified?'verified':'verification pending'}`;layaStatusPill.className='pill tiny '+(layaVerified?'ok':'warn-t');}
     else{layaStatusPill.textContent=`${layaMode} · idle (${lr.model_configuration||'unconfigured'})`;layaStatusPill.className='pill tiny warn-t';}
   }
   const layaRuntimeVal=$('layaRuntimeVal'),layaRuntimeSub=$('layaRuntimeSub');
   if(layaRuntimeVal&&layaRuntimeSub){
     if(!layaEnabled){layaRuntimeVal.innerHTML='<span class="muted">Disabled</span>';layaRuntimeSub.textContent='laya.enabled = false';}
-    else if(lr.available){layaRuntimeVal.innerHTML='<span class="ok">Resident</span>';layaRuntimeSub.textContent=`Inflight: ${n(lr.inflight)} · Unloads: ${n(lr.unload_count)} · TTL: ${durSec(lr.idle_unload_seconds)}`;}
+    else if(lr.available){layaRuntimeVal.innerHTML=`<span class="${layaVerified?'ok':'warn-t'}">Resident${layaVerified?'':' · unverified'}</span>`;layaRuntimeSub.textContent=`Provider/device verification: ${layaVerified?'verified':'pending'} · Inflight: ${n(lr.inflight)} · Unloads: ${n(lr.unload_count)} · TTL: ${durSec(lr.idle_unload_seconds)}`;}
     else{
       layaRuntimeVal.innerHTML=lr.loading?'<span class="warn-t">Loading…</span>':'<span class="muted">Idle (Unloaded)</span>';
       const configStr=lr.model_configuration?`Config: ${esc(lr.model_configuration)}`:'Unconfigured';
+      const runtimeNote=lr.model_configuration==='configured_unverified'?' · configuration present; provider/device verification pending':'';
       const lastErr=lr.last_close_error?` · Close err: ${esc(lr.last_close_error)}`:'';
-      layaRuntimeSub.textContent=`${configStr} · Unloads: ${n(lr.unload_count)}${lastErr}`;
+      layaRuntimeSub.textContent=`${configStr}${runtimeNote} · Unloads: ${n(lr.unload_count)}${lastErr}`;
     }
   }
   const ld=o.laya_decisions||{},layaRecords=Number(ld.records||0),byMode=ld.by_mode||{},advisoryMode=byMode.advisory||{};
@@ -5638,7 +5663,9 @@ function render(s){
   if(layaDecisionsCount&&layaDecisionsSub){
     layaDecisionsCount.textContent=n(layaRecords);
     const advisoryCount=(ld.counts_by_mode&&ld.counts_by_mode.advisory)||advisoryMode.records||0;
-    layaDecisionsSub.textContent=`${n(advisoryCount)} advisory · ${n(ld.invalid_records||0)} invalid`;
+    const baselineComparison=advisoryMode.baseline_comparison||{},baselineComparable=Number(baselineComparison.comparable||0);
+    const baselineText=baselineComparable?`${n(baselineComparison.matched||0)}/${n(baselineComparable)} match baseline · ${n(baselineComparison.diverged||0)} differ`:'no comparable baseline data';
+    layaDecisionsSub.textContent=`${n(advisoryCount)} advisory · ${n(advisoryMode.uncalibrated_estimates||0)} uncalibrated · ${baselineText} · ${n(ld.invalid_records||0)} invalid`;
   }
   const layaCoverageVal=$('layaCoverageVal'),layaCoverageSub=$('layaCoverageSub');
   if(layaCoverageVal&&layaCoverageSub){
@@ -5647,9 +5674,9 @@ function render(s){
       layaCoverageVal.textContent=`${(cov.rate*100).toFixed(1)}%`;
       layaCoverageSub.textContent=`${n(cov.recorded_decisions)} / ${n(cov.eligible_decisions)} eligible decisions`;
     }else{
-      layaCoverageVal.textContent=cov&&cov.reason?esc(cov.reason):'No baseline';
+      layaCoverageVal.textContent=cov&&cov.reason==='eligible_decision_count_not_recorded'?'No eligible calls':(cov&&cov.reason?esc(cov.reason):'No baseline');
       const fb=activeSummary.fallbacks,fbCount=fb&&fb.available?fb.used:0;
-      layaCoverageSub.textContent=`${n(fbCount)} fallbacks recorded`;
+      layaCoverageSub.textContent=layaRecords===0?'No decisions recorded; request scope needs verified repository evidence':`${n(fbCount)} fallbacks recorded`;
     }
   }
   const layaLatencyVal=$('layaLatencyVal'),layaLatencySub=$('layaLatencySub');
@@ -5666,17 +5693,20 @@ function render(s){
       layaLatencySub.textContent='No recorded latency samples';
     }
   }
-  const categoryRows=[],allCategories=ld.counts_by_category?Object.keys(ld.counts_by_category):[];
+  const wiredLayaCategories=['context_source','context_budget','model_route','redundant_step','next_step','delegation','completion_gap','watchdog','retrieval_strategy','subagent_budget'];
+  const categoryCounts=advisoryMode.counts_by_category||{};
+  const categoryRows=[],allCategories=[...new Set([...wiredLayaCategories,...Object.keys(ld.counts_by_category||{})])];
   for(const cat of allCategories){
-    const total=ld.counts_by_category[cat]||0;
-    const advCat=(advisoryMode.counts_by_category&&advisoryMode.counts_by_category[cat])||0;
-    const modeLabel=advCat?'advisory':'—';
-    const abstains=advisoryMode.counts_by_status&&advisoryMode.counts_by_status.abstain||0;
-    const errors=advisoryMode.counts_by_status&&advisoryMode.counts_by_status.error||0;
-    const skips=advisoryMode.counts_by_status&&advisoryMode.counts_by_status.skipped||0;
-    categoryRows.push({category:cat,mode:modeLabel,total,abstains,errors,skips});
+    const total=Number(ld.counts_by_category?.[cat]||0);
+    const eligible=Number(advisoryMode.eligible_by_category?.[cat]||0);
+    const statuses=advisoryMode.counts_by_category_status?.[cat]||{};
+    const scopes=advisoryMode.counts_by_category_scope?.[cat]||{};
+    const modeLabel=eligible||categoryCounts[cat]?'advisory':'wired';
+    const base=advisoryMode.baseline_by_category?.[cat]||{};
+    const compared=Number(base.matched||0)+Number(base.diverged||0);
+    categoryRows.push({category:cat,mode:modeLabel,eligible,request:Number(scopes.request||0),task:Number(scopes.task||0),total,baseline:compared?`${n(base.matched||0)}/${n(compared)}`:'—',abstains:Number(statuses.abstain||0),errors:Number(statuses.error||0),skips:Number(statuses.skipped||0)});
   }
-  rows('layaDecisionsBody',categoryRows,x=>`<tr><td><strong>${esc(x.category)}</strong></td><td><span class="chip">${esc(x.mode)}</span></td><td>${n(x.total)}</td><td>${n(x.abstains)}</td><td>${n(x.errors)}</td><td>${n(x.skips)}</td></tr>`,6,'No typed decision records in selected period');
+  rows('layaDecisionsBody',categoryRows,x=>`<tr><td><strong>${esc(x.category)}</strong></td><td><span class="chip">${esc(x.mode)}</span></td><td>${n(x.eligible)}</td><td>${n(x.request)}</td><td>${n(x.task)}</td><td>${n(x.total)}</td><td>${esc(x.baseline)}</td><td>${n(x.abstains)}</td><td>${n(x.errors)}</td><td>${n(x.skips)}</td></tr>`,10,'No typed decision categories available');
   const captureRows=(o.laya_capture_reasons&&o.laya_capture_reasons.length)?o.laya_capture_reasons:(o.laya_capture_stages||[]).map(st=>({stage:st.stage,reason:'—',error_type:'',calls:st.calls,failures:st.failures}));
   rows('layaCaptureBody',captureRows,x=>{
     const reasonDetail=[x.reason!=='unspecified'&&x.reason!=='—'?esc(x.reason):'',x.error_type?`<span class="bad-t">${esc(x.error_type)}</span>`:''].filter(Boolean).join(' · ')||'<span class="muted">—</span>';

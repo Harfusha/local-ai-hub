@@ -39,31 +39,21 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
             if type(laya_operation) is not dict:
                 self._send(400, {"success": False, "error": "laya_operation must be an object", "terminal": True, "retryable": False}); return
             try:
-                if laya_operation.get("action") == "evaluate_context_source":
-                    result = services_module.APP.evaluate_laya_context_source(laya_operation, root=repo_root)
-                elif laya_operation.get("action") == "evaluate_decision":
-                    server_baseline = laya_operation.get("baseline")
-                    result = services_module.APP.evaluate_laya_decision(
-                        laya_operation, root=repo_root, _server_baseline=server_baseline
-                    )
-                elif laya_operation.get("action") == "runtime_status":
-                    lifecycle = getattr(services_module.APP, "laya_lifecycle", None)
-                    runtime_status = getattr(lifecycle, "status", None)
-                    if not isinstance(runtime_status, dict):
-                        raise RuntimeError("Laya lifecycle status is unavailable")
-                    result = {
-                        "success": True,
-                        "service_available": True,
-                        "model_resident": runtime_status.get("available") is True,
-                        "runtime": runtime_status,
-                    }
-                else:
-                    result = services_module.APP.laya_candidates.handle(
-                        laya_operation,
-                        root=repo_root,
-                        task_store=services_module.APP.agent_tasks,
-                        evidence_store=services_module.APP.evidence,
-                    )
+                if laya_operation.get("action") in {
+                    "evaluate_context_source", "evaluate_decision", "runtime_status",
+                }:
+                    self._send(400, {
+                        "success": False,
+                        "error": "request-scoped Laya inference uses POST /api/laya/decision",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
+                result = services_module.APP.laya_candidates.handle(
+                    laya_operation,
+                    root=repo_root,
+                    task_store=services_module.APP.agent_tasks,
+                    evidence_store=services_module.APP.evidence,
+                )
                 self._send(200, result); return
             except RuntimeError as exc:
                 self._send(503, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return

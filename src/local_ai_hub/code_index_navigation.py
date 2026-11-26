@@ -330,6 +330,10 @@ class CodeIndexNavigationMixin:
                 return {
                     "success": False,
                     "state": "stale",
+                    "error_code": "index_stale",
+                    "status_code": 409,
+                    "terminal": True,
+                    "retryable": False,
                     "error": "indexed Python files need reindexing",
                     "stale_paths": stale_paths[:20],
                 }

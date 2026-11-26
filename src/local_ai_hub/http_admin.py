@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
+
+
+@lru_cache(maxsize=1)
+def _installed_hub_version() -> str | None:
+    try:
+        import importlib.metadata
+
+        return importlib.metadata.version("local-ai-hub")
+    except Exception:
+        return None
 
 
 class HTTPAdminMixin:
@@ -127,13 +138,7 @@ class HTTPAdminMixin:
     def _handle_health_route(self, path: str) -> bool:
         from . import http_server as services_module
         if path == "/health":
-            installed_version = None
-            try:
-                import importlib.metadata
-
-                installed_version = importlib.metadata.version("local-ai-hub")
-            except Exception:
-                installed_version = None
+            installed_version = _installed_hub_version()
             self._send(
                 200,
                 {
@@ -181,13 +186,14 @@ class HTTPAdminMixin:
         if not callable(recorder):
             return False
         try:
+            request_path = services_module.urlparse(str(getattr(self, "path", ""))).path
             accepted = recorder(
                 "admin.authorization",
                 success=allowed,
                 component="http_admin",
                 operation=action,
-                path=services_module.urlparse(str(getattr(self, "path", ""))).path,
-                actor=str(getattr(self, "_authorization_actor", "unknown")),
+                route=request_path,
+                stage=action,
             )
             return accepted is not False
         except Exception:
@@ -207,14 +213,15 @@ class HTTPAdminMixin:
         if not callable(recorder):
             return False
         try:
+            request_path = services_module.urlparse(str(getattr(self, "path", ""))).path
             accepted = recorder(
                 "admin.action.result",
                 success=200 <= int(status) < 400,
                 component="http_admin",
                 operation=action,
-                path=services_module.urlparse(str(getattr(self, "path", ""))).path,
+                route=request_path,
+                stage=action,
                 status_code=int(status),
-                actor=str(getattr(self, "_authorization_actor", "unknown")),
             )
             self._admin_result_audit_accepted = accepted is not False
         except Exception:
@@ -717,6 +724,7 @@ class HTTPAdminMixin:
                     "retryable": False,
                 })
         except Exception as exc:
+            services_module.APP.logger.exception("diagnostic support archive export failed")
             if not services_module._is_client_disconnect(exc) and not response_started:
                 self._send(500, {
                     "success": False,

@@ -7978,13 +7978,19 @@
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_rag_search_1",
         "literal_response_fields": [
+          "degraded",
           "error",
+          "laya_retrieval_fallback",
+          "reason",
+          "semantic_fallback_error",
+          "semantic_fallback_reason",
+          "semantic_fallback_used",
           "success"
         ],
         "response_producers": [
-          "APP.rag.search",
           "_invoke_cancellable_request",
-          "local:result"
+          "local:result",
+          "search_with_lexical_fallback"
         ],
         "action_literals": []
       }
@@ -9496,6 +9502,57 @@
           "status",
           "submit",
           "wait"
+        ]
+      }
+    },
+    "MCP local_ai_coord.laya_decision": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Laya decision evaluation advisory coordination under strict deterministic policy; non-binding local suggestion.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "POST /api/laya/decision": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Laya decision and context-source advisory evaluation under strict deterministic policy; non-binding local suggestion.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_laya_decision_1",
+        "literal_response_fields": [
+          "error",
+          "model_resident",
+          "retryable",
+          "runtime",
+          "service_available",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "APP.evaluate_laya_context_source",
+          "APP.evaluate_laya_decision",
+          "local:result"
+        ],
+        "action_literals": [
+          "evaluate_context_source",
+          "evaluate_decision",
+          "runtime_status"
         ]
       }
     }

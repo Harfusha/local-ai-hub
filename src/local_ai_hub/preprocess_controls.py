@@ -2,9 +2,31 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any
 
 from .project_config import ProjectPathPolicy
+
+
+@dataclass(frozen=True)
+class PreprocessRoleGraph:
+    primary_model: str
+    cascade_enabled: bool
+    draft_model: str | None
+    refiner_model: str | None
+    fallback_enabled: bool
+    fallback_models: tuple[str, ...]
+
+    @property
+    def effective_phases(self) -> tuple[str, ...]:
+        phases = ["deterministic"]
+        if self.draft_model:
+            phases.append("draft")
+        if self.refiner_model:
+            phases.append("refiner")
+        if self.fallback_models:
+            phases.append("fallback")
+        return tuple(phases)
 
 
 class PreprocessControlsMixin:
@@ -30,25 +52,60 @@ class PreprocessControlsMixin:
             return getattr(self, "_exclusive_cpu_pool", self._cpu_pool)
         return self._cpu_pool
 
+    def _role_graph(self) -> PreprocessRoleGraph:
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", None), dict) else {}
+        prep_cfg = config.get("preprocessing", {}) if isinstance(config.get("preprocessing"), dict) else {}
+        models = config.get("models", {}) if isinstance(config.get("models"), dict) else {}
+        resilience = config.get("resilience", {}) if isinstance(config.get("resilience"), dict) else {}
+
+        primary = str(prep_cfg.get("model") or models.get("background_code") or "").strip()
+        cascade_enabled = bool(prep_cfg.get("cascade_enabled", True))
+        fallback_enabled = bool(resilience.get("model_fallback_enabled", True))
+
+        draft_model = None
+        refiner_model = None
+        if cascade_enabled:
+            d = str(prep_cfg.get("draft_model") or "").strip()
+            if d and d != primary:
+                draft_model = d
+            r = str(prep_cfg.get("refiner_model") or "").strip()
+            if r and r != primary:
+                refiner_model = r
+
+        fallback_models: list[str] = []
+        if fallback_enabled:
+            configured_fb = getattr(getattr(self, "services", None), "_fallback_models", None)
+            cands = configured_fb(primary) if callable(configured_fb) else ()
+            if isinstance(cands, (list, tuple)):
+                for c in cands:
+                    if isinstance(c, str) and c.strip() and c.strip() not in fallback_models:
+                        fallback_models.append(c.strip())
+            for role in ("fast_code", "heavy_code"):
+                c = str(models.get(role) or "").strip()
+                if c and c != primary and c not in fallback_models:
+                    fallback_models.append(c)
+            if cascade_enabled:
+                for c in (refiner_model, draft_model):
+                    if c and c not in fallback_models:
+                        fallback_models.append(c)
+
+        return PreprocessRoleGraph(
+            primary_model=primary,
+            cascade_enabled=cascade_enabled,
+            draft_model=draft_model,
+            refiner_model=refiner_model,
+            fallback_enabled=fallback_enabled,
+            fallback_models=tuple(fallback_models),
+        )
+
     def _configured_preprocessing_model(self) -> str:
-        config = getattr(self, "config", {})
-        if not isinstance(config, dict):
-            return ""
-        prep_cfg = config.get("preprocessing", {})
-        models = config.get("models", {})
-        configured = (prep_cfg.get("model") if isinstance(prep_cfg, dict) else None)
-        configured = configured or (models.get("background_code") if isinstance(models, dict) else None)
-        return str(configured or "").strip()
+        return self._role_graph().primary_model
 
     def _configured_preprocessing_draft_model(self) -> str:
-        config = getattr(self, "config", {})
-        if not isinstance(config, dict):
-            return ""
-        prep_cfg = config.get("preprocessing", {})
-        if isinstance(prep_cfg, dict) and prep_cfg.get("cascade_enabled") is False:
-            return ""
-        configured = (prep_cfg.get("draft_model") if isinstance(prep_cfg, dict) else None)
-        return str(configured or "").strip()
+        return self._role_graph().draft_model or ""
+
+    def _configured_preprocessing_refiner_model(self) -> str:
+        return self._role_graph().refiner_model or ""
 
     def _file_card_enrichment_enabled(self) -> bool:
         if bool(self.cfg.get("disable_llm_card_synthesis", False)):
@@ -101,6 +158,12 @@ class PreprocessControlsMixin:
             if any(not isinstance(item, str) or not item.strip() or len(item) > item_limit for item in values):
                 return False
             populated = populated or bool(values)
+        epistemic = data.get("epistemic_class")
+        if epistemic is not None and epistemic not in ("deterministic_fact", "source_verified_fact", "llm_draft", "llm_enriched", "verified_fact"):
+            return False
+        conf = data.get("confidence")
+        if conf is not None and (not isinstance(conf, (int, float)) or not (0.0 <= conf <= 1.0)):
+            return False
         evidence = data.get("evidence")
         if evidence:
             if not isinstance(evidence, list) or len(evidence) > properties["evidence"]["maxItems"]:

@@ -78,7 +78,7 @@ class ModelRouter:
             self.models = dict(models_cfg)
         else:
             self.models = {
-                "background_code": "qwen2.5-coder:1.5b",
+                "background_code": "qwen2.5-coder:3b",
                 "fast_code": "qwen2.5-coder:3b",
                 "heavy_code": "qwen2.5-coder:7b",
                 "reasoning": "qwen2.5-coder:7b",

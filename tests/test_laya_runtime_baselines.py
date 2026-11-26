@@ -15,7 +15,8 @@ def test_runtime_baseline_methods_mapping():
         DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
         DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
         DecisionCategory.NEXT_STEP: "pipeline_step_progress",
-        DecisionCategory.SUBAGENT_BUDGET: "agent_os_delegation_budget",
+        DecisionCategory.SUBAGENT_BUDGET: "request_delegation_budget",
+        DecisionCategory.RETRIEVAL_STRATEGY: "hybrid_context_default",
     }
     for category, method in expected.items():
         assert _RUNTIME_BASELINE_METHODS.get(category) == method

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-ai-hub"
-version = "8.1.0"
+version = "8.2.0"
 description = "Deterministic-first local tooling and inference hub for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,9 +33,9 @@ classifiers = [
 [project.optional-dependencies]
 native = ["Cython>=3,<4"]
 ast-index = ["tree-sitter-language-pack==1.18.0"]
-local-nlp = ["sentence-transformers>=5.4,<6"]
+local-nlp = ["sentence-transformers>=5.4,<6", "transformers>=4.57.4,<4.58"]
 laya-runtime = ["laya==0.4.31", "vegaml==0.16.1"]
-intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "optimum-intel[openvino]>=2.2,<3", "openvino>=2026.1,<2027"]
+intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "optimum-intel[openvino]>=2.2,<3", "openvino>=2026.1,<2027", "transformers>=4.57.4,<4.58"]
 token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]
 performance = ["orjson>=3.10,<4", "msgspec>=0.18,<1", "Cython>=3,<4"]
 profiling = ["py-spy>=0.3,<1", "scalene>=1.5,<2"]
@@ -55,7 +55,14 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_ai_hub = ["defaults.toml", "automation_browser.js", "ui_static/*", "data/*.json"]
+local_ai_hub = [
+  "defaults.toml",
+  "automation_browser.js",
+  "grammars/*.gbnf",
+  "ui_static/*",
+  "ui_static/dist/*",
+  "data/*.json",
+]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
 
 [tool.setuptools.data-files]
@@ -110,7 +117,7 @@ source = ["local_ai_hub"]
 show_missing = true
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "8.2.0"
 mypy_path = "src"
 strict = true
 warn_unused_configs = true
@@ -131,10 +138,18 @@ files = [
   "src/local_ai_hub/operation_contracts.py",
   "src/local_ai_hub/http_scoped_tasks.py",
   "src/local_ai_hub/telemetry_contracts.py",
+  "src/local_ai_hub/agent_identity.py",
+  "src/local_ai_hub/compact.py",
+  "src/local_ai_hub/monotonic_deadline.py",
+  "src/local_ai_hub/native_kernels.py",
+  "src/local_ai_hub/runtime_assets.py",
+  "src/local_ai_hub/source_facts.py",
+  "src/local_ai_hub/source_slice.py",
+  "src/local_ai_hub/token_accounting.py",
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "8.2.0"
 line-length = 120
 
 [tool.ruff.lint]

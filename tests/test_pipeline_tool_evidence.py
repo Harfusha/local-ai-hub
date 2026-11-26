@@ -125,7 +125,7 @@ def test_mcp_solve_tool_returns_pipeline_evidence(tmp_path, monkeypatch):
 def test_laya_advisory_route_changes_active_pipeline_model_tier(tmp_path):
     pipeline = _pipeline(tmp_path, {"success": True, "text": "answer", "model": "smart"})
     pipeline.services.router = SimpleNamespace(classify=lambda *_args: {
-        "task_type": "fast_code", "complexity": "fast", "complexity_score": 1,
+        "task_type": "code", "complexity": "fast", "complexity_score": 1,
         "semantic_required": True,
     })
     pipeline.services.deterministic = SimpleNamespace()
@@ -149,7 +149,7 @@ def test_laya_advisory_route_changes_active_pipeline_model_tier(tmp_path):
 
     result = pipeline.solve_repo({
         "root": str(tmp_path), "task": "implement bounded feature",
-        "task_id": "task-1", "mode": "adaptive",
+        "mode": "adaptive",
     })
 
     assert result["success"] is True
@@ -162,7 +162,7 @@ def test_laya_next_step_advisory_is_returned_as_non_executing_pipeline_guidance(
     pipeline = _pipeline(tmp_path, {"success": True, "text": "answer", "model": "fast"})
     pipeline.config["laya"] = {"enabled": True}
     pipeline.services.router = SimpleNamespace(classify=lambda *_args: {
-        "task_type": "fast_code", "complexity": "fast", "complexity_score": 1,
+        "task_type": "code", "complexity": "fast", "complexity_score": 1,
         "semantic_required": True,
     })
     pipeline.services.deterministic = SimpleNamespace()
@@ -192,7 +192,7 @@ def test_laya_next_step_advisory_is_returned_as_non_executing_pipeline_guidance(
 
     result = pipeline.solve_repo({
         "root": str(tmp_path), "task": "implement bounded feature",
-        "task_id": "task-next-step", "mode": "adaptive",
+        "mode": "adaptive",
     })
 
     next_step = next(
@@ -283,7 +283,7 @@ def test_laya_typed_retrieval_advisory_changes_active_hybrid_context(
     )
 
     result = pipeline.solve_repo({
-        "root": str(tmp_path), "task": "find relevant implementation", "task_id": "task-retrieval",
+        "root": str(tmp_path), "task": "find relevant implementation",
     })
 
     retrieval = next(
@@ -293,3 +293,48 @@ def test_laya_typed_retrieval_advisory_changes_active_hybrid_context(
     assert result["success"] is True
     assert retrieval["options"] == expected_options
     assert context_calls == [expected_internal]
+
+
+def test_laya_taskless_delegation_and_subagent_budget_are_metadata_only(tmp_path):
+    pipeline = _pipeline(tmp_path, {"success": True, "text": "answer", "model": "fast"})
+    pipeline.config["laya"] = {"enabled": True}
+    pipeline.services.router = SimpleNamespace(classify=lambda *_args: {
+        "task_type": "code", "complexity": "fast", "complexity_score": 1,
+        "semantic_required": True,
+    })
+    pipeline.services.deterministic = SimpleNamespace()
+    pipeline.services.deterministic_query = lambda *_args: {
+        "success": True, "direct_answer": False, "requires_synthesis": True,
+        "intent": "implementation", "evidence": [{"evidence_id": "ev-request"}],
+        "confidence": 0.4,
+    }
+    pipeline.services.repo_impact = lambda *_args: {
+        "success": True, "changed_files": [], "risk": {"score": 0, "level": "low"},
+    }
+    pipeline.services._available_laya_model_route_options = lambda _task_type: {"fast", "smart"}
+    planned = []
+    pipeline.planner.plan = lambda route, *_args: (
+        planned.append(dict(route))
+        or {"explorer": True, "worker": False, "critic": False, "confidence": 0.0}
+    )
+    evaluated = []
+
+    def evaluate(operation, **_kwargs):
+        evaluated.append(operation)
+        return {
+            "model_route": "fast", "context_budget": "standard",
+            "retrieval_strategy": "hybrid", "delegation": "review_only",
+            "subagent_budget": "single_agent",
+        }.get(operation["decision"]["category"])
+
+    pipeline.services.evaluate_laya_advisory = evaluate
+    result = pipeline.solve_repo({"root": str(tmp_path), "task": "implement bounded feature"})
+
+    categories = {call["decision"]["category"] for call in evaluated}
+    assert {"model_route", "context_budget", "retrieval_strategy", "delegation", "subagent_budget"} <= categories
+    assert all(call.get("task_id") is None for call in evaluated)
+    route = result["canonical"]["route"]
+    assert route["laya_delegation"] == "review_only"
+    assert route["laya_subagent_budget"] == "single_agent"
+    assert result["canonical"]["plan"]["worker"] is False
+    assert "laya_subagent_budget" not in result["canonical"]["plan"]

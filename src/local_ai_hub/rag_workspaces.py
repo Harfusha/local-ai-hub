@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import closing
 import os
 from pathlib import Path
@@ -26,20 +27,35 @@ class RAGWorkspaceMixin:
         return [{"workspace": r[0], "chunks": r[1], "files": r[2]} for r in rows]
 
     def workspace_stats(self, workspaces: list[str]) -> dict[str, dict[str, int]]:
-        """Return persisted file and chunk coverage for the requested workspaces."""
+        """Return persisted file, chunk, and metadata coverage for workspaces."""
         selected = list(dict.fromkeys(str(workspace) for workspace in workspaces if str(workspace)))
         counts: dict[str, dict[str, int]] = {}
         for offset in range(0, len(selected), 400):
             batch = selected[offset : offset + 400]
             placeholders = ",".join("?" for _ in batch)
+            metadata_keys = [
+                key
+                for workspace in batch
+                for key in (
+                    self._workspace_index_generation_key(workspace),
+                    self._workspace_read_uncertainty_key(workspace),
+                )
+            ]
+            metadata_placeholders = ",".join("?" for _ in metadata_keys)
             with closing(self._connect()) as con:
                 rows = con.execute(
-                    f"""SELECT workspace, 'files', COUNT(*), COUNT(DISTINCT path)
+                    f"""SELECT workspace, 'files', COUNT(*), COUNT(DISTINCT path), 0, 0
                         FROM files WHERE workspace IN ({placeholders}) GROUP BY workspace
                         UNION ALL
-                        SELECT workspace, 'chunks', COUNT(*), COUNT(DISTINCT path)
+                        SELECT workspace, 'chunks', COUNT(*), COUNT(DISTINCT path),
+                               SUM(CASE WHEN embedding IS NOT NULL AND length(embedding)>0 AND trim(embedding) NOT IN ('','[]') THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN embedding IS NULL OR trim(embedding) IN ('','[]') THEN 1 ELSE 0 END)
                         FROM chunks WHERE workspace IN ({placeholders}) GROUP BY workspace""",
                     (*batch, *batch),
+                ).fetchall()
+                metadata_rows = con.execute(
+                    f"SELECT key, value FROM rag_meta WHERE key IN ({metadata_placeholders})",
+                    metadata_keys,
                 ).fetchall()
             for row in rows:
                 workspace = str(row[0])
@@ -49,14 +65,34 @@ class RAGWorkspaceMixin:
                 else:
                     stats["chunks"] = int(row[2])
                     stats["chunked_files"] = int(row[3])
-            with closing(self._connect()) as con:
-                for workspace in batch:
-                    counts.setdefault(workspace, {})["index_generation"] = self._workspace_index_generation(
-                        con, workspace
-                    )
-                    uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
-                    if uncertain_paths:
-                        counts[workspace]["read_uncertain_files"] = len(uncertain_paths)
+                    stats["vector_chunks"] = int(row[4] or 0)
+                    stats["empty_chunks"] = int(row[5] or 0)
+                    stats["fully_indexed"] = bool(stats["chunks"] > 0 and stats["empty_chunks"] == 0)
+            metadata = {str(row[0]): row[1] for row in metadata_rows}
+            for workspace in batch:
+                stats = counts.setdefault(workspace, {})
+                generation = metadata.get(self._workspace_index_generation_key(workspace))
+                try:
+                    stats["index_generation"] = max(0, int(generation)) if generation is not None else 0
+                except (TypeError, ValueError):
+                    stats["index_generation"] = 0
+                uncertain_value = metadata.get(self._workspace_read_uncertainty_key(workspace))
+                if not uncertain_value:
+                    continue
+                try:
+                    decoded = json.loads(str(uncertain_value))
+                except (TypeError, ValueError):
+                    decoded = None
+                if not isinstance(decoded, list):
+                    uncertain_count = 1
+                else:
+                    uncertain_count = len({
+                        path.replace("\\", "/")
+                        for path in decoded
+                        if isinstance(path, str) and path.strip()
+                    })
+                if uncertain_count:
+                    stats["read_uncertain_files"] = uncertain_count
         return counts
 
     def docset_index(self, name: str, *, root: str) -> dict[str, Any]:

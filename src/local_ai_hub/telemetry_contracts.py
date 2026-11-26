@@ -19,11 +19,23 @@ def load_telemetry_json(raw: str) -> object:
 _LAYA_DECISION_FIELDS = frozenset({
     "decision_id", "success", "mode", "status", "category", "repository_id", "task_id",
     "session_id", "provider_label", "suggestion", "reason_codes", "evidence_ids", "model_estimate",
-    "uncertainty", "execution_verification", "runtime_latency_ms", "inference_latency_ms",
+    "uncertainty", "execution_verification", "baseline_available", "baseline_match",
+    "runtime_latency_ms", "inference_latency_ms",
     "queue_wait_ms", "backend", "fallback_used", "fallback_reason",
 })
 
 _LAYA_ELIGIBILITY_FIELDS = frozenset({"decision_id", "mode", "category", "provider_label"})
+
+
+def normalize_laya_decision_metadata(metadata: object) -> object:
+    """Mark rows written before baseline comparison was recorded as unavailable."""
+    if not isinstance(metadata, dict):
+        return metadata
+    previous_fields = _LAYA_DECISION_FIELDS - {"baseline_available", "baseline_match"}
+    previous_pre_runtime_fields = previous_fields - _LAYA_DECISION_RUNTIME_FIELDS
+    if set(metadata) in (previous_fields, previous_pre_runtime_fields):
+        return {**metadata, "baseline_available": False, "baseline_match": None}
+    return metadata
 
 _LAYA_DECISION_RUNTIME_FIELDS = frozenset({
     "runtime_latency_ms", "inference_latency_ms", "queue_wait_ms", "backend",

@@ -21,13 +21,19 @@ from pathlib import Path
 from typing import Any
 
 from .operation_contracts import operation_actions
+from .laya_decisions import _CATEGORY_OPTIONS
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .http_route_registry import (
     GET_ROUTE_HANDLER_BOUNDARIES,
     POST_ROUTE_REGISTRY,
     TELEMETRY_SAFE_GET_ROUTE_LABELS,
 )
-from .telemetry_contracts import _LAYA_DECISION_FIELDS, _LAYA_ELIGIBILITY_FIELDS, load_telemetry_json
+from .telemetry_contracts import (
+    _LAYA_DECISION_FIELDS,
+    _LAYA_ELIGIBILITY_FIELDS,
+    load_telemetry_json,
+    normalize_laya_decision_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -425,12 +431,20 @@ def _safe_error_message(value: Any, *, error_type_override: str = "") -> str:
 
 
 _SAFE_ERROR_CODE_MESSAGES = {
+    "gpu_reserved": "GPU admission unavailable",
+    "gpu_outcome_unknown": "GPU inference outcome unknown",
     "local_backend_transport": "local backend transport failure",
     "local_model_error": "local model inference failed",
+    "model_output_truncated": "model output was truncated",
     "model_request_timeout": "model request timed out",
     "circuit_open": "model circuit open",
     "http_request_failed": "HTTP request failed",
     "http_stream_failed": "HTTP stream failed",
+    "embedding_space_rebuild_required": "embedding space rebuild required",
+    "embedding_space_recovery_failed": "embedding space recovery failed",
+    "embedding_count_mismatch": "embedding count mismatch",
+    "embedding_identity_changed": "embedding identity changed",
+    "invalid_embedding_vector": "invalid embedding vector",
 }
 
 
@@ -651,14 +665,7 @@ _LIVE_OMIT_EMPTY = frozenset({
 })
 
 _LAYA_DECISION_OPTIONS = {
-    "context_source": {"indexed", "artifact", "memory", "rag", "more_evidence"},
-    "context_budget": {"compact", "standard", "expanded"},
-    "model_route": {"fast", "smart", "background", "vision", "generic"},
-    "redundant_step": {"possible_duplicate", "validation_still_required"},
-    "next_step": {"inspect_source", "run_test", "retrieve_evidence", "ask_human"},
-    "delegation": {"review_only", "delegate_bounded", "no_delegation"},
-    "completion_gap": {"missing_verification", "resolve_blocker", "request_human_review"},
-    "watchdog": {"recommend_continue", "recommend_stop", "recommend_human_review"},
+    category.value: set(options) for category, options in _CATEGORY_OPTIONS.items()
 }
 _LAYA_DECISION_STATUSES = {"success", "abstain", "skipped", "error"}
 _LAYA_REASON_CODES = {
@@ -679,7 +686,13 @@ def _laya_decision_report(
     by_mode = {
         mode: {
             "records": 0,
+            "uncalibrated_estimates": 0,
             "counts_by_category": {},
+            "counts_by_category_status": {},
+            "counts_by_category_scope": {},
+            "eligible_by_category": {},
+            "baseline_comparison": {"matched": 0, "diverged": 0, "not_comparable": 0},
+            "baseline_by_category": {},
             "counts_by_status": {},
             "counts_by_reason_code": {},
             "abstentions": 0,
@@ -725,18 +738,22 @@ def _laya_decision_report(
                 continue
             eligible_ids[decision_id] = identity
             eligible_counts[mode] = eligible_counts.get(mode, 0) + 1
+            eligible_by_category = by_mode[mode]["eligible_by_category"]
+            eligible_by_category[category] = eligible_by_category.get(category, 0) + 1
         except (TypeError, ValueError, json.JSONDecodeError):
             invalid_records += 1
     decision_ids: dict[str, tuple[str, str]] = {}
     for (metrics_json,) in rows[:1000]:
         try:
-            metadata = load_telemetry_json(metrics_json)
+            metadata = normalize_laya_decision_metadata(load_telemetry_json(metrics_json))
             if not isinstance(metadata, dict) or frozenset(metadata) != _LAYA_DECISION_FIELDS:
                 raise ValueError("invalid stored Laya metadata")
             mode = metadata["mode"]
             category = metadata["category"]
             decision_id = metadata["decision_id"]
             status = metadata["status"]
+            task_id = metadata["task_id"]
+            session_id = metadata["session_id"]
             reason_codes = metadata["reason_codes"]
             if isinstance(reason_codes, str):
                 reason_codes = json.loads(reason_codes)
@@ -744,6 +761,10 @@ def _laya_decision_report(
                 raise ValueError("invalid stored Laya mode")
             if not isinstance(decision_id, str) or not _LAYA_IDENTIFIER.fullmatch(decision_id):
                 raise ValueError("invalid stored Laya decision id")
+            if task_id is not None and (not isinstance(task_id, str) or not _LAYA_IDENTIFIER.fullmatch(task_id)):
+                raise ValueError("invalid stored Laya task id")
+            if session_id is not None and (not isinstance(session_id, str) or not _LAYA_IDENTIFIER.fullmatch(session_id)):
+                raise ValueError("invalid stored Laya session id")
             if category not in _LAYA_DECISION_OPTIONS or status not in _LAYA_DECISION_STATUSES:
                 raise ValueError("invalid stored Laya category or status")
             if (
@@ -776,6 +797,16 @@ def _laya_decision_report(
                 raise ValueError("invalid stored Laya fallback reason")
             if (fallback_used is True) != (fallback_reason is not None):
                 raise ValueError("inconsistent stored Laya fallback metadata")
+            if type(metadata["baseline_available"]) is not bool:
+                raise ValueError("invalid stored Laya baseline availability")
+            if metadata["baseline_match"] is not None and type(metadata["baseline_match"]) is not bool:
+                raise ValueError("invalid stored Laya baseline comparison")
+            if metadata["baseline_match"] is not None and not metadata["baseline_available"]:
+                raise ValueError("stored Laya baseline comparison has no baseline")
+            if metadata["baseline_match"] is not None and (
+                status != "success" or not isinstance(metadata["suggestion"], str)
+            ):
+                raise ValueError("stored Laya baseline comparison has no successful suggestion")
         except (TypeError, ValueError, json.JSONDecodeError):
             invalid_records += 1
             continue
@@ -791,8 +822,25 @@ def _laya_decision_report(
         status_counts[status] = status_counts.get(status, 0) + 1
         mode_summary = by_mode[mode]
         mode_summary["records"] += 1
+        mode_summary["uncalibrated_estimates"] += metadata["uncertainty"] == "UNCALIBRATED"
+        comparison = mode_summary["baseline_comparison"]
+        category_comparison = mode_summary["baseline_by_category"].setdefault(
+            category, {"matched": 0, "diverged": 0, "not_comparable": 0}
+        )
+        comparison_key = (
+            "matched" if metadata["baseline_match"] is True else
+            "diverged" if metadata["baseline_match"] is False else
+            "not_comparable"
+        )
+        comparison[comparison_key] += 1
+        category_comparison[comparison_key] += 1
         mode_categories = mode_summary["counts_by_category"]
         mode_categories[category] = mode_categories.get(category, 0) + 1
+        category_statuses = mode_summary["counts_by_category_status"].setdefault(category, {})
+        category_statuses[status] = category_statuses.get(status, 0) + 1
+        category_scopes = mode_summary["counts_by_category_scope"].setdefault(category, {"request": 0, "task": 0})
+        decision_scope = "task" if task_id is not None else "request"
+        category_scopes[decision_scope] += 1
         mode_statuses = mode_summary["counts_by_status"]
         mode_statuses[status] = mode_statuses.get(status, 0) + 1
         mode_summary["abstentions"] += status == "abstain"
@@ -872,8 +920,21 @@ def _laya_decision_report(
         mode_summary.pop("fallback_not_used")
         mode_summary.pop("fallback_unknown")
         mode_summary.pop("fallback_reasons")
-        for field in ("counts_by_category", "counts_by_status", "counts_by_reason_code"):
+        for field in ("counts_by_category", "counts_by_status", "counts_by_reason_code", "eligible_by_category"):
             mode_summary[field] = dict(sorted(mode_summary[field].items()))
+        comparison = mode_summary["baseline_comparison"]
+        comparable = comparison["matched"] + comparison["diverged"]
+        comparison["comparable"] = comparable
+        comparison["agreement_rate"] = round(comparison["matched"] / comparable, 4) if comparable else None
+        mode_summary["baseline_by_category"] = dict(sorted(mode_summary["baseline_by_category"].items()))
+        mode_summary["counts_by_category_status"] = {
+            category: dict(sorted(statuses.items()))
+            for category, statuses in sorted(mode_summary["counts_by_category_status"].items())
+        }
+        mode_summary["counts_by_category_scope"] = {
+            category: dict(sorted(scopes.items()))
+            for category, scopes in sorted(mode_summary["counts_by_category_scope"].items())
+        }
     return {
         "available": True,
         "scope": scope,

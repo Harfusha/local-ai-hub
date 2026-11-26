@@ -46,6 +46,13 @@ class HttpIdentityMixin:
                     "error_code": "retired_tenant_header", "terminal": True, "retryable": False,
                 })
                 return False
+        for name in ("X-LocalAI-Actor", "X-LocalAI-Role", "X-LocalAI-Permissions", "X-LocalAI-Privilege"):
+            if name in headers or name.lower() in requested_headers:
+                self._send(400, {
+                    "success": False, "error": f"unsupported or spoofed request header: {name}",
+                    "error_code": "spoofed_auth_header", "terminal": True, "retryable": False,
+                })
+                return False
         return True
 
     def _agent_action_or_error(self, payload: dict[str, Any], default: str) -> str | None:

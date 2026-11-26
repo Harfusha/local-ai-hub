@@ -26,12 +26,70 @@ def test_antigravity_policy_preserves_unmanaged_text_and_is_idempotent(tmp_path)
     assert "normal mode" in first and "stop caveman" in first
 
 
+def test_gemini_install_expands_home_paths_in_custom_skill_registry(tmp_path, monkeypatch):
+    import json
+
+    home = tmp_path / "profile home"
+    gemini = home / ".gemini"
+    config = gemini / "config"
+    config.mkdir(parents=True)
+    registry = config / "skills.json"
+    original = json.dumps({
+        "entries": [
+            {"path": "~/.agents/skills", "enabled": True},
+            {"path": "D:/custom/skills", "enabled": False},
+        ],
+        "other": "preserve",
+    })
+    registry.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(setup, "gemini_cli_extension_active", lambda *_args: False)
+    monkeypatch.setattr(setup, "antigravity_plugin_installed", lambda *_args: False)
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+
+    setup.configure_gemini_instance(
+        gemini, tmp_path / "install", Path("python"), None, {}, True, False,
+        agent_components={
+            "agent_gemini_skills": True,
+            "agent_gemini_instructions": False,
+            "agent_gemini_mcp": False,
+            "agent_gemini_hooks": False,
+            "agent_antigravity_skills": False,
+            "agent_antigravity_instructions": False,
+            "agent_antigravity_mcp": False,
+            "agent_antigravity_hooks": False,
+        },
+    )
+
+    result = json.loads(registry.read_text(encoding="utf-8"))
+    assert result["entries"][0]["path"] == str((home / ".agents" / "skills").resolve())
+    assert result["entries"][1] == {"path": "D:/custom/skills", "enabled": False}
+    assert result["other"] == "preserve"
+
+    setup.configure_gemini_instance(
+        gemini, tmp_path / "install", Path("python"), None, {}, True, False,
+        agent_components={
+            "agent_gemini_skills": True,
+            "agent_gemini_instructions": False,
+            "agent_gemini_mcp": False,
+            "agent_gemini_hooks": False,
+            "agent_antigravity_skills": False,
+            "agent_antigravity_instructions": False,
+            "agent_antigravity_mcp": False,
+            "agent_antigravity_hooks": False,
+        },
+    )
+    assert json.loads(registry.read_text(encoding="utf-8")) == result
+    backups = list(config.glob("skills.json.local-ai-hub-backup-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+
+
 def test_antigravity_setup_can_be_selected_without_gemini_cli_mcp_or_hooks(tmp_path, monkeypatch):
     gemini = tmp_path / ".gemini"
     install = tmp_path / "install"
     calls = []
     monkeypatch.setattr(setup, "gemini_cli_extension_active", lambda *_args: False)
-    monkeypatch.setattr(setup, "antigravity_plugin_installed", lambda *_args: False)
     monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "merge_global_policy", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "merge_token_economy_policy", lambda *_args, **_kwargs: None)
@@ -54,11 +112,48 @@ def test_antigravity_setup_can_be_selected_without_gemini_cli_mcp_or_hooks(tmp_p
     )
 
     assert [(kind, path.relative_to(gemini).as_posix()) for kind, path in calls] == [
-        ("mcp", "config/mcp_config.json"),
         ("config", "config/config.json"),
-        ("hooks", "config/hooks.json"),
     ]
+    assert setup.antigravity_plugin_installed(gemini)
+    assert not (gemini / "config" / "mcp_config.json").exists()
+    assert not (gemini / "config" / "hooks.json").exists()
     assert not (gemini / "settings.json").exists()
+
+
+def test_antigravity_mcp_and_hooks_are_generated_when_selection_omits_them(tmp_path, monkeypatch):
+    gemini = tmp_path / ".gemini"
+    install = tmp_path / "install"
+    install.mkdir()
+    config_dir = gemini / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "mcp_config.json").write_text(
+        '{"mcpServers":{"browser-mcp":{"command":"browser-mcp"}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(setup, "gemini_cli_extension_active", lambda *_args: False)
+
+    setup.configure_gemini_instance(
+        gemini, install, Path("python"), None, {}, False, False,
+        agent_components={
+            "agent_gemini_mcp": False,
+            "agent_gemini_hooks": False,
+            "agent_gemini_skills": False,
+            "agent_gemini_instructions": False,
+            "agent_antigravity_skills": False,
+            "agent_antigravity_instructions": False,
+        },
+    )
+
+    servers = __import__("json").loads(
+        (config_dir / "mcp_config.json").read_text(encoding="utf-8")
+    )["mcpServers"]
+    assert servers["browser-mcp"]["command"] == "browser-mcp"
+    plugin = config_dir / "plugins" / "local-ai-hub"
+    plugin_mcp = __import__("json").loads((plugin / "mcp_config.json").read_text(encoding="utf-8"))
+    assert plugin_mcp["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "antigravity"
+    assert not (config_dir / "hooks.json").exists()
+    plugin_hooks = __import__("json").loads((plugin / "hooks.json").read_text(encoding="utf-8"))
+    assert set(plugin_hooks["local-ai-hub"]) >= {"SessionStart", "PreToolUse", "PostToolUse"}
 
 
 def test_setup_wizard_defaults_and_applies_antigravity_separately_from_gemini():
@@ -441,6 +536,7 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     assert "PreInvocation" not in hub_hook
     assert len(hub_hook["SessionStart"]) == 1
     assert hub_hook["SessionStart"][0]["command"].endswith("SessionStart")
+    assert str((tmp_path / ("local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh")).resolve()) in hub_hook["SessionStart"][0]["command"]
     assert hub_hook["SessionStart"][0]["timeout"] == 10
     assert len(hub_hook["PreToolUse"]) == 1
     assert hub_hook["PreToolUse"][0]["matcher"] == "read_file|run_command"
@@ -450,6 +546,148 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     first_text = hooks_file.read_text(encoding="utf-8")
     setup.sync_antigravity_hooks_json(hooks_file, tmp_path, fake_python, False)
     assert hooks_file.read_text(encoding="utf-8") == first_text
+
+
+def test_antigravity_global_hook_runner_executes_from_path_with_spaces(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    config_dir = tmp_path / "Gemini Home With Spaces" / "config"
+    hooks_file = config_dir / "hooks.json"
+    setup.sync_antigravity_hooks_json(hooks_file, tmp_path, Path(sys.executable), False)
+    hub_hook = json.loads(hooks_file.read_text(encoding="utf-8"))["local-ai-hub"]
+    command = hub_hook["SessionStart"][0]["command"]
+
+    result = subprocess.run(
+        command, shell=True, input="{}\n", text=True, capture_output=True, timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "{}"
+
+
+@pytest.mark.parametrize("old_runner_kind", ["relative", "quoted_absolute"])
+def test_sync_antigravity_hooks_json_migrates_only_recognized_unowned_runner(
+    tmp_path, monkeypatch, old_runner_kind,
+):
+    import json
+    import os
+
+    hooks_file = tmp_path / "config" / "hooks.json"
+    hooks_file.parent.mkdir()
+    fake_python = tmp_path / "bin" / "python.exe"
+    fake_python.parent.mkdir()
+    fake_python.write_text("", encoding="utf-8")
+    runner_name = "local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh"
+    old_runner = (
+        runner_name if os.name == "nt" else f"./{runner_name}"
+    )
+    if old_runner_kind == "quoted_absolute":
+        old_runner = f'"{(hooks_file.parent / runner_name).resolve()}"'
+    hooks_file.write_text(json.dumps({
+        "custom-hook": {"enabled": True, "PreInvocation": []},
+        "local-ai-hub": setup._antigravity_hook_config(old_runner),
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", tmp_path / "install")
+    monkeypatch.setattr(setup, "_ADOPT_UNOWNED_HUB_BLOCKS", True)
+    monkeypatch.setattr(
+        setup, "assert_external_json_key_writable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("unowned")),
+    )
+    monkeypatch.setattr(setup, "record_external_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "record_external_json_key", lambda *_args, **_kwargs: None)
+
+    setup.sync_antigravity_hooks_json(hooks_file, tmp_path, fake_python, False)
+    data = json.loads(hooks_file.read_text(encoding="utf-8"))
+    command = data["local-ai-hub"]["SessionStart"][0]["command"]
+    runner = tmp_path / "config" / ("local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh")
+    assert command == f'"{runner.resolve()}" SessionStart'
+    assert data["custom-hook"] == {"enabled": True, "PreInvocation": []}
+
+
+def test_remove_duplicate_antigravity_hooks_removes_only_exact_generated_group(tmp_path):
+    import json
+
+    hooks_file = tmp_path / "hooks.json"
+    hooks_file.write_text(json.dumps({
+        "custom": {"enabled": True, "PreInvocation": []},
+        "local-ai-hub": {
+            "enabled": True,
+            "SessionStart": [{
+                "type": "command", "command": "local-ai-hook.cmd SessionStart", "timeout": 10,
+            }],
+            "PreToolUse": [{
+                "matcher": "read_file|run_command",
+                "hooks": [{
+                    "type": "command", "command": "local-ai-hook.cmd PreToolUse", "timeout": 15,
+                }],
+            }],
+            "PostToolUse": [{
+                "matcher": "edit_file|write_file",
+                "hooks": [{
+                    "type": "command", "command": "local-ai-hook.cmd PostToolUse", "timeout": 15,
+                }],
+            }],
+        },
+    }), encoding="utf-8")
+
+    assert setup._remove_duplicate_antigravity_hooks(hooks_file, False) is True
+    data = json.loads(hooks_file.read_text(encoding="utf-8"))
+    assert "local-ai-hub" not in data
+    assert data["custom"] == {"enabled": True, "PreInvocation": []}
+
+
+def test_provider_plugin_skills_are_generated_from_canonical_sources(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(setup, "SOURCE_ROOT", tmp_path)
+    providers = ("antigravity", "claude", "codex", "copilot", "cursor", "devin", "gemini")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nversion = "8.1.0"\n', encoding="utf-8",
+    )
+    manifests = {
+        "antigravity": "plugin.json",
+        "claude": ".claude-plugin/plugin.json",
+        "codex": "plugin.json",
+        "copilot": "plugin.json",
+        "cursor": ".cursor-plugin/plugin.json",
+        "devin": "plugin.json",
+        "gemini": "gemini-extension.json",
+    }
+    for provider, relative_manifest in manifests.items():
+        manifest = tmp_path / "plugins" / provider / "local-ai-hub" / relative_manifest
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"name": "local-ai-hub"}), encoding="utf-8")
+    for skill in ("local-ai-orchestrator", "plan-led-work", "token-economizer"):
+        source = tmp_path / "skills" / skill / "references" / "generated.md"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"canonical {skill}\n", encoding="utf-8")
+
+    setup.generate_provider_plugin_skills()
+
+    for provider in providers:
+        for skill in ("local-ai-orchestrator", "plan-led-work", "token-economizer"):
+            generated = tmp_path / "plugins" / provider / "local-ai-hub" / "skills" / skill / "references" / "generated.md"
+            assert generated.read_text(encoding="utf-8") == f"canonical {skill}\n"
+
+
+def test_antigravity_schema_copy_drops_non_schema_contract_metadata(tmp_path):
+    source = tmp_path / "generated" / "schemas"
+    target = tmp_path / "antigravity" / "mcp" / "local-ai"
+    source.mkdir(parents=True)
+    (source / "local_ai_repo.json").write_text(
+        '{"name":"local_ai_repo","parameters":{"type":"object","properties":{"action":{"type":"string"}}},"x-operation-contract":{"large":"metadata"}}',
+        encoding="utf-8",
+    )
+
+    setup.sync_antigravity_mcp_schemas(source, target, backup_enabled=False)
+
+    import json
+    generated = json.loads((target / "local_ai_repo.json").read_text(encoding="utf-8"))
+    assert generated["parameters"]["properties"]["action"]["type"] == "string"
+    assert "x-operation-contract" not in generated
 
 
 def test_antigravity_plugin_is_native_portable_bundle(tmp_path, monkeypatch):
@@ -489,7 +727,11 @@ def test_antigravity_plugin_is_native_portable_bundle(tmp_path, monkeypatch):
                 )
                 assert packaged_file.read_bytes() == source_file.read_bytes(), packaged_file
 
-    runner_path = plugin / "scripts" / "run_hub.py"
+    isolated_plugin = tmp_path / "installed-plugin"
+    (isolated_plugin / "scripts").mkdir(parents=True)
+    runner_path = isolated_plugin / "scripts" / "run_hub.py"
+    runner_path.write_bytes((plugin / "scripts" / "run_hub.py").read_bytes())
+    (isolated_plugin / "mcp_config.json").write_bytes((plugin / "mcp_config.json").read_bytes())
     spec = importlib.util.spec_from_file_location("antigravity_plugin_runner", runner_path)
     assert spec and spec.loader
     runner = importlib.util.module_from_spec(spec)
@@ -501,7 +743,93 @@ def test_antigravity_plugin_is_native_portable_bundle(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_AI_HUB_DIR", str(install))
     assert runner.resolve_hub_install() == install.resolve()
     monkeypatch.setenv("LOCAL_AI_HUB_DIR", str(tmp_path / "missing-hub"))
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.chdir(isolated_home)
     assert runner.resolve_hub_install() is None
+
+
+def test_antigravity_profile_plugin_route_receives_central_hub_path(tmp_path, monkeypatch):
+    import json
+
+    source_root = tmp_path / "hub-source"
+    source_plugin = source_root / "plugins" / "antigravity" / "local-ai-hub"
+    source_plugin.mkdir(parents=True)
+    (source_plugin / "plugin.json").write_text(
+        json.dumps({"name": "local-ai-hub"}), encoding="utf-8"
+    )
+    (source_plugin / "mcp_config.json").write_text(
+        json.dumps({"mcpServers": {"local-ai": {
+            "command": "python", "args": ["runner.py"],
+            "env": {"LOCAL_AI_AGENT": "antigravity"},
+        }}}),
+        encoding="utf-8",
+    )
+    gemini_dir = tmp_path / "profile-home" / ".gemini"
+    installed_plugin = gemini_dir / "config" / "plugins" / "local-ai-hub"
+    installed_plugin.mkdir(parents=True)
+    (installed_plugin / "plugin.json").write_text(
+        json.dumps({"name": "local-ai-hub"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+    hub_install = tmp_path / "installed-hub"
+
+    assert setup.sync_antigravity_plugin_bundle(gemini_dir, backup_enabled=False, hub_dir=hub_install) is True
+
+    installed = json.loads((installed_plugin / "mcp_config.json").read_text(encoding="utf-8"))
+    server = installed["mcpServers"]["local-ai"]
+    assert server["env"]["LOCAL_AI_AGENT"] == "antigravity"
+    assert server["env"]["LOCAL_AI_HUB_DIR"] == str(hub_install.resolve())
+
+
+def test_sync_antigravity_plugin_bundle_installs_missing_profile_idempotently(tmp_path, monkeypatch):
+    import json
+
+    source_root = tmp_path / "source"
+    source_plugin = source_root / "plugins" / "antigravity" / "local-ai-hub"
+    source_plugin.mkdir(parents=True)
+    (source_plugin / "plugin.json").write_text('{"name":"local-ai-hub"}\n', encoding="utf-8")
+    (source_plugin / "README.md").write_text("Hub plugin\n", encoding="utf-8")
+    (source_plugin / "mcp_config.json").write_text(json.dumps({
+        "mcpServers": {"local-ai": {"command": "python", "env": {"LOCAL_AI_AGENT": "antigravity"}}}
+    }), encoding="utf-8")
+    cache = source_plugin / "scripts" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / "runner.cpython-313.pyc").write_bytes(b"generated bytecode")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+    gemini_dir = tmp_path / "profile" / ".gemini"
+
+    assert setup.antigravity_plugin_installed(gemini_dir) is False
+    assert setup.sync_antigravity_plugin_bundle(gemini_dir, backup_enabled=False, hub_dir=tmp_path / "hub") is True
+    assert setup.antigravity_plugin_installed(gemini_dir) is True
+    target = gemini_dir / "config" / "plugins" / "local-ai-hub"
+    assert (target / "README.md").read_text(encoding="utf-8") == "Hub plugin\n"
+    assert not (target / "scripts" / "__pycache__").exists()
+    config = json.loads((target / "mcp_config.json").read_text(encoding="utf-8"))
+    assert config["mcpServers"]["local-ai"]["env"]["LOCAL_AI_HUB_DIR"] == str((tmp_path / "hub").resolve())
+    first = {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()}
+
+    assert setup.sync_antigravity_plugin_bundle(gemini_dir, backup_enabled=False, hub_dir=tmp_path / "hub") is True
+    assert {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()} == first
+
+
+def test_sync_antigravity_plugin_bundle_preserves_unrecognized_profile_directory(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    source_plugin = source_root / "plugins" / "antigravity" / "local-ai-hub"
+    source_plugin.mkdir(parents=True)
+    (source_plugin / "plugin.json").write_text('{"name":"local-ai-hub"}\n', encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+    gemini_dir = tmp_path / "profile" / ".gemini"
+    target = gemini_dir / "config" / "plugins" / "local-ai-hub"
+    target.mkdir(parents=True)
+    custom = target / "custom.json"
+    custom.write_text('{"keep":true}\n', encoding="utf-8")
+
+    assert setup.sync_antigravity_plugin_bundle(gemini_dir, backup_enabled=False) is False
+    assert custom.read_text(encoding="utf-8") == '{"keep":true}\n'
+    assert not (target / "plugin.json").exists()
 
 
 def test_claude_plugin_bundles_shared_mcp_skills_and_native_hooks():
@@ -547,8 +875,9 @@ def test_antigravity_hook_session_start_injects_bounded_static_hub_guidance(monk
     assert "private prompt" not in message
 
 
-def test_antigravity_hook_pre_tool_use_read_file(tmp_path):
+def test_antigravity_hook_pre_tool_use_read_file(tmp_path, monkeypatch):
     from local_ai_hub import antigravity_hook
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: False)
 
     # Whitelisted path
     res = antigravity_hook.handle_pre_tool_use({
@@ -595,8 +924,9 @@ def test_antigravity_hook_pre_tool_use_read_file(tmp_path):
     assert res["decision"] == "allow"
 
 
-def test_antigravity_hook_pre_tool_use_run_command():
+def test_antigravity_hook_pre_tool_use_run_command(monkeypatch):
     from local_ai_hub import antigravity_hook
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: False)
 
     # Unconstrained searches denied
     for bad_cmd in ["dir /s", "dir /s /b", "findstr /s foo *", "grep -r foo .", "rg pattern", "ripgrep test"]:
@@ -612,6 +942,52 @@ def test_antigravity_hook_pre_tool_use_run_command():
             "toolCall": {"name": "run_command", "args": {"CommandLine": good_cmd}}
         })
         assert res["decision"] == "allow", f"expected allow for {good_cmd}"
+
+
+def test_antigravity_hook_routes_source_reads_through_hub_when_online(tmp_path, monkeypatch):
+    from local_ai_hub import antigravity_hook
+
+    source = tmp_path / "small.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: True, raising=False)
+
+    result = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(source)}}
+    })
+
+    assert result["decision"] == "deny"
+    assert "local_ai_repo" in result["reason"]
+    assert "local_ai_artifact" in result["reason"]
+
+
+def test_antigravity_hook_routes_bounded_source_search_through_hub_when_online(monkeypatch):
+    from local_ai_hub import antigravity_hook
+
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: True, raising=False)
+    for command in (
+        "rg -m 5 needle src",
+        "Get-ChildItem -Path src -Recurse | Select-String -Pattern needle",
+    ):
+        result = antigravity_hook.handle_pre_tool_use({
+            "toolCall": {"name": "run_command", "args": {"CommandLine": command}}
+        })
+
+        assert result["decision"] == "deny", command
+        assert "local_ai_repo" in result["reason"], command
+
+
+def test_antigravity_hook_keeps_native_source_fallback_when_hub_offline(tmp_path, monkeypatch):
+    from local_ai_hub import antigravity_hook
+
+    source = tmp_path / "small.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: False, raising=False)
+
+    result = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(source)}}
+    })
+
+    assert result["decision"] == "allow"
 
 
 

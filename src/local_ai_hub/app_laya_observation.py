@@ -15,6 +15,29 @@ class AppLayaObservationMixin:
         """Derive deterministic baselines from authoritative Hub state."""
         from .laya_decisions import DecisionCategory, derive_watchdog_lifecycle_baseline
 
+        if task is None:
+            preferred = {
+                DecisionCategory.MODEL_ROUTE: "fast",
+                DecisionCategory.CONTEXT_BUDGET: "standard",
+                DecisionCategory.RETRIEVAL_STRATEGY: "hybrid",
+                DecisionCategory.NEXT_STEP: "inspect_source",
+                DecisionCategory.DELEGATION: "review_only",
+                DecisionCategory.SUBAGENT_BUDGET: "single_agent",
+            }.get(request.category)
+            suggestion = preferred if preferred in request.options else next(iter(request.options), None)
+            if not request.evidence_ids or suggestion is None:
+                return None
+            method = {
+                DecisionCategory.MODEL_ROUTE: "model_router_classify",
+                DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
+                DecisionCategory.RETRIEVAL_STRATEGY: "hybrid_context_default",
+                DecisionCategory.NEXT_STEP: "pipeline_step_progress",
+                DecisionCategory.DELEGATION: "pipeline_worker_escalation",
+                DecisionCategory.SUBAGENT_BUDGET: "request_delegation_budget",
+            }.get(request.category)
+            return ({"method": method, "suggestion": suggestion, "evidence_id": request.evidence_ids[0]}
+                    if method else None)
+
         if request.category is DecisionCategory.WATCHDOG:
             checkpoint = getattr(task, "checkpoint", None)
             return derive_watchdog_lifecycle_baseline(
@@ -115,7 +138,7 @@ class AppLayaObservationMixin:
             if "single_agent" not in request.options:
                 return None
             return {
-                "method": "agent_os_delegation_budget",
+                "method": "request_delegation_budget",
                 "suggestion": "single_agent",
                 "evidence_id": evidence_id,
             }
@@ -143,6 +166,7 @@ class AppLayaObservationMixin:
         request: Any,
         decision: Any,
         runtime: Any | None = None,
+        baseline: Mapping[str, Any] | None = None,
     ) -> bool:
         """Store the typed decision projection through existing metadata telemetry."""
         try:
@@ -151,8 +175,18 @@ class AppLayaObservationMixin:
             if not callable(recorder):
                 return False
             metadata = decision.metadata()
+            baseline_suggestion = baseline.get("suggestion") if isinstance(baseline, Mapping) else None
+            baseline_available = isinstance(baseline_suggestion, str) and bool(baseline_suggestion)
+            suggestion = getattr(decision, "suggestion", None)
+            comparable = baseline_available and baseline_suggestion in getattr(request, "options", ())
             metadata.update({
                 "provider_label": request.provider_label,
+                "baseline_available": baseline_available,
+                "baseline_match": (
+                    suggestion == baseline_suggestion
+                    if comparable and getattr(getattr(decision, "status", None), "value", None) == "success"
+                    else None
+                ),
                 "runtime_latency_ms": getattr(runtime, "latency_ms", None),
                 "inference_latency_ms": getattr(runtime, "inference_latency_ms", None),
                 "queue_wait_ms": getattr(runtime, "adapter_queue_wait_ms", None),
@@ -168,31 +202,8 @@ class AppLayaObservationMixin:
                 repository_id=request.repository_id,
                 task_id=request.task_id,
                 session_id=request.session_id,
+                provider_label=request.provider_label,
             )
-            collector = getattr(self, "training_collector", None)
-            if collector and getattr(collector, "enabled", False):
-                try:
-                    cat = getattr(request, "category", None)
-                    cat_val = str(getattr(cat, "value", cat) or "decision")
-                    sugg = getattr(decision, "suggestion", None)
-                    if sugg:
-                        state_data = getattr(request, "state", None) or {}
-                        if hasattr(state_data, "to_dict"):
-                            state_data = state_data.to_dict()
-                        elif not isinstance(state_data, dict):
-                            state_data = {"raw": str(state_data)}
-                        task_id = str(getattr(request, "task_id", "") or "unbound")
-                        collector.record_laya_decision(
-                            category=cat_val,
-                            state=state_data,
-                            question_text=f"Decision {cat_val} for task {task_id}",
-                            expected_choice=str(sugg),
-                            confidence_distribution={str(sugg): 1.0},
-                        )
-                except Exception as exc:
-                    debug_log = getattr(getattr(self, "logger", None), "debug", None)
-                    if callable(debug_log):
-                        debug_log("Laya training collector record failed: %s", type(exc).__name__)
         except Exception as exc:
             warning = getattr(getattr(self, "logger", None), "warning", None)
             if callable(warning):

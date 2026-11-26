@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import math
 from copy import deepcopy
 from functools import lru_cache
@@ -257,7 +258,7 @@ _TASK_ACTIONS = (
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
-_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "client_status", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release")
+_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "client_status", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release", "laya_decision")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
@@ -471,7 +472,7 @@ _ACTION_SCOPED_FIELDS = {
         "worktree_path": frozenset({"worktree_release"}),
         "delete_branch": frozenset({"worktree_release"}),
         "output_path": frozenset({"curate_dataset"}),
-        "laya_operation": frozenset({"curate_dataset"}),
+        "laya_operation": frozenset({"curate_dataset", "laya_decision"}),
         "min_receipts": frozenset({"curate_dataset"}),
         "command_id": frozenset({"record_native_receipt"}),
         "next_action": frozenset({"task_checkpoint", "task_update"}),
@@ -918,6 +919,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "worktree_release": ("root", "worktree_path", "worktree_id", "delete_branch", "branch"),
             "simulate_merge": ("root", "source_branch", "target_branch"),
             "curate_dataset": ("root", "output_path", "min_receipts", "format", "laya_operation"),
+            "laya_decision": ("root", "laya_operation"),
             "negative_knowledge_record": ("root", "record"),
             "negative_knowledge_find": ("root", "query", "limit"),
             "incident_decision": ("root", "fingerprint", "state_revision"),
@@ -983,6 +985,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "plan_bind_task": ("root", "task_id", "plan_id", "plan_task_id"),
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
+            "laya_decision": ("root", "laya_operation"),
             "memory_record": ("root", "scope", "key", "value"),
             "memory_delete": ("root", "scope", "record_id"),
             "memory_promote": ("root", "scope", "record_id", "target_scope"),
@@ -1020,6 +1023,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_checkpoint": ("root", "task_id"),
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
+            "laya_decision": ("root",),
             "memory_record": ("root", "scope", "key"),
             "memory_delete": ("root", "scope", "record_id"),
             "memory_promote": ("root", "scope", "record_id", "target_scope"),
@@ -1126,7 +1130,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "output_path": {"type": "string", "default": "training_dataset.jsonl"},
             "min_receipts": {"type": "integer", "default": 1},
             "laya_operation": {"type": ["object", "null"], "default": None,
-                "description": "Explicit root-scoped Laya action through MCP/HTTP: active typed advisory decisions or candidate label, review, split, export, and delete lifecycle. The server derives canonical task/session identity, validates authorized evidence provenance and current evidence, and fixes decisions to advisory mode. Candidate capture and lifecycle mutations use an atomic write. Export revalidates evidence, labels, snapshot, and repository scope; only verified group-safe train rows export."},
+                "description": "Explicit Laya operation. laya_decision supports taskless request advisory operations with repository-scoped verified evidence and server-derived baseline. curate_dataset remains for supervised candidate lifecycle; task_id is required only where that workflow needs a real Agent OS task."},
             "session_id": {"type": "string", "default": "", "maxLength": 256},
             "question_id": {"type": "string", "default": "", "maxLength": 80},
             "question": {"type": "string", "default": "", "maxLength": 16_384},
@@ -1555,8 +1559,8 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             then.setdefault("properties", {})["limit"] = {
                 "type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 20,
             }
-        if disallowed:
-            then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
+        if tool == "local_ai_artifact" and action == "list" and "artifact_id" in disallowed:
+            then["not"] = {"required": ["artifact_id"]}
         if not then:
             continue
         conditions.append({
@@ -1566,6 +1570,10 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             },
             "then": then,
         })
+    # The handler validates action-specific allowed fields before dispatch.
+    # Duplicating every field exclusion in each MCP conditional inflated public
+    # schemas by hundreds of kilobytes; keep only conditions that clients need
+    # for argument construction (required fields and explicit cross-field rules).
     # Codex's type renderer does not show conditional `required` clauses.
     # Repeat the registry's action-specific requirements as field descriptions.
     required_by_field: dict[str, list[str]] = {}
@@ -2109,6 +2117,20 @@ def _cached_operation_parameters_schema(
     optional_actions = [action for action, row in action_contracts if not row["required"]]
     required_sets = {tuple(row["required"]) for _, row in required_actions}
     non_empty_sets = {tuple(row.get("non_empty", ())) for _, row in required_actions}
+
+    def non_empty_constraints(fields: Iterable[str]) -> dict[str, dict[str, Any]]:
+        constraints: dict[str, dict[str, Any]] = {}
+        for field in fields:
+            field_schema = properties.get(field, {})
+            field_type = field_schema.get("type")
+            if field_type == "string" or (isinstance(field_type, list) and "string" in field_type):
+                constraints[field] = {"minLength": 1}
+            elif field_type == "object" or (isinstance(field_type, list) and "object" in field_type):
+                constraints[field] = {"minProperties": 1}
+            elif field_type == "array" or (isinstance(field_type, list) and "array" in field_type):
+                constraints[field] = {"minItems": 1}
+        return constraints
+
     if (
         required_actions
         and optional_actions
@@ -2126,7 +2148,7 @@ def _cached_operation_parameters_schema(
             "then": {},
             "else": {
                 "required": required_fields,
-                "properties": {field: {"minLength": 1} for field in non_empty_fields},
+                "properties": non_empty_constraints(non_empty_fields),
             },
         }]
     elif required_actions:
@@ -2138,10 +2160,7 @@ def _cached_operation_parameters_schema(
                 },
                 "then": {
                     "required": list(row["required"]),
-                    "properties": {
-                        field: {"minLength": 1}
-                        for field in row.get("non_empty", ())
-                    },
+                    "properties": non_empty_constraints(tuple(row.get("non_empty", ()))),
                 },
             }
             for action, row in required_actions

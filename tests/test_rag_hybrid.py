@@ -74,6 +74,31 @@ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):
     assert search_res.get("hybrid") is True
 
 
+def test_public_lexical_only_search_skips_embedding_backend(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "lexical-only-project"
+    root.mkdir()
+    (root / "auth.py").write_text(
+        "def authenticate_jwt_token(token):\n    return token.valid()\n",
+        encoding="utf-8",
+    )
+    assert store.index_step(str(root), max_files=10)["success"] is True
+    store.services.calls.clear()
+
+    result = store.search(
+        "authenticate_jwt_token",
+        workspace=store.workspace_id(str(root)),
+        use_reranker=False,
+        lexical_only=True,
+    )
+
+    assert store.services.calls == []
+    assert result["success"] is True
+    assert result["retrieval_mode"] == "lexical_fallback"
+    assert result["lexical_backend"] == "fts5"
+    assert "auth.py" in result["results"][0]["path"]
+
+
 def test_graphrag_search_excludes_relations_from_other_repositories(tmp_path):
     store = _store(tmp_path)
     root = tmp_path / "scoped-project"

@@ -153,3 +153,13 @@ def test_circular_dependencies_reject_files_changed_after_indexing(tmp_path):
     assert result["success"] is False
     assert result["index_state"] == "stale"
     assert "reindex" in result["error"].lower()
+    assert result["error_code"] == "index_stale"
+    assert result["status_code"] == 409
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+    from local_ai_hub.http_server import _api_result_http_response
+
+    status, body = _api_result_http_response(result)
+    assert status == 409
+    assert body["error_code"] == "index_stale"

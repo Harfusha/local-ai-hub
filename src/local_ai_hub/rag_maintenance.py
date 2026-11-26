@@ -196,7 +196,7 @@ class RAGMaintenanceMixin:
                     con.execute(
                         "SELECT DISTINCT COALESCE(TRIM(CAST(embedding_space AS TEXT)), '') "
                         "FROM chunks WHERE workspace=? AND embedding IS NOT NULL "
-                        "AND length(embedding)>0",
+                        "AND length(embedding)>0 AND TRIM(CAST(embedding AS TEXT))<>'[]'",
                         (workspace,),
                     ).fetchall()
                     if stored_space is None else []
@@ -209,10 +209,11 @@ class RAGMaintenanceMixin:
                     unresolved_legacy_vectors = True
                 else:
                     inferred_spaces.add(row_space)
-            if stored_space is None and (unresolved_legacy_vectors or len(inferred_spaces) > 1):
+            if stored_space is None and not reindex_target and (unresolved_legacy_vectors or len(inferred_spaces) > 1):
                 return {
                     "success": False, "workspace": workspace,
                     "error": "embedding_space_rebuild_required",
+                    "error_code": "embedding_space_rebuild_required",
                     "rebuild_required": True, "retryable": False,
                 }
             if stored_space is None and inferred_spaces:
@@ -241,12 +242,14 @@ class RAGMaintenanceMixin:
                     return {
                         "success": False, "workspace": workspace,
                         "error": "embedding_space_recovery_failed",
+                        "error_code": "embedding_space_recovery_failed",
                         "retryable": is_busy_error(exc),
                     }
                 if recovery_conflict["value"]:
                     return {
                         "success": False, "workspace": workspace,
                         "error": "embedding_space_rebuild_required",
+                        "error_code": "embedding_space_rebuild_required",
                         "rebuild_required": True, "retryable": False,
                     }
                 stored_space = inferred_space
@@ -516,15 +519,25 @@ class RAGMaintenanceMixin:
                         return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
                     vectors = vectors_result.get("embeddings", [])
                     if len(vectors) != len(batch_pointers):
-                        return {"success": False, "error": "embedding count mismatch during background RAG path step"}
+                        return {
+                            "success": False,
+                            "error_code": "embedding_count_mismatch",
+                            "error": "embedding count mismatch during background RAG path step",
+                        }
                     current_space = self._embedding_space_id(vectors_result)
                     if batch_embedding_space is not None and current_space != batch_embedding_space:
-                        return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
+                        return {
+                            "success": False, "error_code": "embedding_identity_changed",
+                            "error": "embedding identity changed during RAG path step", "retryable": True,
+                        }
                     if batch_embedding_space is None:
                         batch_embedding_space = current_space
                         if current_space != embedding_space:
                             if _identity_retry and reused_chunks:
-                                return {"success": False, "error": "embedding identity changed during RAG path retry", "retryable": True}
+                                return {
+                                    "success": False, "error_code": "embedding_identity_changed",
+                                    "error": "embedding identity changed during RAG path retry", "retryable": True,
+                                }
                             if reused_chunks:
                                 return self.index_paths_step(
                                     str(root_path), workspace=workspace, paths=paths,
@@ -537,7 +550,10 @@ class RAGMaintenanceMixin:
                     for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):
                         embedding = _serialize_embedding(vector)
                         if embedding is None:
-                            return {"success": False, "error": "embedding backend returned an invalid vector"}
+                            return {
+                                "success": False, "error_code": "invalid_embedding_vector",
+                                "error": "embedding backend returned an invalid vector",
+                            }
                         file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
                         file_data[f_idx]["records"][rec_idx]["embedding_space"] = batch_embedding_space
                     embedded_chunks += len(batch_pointers)
