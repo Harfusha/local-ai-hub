@@ -1789,7 +1789,7 @@ def sync_cursor_plugin_bundle(cursor_dir: Path, backup_enabled: bool) -> bool:
         relative = source_file.relative_to(source)
         if "__pycache__" in relative.parts or source_file.suffix in {".pyc", ".pyo"}:
             continue
-        if relative.parts[0] in ("skills", "rules"):
+        if relative.parts[0] == "skills":
             continue
         target_file = target / relative
         if target_file.is_symlink():
