@@ -1069,7 +1069,14 @@ class HTTPPostRoutesMixin:
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths", payload.get("changed_files"))
-                self._send(200, services_module.APP.services.split_changes(root, paths)); return
+                if any(key in payload for key in ("mode", "limit", "offset")):
+                    result = services_module.APP.services.split_changes(
+                        root, paths, mode=payload.get("mode", "summary"),
+                        limit=payload.get("limit", 8), offset=payload.get("offset", 0),
+                    )
+                else:
+                    result = services_module.APP.services.split_changes(root, paths)
+                self._send(200, result); return
             if 'post_repo_synthesize_rules_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 10))

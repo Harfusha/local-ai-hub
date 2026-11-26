@@ -18,6 +18,12 @@ The grouping summary now includes tracked line totals by stage; totals may count
 
 For up to eight observed Python patch scopes per request, the existing bounded AST engine compares exact Git blob pairs when both objects are available (or a side is the all-zero addition/deletion ID). Missing unstaged objects are reconstructed in memory from the exact patch and verified by Git blob hash. It exposes structural change counts and bounded symbol names, cached by the scoped patch identity. No source is retained. Unreconstructable blobs, syntax errors, unsupported languages and budget limits are explicit; structural equality does not prove behavior equivalence. This is not yet general semantic grouping or local-model intent inference.
 
+## Compact commit planning and local model suggestions
+
+`split_changes` defaults to a compact group page at the MCP boundary. Set `mode="details"` for bounded patch metadata, `mode="semantic"` for optional local-model advisory messages, or supply a single `path` to focus details. Page with `limit` (1–8) and `offset`; each call observes the current worktree, so do not combine pages across edits as a single exact snapshot. Omitted paths/scopes/hunks are explicitly counted. The existing HTTP route retains its legacy full mode when no projection arguments are provided.
+
+`python tools/hubctl.py changes [summary|details|semantic] --root /absolute/repo` exposes the same read-only service; `--changed-path` can narrow it. Model output must be valid bounded JSON with exactly the supplied IDs and single-line conventional messages; deterministic facts are unchanged. Model text is advisory, not verified intent or commit authority. Managed project planner instructions now prefer the compact plan before commit.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.

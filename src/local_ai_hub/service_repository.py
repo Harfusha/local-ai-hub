@@ -877,8 +877,23 @@ class ServiceRepositoryMixin:
     def generate_mocks(self, root: str, file_path: str, symbol: str) -> dict[str, Any]:
         return self.deterministic.generate_mocks(root, file_path, symbol)
 
-    def split_changes(self, root: str, changed_files: list[str] | None = None) -> dict[str, Any]:
-        return self.deterministic.split_changes(root, changed_files)
+    def split_changes(
+        self, root: str, changed_files: list[str] | None = None, *,
+        mode: str = "full", limit: int = 8, offset: int = 0,
+    ) -> dict[str, Any]:
+        from .change_plan_projection import project_change_plan
+
+        if mode not in {"full", "summary", "details", "semantic"}:
+            return {"success": False, "error": "invalid change plan mode"}
+        if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
+            return {"success": False, "error": "invalid change plan page"}
+        result = self.deterministic.split_changes(root, changed_files)
+        if mode == "full":
+            return result
+        return project_change_plan(
+            result, mode=mode, limit=limit, offset=offset,
+            delegate=self.delegate if mode == "semantic" else None, root=root,
+        )
 
     def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:
         return self.deterministic.synthesize_rules(root, limit)

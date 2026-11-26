@@ -613,9 +613,22 @@ def _local_ai_repo_impl(
             "root": root, "file": path, "symbol": query,
         }, timeout=services_module._timeout("quick")), "architecture")
     if action == "split_changes":
+        view = ("details" if path else "summary") if mode == "adaptive" else mode
+        page_limit = limit if explicit_limit else 8
+        if view not in {"summary", "details", "semantic"}:
+            return services_module.contract_error("split_changes mode must be summary, details or semantic")
+        if type(page_limit) is not int or not 1 <= page_limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
+            return services_module.contract_error("split_changes limit must be 1 through 8 and offset 0 through 100000")
         return services_module._compact(services_module.CLIENT.post("/api/repo/split_changes", {
             "root": root, "paths": [path] if path else None,
-        }, timeout=services_module._timeout("quick")), "architecture", extra_fields=["clusters", "cluster_count", "total_files", "summary", "method", "verification_status", "commit_ready", "limitations", "patch_coverage_complete", "unavailable_patch_scopes", "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id"])
+            "mode": view, "limit": page_limit, "offset": offset,
+        }, timeout=services_module._timeout("model" if view == "semantic" else "quick")), "architecture",
+            extra_fields=["clusters", "cluster_count", "total_files", "summary", "method",
+                          "verification_status", "commit_ready", "limitations", "patch_coverage_complete",
+                          "unavailable_patch_scopes", "unavailable_patch_scope_count", "unavailable_patch_scopes_omitted",
+                          "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id",
+                          "projection_mode", "projection_partial", "offset", "limit", "has_more",
+                          "next_offset", "model_advice_status"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,

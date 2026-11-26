@@ -31,6 +31,7 @@ MANAGED_PLANNER_INSTRUCTIONS = f"""{PLANNER_BLOCK_START}
 - **Checkpoint Recovery**: If a checkpoint persisted but plan sync failed, resolve the error, reread the plan revision, and call `plan_bind_task` again with the same task and session. `checkpoint_sync="reconciled"` confirms the pending projection was applied; `not_pending` does not prove the task and plan agree. Do not overwrite conflicting plan edits or repeat the persisted task mutation.
 - **Kanban & Briefings**: `plan_board_view(root=<absolute repository path>)` and `session_briefing(root=<absolute repository path>)` read the authoritative plan files.
 - **Authentic Verification**: Use `plan_validate` for plan validity; it does not replace authentic per-criterion command receipts. Complete bound tasks through the receipt-gated Agent OS workflow.
+- **Commit Planning**: Before committing, use `local_ai_repo(action="split_changes", root=<absolute repository path>)` when exposed. Read compact groups first, request a specific path or details only for unresolved changes, and use semantic mode for advisory local commit messages. Review unowned or uncovered changes and validate required checks for the actual commit scope. A summary or cache hit is not a receipt or authorization to stage or commit. Never blanket-stage an unrelated dirty worktree.
 - **Interruption & Resumption**: On interruption, preserve explicit blockers and next actions in the checkpoint rather than restarting with a blank plan.
 {PLANNER_BLOCK_END}"""
 

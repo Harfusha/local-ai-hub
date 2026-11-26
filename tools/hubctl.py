@@ -247,7 +247,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge", "changes"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
@@ -296,6 +296,10 @@ def main() -> int:
     elif args.action in {"pause", "resume"}:
         if args.sub_arg is not None:
             parser.error(f"Action '{args.action}' takes no arguments")
+        requested_mode = None
+    elif args.action == "changes":
+        if args.sub_arg not in {None, "summary", "details", "semantic"} or args.apply or args.root is None:
+            parser.error("changes requires --root, optional summary/details/semantic, and is read-only")
         requested_mode = None
     elif args.action == "knowledge":
         if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
@@ -352,6 +356,16 @@ def main() -> int:
         parser.error(f"Unrecognized argument '{args.sub_arg}' for action '{args.action}'")
     else:
         requested_mode = None
+
+    if args.action == "changes":
+        payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary"}
+        if args.changed_path:
+            payload["paths"] = args.changed_path
+        result = HubClient(config_path=_config_arg(args.config)).post(
+            "/api/repo/split_changes", payload, timeout=1800.0 if args.sub_arg == "semantic" else 180.0,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("success") is True else 1
 
     if args.action == "knowledge":
         from local_ai_hub.repo_knowledge import (
