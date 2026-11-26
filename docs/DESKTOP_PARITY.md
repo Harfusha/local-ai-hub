@@ -1,6 +1,6 @@
 # Native desktop migration — evidence and parity register
 
-Status: **partial implementation; not a replacement release**. This is the
+Status: **draft cutover; runtime web UI disconnected, full desktop parity and physical source deletion incomplete. Do not merge as a replacement release.** This is the
 requested feature/verification matrix, not a second project plan. The repository
 plan tool was unavailable in this environment; no plan files were modified.
 
@@ -14,8 +14,7 @@ dependency license/security review remain release gates.
 
 Build from a trusted Hub checkout with Rust stable and platform OpenGL
 libraries: `cargo build --manifest-path desktop/Cargo.toml --release`.
-Run `desktop/target/release/local-ai-hub-desktop` (add .exe on Windows)
-from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
+Run `python tools/hubctl.py desktop` (the legacy `dashboard` CLI alias opens the same native binary), or run `desktop/target/release/local-ai-hub-desktop` directly from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
 LOCAL_AI_CONFIG or choose the installation in the UI. Python is still
 required by the existing Hub; it is not used for GUI rendering. The desktop
 executes a fixed adapter script with JSON stdin/stdout and named operations.
@@ -28,13 +27,11 @@ One operation runs in a worker thread; the renderer is event-driven apart
 from a 30-second focused-window health probe, which can be disabled. Views
 load explicitly. The searchable response inspector virtualizes visible
 rows, caps at 12,000 flattened fields and 8 MB adapter response, and exposes
-individual detail/copy. It is not yet a substitute for typed charts,
-pagination, Kanban, trace drilldowns or rich request tables. The service
+individual detail/copy. Native schema-specific tables, record details and a Kanban with separate declared/verified progress are implemented, alongside bounded trace pages and revision-aware actions. Specialized charts, full history paging, streaming and action-specific presentations are incomplete. The service
 lifecycle and desktop lifecycle remain separate. Closing during operations
 is blocked to avoid interrupting a mutation.
 
-CI: .github/workflows/desktop.yml builds and runs Rust tests on Ubuntu,
-Windows and macOS, and runs focused bridge tests on Ubuntu. Native binaries
+CI: .github/workflows/desktop.yml builds and runs Rust tests on Ubuntu 22.04, Windows and macOS, runs focused bridge/HTTP/packaging tests, and measures first window and 60 seconds of idle RSS/CPU under Linux Xvfb/software OpenGL with Hub absent. Linux baseline was pinned after a real CI artifact required GLIBC_2.43 and could not launch on the available older runtime. Native binaries
 are CI artifacts, not signed installers. Cargo.lock must be generated and
 committed after a successful dependency resolution; no reproducible build
 claim until then. Full runtime portability, GPU/driver behavior and resource
@@ -48,20 +45,20 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 | Dashboard page / workflow | Desktop location | Current coverage | Acceptance verification still required |
 |---|---|---|---|
 | Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshots, no charts or workload drilldown | Compare cards, periods, health/warming/stale states and workload drilldowns |
-| Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial snapshot / trace index inspector; no specialized history table | Compare filtering/paging, cancellation, retry, trace links, job failures |
-| Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists, create/get/complete/fail, repository fact record/delete, incident record; trace index only | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
-| Coordination: plans, board, dependencies, locks, semaphore | Plans, Plan board, Semaphores, File leases, Worktrees | Partial scoped reads and plan creation; no revision-aware edits or Kanban | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |
+| Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial native recent-request and trace tables, bounded trace event pages, endpoint analytics | Compare filtering/paging, cancellation, retry, trace links, job failures |
+| Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists, create/get/complete/fail, repository fact record/delete, incident record, bounded trace event pages | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
+| Coordination: plans, board, dependencies, locks, semaphore | Plans, Plan board, Semaphores, File leases, Worktrees | Partial native Kanban and verified progress, plan create/update and task edit/delete with expected revision, semaphore/lease/worktree actions and briefing | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |
 | Projects & preprocessing | Projects | Partial status and project config reads, register/reindex/pause/resume/unregister and global controls | Register, configure, remove, pause, resume, progress and unavailable indexes |
-| Commands | Commands, Worktrees | Partial shared status and scoped worktree reads; no broker drilldown | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
-| Models & search | Search workspaces, Hardware, Overview | Partial snapshots and two-route comparison | Model compare, runtime inventory, statistics, profiles, cache, agents, route/token/latency metrics, evals, benchmarks, Laya, embedding/rerank, optimization |
-| Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
+| Commands | Commands, Worktrees | Partial shared status and scoped worktree reads/actions; no broker drilldown | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
+| Models & search | Search workspaces, Hardware, Overview | Partial snapshots, model inventory, benchmark and telemetry report, two-route comparison | Model compare, runtime inventory, statistics, profiles, cache, agents, route/token/latency metrics, evals, benchmarks, Laya, embedding/rerank, optimization |
+| Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart, encrypted diagnostics export in Transfers | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
 | Settings | Settings — activity mode, toolbar | Partial config read, activity mode, telemetry mode, selected feature flags and override reset | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures |
-| Transfers | Future Transfers | Missing | Export/import ZIP, scope, password, integrity, failure and cancellation |
+| Transfers | Transfers | Partial bounded ZIP export/import and encrypted diagnostics export with returned password | Export/import ZIP, scope, password, integrity, failure and cancellation |
 | Activity | Activity | Partial bounded event snapshot | Cursor, filters, SSE, pause, stale/reconnect and detail modals |
 | Global control menu | Toolbar / maintenance selector | Partial: mode, DB optimization, expired cache, stale agent cleanup, detailed telemetry toggle/purge, stats purge, global preprocessing | Detailed telemetry consent and purge, stats purge, preprocessing pause/resume, diagnostic results and failure states |
 | Service unavailable | Toolbar | Explicit Start and unreachable state; no implicit autostart | Cold start, supervisor already warming, permission failure, timeout, restart failure, close during transition |
 | Desktop and service independence | Window close | No stop on close; busy close blocked | Start/stop via CLI, externally stopped Hub, desktop relaunch, concurrent operations |
-| Web UI cutover | Not performed | Blocked by incomplete parity | Remove static routes/assets and references, preserve HTTP API/MCP, verify old routes no longer serve UI |
+| Web UI cutover | HTTP server, packaging, CLI | Runtime disconnected in draft: old GET paths return JSON 404, UI mixin removed, package data excludes static assets, CLI launches desktop. Legacy HTML/TypeScript and browser test/build references remain for parity migration; no served fallback | Complete equivalent native regression coverage, delete legacy sources and build/test references, verify clean package and API/MCP compatibility |
 
 ## CLI entrypoint inventory
 
@@ -77,7 +74,7 @@ surface or the required future surface, not a completed implementation.
 | `stop` | Stop Hub | Controller present; run focused tests and real CLI/API integration |
 | `restart` | Restart Hub | Controller present; run focused tests and real CLI/API integration |
 | `watch` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `dashboard` | Retained pending cutover | Incomplete; classify subcommands/options and test parity or document exclusion |
+| `desktop` / legacy `dashboard` | Native launcher | No HTTP URL; verify launch and missing binary error |
 | `service-status` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
 | `agent-state` | Scoped Tasks/Memory/Incidents reads only | Incomplete; classify subcommands/options and test parity or document exclusion |
 | `cleanup` | Confirmed stale agent state cleanup only | Incomplete; classify subcommands/options and test parity or document exclusion |
@@ -189,8 +186,8 @@ Inline handler names found in HTML (including generated templates):
 
 ## Literal API references in dashboard HTML
 
-The desktop currently consumes only the fixed routes in `VIEWS`,
-`MAINTENANCE` and `dispatch` in `tools/desktop.py`; other API routes must be inventoried
+The desktop consumes only fixed/named operations in `VIEWS`,
+`MAINTENANCE`, `dispatch` and `transfer` in `tools/desktop.py`; other API routes must be inventoried
 with their schemas, auth, scope, payload, responses, binary/SSE contracts and
 callers. Preserve the backend routes unless proven presentation-only.
 This list is lexical, not a complete route registry.
@@ -251,7 +248,7 @@ Added `desktop/src/main.rs` unit tests for bounded rows, paths and named IPC
 requests, and `tests/test_desktop_control.py`: offline reads, explicit repository
 scope and encoding, start/stop/restart delegation, idempotent start,
 allowlist rejection, argv/no-shell transport, API failure and maintenance
-confirmation at the response boundary. Tests are not executed in this environment; CI configured but results not yet verified.
+confirmation at the response boundary. Earlier Rust/bridge CI succeeded on revisions 15ddb42 and a2c30d2; current revision after cutover and native table changes is not verified. Local direct Git checkout still fails DNS; no local Cargo. Linux artifact from a2c30d2 was downloaded and checked with ldd: GLIBC_2.43 required and unavailable locally. New pinned Linux build/smoke test is pending.
 
 Required commands, from the actual checkout, per AGENTS.md:
 
@@ -268,7 +265,7 @@ python tools/selftest.py
 Then run targeted lifecycle, HTTP/MCP and desktop end-to-end tests after
 identifying the existing test modules. No full unbounded pytest run.
 
-Performance measurement: not run. The environment has no repository
+Performance measurement: not yet available. The first actual Linux artifact failed loader compatibility before window creation; the pinned CI baseline and Xvfb smoke script address this failure and collect real measurements. The environment has no repository
 checkout (DNS failure to GitHub) or interactive target desktop/service.
 On Windows and Linux, measure cold/warm first-window and first-ready latency
 using monotonic timestamps, and record desktop process RSS/private memory and
@@ -284,5 +281,10 @@ actual results plus hardware/OS/Rust/eframe/Python versions. No threshold claime
   cancellation, config and transfer handling, packaging/launchers.
 - Verify authentication and scope with real configured clients, API/MCP
   compatibility, offline/online lifecycle, accessibility, and resource usage.
-- Remove web UI only after parity and tests pass; keep API and MCP. The draft
-  branch deliberately retains it to avoid breaking existing clients.
+- Complete physical removal of legacy HTML/TypeScript/build/test references only after equivalent native behavior tests exist. Draft HTTP cutover already disables the routes and excludes assets from packaging; keep PR draft until full parity and verification. Preserve HTTP API/MCP.
+
+## Current cutover blockers
+
+- Legacy dashboard source files and frontend build/test references are retained pending complete native parity and equivalent regression coverage. They are no longer served by the HTTP handler or included as Python package data. Do not interpret this as complete source removal.
+- Update controls, detailed vision review, complete settings/editor flows, live event streaming, trace/history linking, advanced command/agent controls, and full packaging are not complete. Existing backend endpoints remain intact; do not weaken auth or remove backend tests to force a green suite.
+- Current head has not passed the full targeted CI after these changes; no full service lifecycle, API/MCP regression, or actual cross-platform runtime verification is available. Draft must not be merged as finished.
