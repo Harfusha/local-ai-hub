@@ -265,6 +265,7 @@ impl Desktop {
         match self.page {
             1 => {
                 if self.current() == "Trace index" {
+                    ui.small("Full inputs and outputs are captured only when detailed telemetry is enabled. Stored details appear as recorded; local access only; separate local retention policy.");
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Trace ID");
                         ui.text_edit_singleline(&mut self.entity);
@@ -520,7 +521,7 @@ impl eframe::App for Desktop {
             ui.add_enabled_ui(self.busy.is_none() && self.pending.is_none(), |ui| {
                 for (index, (name, _)) in PAGES.iter().enumerate() {
                     if ui.selectable_label(self.page == index, *name).clicked() && self.page != index {
-                        self.page = index; self.view = 0; self.rows.clear(); self.visible.clear(); self.detail = None;
+                        self.page = index; self.view = 0; self.clear_response(); self.entity.clear(); self.revision.clear();
                         self.filter.clear();
                     }
                 }
@@ -532,7 +533,7 @@ impl eframe::App for Desktop {
                 ui.horizontal_wrapped(|ui| {
                     for (index, view) in PAGES[self.page].1.iter().enumerate() {
                         if ui.selectable_label(self.view == index, *view).clicked() && self.view != index {
-                            self.view = index; self.rows.clear(); self.visible.clear(); self.detail = None;
+                            self.view = index; self.clear_response(); self.entity.clear(); self.revision.clear();
                         }
                     }
                     if ui.button("Load / refresh").clicked() { self.refresh(ctx); }
@@ -594,7 +595,7 @@ impl eframe::App for Desktop {
                             needle.is_empty() || item.to_string().to_lowercase().contains(&needle)).collect();
                         ui.label(format!("{} matching records (bounded response)", filtered.len()));
                         let mut selected = None;
-                        egui::ScrollArea::both().id_salt("records").show(ui, |ui| {
+                        egui::ScrollArea::horizontal().id_salt("records").show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 for column in table.columns {
                                     ui.add_sized([155.0, 24.0], egui::Label::new(*column));
@@ -669,6 +670,10 @@ impl eframe::App for Desktop {
             egui::Window::new("Confirm operation").collapsible(false).resizable(false).show(ctx, |ui| {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
+                let args = &self.pending.as_ref().unwrap().payload["args"];
+                for key in ["root", "id", "task_id", "action", "file", "revision"] {
+                    if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { decision = Some(false); }
                     if ui.button("Confirm").clicked() { decision = Some(true); }
@@ -697,7 +702,7 @@ impl eframe::App for Desktop {
                 self.install = Install { root: PathBuf::from(&self.root_input),
                     python: PathBuf::from(&self.python_input),
                     config: (!self.config_input.trim().is_empty()).then(|| PathBuf::from(&self.config_input)) };
-                self.service = None; self.rows.clear(); self.visible.clear(); self.detail = None;
+                self.service = None; self.clear_response(); self.entity.clear(); self.revision.clear();
                 self.last_probe = Instant::now() - Duration::from_secs(30);
                 open = false;
             }

@@ -6,11 +6,20 @@ on:
       - 'desktop/**'
       - 'tools/desktop.py'
       - 'tests/test_desktop_control.py'
+      - 'tests/test_dashboard_operational_surfaces.py'
+      - 'src/local_ai_hub/http_*.py'
+      - 'tools/hubctl.py'
+      - 'pyproject.toml'
+      - 'MANIFEST.in'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: native-desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   desktop:
@@ -47,4 +56,4 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e . pytest
       - run: python -m compileall -q tools/desktop.py tests/test_desktop_control.py
-      - run: python -m pytest tests/test_desktop_control.py -q
+      - run: python -m pytest tests/test_desktop_control.py tests/test_dashboard_operational_surfaces.py::test_retired_dashboard_route_returns_json_not_found tests/test_packaging_assets.py -q

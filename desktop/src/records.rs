@@ -42,7 +42,7 @@ pub fn board_columns(response: &Value) -> Option<Vec<(&str, &[Value])>> {
     }
     if result.len() != columns.len() {
         for (state, items) in columns {
-            if !result.iter().any(|(key, _)| key == state) {
+            if !result.iter().any(|(key, _)| *key == state.as_str()) {
                 result.push((state.as_str(), items.as_array()?.as_slice()));
             }
         }

@@ -14,12 +14,13 @@ def test_dashboard_template_keeps_primary_content_and_faithful_raw_payload():
     assert "JSON.stringify(traceSanitizeValue(payload)" not in DASHBOARD_HTML
 
 
-def test_served_dashboard_discloses_trace_access_and_retention_policy():
-    html = http_server._dashboard_html_with_trace_notice()
-    assert "Full inputs and outputs are captured only when enabled" in html
-    assert "Stored details appear as recorded" in html
-    assert "local access only" in html
-    assert "separate local retention policy" in html
+def test_native_desktop_discloses_trace_access_and_retention_policy():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] / "desktop/src/main.rs").read_text(encoding="utf-8")
+    assert "Full inputs and outputs are captured only when detailed telemetry is enabled" in source
+    assert "Stored details appear as recorded" in source
+    assert "local access only" in source
+    assert "separate local retention policy" in source
 
 
 def test_dashboard_has_live_detailed_telemetry_toggle():
@@ -382,12 +383,14 @@ def test_operator_surfaces_report_all_transition_failures() -> None:
     assert unauthorized["buttonsEnabled"] is True
 
 
-def test_dashboard_route_serves_live_http_document(monkeypatch) -> None:
+def test_retired_dashboard_route_returns_json_not_found(monkeypatch) -> None:
+    import json
     import threading
+    import urllib.error
     import urllib.request
     from types import SimpleNamespace
-
     from local_ai_hub import http_server
+    import pytest
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "monitoring": {"dashboard_enabled": True},
@@ -397,12 +400,13 @@ def test_dashboard_route_serves_live_http_document(monkeypatch) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/dashboard", timeout=3) as response:
-            body = response.read().decode("utf-8")
-            assert response.status == 200
-            assert response.headers.get_content_type() == "text/html"
-        assert 'id="activityModeBadge"' in body
-        assert "Ollama is offline" in body
+        for path in ("/", "/dashboard", "/dashboard/", "/favicon.ico"):
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}{path}", timeout=3)
+            assert rejected.value.code == 404
+            assert rejected.value.headers.get_content_type() == "application/json"
+            assert json.loads(rejected.value.read())["success"] is False
+            rejected.value.close()
     finally:
         server.shutdown()
         server.server_close()
