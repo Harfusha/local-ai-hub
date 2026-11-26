@@ -699,7 +699,7 @@ def test_local_ai_repo_context_bounds_oversized_authoritative_fields(monkeypatch
     )
 
     assert json_tokens(result) <= 220
-    assert result["response_budget"]["requested_tokens"] == 220
+    assert "response_budget" not in result
 
 
 def test_local_ai_repo_context_low_budget_preserves_authoritative_envelope(monkeypatch) -> None:
@@ -1012,7 +1012,8 @@ def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypa
                                 for item in content_items], "isError": False}
         if isinstance(wire, tuple):
             envelope["structuredContent"] = wire[1]
-        assert result["response_budget"]["returned_tokens"] == json_tokens(envelope)
+        assert "response_budget" not in result
+        assert json_tokens(envelope) <= response_tokens
         assert json_tokens(envelope) <= response_tokens
         if result["success"] is False:
             # The full text + structured envelope may exceed 512 when mandatory

@@ -812,10 +812,8 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                  else services_module.project_agent_response)
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
-    if not detail_enabled:
-        detailed_checker = getattr(services_module, "detailed_diagnostics_enabled", None)
-        if detailed_checker and detailed_checker(services_module.CFG):
-            detail_enabled = True
+    # Full telemetry capture is internal. It must not enable diagnostics on
+    # ordinary MCP responses; only explicit agent-output diagnostics do that.
     safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
     if safe == structured:
         return contents, structured
