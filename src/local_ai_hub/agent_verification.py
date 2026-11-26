@@ -559,6 +559,7 @@ class CompletionResult:
     stale_criteria: tuple[str, ...]
     receipts: tuple[VerificationReceipt, ...]
     consistency: dict[str, Any] = field(default_factory=dict)
+    execution: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.task_id) is not str or "\x00" in self.task_id or self.task_id != self.task_id.strip():
@@ -594,6 +595,9 @@ class CompletionResult:
                 raise ValueError("complete requires passing evidence receipts for every satisfied criterion")
         object.__setattr__(self, "receipts", tuple(self.receipts))
         object.__setattr__(self, "consistency", dict(self.consistency))
+        if not isinstance(self.execution, Mapping):
+            raise TypeError("execution must be a mapping")
+        object.__setattr__(self, "execution", dict(self.execution))
 
     def is_complete(self) -> bool:
         return self.complete
@@ -627,6 +631,8 @@ class CompletionResult:
         }
         if self.consistency:
             payload["consistency"] = dict(self.consistency)
+        if self.execution:
+            payload["execution"] = dict(self.execution)
         return payload
 
 
@@ -1897,6 +1903,17 @@ class VerificationStore:
                 except Exception:
                     audit = {}
 
+        execution: dict[str, Any] = {}
+        from .verified_execution import EXECUTION_KEY, execution_projection
+
+        if task_state is not None and EXECUTION_KEY in task_state.contract.slo_profile:
+            execution = execution_projection(
+                required_criteria, task_state.contract.slo_profile[EXECUTION_KEY],
+                satisfied=satisfied, unsatisfied=unsatisfied, stale=stale,
+                receipt_ids={receipt.criterion: receipt.receipt_id for receipt in visible_receipts},
+                receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
+            )
+            is_complete = is_complete and not task_state.checkpoint.blockers
         return CompletionResult(
             task_id=task_id,
             complete=is_complete,
@@ -1905,6 +1922,7 @@ class VerificationStore:
             stale_criteria=tuple(stale),
             receipts=visible_receipts,
             consistency=audit,
+            execution=execution,
         )
 
     def export_receipts(

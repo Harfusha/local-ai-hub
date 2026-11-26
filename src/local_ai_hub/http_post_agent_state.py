@@ -163,7 +163,19 @@ def handle_agent_state_verification(self: Any, payload: dict[str, Any]) -> None:
                 "stop_code": "completion_repository_revision_mismatch",
                 "error": "requested repository revision does not match the current repository revision",
             }); return
-        res = services_module.APP.agent_verification.completion(task_id, current_revision=current_revision)
+        verifier = services_module.APP.agent_verification
+        from .verified_execution import EXECUTION_KEY
+        from .verification_rules import evaluate_project_completion
+
+        task_store = getattr(verifier, "task_store", None)
+        task = task_store.get(task_id) if task_store is not None else None
+        if (task is not None and EXECUTION_KEY in task.contract.slo_profile and current_revision):
+            res = evaluate_project_completion(
+                verifier, task_id, root=root, current_revision=current_revision,
+                state_dir=verifier.state_store.db_path.parent,
+            )
+        else:
+            res = verifier.completion(task_id, current_revision=current_revision)
         if not current_revision and any(
             str(getattr(receipt, "repository_revision", "") or "").strip()
             for receipt in res.receipts

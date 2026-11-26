@@ -160,6 +160,10 @@ class TaskLifecycleMixin:
         completion_started_at = time.monotonic()
         if "_pending_fenced_work" in task.checkpoint.state_data:
             raise CompletionGateError("Cannot transition to COMPLETED: fenced work mutation is pending")
+        from .verified_execution import EXECUTION_KEY
+
+        if EXECUTION_KEY in task.contract.slo_profile and task.checkpoint.blockers:
+            raise CompletionGateError("Cannot transition to COMPLETED: verified execution has unresolved checkpoint blockers")
         memory_audit_validator = getattr(self, "_validate_memory_audit", None)
         if callable(memory_audit_validator):
             memory_audit_validator(task)
