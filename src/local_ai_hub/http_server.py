@@ -197,7 +197,6 @@ from .response_budget import _reconcile_existing_budget  # noqa: F401
 from .trace_context import reset_context, reset_observer, set_context, set_observer  # noqa: F401
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler  # noqa: F401
 from .http_post_repository_analysis import handle_post_repository_analysis, handle_post_plan  # noqa: F401
-from .dashboard import DASHBOARD_HTML
 from .config import ConfigError as ConfigError, deep_merge as deep_merge, load_config, save_runtime_overrides as save_runtime_overrides, validate_config as validate_config
 from .delivery import decide_delivery  # noqa: F401
 from .resilience import RecoveryJournal  # noqa: F401
@@ -345,7 +344,7 @@ _GAMING_DRAIN_TIMEOUT_SECONDS = 4.5
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
-    "/health", "/ready", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
+    "/health", "/ready", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
     "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/repair-priorities",
     "/api/telemetry/endpoint-stats",
@@ -376,14 +375,6 @@ READINESS_COMPONENTS = (
 
 
 
-
-def _dashboard_html_with_trace_notice() -> str:
-    html = DASHBOARD_HTML.replace(
-        "Agent debug traces · off by default; payloads available when enabled",
-        "Agent debug traces · full input/output only when enabled · complete stored details shown as recorded · local access only · separate local retention policy",
-        1,
-    )
-    return html
 
 
 def _is_loopback_peer(handler: Any) -> bool:
@@ -1736,7 +1727,6 @@ __all__ = [
     '_bound_agent_event_page_impl',
     '_completion_revision_or_stop',
     '_config_update_failure_payload',
-    '_dashboard_html_with_trace_notice',
     '_encode_agent_event_cursor',
     '_get_mode_unload_status',
     '_http_admin_action',

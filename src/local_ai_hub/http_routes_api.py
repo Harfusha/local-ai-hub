@@ -12,7 +12,6 @@ from typing import Any
 from . import __version__
 from .http_admin_modes import HTTPAdminModesMixin
 from .http_admin import HTTPAdminMixin
-from .http_routes_ui import HTTPRoutesUIMixin
 from .http_routes_post import HTTPPostRoutesMixin
 
 
@@ -29,7 +28,7 @@ from .http_api_stream import HttpStreamMixin
 from . import http_api_get as _http_api_get
 from .http_api_get import HttpGetMixin
 
-class Handler(HttpRequestMixin, HttpIdentityMixin, HttpAuthorizationMixin, HttpPostHelpersMixin, HttpStreamMixin, HttpGetMixin, HTTPPostRoutesMixin, HTTPAdminModesMixin, HTTPAdminMixin, HTTPRoutesUIMixin, BaseHTTPRequestHandler):
+class Handler(HttpRequestMixin, HttpIdentityMixin, HttpAuthorizationMixin, HttpPostHelpersMixin, HttpStreamMixin, HttpGetMixin, HTTPPostRoutesMixin, HTTPAdminModesMixin, HTTPAdminMixin, BaseHTTPRequestHandler):
     _ADMIN_ACTIONS = {
         "db.query": ({"GET", "POST"}, "/api/db/query", None),
         "debug_traces.list": ({"GET"}, "/api/debug-traces", None),
