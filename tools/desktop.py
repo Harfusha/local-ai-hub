@@ -377,8 +377,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             raw = source.read(8 * 1024 * 1024 + 1)
         if len(raw) > 8 * 1024 * 1024:
             raise ValueError("Image exceeds 8 MiB")
-        mime = "image/png" if raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n") else (
-            "image/jpeg" if raw.startswith(b"\\xff\\xd8\\xff") else "")
+        mime = "image/png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else (
+            "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "")
         if not mime:
             raise ValueError("Unsupported image format; choose PNG or JPEG")
         image = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
