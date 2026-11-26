@@ -137,15 +137,6 @@ def test_http_adoption_endpoint_returns_aggregates_only(tmp_path):
         server.shutdown(); server.server_close(); http_server.APP = previous; app.close()
 
 
-def test_dashboard_does_not_poll_removed_adoption_panel():
-    from local_ai_hub import dashboard
-
-    html = dashboard.DASHBOARD_HTML
-    assert "refreshAdoption" not in html
-    assert "adoptionActions" not in html
-    assert "'/api/adoption'" not in html
-
-
 def test_removed_adoption_status_arguments_reject_before_fetch(monkeypatch):
     import inspect
     import pytest

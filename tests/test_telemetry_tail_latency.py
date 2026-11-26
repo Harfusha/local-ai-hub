@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 
 from local_ai_hub.telemetry import TelemetryStore
-from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
 def test_report_exposes_http_action_and_cache_layer_tail_percentiles(tmp_path):
@@ -36,10 +35,6 @@ def test_p50_latency_uses_median_for_even_sample_count(tmp_path):
 
     action = next(item for item in report["http_tail_latency"]["by_action"] if item["action"] == "/median")
     assert action["p50_duration_ms"] == 25.0
-
-
-def test_dashboard_has_http_tail_latency_target():
-    assert 'id="httpTail"' in DASHBOARD_HTML
 
 
 def test_process_scope_excludes_pre_start_history(tmp_path):

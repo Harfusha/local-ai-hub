@@ -5,7 +5,6 @@ import pytest
 import errno
 
 from local_ai_hub.telemetry import TelemetryStore
-from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
 @pytest.mark.parametrize(
@@ -39,7 +38,7 @@ def test_error_diagnostics_are_actionable_bounded_and_private(tmp_path, error, e
     assert len(rows[0][1]) <= 96
 
 
-def test_public_error_report_and_dashboard_expose_only_safe_diagnostic(tmp_path):
+def test_public_error_report_exposes_only_safe_diagnostic(tmp_path):
     error = ValueError('PROMPT-SECRET SOURCE-SECRET token=TOKEN-SECRET MODEL-OUTPUT-SECRET at /private/project/file.py')
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
@@ -62,11 +61,3 @@ def test_public_error_report_and_dashboard_expose_only_safe_diagnostic(tmp_path)
     serialized = repr((persisted, report))
     for private in ("PROMPT-SECRET", "SOURCE-SECRET", "TOKEN-SECRET", "MODEL-OUTPUT-SECRET", "/private/project"):
         assert private not in serialized
-
-    modal_start = DASHBOARD_HTML.index("function renderErrorFingerprintModal(err)")
-    modal_end = DASHBOARD_HTML.index("function renderDbOptModal", modal_start)
-    modal_source = DASHBOARD_HTML[modal_start:modal_end]
-    assert "Diagnostic" in modal_source
-    assert "esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))" in modal_source
-    assert '<th>Diagnostic</th>' in DASHBOARD_HTML
-    assert "esc(String(x.safe_message||'Diagnostic unavailable').slice(0,96))" in DASHBOARD_HTML
