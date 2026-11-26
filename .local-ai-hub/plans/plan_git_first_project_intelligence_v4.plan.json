@@ -192,7 +192,7 @@
       ],
       "description": "Integrate reviewed V4 implementation without losing existing local work; update acceptance records and verify on master.",
       "kind": "operation",
-      "next_action": "Commit changes to codex/pr-9-complete and merge into master.",
+      "next_action": "Completed and integrated into master.",
       "order": 4,
       "spec_refs": [
         {
@@ -204,7 +204,7 @@
         }
       ],
       "title": "Integrate completed change into master",
-      "work_status": "in_progress"
+      "work_status": "completed"
     }
   },
   "title": "Git-first unified project intelligence V4"
