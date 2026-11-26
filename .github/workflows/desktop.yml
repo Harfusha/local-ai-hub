@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -36,9 +36,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux system libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils
       - run: cargo test
       - run: cargo build --release
+      - name: Linux native window and idle measurement (isolated Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install psutil
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 python3 ../tools/desktop_smoke.py target/release/local-ai-hub-desktop > desktop-smoke.json
+          cat desktop-smoke.json
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ runner.os }}-${{ runner.arch }}
@@ -46,6 +52,7 @@ jobs:
             desktop/target/release/local-ai-hub-desktop
             desktop/target/release/local-ai-hub-desktop.exe
             desktop/Cargo.lock
+            desktop/desktop-smoke.json
           if-no-files-found: error
   bridge:
     runs-on: ubuntu-latest
