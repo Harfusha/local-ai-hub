@@ -93,6 +93,7 @@ class DeterministicEditingMixin:
             hidden_run_kwargs_fn=hidden_run_kwargs,
             base=base,
             head=head,
+            git_runner=run_hidden,
         )
 
     def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:

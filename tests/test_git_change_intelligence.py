@@ -230,3 +230,14 @@ def test_committed_comparison_ignores_dirty_worktree(tmp_path):
     assert group["changes"][0]["atoms"][0]["scope"] == "committed"
     assert result["commit_ready"] is False
     assert not _plan(tmp_path, base="--help", head="HEAD")["success"]
+
+
+def test_observed_identity_binds_head_and_index(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "payment.py").write_text("changed\n", encoding="utf-8")
+    first = _plan(tmp_path)
+    _git(tmp_path, "commit", "--allow-empty", "-m", "new head")
+    second = _plan(tmp_path)
+    assert first["git_snapshot_metadata"]["head"] != second["git_snapshot_metadata"]["head"]
+    assert first["observed_change_set_id"] != second["observed_change_set_id"]
+    assert first["clusters"][0]["observed_atom_ids"] == second["clusters"][0]["observed_atom_ids"]

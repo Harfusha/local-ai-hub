@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 from unittest.mock import MagicMock
-from local_ai_hub import deterministic as deterministic_module
+from local_ai_hub import deterministic_editing as deterministic_editing_module
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.command_broker import CommandBroker
 from local_ai_hub.services import LocalAIServices
@@ -44,8 +44,12 @@ def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
 
     def fake_run(argv, **kwargs):
         timeouts.append(kwargs.get("timeout"))
-        if "rev-parse" in argv:
-            output = str(tmp_path).encode() + b"\n"
+        if "--show-toplevel" in argv:
+            output = str(tmp_path.resolve()).encode() + b"\n"
+        elif "--verify" in argv:
+            output = b"a" * 40 + b"\n"
+        elif "ls-files" in argv:
+            output = b""
         elif "status" in argv:
             output = b" M source.py\0"
         elif "--patch" in argv:
@@ -56,12 +60,12 @@ def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
             output = b"1\t1\tsource.py\0"
         return subprocess.CompletedProcess(argv, 0, output, b"")
 
-    monkeypatch.setattr(deterministic_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(deterministic_editing_module, "run_hidden", fake_run)
 
     result = engine.split_changes(str(tmp_path))
 
     assert result["total_files"] == 1
-    assert timeouts == [0.7] * 7
+    assert timeouts == [0.7] * 11
 
 
 def test_synthesize_rules(tmp_path: Path) -> None:

@@ -28,6 +28,10 @@ _LOCK = threading.Lock()
 _HUNK = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)")
 
 
+class PatchBudgetExceeded(ValueError):
+    """A single patch could not be captured within the transport budget."""
+
+
 def identity(*parts: str) -> str:
     return hashlib.sha256(json.dumps(parts, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -154,7 +158,11 @@ def inspect_change_atoms(
                 *(("--cached",) if scope == staged_scope else ()),
                 "--", ":(literal)" + path,
             )
-            patch = git(*args)
+            try:
+                patch = git(*args)
+            except PatchBudgetExceeded:
+                unavailable.append({"path": path, "scope": scope, "reason": "patch_output_budget"})
+                continue
             if not patch or len(patch) > _MAX_PATCH_BYTES or b"\nSubmodule " in patch or b"Subproject commit " in patch:
                 unavailable.append({"path": path, "scope": scope, "reason": "unsupported_or_large_patch"})
                 continue
@@ -198,7 +206,11 @@ def inspect_change_atoms(
             observations[path] = [item for item in observations[path] if item["scope"] != scope]
             unavailable.append({"path": path, "scope": scope, "reason": "recheck_budget"})
             continue
-        if hashlib.sha256(git(*args)).hexdigest() != digest:
+        try:
+            current = git(*args)
+        except PatchBudgetExceeded as exc:
+            raise ValueError("Git patch exceeded budget during recheck") from exc
+        if hashlib.sha256(current).hexdigest() != digest:
             raise ValueError("Git patch changed during inspection")
 
     return {

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import PurePosixPath
 from typing import Any
 
-from .change_atoms import identity, inspect_change_atoms
+from .change_atoms import PatchBudgetExceeded, identity, inspect_change_atoms
+from .process_utils import clean_git_env, run_hidden
 
 
 def _component(path: str) -> tuple[str, str]:
@@ -204,6 +206,16 @@ def _explicit_path_proposal(files: list[str]) -> dict[str, Any]:
     }
 
 
+def _git_snapshot_metadata(git: Any) -> dict[str, str]:
+    try:
+        head = _resolve_commit(git, "HEAD")
+    except ValueError:
+        # Unborn and inaccessible HEAD must not be claimed as a verified revision.
+        head = "unavailable"
+    index = git("ls-files", "--stage", "-z")
+    return {"head": head, "index_digest": hashlib.sha256(index).hexdigest()}
+
+
 def run_split_changes(
     engine: Any,
     root: str,
@@ -214,21 +226,28 @@ def run_split_changes(
     hidden_run_kwargs_fn: Any,
     base: str | None = None,
     head: str = "HEAD",
+    git_runner: Any = run_hidden,
 ) -> dict[str, Any]:
     resolved_root = path_type(engine._root(root))
 
     def git(*args: str) -> bytes:
-        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        env["GIT_OPTIONAL_LOCKS"] = "0"
-        cp = subprocess_module.run(
+        env = clean_git_env(extra_env={
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C",
+        })
+        patch = "--patch" in args
+        cp = git_runner(
             ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", *args],
-            cwd=str(resolved_root),
-            capture_output=True,
-            check=False,
-            timeout=engine.git_status_timeout,
-            env=env,
+            cwd=str(resolved_root), capture_output=True, check=False,
+            timeout=engine.git_status_timeout, env=env,
+            stdin=subprocess_module.DEVNULL,
+            max_output_bytes=512 * 1024 if patch else 4 * 1024 * 1024,
             **hidden_run_kwargs_fn(),
         )
+        if getattr(cp, "stdout_truncated", False):
+            if patch:
+                raise PatchBudgetExceeded("Git patch output exceeds budget")
+            raise ValueError("Git inventory exceeds output budget")
         if cp.returncode != 0:
             raise ValueError("Git inventory unavailable")
         return cp.stdout
@@ -256,7 +275,9 @@ def run_split_changes(
         diff_args = ("diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none")
         comparison = None
         atom_git = git
+        snapshot_before = None
         if base is None:
+            snapshot_before = _git_snapshot_metadata(git)
             before = git(*args)
             statuses = _parse_status(before)
             staged = _parse_numstat(git(*diff_args, "--cached", "--"))
@@ -278,6 +299,7 @@ def run_split_changes(
                     boundary = args_without_cached.index("--")
                     return git(*args_without_cached[:boundary], base_sha, head_sha, *args_without_cached[boundary:])
                 return git(*patch_args)
+        full_status_count = len(statuses)
         if changed_files is not None:
             if not isinstance(changed_files, list) or any(not isinstance(p, str) or p not in statuses for p in changed_files):
                 raise ValueError("Requested path is not in the current dirty worktree")
@@ -287,8 +309,10 @@ def run_split_changes(
             staged_scope="committed" if comparison else "staged",
             persistent_cache=getattr(engine, "_change_summary_cache", None),
         )
-        if comparison is None and git(*args) != before:
-            raise ValueError("Worktree inventory changed during inspection")
+        if comparison is None and (
+            git(*args) != before or _git_snapshot_metadata(git) != snapshot_before
+        ):
+            raise ValueError("Git HEAD, index or inventory changed during inspection")
         clusters = _group(statuses, staged, unstaged)
         by_path = observed["observations"]
         for cluster in clusters:
@@ -361,6 +385,9 @@ def run_split_changes(
         "root": str(resolved_root),
         "total_files": len(statuses),
         "comparison": comparison,
+        "inventory_file_count": full_status_count,
+        "inventory_scope": "selected_paths" if changed_files is not None else "git_visible_changes",
+        "git_snapshot_metadata": snapshot_before,
         "cluster_count": len(clusters),
         "clusters": clusters,
         "summary": f"{len(statuses)} changed file(s), {len(clusters)} proposed component group(s)",
@@ -371,8 +398,9 @@ def run_split_changes(
         "persistent_summary_cache_hits": observed["persistent_cache_hits"],
         "observed_change_set_id": identity(
             "observed-change-set-v2", str(top),
-            comparison["base"] if comparison else "worktree",
-            comparison["head"] if comparison else "worktree",
+            comparison["base"] if comparison else snapshot_before["head"],
+            comparison["head"] if comparison else snapshot_before["index_digest"],
+            *(identity(path, flag) for path, flag in sorted(statuses.items())),
             *(atom["atom_id"] for path in sorted(observed["observations"])
               for atom in observed["observations"][path]),
         ),
