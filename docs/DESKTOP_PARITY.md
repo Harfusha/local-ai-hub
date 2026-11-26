@@ -4,24 +4,41 @@ Status: **partial implementation; not a replacement release**. This is the
 requested feature/verification matrix, not a second project plan. The repository
 plan tool was unavailable in this environment; no plan files were modified.
 
-## Architecture
+## Architecture (Rust revision)
 
-Use Python 3.11+ and Tcl/Tk (tkinter/ttk), initially from the source checkout:
-`python tools/desktop.py [--config /path/to/config.toml]`. This adds no pip
-runtime dependency and does not use HTTP-served HTML, Electron, or a browser.
-Tcl/Tk must be present in the Python installation (some Linux distributions
-package it separately). The suitability for rich charts, very large lists,
-accessibility, and distribution remains to be verified on real desktops.
+The desktop is now compiled Rust, using eframe/egui 0.31.1 with the Glow
+OpenGL renderer. No Tkinter, Qt, Electron, browser engine or local UI server.
+The toolkit is MIT/Apache-2.0 licensed. The explicit 0.31.1 pin targets a
+known App::update API, not a claim to be the newest release. Upgrade and
+dependency license/security review remain release gates.
 
-The desktop is a separate process. Its health probe and read operations use
-the existing loopback HubClient with auto_start=False; only explicit Start
-invokes the lifecycle CLI. Stop/restart use the existing supervisor-aware CLI
-and do not introduce a second service manager. The desktop has no arbitrary
-command runner. Maintenance uses fixed route/payload pairs and confirmations.
-Workers serialize operations outside the GUI event loop; no view polling or
-parallel expensive reads are started in the background. Status is probed every
-five seconds. Rendered text has a 250,000-character display cap (not API
-pagination or virtualization). Closing the window does not request service stop.
+Build from a trusted Hub checkout with Rust stable and platform OpenGL
+libraries: `cargo build --manifest-path desktop/Cargo.toml --release`.
+Run `desktop/target/release/local-ai-hub-desktop` (add .exe on Windows)
+from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
+LOCAL_AI_CONFIG or choose the installation in the UI. Python is still
+required by the existing Hub; it is not used for GUI rendering. The desktop
+executes a fixed adapter script with JSON stdin/stdout and named operations.
+No arbitrary route, shell or command broker is exposed. Each operation uses
+a short-lived adapter process; it delegates to HubClient(auto_start=False)
+or the existing lifecycle CLI. There is no resident Python GUI or bridge
+while idle. No new network listener or secret storage is introduced.
+
+One operation runs in a worker thread; the renderer is event-driven apart
+from a 30-second focused-window health probe, which can be disabled. Views
+load explicitly. The searchable response inspector virtualizes visible
+rows, caps at 12,000 flattened fields and 8 MB adapter response, and exposes
+individual detail/copy. It is not yet a substitute for typed charts,
+pagination, Kanban, trace drilldowns or rich request tables. The service
+lifecycle and desktop lifecycle remain separate. Closing during operations
+is blocked to avoid interrupting a mutation.
+
+CI: .github/workflows/desktop.yml builds and runs Rust tests on Ubuntu,
+Windows and macOS, and runs focused bridge tests on Ubuntu. Native binaries
+are CI artifacts, not signed installers. Cargo.lock must be generated and
+committed after a successful dependency resolution; no reproducible build
+claim until then. Full runtime portability, GPU/driver behavior and resource
+consumption remain unmeasured.
 
 ## Page-level parity matrix
 
@@ -31,17 +48,17 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 | Dashboard page / workflow | Desktop location | Current coverage | Acceptance verification still required |
 |---|---|---|---|
 | Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshots, no charts or workload drilldown | Compare cards, periods, health/warming/stale states and workload drilldowns |
-| Requests: scheduler, active API, async jobs, work orders, history | Future Requests | Missing dedicated screen | Compare filtering/paging, cancellation, retry, trace links, job failures |
-| Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists; no mutations, runs, traces, modals, analytics | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
-| Coordination: plans, board, dependencies, locks, semaphore | File leases | Partial lease read only | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |
-| Projects & preprocessing | Projects | Partial status read only | Register, configure, remove, pause, resume, progress and unavailable indexes |
-| Commands | Future Commands | Missing dedicated screen | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
-| Models & search | Search workspaces, Hardware, Overview | Partial snapshots | Model compare, runtime inventory, statistics, profiles, cache, agents, route/token/latency metrics, evals, benchmarks, Laya, embedding/rerank, optimization |
+| Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial snapshot / trace index inspector; no specialized history table | Compare filtering/paging, cancellation, retry, trace links, job failures |
+| Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists, create/get/complete/fail, repository fact record/delete, incident record; trace index only | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
+| Coordination: plans, board, dependencies, locks, semaphore | Plans, Plan board, Semaphores, File leases, Worktrees | Partial scoped reads and plan creation; no revision-aware edits or Kanban | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |
+| Projects & preprocessing | Projects | Partial status and project config reads, register/reindex/pause/resume/unregister and global controls | Register, configure, remove, pause, resume, progress and unavailable indexes |
+| Commands | Commands, Worktrees | Partial shared status and scoped worktree reads; no broker drilldown | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
+| Models & search | Search workspaces, Hardware, Overview | Partial snapshots and two-route comparison | Model compare, runtime inventory, statistics, profiles, cache, agents, route/token/latency metrics, evals, benchmarks, Laya, embedding/rerank, optimization |
 | Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
-| Settings | Settings — activity mode, toolbar | Partial activity mode only | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures |
+| Settings | Settings — activity mode, toolbar | Partial config read, activity mode, telemetry mode, selected feature flags and override reset | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures |
 | Transfers | Future Transfers | Missing | Export/import ZIP, scope, password, integrity, failure and cancellation |
 | Activity | Activity | Partial bounded event snapshot | Cursor, filters, SSE, pause, stale/reconnect and detail modals |
-| Global control menu | Toolbar / maintenance selector | Partial: mode, DB optimization, expired cache, stale agent cleanup | Detailed telemetry consent and purge, stats purge, preprocessing pause/resume, diagnostic results and failure states |
+| Global control menu | Toolbar / maintenance selector | Partial: mode, DB optimization, expired cache, stale agent cleanup, detailed telemetry toggle/purge, stats purge, global preprocessing | Detailed telemetry consent and purge, stats purge, preprocessing pause/resume, diagnostic results and failure states |
 | Service unavailable | Toolbar | Explicit Start and unreachable state; no implicit autostart | Cold start, supervisor already warming, permission failure, timeout, restart failure, close during transition |
 | Desktop and service independence | Window close | No stop on close; busy close blocked | Start/stop via CLI, externally stopped Hub, desktop relaunch, concurrent operations |
 | Web UI cutover | Not performed | Blocked by incomplete parity | Remove static routes/assets and references, preserve HTTP API/MCP, verify old routes no longer serve UI |
@@ -172,8 +189,8 @@ Inline handler names found in HTML (including generated templates):
 
 ## Literal API references in dashboard HTML
 
-The desktop currently consumes only the fixed routes in `VIEWS` and
-`MAINTENANCE` in `tools/desktop.py`; other API routes must be inventoried
+The desktop currently consumes only the fixed routes in `VIEWS`,
+`MAINTENANCE` and `dispatch` in `tools/desktop.py`; other API routes must be inventoried
 with their schemas, auth, scope, payload, responses, binary/SSE contracts and
 callers. Preserve the backend routes unless proven presentation-only.
 This list is lexical, not a complete route registry.
@@ -230,14 +247,17 @@ This list is lexical, not a complete route registry.
 
 ## Verification
 
-Added `tests/test_desktop_control.py`: offline reads, explicit repository
+Added `desktop/src/main.rs` unit tests for bounded rows, paths and named IPC
+requests, and `tests/test_desktop_control.py`: offline reads, explicit repository
 scope and encoding, start/stop/restart delegation, idempotent start,
 allowlist rejection, argv/no-shell transport, API failure and maintenance
-confirmation at the response boundary. Tests are not executed in this environment.
+confirmation at the response boundary. Tests are not executed in this environment; CI configured but results not yet verified.
 
 Required commands, from the actual checkout, per AGENTS.md:
 
 ```sh
+cargo test --manifest-path desktop/Cargo.toml
+cargo build --manifest-path desktop/Cargo.toml --release
 python -m pytest tests/test_desktop_control.py -q
 python -m pytest tests/test_test_environment_isolation.py -q
 python -m compileall -q src tools tests
@@ -254,13 +274,13 @@ On Windows and Linux, measure cold/warm first-window and first-ready latency
 using monotonic timestamps, and record desktop process RSS/private memory and
 CPU delta over a 60-second idle sample with Hub stopped and running. Measure
 service and desktop independently; repeat at least three times and report
-actual results plus hardware/OS/Python/Tk versions. No threshold claimed.
+actual results plus hardware/OS/Rust/eframe/Python versions. No threshold claimed.
 
 ## Remaining acceptance gates
 
 - Full parity against HTML, dashboard TypeScript and Python/HTTP routes and CLI
   registries, including dynamically rendered controls.
-- Native typed screens, forms, action-specific errors, paging, searches, charts,
+- Complete native typed screens, remaining forms, action-specific errors, paging, searches, charts,
   cancellation, config and transfer handling, packaging/launchers.
 - Verify authentication and scope with real configured clients, API/MCP
   compatibility, offline/online lifecycle, accessibility, and resource usage.
