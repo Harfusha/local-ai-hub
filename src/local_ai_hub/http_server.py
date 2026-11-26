@@ -1651,7 +1651,6 @@ __all__ = [
     'CheckpointResponseBudgetError',
     'CompletionGateError',
     'ConfigError',
-    'DASHBOARD_HTML',
     'DEBUG_TRACE_HTTP_MAX_BYTES',
     'DebugTraceObserver',
     'FeatureSet',
