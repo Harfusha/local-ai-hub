@@ -121,7 +121,7 @@ class HubControl:
             if not client._online(timeout=2.0):
                 raise RuntimeError("Hub is not reachable. Use Start Hub if it is stopped.")
             data = client.get(path, timeout=15.0, requires_heavy_work=False)
-            if data.get("success") is False:
+            if data.get("success") is False or data.get("outcome_unknown"):
                 raise RuntimeError(str(data.get("error") or "Hub request failed"))
             return data
         finally:
@@ -221,6 +221,45 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if action != "get":
             payload["reason"] = text_field(args, "reason")
         return checked_post(control, "/api/agent-state/tasks", payload)
+    if op in {"task_create", "memory_record", "memory_delete", "plan_create",
+              "global_preprocess", "feature"}:
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        if op == "global_preprocess":
+            action = text_field(args, "action", 30)
+            if action not in {"pause", "resume", "cleanup_deleted"}:
+                raise ValueError("Unsupported preprocessing action")
+            return checked_post(control, "/api/preprocess", {"action": action})
+        if op == "feature":
+            feature = text_field(args, "feature", 100)
+            if feature not in {"status", "repo", "tasks", "rag", "commands", "coord",
+                               "artifacts", "subagents", "agent_os"} or type(args.get("enabled")) is not bool:
+                raise ValueError("Unsupported feature or invalid boolean")
+            return checked_post(control, "/api/config/update",
+                                {"action": "update", "settings": {f"features.{feature}": args["enabled"]}})
+        root = explicit_root(args.get("root"))
+        if op == "task_create":
+            criteria = text_field(args, "criteria", 12000)
+            return checked_post(control, "/api/agent-state/tasks", {"root": root, "action": "create",
+                "contract": {"goal": text_field(args, "goal", 12000),
+                             "acceptance_criteria": [line.strip() for line in criteria.splitlines() if line.strip()],
+                             "scope": "task", "risk_profile": "normal"}})
+        if op in {"memory_record", "memory_delete"}:
+            payload = {"root": root, "action": "record" if op == "memory_record" else "delete",
+                       "key": text_field(args, "key", 200), "scope": "repository"}
+            if op == "memory_record":
+                raw = text_field(args, "value", 12000)
+                try:
+                    value = json.loads(raw)
+                except ValueError:
+                    value = raw
+                payload.update({"value": value, "kind": "fact", "confidence": 1.0})
+            return checked_post(control, "/api/agent-state/memory", payload)
+        import uuid
+        return checked_post(control, "/api/coord/plan_create", {"root": root,
+            "plan_id": text_field(args, "id", 85), "title": text_field(args, "title", 160),
+            "description": "", "lifecycle": "active", "owner": "desktop",
+            "idempotency_key": "desktop-" + uuid.uuid4().hex})
     if op == "incident":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
