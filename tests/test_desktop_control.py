@@ -112,3 +112,51 @@ def test_unknown_maintenance_is_rejected_before_transport():
         with pytest.raises(KeyError):
             desktop.HubControl().maintenance("arbitrary shell")
         factory.assert_not_called()
+
+
+def test_bridge_rejects_arbitrary_route_and_shell():
+    control = MagicMock()
+    for request in (
+        {"op": "post", "args": {"route": "/api/command"}},
+        {"op": "shell", "args": {"command": "echo no"}},
+        {"op": "project", "args": {"action": "arbitrary", "confirmed": True}},
+    ):
+        with pytest.raises(ValueError):
+            desktop.dispatch(control, request)
+    control._client.assert_not_called()
+
+
+@pytest.mark.parametrize("op,args", [
+    ("maintenance", {"action": "Purge detailed traces"}),
+    ("telemetry", {"mode": "full"}),
+    ("config_reset", {}),
+    ("task", {"action": "complete", "id": "task_1"}),
+    ("project", {"action": "unregister"}),
+])
+def test_bridge_requires_confirmation(op, args):
+    with pytest.raises(ValueError, match="confirmation"):
+        desktop.dispatch(MagicMock(), {"op": op, "args": args})
+
+
+def test_plan_board_requires_explicit_scope():
+    with pytest.raises(ValueError, match="explicit"):
+        desktop.dispatch(MagicMock(), {"op": "plan_board", "args": {"id": "plan_1"}})
+
+
+def test_project_unregister_keeps_data(tmp_path):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post", return_value={"success": True}) as post:
+        desktop.dispatch(control, {"op": "project", "args": {
+            "root": str(tmp_path), "action": "unregister", "confirmed": True}})
+        post.assert_called_once_with(control, "/api/preprocess", {
+            "root": str(tmp_path.resolve()), "action": "unregister", "purge_data": False})
+
+
+def test_bridge_never_imports_tkinter():
+    import ast
+    from pathlib import Path
+    tree = ast.parse(Path(desktop.__file__).read_text(encoding="utf-8"))
+    imports = [a.name for node in ast.walk(tree) if isinstance(node, ast.Import) for a in node.names]
+    assert "tkinter" not in imports
+    assert not any(isinstance(node, ast.ImportFrom) and node.module == "tkinter"
+                   for node in ast.walk(tree))
