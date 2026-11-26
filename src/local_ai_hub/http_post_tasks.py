@@ -26,9 +26,37 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
     if action == "repair_session":
         self._task_repair_session(payload)
         return
+    if action in {"projection_restore_preview", "projection_restore"}:
+        root = str(payload.get("root", ""))
+        task_id = str(payload.get("task_id", "")).strip()
+        if not root or not task_id:
+            self._send(400, {"success": False, "error": "root and task_id are required", "terminal": True, "retryable": False}); return
+        if action == "projection_restore_preview":
+            result = services_module.APP.agent_tasks.preview_task_projection_restore(task_id, root)
+            self._send(200 if result.get("success") else 400, result); return
+        result = services_module.APP.agent_tasks.restore_task_projection(
+            task_id, root, str(payload.get("event_digest", ""))
+        )
+        self._send(200 if result.get("success") else 409, result); return
+    if action == "projection_restore_batch_preview":
+        root = str(payload.get("root", ""))
+        if not root:
+            self._send(400, {"success": False, "error": "root is required", "terminal": True, "retryable": False}); return
+        result = services_module.APP.agent_tasks.preview_missing_task_projection_recovery(
+            root, limit=payload.get("limit", 100), offset=payload.get("offset", 0)
+        )
+        self._send(200 if result.get("success") else 400, result); return
+    if action == "projection_restore_batch":
+        root = str(payload.get("root", ""))
+        if not root:
+            self._send(400, {"success": False, "error": "root is required", "terminal": True, "retryable": False}); return
+        result = services_module.APP.agent_tasks.restore_task_projections(root, payload.get("entries"))
+        self._send(200 if result.get("success") else 409, result); return
     scoped_task_actions = {
         "curate_dataset",
         "ask", "answer",
+        "projection_restore_preview", "projection_restore", "projection_restore_batch_preview",
+        "projection_restore_batch",
     }
     repo_root = str(getattr(self, "_authorization_root", "") or "")
     if action in scoped_task_actions and not repo_root:

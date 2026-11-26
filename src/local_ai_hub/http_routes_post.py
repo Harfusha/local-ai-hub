@@ -31,6 +31,12 @@ class HTTPPostRoutesMixin:
         except Exception:
             self._send(503, {"success": False, "error": "local model inventory unavailable", "terminal": True, "retryable": False})
             return
+        options = request.setdefault("options", {})
+        if "num_ctx" not in options:
+            if request["model"].startswith("qwen3.5:") or request["model"].startswith("gemma4:"):
+                options["num_ctx"] = 131072
+            elif request["model"].startswith("qwen2.5-coder:"):
+                options["num_ctx"] = 32768
         try:
             result = app.services.proxy_request("/api/chat", request, source="proxy:opencode")
             if isinstance(result, dict) and result.get("error") and result.get("done") is not True:
@@ -197,6 +203,8 @@ class HTTPPostRoutesMixin:
             self._send(403, {"success": False, "error": "learning route requires authenticated operator scope", "terminal": True, "retryable": False}); return
         if path == "/api/agent-state/cleanup" and getattr(self, "_authorization_actor", "unrecognized") == "unrecognized":
             self._send(403, {"success": False, "error": "cleanup route requires authenticated operator scope", "terminal": True, "retryable": False}); return
+        if path == "/api/agent-state/tasks" and payload.get("action") in {"projection_restore", "projection_restore_batch"} and getattr(self, "_authorization_actor", "unrecognized") == "unrecognized":
+            self._send(403, {"success": False, "error": "projection restore requires authenticated operator scope", "terminal": True, "retryable": False}); return
         if path.startswith("/api/agent-state/") and path not in allowed_agent_state_post and path != "/api/agent-state/learning":
             self._send(403, {"success": False, "error": "agent_state route has no root-scoped access contract", "terminal": True, "retryable": False}); return
         if path == "/api/agent-state/memory" and not self._bind_memory_payload(payload):
@@ -909,6 +917,7 @@ class HTTPPostRoutesMixin:
                            "deadline": deadline}
                 if laya_strategy == "lexical_bm25":
                     options["lexical_only"] = True
+
                 def search_with_lexical_fallback(cancel_event=None):
                     search_options = dict(options)
                     if cancel_event is not None:

@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import closing
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from local_ai_hub import http_server
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_project_incidents import build_project_incident_record
 from local_ai_hub.repo_project_memory import build_project_memory_record
 from local_ai_hub.repo_project_tasks import build_project_task_record
+from local_ai_hub.sqlite_support import connect_sqlite
 
 
 def _post(base_url: str, path: str, payload: dict, *, dashboard: bool = False):
@@ -158,6 +162,67 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
         assert status == 200 and query["success"] is True
         assert any(row["record"]["id"] == "rule-billing-idempotency" for row in query["records"])
         assert store.get("task", "task-idempotent-billing")["record"]["payload"]["checkpoint"]["next_action"] == "verify retry behavior"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        http_server.APP = previous_app
+        app.close()
+
+
+def test_http_projection_recovery_requires_operator_and_preserves_event_history(tmp_path, monkeypatch):
+    root = tmp_path / "recovery-service"
+    control = root / ".local-ai-hub"
+    control.mkdir(parents=True)
+    project_id = "608c48ba-c68d-4551-8643-4a53b57b6510"
+    (control / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    state_dir = tmp_path / "recovery-state"
+    config_path = tmp_path / "recovery-config.toml"
+    config_path.write_text("\n".join([
+        "[local_ai_hub]", "config_schema_version = 1", "", "[server]",
+        'bind = "127.0.0.1"', 'state_dir = "' + state_dir.as_posix() + '"', "",
+        "[security]", 'allowed_roots = ["' + tmp_path.as_posix() + '"]', "",
+        "[agent_state]", "enabled = true", "", "[prewarm]", "enabled = false", "",
+    ]), encoding="utf-8")
+    app = LocalAIApp(str(config_path))
+    previous_app = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        task_id = "task-http-projection-recovery"
+        task = app.agent_tasks.create(
+            GoalContract(goal="Close monthly customer billing accurately"),
+            ScopeContext(repository_id=project_id, task_id=task_id),
+            task_id=task_id,
+            repo_root=str(root),
+        )
+        with closing(connect_sqlite(app.agent_tasks.state_store.db_path)) as con:
+            con.execute("DELETE FROM agent_tasks_projection WHERE task_id = ?", (task_id,))
+            con.commit()
+        original_events = app.agent_tasks.state_store.events(f"task:{task_id}")
+
+        status, preview = _post(base_url, "/api/agent-state/tasks", {
+            "action": "projection_restore_preview", "root": str(root), "task_id": task_id,
+        })
+        assert status == 200 and preview["eligible"] is True
+        status, wrong_root = _post(base_url, "/api/agent-state/tasks", {
+            "action": "projection_restore_preview", "root": str(tmp_path.parent), "task_id": task_id,
+        })
+        assert status == 403 and wrong_root["success"] is False
+
+        restore = {
+            "action": "projection_restore", "root": str(root), "task_id": task_id,
+            "event_digest": preview["event_digest"],
+        }
+        status, restored = _post(base_url, "/api/agent-state/tasks", restore, dashboard=True)
+        assert status == 200 and restored["restored"] is True
+        assert app.agent_tasks.get(task_id).to_dict() == task.to_dict()
+        assert app.agent_tasks.state_store.events(f"task:{task_id}") == original_events
     finally:
         server.shutdown()
         server.server_close()

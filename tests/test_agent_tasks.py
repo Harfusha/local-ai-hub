@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 import subprocess
@@ -166,8 +165,6 @@ def test_checkpoint_shadow_failure_does_not_change_task_result(store: TaskStore,
 
 
 def test_blocked_task_checkpoint_shadow_uses_blocked_status_reason(store: TaskStore):
-    from hashlib import sha256
-
     repository_id = "c" * 64
     task_id = "task-shadow-blocked"
     task = store.create(
@@ -714,7 +711,7 @@ def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(s
 
 
 def test_task_query_bounds_rows_scanned(store: TaskStore):
-    task = store.create(contract_with_criteria("tests"), task_context(), task_id="scan-seed")
+    store.create(contract_with_criteria("tests"), task_context(), task_id="scan-seed")
     con = connect_sqlite(store.state_store.db_path)
     try:
         rows = [
@@ -2186,3 +2183,112 @@ def test_commit_update_only_refreshes_search_index_when_indexed_fields_change(
         idempotency_key="checkpoint-search-index-refresh-guard",
     )
     assert refreshed == [task.task_id]
+
+
+def test_projection_restore_recovers_exact_creation_state_without_appending_event(store: TaskStore, tmp_path: Path):
+    root = tmp_path / "recoverable"
+    root.mkdir()
+    task = store.create(
+        GoalContract(goal="Publish the quarterly forecast", acceptance_criteria=("forecast reviewed",)),
+        ScopeContext(repository_id="recovery-project", task_id="task-recovery-created-only"),
+        task_id="task-recovery-created-only",
+        repo_root=str(root),
+    )
+    original_events = store.state_store.events(f"task:{task.task_id}")
+    with closing(connect_sqlite(store.state_store.db_path)) as con:
+        con.execute("DELETE FROM agent_tasks_projection WHERE task_id = ?", (task.task_id,))
+        con.commit()
+
+    preview = store.preview_task_projection_restore(task.task_id, str(root))
+    assert preview["success"] is True
+    assert preview["eligible"] is True, preview
+    restored = store.restore_task_projection(task.task_id, str(root), preview["event_digest"])
+
+    assert restored["success"] is True
+    assert restored["restored"] is True
+    assert store.get(task.task_id).to_dict() == task.to_dict()
+    assert store.state_store.events(f"task:{task.task_id}") == original_events
+    assert store.restore_task_projection(task.task_id, str(root), preview["event_digest"])["reason"] == "projection_exists"
+
+
+def test_projection_restore_skips_stream_with_mutation_after_creation(store: TaskStore, tmp_path: Path):
+    root = tmp_path / "mutated"
+    root.mkdir()
+    task = store.create(
+        GoalContract(goal="Ship the approved onboarding flow"),
+        ScopeContext(repository_id="recovery-project", task_id="task-recovery-mutated"),
+        task_id="task-recovery-mutated",
+        repo_root=str(root),
+    )
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="implementation", next_action="review acceptance"),
+        actor="agent",
+        idempotency_key="checkpoint-recovery-mutated",
+    )
+    with closing(connect_sqlite(store.state_store.db_path)) as con:
+        con.execute("DELETE FROM agent_tasks_projection WHERE task_id = ?", (task.task_id,))
+        con.commit()
+
+    preview = store.preview_task_projection_restore(task.task_id, str(root))
+    assert preview["success"] is True
+    assert preview["eligible"] is False
+    assert preview["reason"] == "history_not_creation_only"
+
+
+def test_projection_restore_rejects_wrong_root_and_stale_preview(store: TaskStore, tmp_path: Path):
+    root = tmp_path / "owner"
+    other_root = tmp_path / "other"
+    root.mkdir()
+    other_root.mkdir()
+    task = store.create(
+        GoalContract(goal="Reconcile customer billing records"),
+        ScopeContext(repository_id="recovery-project", task_id="task-recovery-owner"),
+        task_id="task-recovery-owner",
+        repo_root=str(root),
+    )
+    with closing(connect_sqlite(store.state_store.db_path)) as con:
+        con.execute("DELETE FROM agent_tasks_projection WHERE task_id = ?", (task.task_id,))
+        con.commit()
+
+    wrong_root = store.preview_task_projection_restore(task.task_id, str(other_root))
+    assert wrong_root["eligible"] is False
+    assert wrong_root["reason"] == "repository_scope_mismatch"
+    preview = store.preview_task_projection_restore(task.task_id, str(root))
+    store.state_store.append(AgentEvent.create(
+        stream_id=f"task:{task.task_id}", kind="task.checkpointed",
+        payload=TaskCheckpoint(phase="changed").to_dict(), actor="agent",
+    ))
+    stale = store.restore_task_projection(task.task_id, str(root), preview["event_digest"])
+    assert stale["success"] is False
+    assert stale["reason"] == "history_not_creation_only"
+    assert store.get(task.task_id) is None
+
+
+def test_batched_projection_recovery_is_root_scoped_and_per_record(store: TaskStore, tmp_path: Path):
+    root = tmp_path / "batch-owner"
+    foreign_root = tmp_path / "batch-foreign"
+    root.mkdir()
+    foreign_root.mkdir()
+    owned = store.create(
+        GoalContract(goal="Prepare the customer renewal plan"),
+        ScopeContext(repository_id="batch-owner", task_id="task-batch-owned"),
+        task_id="task-batch-owned", repo_root=str(root),
+    )
+    foreign = store.create(
+        GoalContract(goal="Prepare another customer's renewal plan"),
+        ScopeContext(repository_id="batch-foreign", task_id="task-batch-foreign"),
+        task_id="task-batch-foreign", repo_root=str(foreign_root),
+    )
+    with closing(connect_sqlite(store.state_store.db_path)) as con:
+        con.execute("DELETE FROM agent_tasks_projection WHERE task_id IN (?, ?)", (owned.task_id, foreign.task_id))
+        con.commit()
+
+    preview = store.preview_missing_task_projection_recovery(str(root), limit=100, offset=0)
+    assert preview["success"] is True
+    assert [entry["task_id"] for entry in preview["entries"]] == [owned.task_id]
+    restored = store.restore_task_projections(str(root), preview["entries"])
+
+    assert restored["restored"] == [owned.task_id]
+    assert store.get(owned.task_id) is not None
+    assert store.get(foreign.task_id) is None

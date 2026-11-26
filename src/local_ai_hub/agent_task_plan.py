@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing, nullcontext
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,8 @@ from .agent_task_models import (
     ConcurrentTaskUpdateError,
     TaskIdempotencyConflictError,
     TaskState,
+    TaskStatus,
+    _canonical_repository_root,
     _preserve_checkpoint_memory_state,
     _task_scope_root,
 )
@@ -26,6 +29,204 @@ TaskStore = None
 
 
 class TaskPlanSyncMixin:
+    def preview_missing_task_projection_recovery(
+        self, repo_root: str, *, limit: int = 100, offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return bounded, root-owned recovery candidates without task payloads."""
+        try:
+            canonical_root = _canonical_repository_root(repo_root)
+        except (OSError, ValueError):
+            return {"success": False, "error": "invalid_repository_root"}
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return {"success": False, "error": "limit_must_be_between_1_and_100"}
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return {"success": False, "error": "offset_must_be_nonnegative"}
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            rows = con.execute(
+                """SELECT DISTINCT e.stream_id
+                   FROM agent_events AS e
+                   WHERE e.kind = 'task.created'
+                     AND e.stream_id LIKE 'task:%'
+                     AND json_extract(
+                         CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,
+                         '$.checkpoint.state_data._agent_task_scope.repo_root'
+                     ) = ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM agent_tasks_projection AS p
+                         WHERE p.task_id = substr(e.stream_id, 6)
+                     )
+                   ORDER BY e.stream_id
+                   LIMIT ? OFFSET ?""",
+                (canonical_root, limit, offset),
+            ).fetchall()
+        entries: list[dict[str, Any]] = []
+        skipped: dict[str, int] = {}
+        for (stream_id,) in rows:
+            task_id = str(stream_id)[5:]
+            result = self.preview_task_projection_restore(task_id, canonical_root)
+            if result.get("reason") == "repository_scope_mismatch":
+                continue
+            if result.get("reason") in {"invalid_event_history", "event_history_unavailable"}:
+                skipped["unverified_scope"] = skipped.get("unverified_scope", 0) + 1
+                continue
+            if result.get("eligible") is True:
+                entries.append({"task_id": task_id, "event_digest": result["event_digest"]})
+            else:
+                reason = str(result.get("reason", "not_eligible"))
+                skipped[reason] = skipped.get(reason, 0) + 1
+        return {
+            "success": True,
+            "entries": entries,
+            "eligible_count": len(entries),
+            "skipped": skipped,
+            "scanned": len(rows),
+            "offset": offset,
+            "next_offset": offset + len(rows),
+            "has_more": len(rows) == limit,
+        }
+
+    def restore_task_projections(self, repo_root: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+        """Restore a bounded reviewed batch; each stream commits independently."""
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 100:
+            return {"success": False, "error": "entries_must_contain_1_to_100_items"}
+        task_ids: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {"task_id", "event_digest"}:
+                return {"success": False, "error": "invalid_recovery_entry"}
+            task_id = entry["task_id"]
+            digest = entry["event_digest"]
+            if (
+                not isinstance(task_id, str) or not task_id.strip() or "\x00" in task_id
+                or task_id in task_ids or not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+            ):
+                return {"success": False, "error": "invalid_or_duplicate_task_id"}
+            task_ids.add(task_id)
+        results = []
+        for entry in entries:
+            try:
+                result = self.restore_task_projection(entry["task_id"], repo_root, entry["event_digest"])
+            except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                result = {"success": False, "restored": False, "reason": "storage_write_failed", "task_id": str(entry["task_id"])}
+            results.append(result)
+        restored = [item["task_id"] for item in results if item.get("restored") is True]
+        skipped: dict[str, int] = {}
+        for item in results:
+            if item.get("restored") is not True:
+                reason = str(item.get("reason", "restore_failed"))
+                skipped[reason] = skipped.get(reason, 0) + 1
+        return {"success": not any(item.get("success") is False for item in results), "restored": restored, "restored_count": len(restored), "skipped": skipped}
+
+    def preview_task_projection_restore(self, task_id: str, repo_root: str) -> dict[str, Any]:
+        """Preview restore only when a task's complete history is its creation event."""
+        task_id = str(task_id or "").strip()
+        try:
+            canonical_root = _canonical_repository_root(repo_root)
+        except (OSError, ValueError):
+            return {"success": False, "eligible": False, "reason": "invalid_repository_root"}
+        if not task_id or "\x00" in task_id:
+            return {"success": False, "eligible": False, "reason": "invalid_task_id"}
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            row = con.execute(
+                "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        existing = self._row_to_state(row) if row else None
+        if existing is not None:
+            if _task_scope_root(existing) == canonical_root:
+                return {"success": True, "eligible": False, "reason": "projection_exists", "task_id": task_id}
+            return {"success": False, "eligible": False, "reason": "task_not_found"}
+        try:
+            page = self.state_store.event_page(f"task:{task_id}", after_seq=0, limit=2)
+            if page.get("success") is not True:
+                return {"success": False, "eligible": False, "reason": "event_history_unavailable", "task_id": task_id}
+            events = page.get("events", [])
+            if (
+                page.get("has_more") is True
+                or page.get("gap_ranges")
+                or page.get("first_retained_seq") != 1
+                or page.get("last_seq") != 1
+                or len(events) != 1
+            ):
+                return {"success": True, "eligible": False, "reason": "history_not_creation_only", "task_id": task_id}
+            event = AgentEvent.from_dict(events[0])
+            if event.seq != 1 or event.stream_id != f"task:{task_id}" or event.kind != "task.created":
+                return {"success": True, "eligible": False, "reason": "invalid_creation_event", "task_id": task_id}
+            state = TaskState.from_dict(event.payload)
+            if (
+                state.task_id != task_id
+                or state.status is not TaskStatus.PLANNED
+                or state.lease_id
+                or state.verification_receipts
+                or state.heartbeat_expires_at != 0
+                or state.checkpoint.state_data.get("worktree") is not None
+            ):
+                return {"success": True, "eligible": False, "reason": "invalid_initial_state", "task_id": task_id}
+            if _task_scope_root(state) != canonical_root:
+                return {"success": True, "eligible": False, "reason": "repository_scope_mismatch", "task_id": task_id}
+            canonical_event = json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            digest = hashlib.sha256(canonical_event.encode("utf-8")).hexdigest()
+            return {"success": True, "eligible": True, "reason": "complete_creation_only_history", "task_id": task_id, "event_digest": digest}
+        except (KeyError, TypeError, ValueError, RuntimeError, OSError, sqlite3.Error):
+            return {"success": True, "eligible": False, "reason": "invalid_event_history", "task_id": task_id}
+
+    def restore_task_projection(self, task_id: str, repo_root: str, event_digest: str) -> dict[str, Any]:
+        """Restore one creation-only task through the task store's ordered write path."""
+        preview = self.preview_task_projection_restore(task_id, repo_root)
+        if preview.get("reason") == "projection_exists":
+            return {"success": True, "restored": False, "reason": "projection_exists", "task_id": task_id}
+        if preview.get("eligible") is not True:
+            return {"success": False, "restored": False, "reason": preview.get("reason", "not_eligible"), "task_id": task_id}
+        if not isinstance(event_digest, str) or event_digest != preview.get("event_digest"):
+            return {"success": False, "restored": False, "reason": "preview_changed", "task_id": task_id}
+        self._init_projection_table()
+        event_page = self.state_store.event_page(f"task:{task_id}", after_seq=0, limit=2)
+        event = AgentEvent.from_dict(event_page["events"][0])
+        state = TaskState.from_dict(event.payload)
+        context = json_dumps({
+            "repository_id": state.context.repository_id,
+            "clone_id": state.context.clone_id,
+            "worktree_id": state.context.worktree_id,
+            "branch": state.context.branch,
+            "task_id": state.context.task_id,
+            "session_id": state.context.session_id,
+        })
+
+        def _write(con: sqlite3.Connection) -> tuple[dict[str, Any], list[AgentEvent]]:
+            with write_transaction(con, rollback_label="Agent task projection recovery"):
+                if con.execute("SELECT 1 FROM agent_tasks_projection WHERE task_id = ?", (task_id,)).fetchone():
+                    return {"success": True, "restored": False, "reason": "projection_exists", "task_id": task_id}, []
+                rows = con.execute(
+                    """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                              correlation_id, actor, created_at
+                       FROM agent_events WHERE stream_id = ? ORDER BY seq LIMIT 2""",
+                    (f"task:{task_id}",),
+                ).fetchall()
+                if len(rows) != 1:
+                    return {"success": False, "restored": False, "reason": "preview_changed", "task_id": task_id}, []
+                current_event = AgentEvent.from_row(rows[0])
+                current_digest = hashlib.sha256(json.dumps(
+                    current_event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")).hexdigest()
+                if current_digest != event_digest or current_event.kind != "task.created" or current_event.seq != 1:
+                    return {"success": False, "restored": False, "reason": "preview_changed", "task_id": task_id}, []
+                con.execute(
+                    """INSERT INTO agent_tasks_projection (
+                        task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                        heartbeat_expires_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (state.task_id, state.status.value, state.owner, state.lease_id,
+                     json_dumps(state.contract.to_dict()), context,
+                     json_dumps(state.checkpoint.to_dict()), json_dumps(state.verification_receipts),
+                     state.heartbeat_expires_at, state.created_at, state.updated_at),
+                )
+                self._refresh_task_search_index(con, task_id)
+                return {"success": True, "restored": True, "reason": "restored", "task_id": task_id}, []
+
+        try:
+            return self._run_ordered_task_write(_write)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            return {"success": False, "restored": False, "reason": "storage_write_failed", "task_id": task_id}
+
     def _save_projection(self, state: TaskState) -> None:
         if not self._db_path_available():
             return

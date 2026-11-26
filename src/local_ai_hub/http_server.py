@@ -1324,7 +1324,8 @@ _AGENT_TASK_ACTIONS = frozenset({
     "create", "list", "get", "transition", "complete", "fail",
     "checkpoint", "rollback", "resume", "heartbeat", "ask", "answer",
     "cleanup_worktree", "reap_expired", "curate_dataset", "budget_increase",
-    "claim", "adopt", "repair_session",
+    "claim", "adopt", "repair_session", "projection_restore_preview", "projection_restore",
+    "projection_restore_batch_preview", "projection_restore_batch",
 })
 _AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export", "native_receipt", "project_command"})
 _AGENT_BLACKBOARD_RETIRED_FIELDS = frozenset({"key", "value", "approver", "sections", "record"})
