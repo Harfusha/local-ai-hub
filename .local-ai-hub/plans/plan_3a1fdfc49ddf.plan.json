@@ -57,12 +57,12 @@
         "For model token/context limits, reduce optional context/output scope or fetch a smaller artifact and continue from deterministic evidence; never replay unchanged requests or accept partial output.",
         "Restart Hub only after audit; report source, runtime and verification evidence separately."
       ],
-      "blocker": "None - all verified; live endpoints /health 200, /api/status 200, /api/live/status 200, POST /api/admin/mode 200; semantic review passed with req_8431a8d34e85; 14/14 provider handshakes pass; 16,150+ telemetry events recorded.",
+      "blocker": "Source changes pass syntax parsing and diff whitespace checks; behavior tests and running-Hub activation were not run.",
       "clarifications": [],
       "depends_on": [],
       "description": "Operational continuation for task_endpoint_reliability_audit. This plan is the source of truth; retain its 29 results and six acceptance criteria.\n\nHistorical audit context: an earlier working baseline had 19 modified paths; a later snapshot had 20 modified paths and one untracked test. Baselines changed during the audit, so never restore, stash, reset, clean, or overwrite user/agent changes. Earlier conflict-marker scans found no actionable conflict; current git index has n\n[... compact MCP projection ...]\n\nCheckpoint 2026-11-25: current Hub status is healthy with warnings=0 and 2 preprocessing projects still active. Recent Laya decision telemetry is recording; one ValueError at 12:26 was followed by successful records at 12:47 and 15:36. Product endpoint 5xx events stop at 13:15 in the last 24h; later 500 admin.action.result rows lack route/error details and remain unexplained. Live source fixes still need activation and endpoint probes after a safe drain.\n\nCheckpoint 2026-11-25: drained preprocessing safely (0 workers), restarted Hub to PID 38876, then resumed all 32 projects. Live /api/status is 200, v8.1.0, warnings=0. Live MCP find_files on the previously slow broad home root now returns terminal 422 repository_inventory_incomplete/time_limit in 3.8s. No product route 5xx appeared in last-hour events; one admin.action.result 500 at startup lacks route/trace detail and is not attributable.\n\nCheckpoint 2026-11-25 21:42 CET: source/runtime release parity is 8.2.1; Hub restarted and both /health and doctor report 8.2.1, warnings=0. In scope=process telemetry after restart, active session has 0 failures; 24 HTTP events all success. One-day/window telemetry still contains historical 16 HTTP errors and long tails on /api/async-jobs and /api/review (p95 about 29 s), mostly from pre-8.2.1 sessions; no exact live cause is proven. Preserve the eight unattributed admin.action.result 500s. Next: retrieve route-level trace attribution and continue only evidence-backed fixes. Codex plugin cache remains at 8.2.0 because inventory timed out and plugin add returned Access denied while the app process is active.",
       "kind": "analysis",
-      "next_action": "Maintain verified endpoint reliability and telemetry collection.",
+      "next_action": "Restart after the filtering change; verify ordinary MCP responses omit diagnostics while explicit debug output remains available.",
       "results": [
         {
           "evidence_id": "req_5e1b1e16884d",
@@ -289,10 +289,17 @@
             "content_sha256": "72fbd1f5d8b7c49c694e1b3d45749e42587ff88cc1e2a1518b2a960f2e43b0eb",
             "kind": "working"
           }
+        },
+        {
+          "path": "docs/superpowers/specs/2026-11-26-agent-facing-response-signal-cleanup-design.md",
+          "revision": {
+            "content_sha256": "312410329ccbe95a62027556642bb15df04c27bd406c96914cee8aa45bf30a33",
+            "kind": "working"
+          }
         }
       ],
       "title": "Local AI Hub performance, integration, and runtime validation",
-      "work_phase": "verification",
+      "work_phase": "implementation",
       "work_status": "in_progress"
     }
   },

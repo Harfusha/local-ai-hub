@@ -492,6 +492,15 @@ class HttpPostHelpersMixin:
         )
         if isinstance(wire_data, dict) and "returned_tokens" in (wire_data.get("response_budget") or {}):
             wire_data = services_module._reconcile_existing_budget(wire_data) or wire_data
+        if not aggregate_report:
+            # Budget reconciliation adds wire-size accounting after projection;
+            # remove internal metadata from routine agent-facing responses.
+            if response_path == "/api/coord/pubsub_poll":
+                wire_data = services_module.project_pubsub_poll_response(wire_data, enabled=detail_enabled)
+            elif response_path == "/api/coord/wait_for_event":
+                wire_data = services_module.project_wait_event_response(wire_data, enabled=detail_enabled)
+            else:
+                wire_data = services_module.project_agent_response(wire_data, enabled=detail_enabled)
         body = raw_body if isinstance(raw_body, bytes) else services_module._json_bytes(wire_data)
         if (
             response_path in {"/api/search", "/api/repo/code-index"}

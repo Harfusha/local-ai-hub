@@ -633,7 +633,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
             "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
-            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 131072, "max_context_tokens": 131072, "max_prompt_tokens": 120000, "context_reserve_tokens": 4096},
+            "opencode": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 131072, "max_context_tokens": 131072, "max_prompt_tokens": 120000, "context_reserve_tokens": 4096},
             "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
         },
     },
@@ -692,7 +693,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
             "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
-            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 131072, "max_context_tokens": 131072, "max_prompt_tokens": 120000, "context_reserve_tokens": 4096},
+            "opencode": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 131072, "max_context_tokens": 131072, "max_prompt_tokens": 120000, "context_reserve_tokens": 4096},
             "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
         },
     },
