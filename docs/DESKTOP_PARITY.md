@@ -1,6 +1,6 @@
 # Native desktop migration — evidence and parity register
 
-Status: **draft cutover; runtime web UI disconnected, full desktop parity and physical source deletion incomplete. Do not merge as a replacement release.** This is the
+Status: **draft cutover; runtime web UI disconnected, legacy frontend sources and build removed; full desktop parity and verification incomplete. Do not merge as a replacement release.** This is the
 requested feature/verification matrix, not a second project plan. The repository
 plan tool was unavailable in this environment; no plan files were modified.
 
@@ -27,7 +27,7 @@ One operation runs in a worker thread; the renderer is event-driven apart
 from a 30-second focused-window health probe, which can be disabled. Views
 load explicitly. The searchable response inspector virtualizes visible
 rows, caps at 12,000 flattened fields and 8 MB adapter response, and exposes
-individual detail/copy. Native schema-specific tables, record details and a Kanban with separate declared/verified progress are implemented, alongside bounded trace pages and revision-aware actions. Specialized charts, full history paging, streaming and action-specific presentations are incomplete. The service
+individual detail/copy. Native schema-specific tables, record details and a Kanban with separate declared/verified progress are implemented, alongside bounded trace pages and revision-aware actions. Basic request duration chart, scoped paging and bounded SSE follow are implemented. Specialized charts, full history paging and action-specific presentations remain incomplete. The service
 lifecycle and desktop lifecycle remain separate. Closing during operations
 is blocked to avoid interrupting a mutation.
 
@@ -44,7 +44,7 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 
 | Dashboard page / workflow | Desktop location | Current coverage | Acceptance verification still required |
 |---|---|---|---|
-| Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshots, no charts or workload drilldown | Compare cards, periods, health/warming/stale states and workload drilldowns |
+| Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshots, recent request duration chart, health and project progress; no full workload drilldown | Compare cards, periods, health/warming/stale states and workload drilldowns |
 | Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial native recent-request and trace tables, bounded trace event pages, endpoint analytics | Compare filtering/paging, cancellation, retry, trace links, job failures |
 | Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists, create/get/complete/fail, repository fact record/delete, incident record, bounded trace event pages | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
 | Coordination: plans, board, dependencies, locks, semaphore | Plans, Plan board, Semaphores, File leases, Worktrees | Partial native Kanban and verified progress, plan create/update and task edit/delete with expected revision, semaphore/lease/worktree actions and briefing | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |
@@ -54,11 +54,11 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 | Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart, encrypted diagnostics export in Transfers | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
 | Settings | Settings — activity mode, toolbar | Partial config read, activity mode, telemetry mode, selected feature flags and override reset | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures |
 | Transfers | Transfers | Partial bounded ZIP export/import and encrypted diagnostics export with returned password | Export/import ZIP, scope, password, integrity, failure and cancellation |
-| Activity | Activity | Partial bounded event snapshot | Cursor, filters, SSE, pause, stale/reconnect and detail modals |
+| Activity | Activity | Partial bounded event snapshot and focus-only SSE follow with cursor/deduplication | Cursor, filters, SSE, pause, stale/reconnect and detail modals |
 | Global control menu | Toolbar / maintenance selector | Partial: mode, DB optimization, expired cache, stale agent cleanup, detailed telemetry toggle/purge, stats purge, global preprocessing | Detailed telemetry consent and purge, stats purge, preprocessing pause/resume, diagnostic results and failure states |
 | Service unavailable | Toolbar | Explicit Start and unreachable state; no implicit autostart | Cold start, supervisor already warming, permission failure, timeout, restart failure, close during transition |
 | Desktop and service independence | Window close | No stop on close; busy close blocked | Start/stop via CLI, externally stopped Hub, desktop relaunch, concurrent operations |
-| Web UI cutover | HTTP server, packaging, CLI | Runtime disconnected in draft: old GET paths return JSON 404, UI mixin removed, package data excludes static assets, CLI launches desktop. Legacy HTML/TypeScript and browser test/build references remain for parity migration; no served fallback | Complete equivalent native regression coverage, delete legacy sources and build/test references, verify clean package and API/MCP compatibility |
+| Web UI cutover | HTTP server, packaging, CLI | Runtime disconnected in draft: old GET paths return JSON 404, UI mixin removed, package data excludes static assets, CLI launches desktop. HTML/TypeScript, frontend build and DOM-only tests deleted; no served fallback | Complete equivalent native regression coverage; verify clean package and API/MCP compatibility |
 
 ## CLI entrypoint inventory
 
@@ -285,6 +285,13 @@ actual results plus hardware/OS/Rust/eframe/Python versions. No threshold claime
 
 ## Current cutover blockers
 
-- Legacy dashboard source files and frontend build/test references are retained pending complete native parity and equivalent regression coverage. They are no longer served by the HTTP handler or included as Python package data. Do not interpret this as complete source removal.
+- Legacy dashboard sources and frontend build references were physically deleted; DOM-only tests were retired and mixed tests migrated to preserve backend assertions. Native behavior coverage is not yet equivalent to the historical browser suite. The old implementation and tests remain available in Git history.
 - Update controls, detailed vision review, complete settings/editor flows, live event streaming, trace/history linking, advanced command/agent controls, and full packaging are not complete. Existing backend endpoints remain intact; do not weaken auth or remove backend tests to force a green suite.
 - Current head has not passed the full targeted CI after these changes; no full service lifecycle, API/MCP regression, or actual cross-platform runtime verification is available. Draft must not be merged as finished.
+
+## Latest implementation evidence
+
+- The branch was synchronized with master at `f8e8524` (merge `7dfa7fc`).
+- The runtime cutover removes browser routes and the source cutover removes HTML/TypeScript and the frontend compiler. The AST cutover check exposed thirteen additional stale test imports; these were migrated in `747a34f`. Do not interpret this source migration as a passing test run.
+- Native controls now include task paging, vision PNG/JPEG review, scoped SSE, typed settings, explicit local update confirmation, revision-aware plan actions, asynchronous work status/results/cancellation, memory/task enums, portable ZIP packaging and SHA-256-verified atomic binary installation.
+- Previous native workflows succeeded at `15ddb42` and `a2c30d2` before the latest changes. Current head requires fresh full CI, Linux startup/idle metrics, Windows/macOS runtime acceptance, parity review and Cargo.lock. No verified completion claim.

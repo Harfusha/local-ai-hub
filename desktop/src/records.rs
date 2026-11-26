@@ -14,7 +14,9 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Work orders" => (&["/work_orchestrator/recent", "/work_orchestrator/orders", "/work_orchestrator/items"], &["work_id", "goal", "state", "updated_at", "error"]),
         "Trace index" => (&["/items"], &["trace_id", "request_id", "action", "agent", "kind", "status", "updated_at"]),
         "Tasks" => (&["/tasks", "/items"], &["task_id", "goal", "status", "updated_at", "root"]),
-        "Memory" => (&["/records", "/memory", "/items"], &["key", "scope", "kind", "confidence", "updated_at"]),
+        "Memory" => (&["/records", "/memory", "/items"], &["key", "scope", "kind", "confidence", "provenance", "created_at", "updated_at"]),
+        "Search workspaces" => (&["/workspaces"], &["root", "path", "workspace", "status", "documents", "chunks"]),
+        "Endpoint analytics" => (&["/items"], &["name", "type", "calls", "success_rate", "p95_ms", "p99_ms", "status"]),
         "Incidents" => (&["/incidents", "/items"], &["incident_id", "operation_class", "redacted_message", "status", "created_at"]),
         "Projects" => (&["/projects", "/preprocessing/projects"], &["root", "project", "phase", "phase_progress_pct", "active_detail", "waiting_reason"]),
         "Plans" => (&["/plans", "/items"], &["id", "title", "lifecycle", "file_revision"]),
@@ -98,6 +100,20 @@ mod tests {
         let mut buffer = vec![json!({"seq": 1}), json!({"seq": 2})];
         merge_events(&mut buffer, &[json!({"seq": 2}), json!({"seq": 3}), json!({"seq": 4})], 3);
         assert_eq!(buffer, vec![json!({"seq": 2}), json!({"seq": 3}), json!({"seq": 4})]);
+    }
+    #[test]
+    fn memory_provenance_is_not_discarded() {
+        let response = json!({"records":[{"key":"fact","provenance":{"root":"/project","repository":"repo"},"created_at":123}]});
+        let table = records("Memory", &response).unwrap();
+        assert!(table.columns.contains(&"provenance"));
+        assert_eq!(table.values[0]["provenance"]["root"], "/project");
+    }
+    #[test]
+    fn workspace_inventory_is_read_only_and_missing_is_unknown() {
+        assert!(records("Search workspaces", &json!({})).is_none());
+        let response = json!({"workspaces":[{"root":"/project","status":"unknown"}]});
+        let table = records("Search workspaces", &response).unwrap();
+        assert_eq!(table.values[0]["status"], "unknown");
     }
     #[test]
     fn unavailable_fields_are_not_zero() {

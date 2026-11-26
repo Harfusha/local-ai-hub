@@ -125,7 +125,7 @@ class HubControl:
 
     def read(self, view: str, root: str = "") -> dict[str, Any]:
         path = VIEWS[view]
-        if view in SCOPED:
+        if view in SCOPED or (view == "Endpoint analytics" and root.strip()):
             if not root.strip():
                 raise ValueError("Select an explicit repository root first.")
             root_path = Path(root).expanduser().resolve(strict=True)

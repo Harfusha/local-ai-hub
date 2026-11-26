@@ -823,6 +823,8 @@ impl eframe::App for Desktop {
                             return;
                         }
                     }
+                    if self.current() == "Search workspaces" { ui.label("Read-only inventory. Unknown status is not proof of a missing index. No automatic removal."); }
+                    if self.current() == "Endpoint analytics" { ui.label("Endpoint and MCP calls do not prove model execution. Select an explicit repository to scope counts."); }
                     if let Some(table) = records::records(self.current(), snapshot) {
                         let needle = self.filter.to_lowercase();
                         let filtered: Vec<&Value> = table.values.into_iter().filter(|item|

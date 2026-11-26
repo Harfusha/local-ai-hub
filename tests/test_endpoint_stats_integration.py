@@ -123,21 +123,12 @@ def test_distinct_exact_project_filters_over_http(tmp_path, monkeypatch):
     try:
         for folder, count in (("a", 1), ("b", 2)):
             query = urllib.parse.urlencode({"root": str(tmp_path / folder / "shared")})
-            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/endpoint-stats?{query}", timeout=10) as response:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/endpoint-stats?{query}", timeout=10) as response:
                 payload = json.load(response)
-            # The exact-root contract must not merge identically named projects.
-            def rows(value):
-                if isinstance(value, dict):
-                    if value.get("item_name", value.get("name")) == "test:visual":
-                        yield value
-                    for child in value.values():
-                        yield from rows(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        yield from rows(child)
-            matching = list(rows(payload))
-            assert matching, payload
-            assert all(row.get("calls", row.get("count", row.get("total_calls"))) == count for row in matching), matching
+            matches = [row for row in payload["items"] if row["name"] == "test:visual"]
+            assert payload["success"] is True
+            assert len(matches) == 1
+            assert matches[0]["calls"] == count
     finally:
         server.shutdown()
         server.server_close()
