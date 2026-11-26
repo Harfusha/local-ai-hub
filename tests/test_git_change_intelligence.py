@@ -165,3 +165,21 @@ def test_malformed_persistent_cache_is_recomputed(tmp_path):
     assert result["success"]
     assert result["persistent_summary_cache_hits"] == 0
     assert result["clusters"][0]["observed_hunk_count"] == 1
+
+
+def test_staged_python_ast_summary_is_structural_not_verification(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "payment.py"
+    path.write_text("def pay():\n    return 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "payment.py")
+    _git(tmp_path, "commit", "-m", "python fixture")
+    path.write_text("def pay():\n    return 2\n\ndef refund():\n    return 0\n", encoding="utf-8")
+    _git(tmp_path, "add", "payment.py")
+    result = _plan(tmp_path)
+    group = result["clusters"][0]
+    semantic = group["changes"][0]["atoms"][0]["semantic"]
+    assert semantic["status"] == "observed"
+    assert semantic["change_counts"] == {"modified": 1, "added": 1}
+    assert group["semantic_change_counts"] == semantic["change_counts"]
+    assert not semantic["behavior_equivalence_proven"]
+    assert result["verification_status"] == "unknown"

@@ -14,6 +14,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
+from .change_semantics import summarize_python_patch
+
 _MAX_PATCH_BYTES = 512 * 1024
 _MAX_PATCHES = 64
 _MAX_LINES = 10000
@@ -128,6 +130,7 @@ def inspect_change_atoms(
     pending: list[tuple[str, str, tuple[str, ...], str]] = []
     cache_hits = 0
     persistent_hits = 0
+    semantic_attempts = 0
     deadline = time.monotonic() + 10
     for path, xy in sorted(statuses.items()):
         if xy == "??" or xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
@@ -161,7 +164,18 @@ def inspect_change_atoms(
             )
             cache_hits += int(source != "computed")
             persistent_hits += int(source == "persistent")
+            semantic = {"status": "unavailable", "reason": "unsupported_language"}
+            if path.lower().endswith(".py"):
+                if semantic_attempts < 8 and time.monotonic() < deadline:
+                    semantic_attempts += 1
+                    semantic = summarize_python_patch(
+                        patch, git, cache=persistent_cache,
+                        key=identity("python-ast-summary-v1", atom_id),
+                    )
+                else:
+                    semantic = {"status": "unavailable", "reason": "analysis_budget"}
             observations.setdefault(path, []).append({
+                "semantic": semantic,
                 "atom_id": atom_id,
                 "scope": scope,
                 "hunk_count": count,

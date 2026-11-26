@@ -14,6 +14,10 @@ The deterministic engine uses its existing SQLite cache infrastructure and a ver
 
 The grouping summary now includes tracked line totals by stage; totals may count intermediate edits in both scopes. Persistent cache hits are reported separately. This is a disposable derived cache, **not** yet an authoritative task-linked Change Ledger or receipt store.
 
+## Structural Python summaries
+
+For up to eight observed Python patch scopes per request, the existing bounded AST engine compares exact Git blob pairs when both objects are available (or a side is the all-zero addition/deletion ID). It exposes structural change counts and bounded symbol names, cached by the scoped patch identity. No source is retained. Unavailable unstaged blobs, syntax errors, unsupported languages and budget limits are explicit; structural equality does not prove behavior equivalence. This is not yet general semantic grouping or local-model intent inference.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.

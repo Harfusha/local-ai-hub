@@ -253,6 +253,18 @@ def run_split_changes(
             cluster["group_key"] = identity("group-v1", str(top), *cluster["files"])
             cluster["observed_atom_ids"] = sorted(atom_ids)
             cluster["observed_hunk_count"] = hunk_count
+            semantic_counts: dict[str, int] = {}
+            semantic_observed = 0
+            for change in cluster["changes"]:
+                for atom in change["atoms"]:
+                    semantic = atom["semantic"]
+                    if semantic["status"] != "observed":
+                        continue
+                    semantic_observed += 1
+                    for kind, count in semantic["change_counts"].items():
+                        semantic_counts[kind] = semantic_counts.get(kind, 0) + count
+            cluster["semantic_change_counts"] = semantic_counts
+            cluster["semantic_observed_scopes"] = semantic_observed
             totals = cluster["line_totals"]
             added = sum(scope["added"] for scope in totals.values())
             deleted = sum(scope["deleted"] for scope in totals.values())
@@ -260,6 +272,10 @@ def run_split_changes(
                 f"; {hunk_count} observed text hunk(s), "
                 f"+{added}/-{deleted} tracked lines across staged and unstaged scopes"
             )
+            if semantic_counts:
+                cluster["summary"] += "; AST: " + ", ".join(
+                    f"{count} {kind}" for kind, count in sorted(semantic_counts.items())
+                )
             if any(item["path"] in cluster["files"] for item in observed["unavailable"]):
                 cluster["risks"] = sorted(set(cluster["risks"]) | {"patch_coverage_incomplete"})
     except (OSError, ValueError, subprocess_module.SubprocessError):
