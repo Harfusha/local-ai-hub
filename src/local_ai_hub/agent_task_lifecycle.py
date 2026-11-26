@@ -268,6 +268,11 @@ class TaskLifecycleMixin:
             ) from exc
 
         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
+        if EXECUTION_KEY in task.contract.slo_profile:
+            execution = result.get("execution", {}) if isinstance(result, Mapping) else getattr(result, "execution", {})
+            problems = execution.get("problems", {})
+            if problems.get("blocking_open", 0):
+                raise CompletionGateError("Cannot transition to COMPLETED: verified execution has unresolved blocking problems")
         if complete is not True:
             if _waive_receipts and complete is False:
                 self._observe_laya_completion(

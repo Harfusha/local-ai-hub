@@ -471,10 +471,23 @@ def _preserve_checkpoint_memory_state(
     *,
     allow_server_memory_refresh: bool = False,
     allow_server_work_update: bool = False,
+    allow_server_execution_update: bool = False,
 ) -> TaskCheckpoint:
     if not allow_server_memory_refresh:
         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
     merged_state_data = dict(checkpoint.state_data)
+    from .execution_problems import PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY
+
+    if PROBLEM_REPORT_KEY in merged_state_data:
+        raise ValueError("execution problem reports must use task_checkpoint")
+    if not allow_server_execution_update:
+        if PROBLEM_STATE_KEY in merged_state_data and (
+            PROBLEM_STATE_KEY not in current_state_data
+            or merged_state_data[PROBLEM_STATE_KEY] != current_state_data[PROBLEM_STATE_KEY]
+        ):
+            raise ValueError("execution problem registry is server-managed")
+        if PROBLEM_STATE_KEY in current_state_data:
+            merged_state_data[PROBLEM_STATE_KEY] = current_state_data[PROBLEM_STATE_KEY]
     lineage = "_portable_attempt"
     if lineage in merged_state_data and (
         lineage not in current_state_data or merged_state_data[lineage] != current_state_data[lineage]

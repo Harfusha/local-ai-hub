@@ -83,6 +83,35 @@ complete repository inventory. Use the existing authorized inventory tools to
 obtain resources and record exclusions. A receipt validates its criterion
 only; it cannot establish that omitted resources do not exist.
 
+## Durable problem reports
+
+Report a discovered issue with the existing `task_checkpoint` operation by
+including a single `execution_problem_report` object in checkpoint state_data:
+
+```json
+{
+  "id": "F-001",
+  "title": "Consumer expects a different response schema",
+  "criterion": "review API contract",
+  "blocking": true,
+  "evidence_ids": []
+}
+```
+
+The task must be opted in, owned by the caller and nonterminal. The registry
+is server-managed, append-only, bounded to 64 reports per task, preserved
+across ordinary checkpoints and rollback. Repeated IDs with different
+content are rejected. A blocking report requires a current criterion; add
+an obligation through authorized steering first if needed. Nonblocking
+observations may be unlinked and remain visible in audit output.
+Reported evidence references are leads, not verified evidence. A blocking
+problem remains open until a different, fresh canonically validated receipt
+for its linked criterion is recorded after reporting. Stale verification
+reopens it. The completion preview includes problem counts and open reports;
+a receipt waiver does not close a blocking report. Resolution is not proof
+of independent expert review: the criterion and actual evidence still
+must adequately cover the reported problem.
+
 ## Agent behavior
 
 Define measurable criteria for the intended scope. Use repository inventory
@@ -97,12 +126,13 @@ blocking for audit completion.
 ## Scope and follow-up
 
 This increment implements graph, declared inventory compilation, coverage,
-deterministic next action and opt-in blocker gating. It does not prove that user intent was translated into
+deterministic next action, opt-in blocker gating and durable problem reports. It does not prove that user intent was translated into
 complete criteria. Remaining acceptance work:
 
 1. Compile repository inventory/impact into versioned, provenance-bound
    obligations and explicit exclusions.
-2. Add a server-owned append-only problem lifecycle linked to evidence.
+2. Extend problem reports with authorized rejection/defer dispositions,
+   independent resolution verification, and cross-task/Git knowledge sharing.
 3. Integrate graph revisions with authorized steering and replay.
 4. Implement dependency-selective invalidation, conservative fallback,
    and context retrieval for each obligation.
