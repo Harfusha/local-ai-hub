@@ -177,7 +177,7 @@ def test_mcp_status_remains_usable_when_hub_daemon_is_offline(tmp_path, monkeypa
         port = listener.getsockname()[1]
         config_path = tmp_path / "offline.toml"
         state_dir = (tmp_path / "state").as_posix()
-        config_path.write_text(f'[server]\nport = {port}\nstate_dir = "{state_dir}"\n', encoding="utf-8")
+        config_path.write_text(f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nport = {port}\nstate_dir = "{state_dir}"\n', encoding="utf-8")
         client = local_ai_mcp.HubClient(config_path=str(config_path), auto_start=False)
         monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
         monkeypatch.setattr(
@@ -225,6 +225,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     state_dir = (tmp_path / "state").as_posix()
     config_path = tmp_path / "autostart.toml"
     config_path.write_text(
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = {port}\nstate_dir = "{state_dir}"\n'
         '[hardware]\nprofile = "balanced"\n'
         '[features]\nlocal_semantic_analysis = true\n'
@@ -426,12 +427,14 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
             "complexity": "low",
             "max_tokens": 256,
             "delivery": "sync",
-            "latency_budget_ms": 15000,
+            "latency_budget_ms": 15000.0,
             "model": "",
             "operation": "delegate",
             "changed_paths": [],
             "repository_revision": "",
             "evidence_ids": [],
+            "root": None,
+            "workspace": None,
         }
         for task, context in tasks
     ]
@@ -946,6 +949,7 @@ def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypa
     excluded.write_text("class AdaptiveContextMarker: pass\n", encoding="utf-8")
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\nauto_start_ollama = false\n'
         '\n[hardware]\nprofile = "cpu"\nauto_tune = false\n'
         '\n[prewarm]\nenabled = false\n'

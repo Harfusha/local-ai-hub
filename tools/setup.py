@@ -545,17 +545,56 @@ def merge_antigravity_skill_policy(path: Path, backup_enabled: bool) -> None:
         )
 
 
+SHARED_PLUGIN_SKILLS: set[str] = {
+    "local-ai-orchestrator",
+    "plan-led-work",
+    "token-economizer",
+}
+
+
+def _remove_owned_text_block(path: Path, begin: str, end: str) -> bool:
+    """Remove an owned text block from path if present, returning True if modified."""
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+        pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end) + r"(?:\r?\n)*", re.DOTALL)
+        if pattern.search(text):
+            new_text = pattern.sub("", text).rstrip("\r\n") + "\n"
+            path.write_text(new_text, encoding="utf-8")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def install_agent_skills(
     install_dir: Path,
     target_skills_dir: Path,
     *,
     include_companion: bool = True,
     refresh_hub_owned: bool = False,
+    skip_skills: set[str] | None = None,
 ) -> None:
+    skip = skip_skills or set()
     source_skill = install_dir / "skills" / "local-ai-orchestrator"
-    install_skill(source_skill, target_skills_dir / "local-ai-orchestrator", refresh_hub_owned=refresh_hub_owned)
+    if "local-ai-orchestrator" not in skip:
+        install_skill(source_skill, target_skills_dir / "local-ai-orchestrator", refresh_hub_owned=refresh_hub_owned)
+    elif (target_skills_dir / "local-ai-orchestrator").is_dir():
+        try:
+            shutil.rmtree(target_skills_dir / "local-ai-orchestrator")
+        except OSError:
+            pass
+
     if include_companion:
         for skill_name in COMPANION_SKILLS:
+            if skill_name in skip:
+                if (target_skills_dir / skill_name).is_dir():
+                    try:
+                        shutil.rmtree(target_skills_dir / skill_name)
+                    except OSError:
+                        pass
+                continue
             source = install_dir / "skills" / skill_name
             if source.exists():
                 install_skill(source, target_skills_dir / skill_name, refresh_hub_owned=refresh_hub_owned)
@@ -1750,6 +1789,8 @@ def sync_cursor_plugin_bundle(cursor_dir: Path, backup_enabled: bool) -> bool:
         relative = source_file.relative_to(source)
         if "__pycache__" in relative.parts or source_file.suffix in {".pyc", ".pyo"}:
             continue
+        if relative.parts[0] in ("skills", "rules"):
+            continue
         target_file = target / relative
         if target_file.is_symlink():
             log(f"WARNING: preserving linked Cursor plugin file: {target_file}")
@@ -2038,6 +2079,8 @@ def sync_antigravity_plugin_bundle(
         relative = source_file.relative_to(source)
         if "__pycache__" in relative.parts or source_file.suffix in {".pyc", ".pyo"}:
             continue
+        if relative.parts[0] in ("skills", "rules"):
+            continue
         target_file = target / relative
         if target_file.is_symlink():
             log(f"WARNING: preserving linked Antigravity plugin file: {target_file}")
@@ -2063,6 +2106,10 @@ def sync_antigravity_plugin_bundle(
             target_file.write_bytes(content)
         else:
             shutil.copy2(source_file, target_file)
+    for prune_name in ("skills", "rules"):
+        prune_dir = target / prune_name
+        if prune_dir.exists() and not prune_dir.is_symlink():
+            shutil.rmtree(prune_dir, ignore_errors=True)
     log(f"Antigravity plugin bundle {'installed' if not target_exists else 'refreshed'} from source: {target}")
     return True
 
@@ -2992,7 +3039,11 @@ def _configure_gemini_instance_impl(
         or _agent_component_enabled(agent_components, "antigravity", "skills", default=False)
     ):
         install_agent_skills(install_dir, gemini_dir / "skills", include_companion=include_companion)
-        install_agent_skills(install_dir, gemini_dir / "config" / "skills", include_companion=include_companion)
+        install_agent_skills(
+            install_dir,
+            gemini_dir / "config" / "skills",
+            include_companion=include_companion,
+        )
         normalize_gemini_skill_registry(
             gemini_dir / "config" / "skills.json", gemini_dir.parent, backup_enabled,
         )
@@ -3016,6 +3067,7 @@ def _configure_gemini_instance_impl(
     ):
         doc = gemini_dir / "GEMINI.md"
         try:
+            _remove_owned_text_block(doc, ANTIGRAVITY_POLICY_BEGIN, ANTIGRAVITY_POLICY_END)
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         except ValueError as exc:

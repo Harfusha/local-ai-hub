@@ -155,6 +155,7 @@ _CURRENT_ROUTE_PATHS = {
 }
 _CURRENT_ADDED_ROUTES = {
     'post_updates_1': {'paths': ['/api/updates'], 'before': 'post_admin_mode_1'},
+ 'post_laya_decision_1': {'paths': ['/api/laya/decision'], 'before': 'post_agent_state_memory_1'},
     'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},
     'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
  'post_task_automation_1': {'paths': ['/api/task/automation'], 'before': 'post_repo_split_changes_1'},
@@ -182,13 +183,16 @@ _CURRENT_ADDED_ROUTES = {
  'post_coord_plan_reconcile_steering_1': {'paths': ['/api/coord/plan_reconcile_steering'], 'before': 'post_benchmark_run_1'},
  'post_gpu_reservation_1': {'paths': ['/api/gpu-reservation'], 'before': 'post_delegate_repo_1'},
  'post_repo_patch_1': {'paths': ['/api/repo/patch'], 'before': 'post_implementations_1'},
+ 'post_repo_knowledge_query_1': {'paths': ['/api/repo/knowledge/query'], 'before': 'post_repo_deterministic_1'},
+ 'post_repo_knowledge_manage_1': {'paths': ['/api/repo/knowledge/manage'], 'before': 'post_repo_deterministic_1'},
  'post_repo_call_graph_1': {'paths': ['/api/repo/call_graph'], 'before': 'post_implementations_1'},
  'post_repo_git_status_1': {'paths': ['/api/repo/git_status'], 'before': 'post_implementations_1'},
  'post_repo_revert_1': {'paths': ['/api/repo/revert'], 'before': 'post_implementations_1'},
  'post_repo_find_files_1': {'paths': ['/api/repo/find_files'], 'before': 'post_implementations_1'},
  'post_repo_file_info_1': {'paths': ['/api/repo/file_info'], 'before': 'post_implementations_1'},
  'post_telemetry_endpoint_stats_reset_1': {'paths': ['/api/telemetry/endpoint-stats/reset'], 'before': 'post_work_orders_1'},
- 'post_debug_trace_purge_1': {'paths': ['/api/debug-traces/purge'], 'before': 'post_maintenance_resolve_errors_1'}}
+ 'post_debug_trace_purge_1': {'paths': ['/api/debug-traces/purge'], 'before': 'post_maintenance_resolve_errors_1'},
+ 'post_opencode_gateway_1': {'paths': ['/api/chat/completions'], 'before': 'post_chat_1'}}
 _ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 

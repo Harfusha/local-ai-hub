@@ -20,7 +20,7 @@ def test_antigravity_hook_read_file_bounds():
         huge_file = tmp_path / "huge.py"
         huge_file.write_text("\n".join(f"x_{i} = {i}" for i in range(300)), encoding="utf-8")
 
-        # Full read above the shared 80-line budget is automatically clamped to 1..80
+        # Full read above the shared 80-line budget is denied by default.
         payload_full = {
             "toolCall": {
                 "name": "read_file",
@@ -28,11 +28,10 @@ def test_antigravity_hook_read_file_bounds():
             }
         }
         res = handle_pre_tool_use(payload_full)
-        assert res["decision"] == "allow"
-        assert res.get("overwrite", {}).get("StartLine") == 1
-        assert res.get("overwrite", {}).get("EndLine") == 80
+        assert res["decision"] == "deny"
+        assert "lines > 80" in res["reason"]
 
-        # A bounded 80-line slice is allowed; a wider requested slice is automatically clamped.
+        # A bounded 80-line slice is allowed; a wider requested slice is denied by default.
         payload_slice = {
             "toolCall": {
                 "name": "read_file",
@@ -46,8 +45,33 @@ def test_antigravity_hook_read_file_bounds():
         assert handle_pre_tool_use(payload_slice)["decision"] == "allow"
         payload_slice["toolCall"]["args"]["EndLine"] = 81
         res_wide = handle_pre_tool_use(payload_slice)
-        assert res_wide["decision"] == "allow"
-        assert res_wide.get("overwrite", {}).get("EndLine") == 80
+        assert res_wide["decision"] == "deny"
+
+
+def test_antigravity_hook_read_file_auto_clamping(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        huge_file = tmp_path / "huge.py"
+        huge_file.write_text("\n".join(f"x_{i} = {i}" for i in range(300)), encoding="utf-8")
+        monkeypatch.setenv("LOCAL_AI_AUTO_CLAMP_READS", "1")
+
+        # Full read with clamping enabled overwrites to 1..80
+        res_full = handle_pre_tool_use({
+            "toolCall": {"name": "read_file", "args": {"Path": str(huge_file)}}
+        })
+        assert res_full["decision"] == "allow"
+        assert res_full.get("overwrite", {}).get("StartLine") == 1
+        assert res_full.get("overwrite", {}).get("EndLine") == 80
+
+        # Wide slice with clamping enabled overwrites EndLine to 80
+        res_slice = handle_pre_tool_use({
+            "toolCall": {
+                "name": "read_file",
+                "args": {"Path": str(huge_file), "StartLine": 1, "EndLine": 81},
+            }
+        })
+        assert res_slice["decision"] == "allow"
+        assert res_slice.get("overwrite", {}).get("EndLine") == 80
 
 
 def test_antigravity_hook_routes_source_reads_through_hub_when_online(tmp_path, monkeypatch):
@@ -128,6 +152,35 @@ def test_antigravity_hook_run_command_guards():
     res_git = handle_pre_tool_use(payload_git)
     assert res_git["decision"] == "allow"
     assert res_git.get("overwrite", {}).get("CommandLine") == "git status -s"
+
+    # Context-saving overwrites for git branch and show
+    res_branch = handle_pre_tool_use({"toolCall": {"name": "run_command", "args": {"CommandLine": "git branch"}}})
+    assert res_branch["decision"] == "allow"
+    assert res_branch.get("overwrite", {}).get("CommandLine") == "git branch -v"
+
+    res_branch_a = handle_pre_tool_use({"toolCall": {"name": "run_command", "args": {"CommandLine": "git branch -a"}}})
+    assert res_branch_a["decision"] == "allow"
+    assert res_branch_a.get("overwrite", {}).get("CommandLine") == "git branch -a --column"
+
+    res_show = handle_pre_tool_use({"toolCall": {"name": "run_command", "args": {"CommandLine": "git show"}}})
+    assert res_show["decision"] == "allow"
+    assert res_show.get("overwrite", {}).get("CommandLine") == "git show --stat -n 1"
+
+    # Unconstrained git log with extra args gets auto-rewritten with limit and oneline
+    res_log_unconstrained = handle_pre_tool_use({"toolCall": {"name": "run_command", "args": {"CommandLine": "git log --author=Adam"}}})
+    assert res_log_unconstrained["decision"] == "allow"
+    assert res_log_unconstrained.get("overwrite", {}).get("CommandLine") == "git log --author=Adam -n 10 --oneline"
+
+    # Quiet flag auto-appended to compileall and pytest
+    res_compile = handle_pre_tool_use({"toolCall": {"name": "run_command", "args": {"CommandLine": "python -m compileall src"}}})
+    assert res_compile["decision"] == "allow"
+    assert res_compile.get("overwrite", {}).get("CommandLine") == "python -m compileall src -q"
+
+    res_pytest = handle_pre_tool_use({"toolCall": {"name": "run_command", "args": {"CommandLine": "pytest tests/unit/test_foo.py"}}})
+    assert res_pytest["decision"] == "allow"
+    assert res_pytest.get("overwrite", {}).get("CommandLine") == "pytest tests/unit/test_foo.py -q"
+
+
 
 
 def test_antigravity_hook_post_tool_shadow_compile():

@@ -328,7 +328,7 @@ def _project_minimal_agent_response(result: dict[str, Any], tool: str, action: s
             minimal[key] = result[key]
     for key in (
         "advisory_only", "semantic_quality", "review_consistency", "quality_warning",
-        "bypass_reason", "response_budget", "task_id", "request_id", "reused",
+        "bypass_reason", "task_id",
     ):
         if key in result:
             minimal[key] = result[key]
@@ -336,7 +336,13 @@ def _project_minimal_agent_response(result: dict[str, Any], tool: str, action: s
     return minimal if len(minimal) > 1 else result
 
 
-def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
+def _agent_output(
+    value: Any,
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    retain_internal_metadata: bool = False,
+) -> Any:
     """Keep internal observations out of ordinary agent responses.
 
     Agent MCP responses are clean by default. Background debug traces (SQLite)
@@ -345,10 +351,18 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     services_module = _get_services_module()
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
-    if not detail_enabled:
-        detailed_checker = getattr(services_module, "detailed_diagnostics_enabled", None)
-        if detailed_checker and detailed_checker(services_module.CFG):
-            detail_enabled = True
+    # Full telemetry capture stays internal. It must not turn every ordinary
+    # agent response into a diagnostics response; agent_diagnostics_enabled
+    # also requires the explicit debug profile or output-diagnostics setting.
+    internal_fields = (
+        {key: value[key] for key in ("response_budget", "token_efficiency", "request_id", "reused") if key in value}
+        if retain_internal_metadata and isinstance(value, dict) else {}
+    )
+    truncated = (
+        isinstance(value, dict)
+        and isinstance(value.get("response_budget"), dict)
+        and value["response_budget"].get("truncated") is True
+    )
     projector = (services_module.project_status_response if tool == "local_ai_status"
                  else services_module.project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"
@@ -373,7 +387,17 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     if profile == "minimal" and tool != "local_ai_status" and isinstance(result, dict) and result.get("success") is True:
         result = _project_minimal_agent_response(result, tool=tool, action=str(arguments.get("action", "")))
 
-    return services_module._reconcile_existing_budget(result) or result
+    if isinstance(result, dict):
+        if retain_internal_metadata:
+            result.update(internal_fields)
+        if truncated:
+            result["truncated"] = True
+    result = services_module._reconcile_existing_budget(result) or result
+    if retain_internal_metadata:
+        return result
+    # Reconciliation updates accounting after the first projection. Project
+    # once more so that private envelope fields stay off the wire by default.
+    return projector(result, enabled=detail_enabled, extra_fields=extra)
 
 def _instrumented_tool(services_module: Any = None):
     if services_module is None:
@@ -394,12 +418,15 @@ def _instrumented_tool(services_module: Any = None):
                 arguments = dict(kwargs)
             budget_rejection = services_module._explicit_budget_rejection(arguments)
             if budget_rejection is not None:
-                return budget_rejection
+                return services_module._agent_output(budget_rejection, fn.__name__, arguments)
             if (fn.__name__ == "local_ai_coord" and arguments.get("action") in {"claim", "release", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release"}
                     and type(arguments.get("max_response_tokens")) is int
                     and 0 < arguments["max_response_tokens"] < 512):
-                return {"success": False, "error": "lease mutation requires max_response_tokens >= 512",
-                        "operation_not_started": True}
+                return services_module._agent_output(
+                    {"success": False, "error": "lease mutation requires max_response_tokens >= 512",
+                     "operation_not_started": True},
+                    fn.__name__, arguments,
+                )
 
             # Universal MCP-level Token Economy hard guard for all connected agents
             if fn.__name__ == "local_ai_repo":
@@ -441,25 +468,35 @@ def _instrumented_tool(services_module: Any = None):
                 "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release", "gpu_scheduler_capacity_lease_release",
             })
             if mode_rejection is not None and not operator_status and not reservation_control:
-                return mode_rejection
+                return services_module._agent_output(mode_rejection, fn.__name__, arguments)
             if not services_module.detailed_diagnostics_enabled(services_module.CFG) and services_module.diagnostic_mcp_operation(fn.__name__, arguments):
-                return services_module.diagnostics_disabled_response()
+                return services_module._agent_output(
+                    services_module.diagnostics_disabled_response(), fn.__name__, arguments,
+                )
             if fn.__name__ == "local_ai_task" and arguments.get("action") == "benchmark":
                 validation_error = services_module.validate_operation_arguments(
                     "local_ai_task", "benchmark", arguments, features=services_module.FEATURES,
                 )
                 if validation_error is not None:
-                    return services_module.contract_error(
+                    return services_module._agent_output(services_module.contract_error(
                         f"{validation_error}; benchmark runs the configured model suite with a fixed "
                         "prompt and does not accept per-input model, prompt, or deadline options",
                         status_code=400,
-                    )
+                    ), fn.__name__, arguments)
             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
             token = services_module._CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
             response_profile = arguments.get("response_profile", "")
-            if (not response_profile and fn.__name__ == "local_ai_repo"
-                    and arguments.get("action") in {"context", "search", "code_index"}):
-                response_profile = "compact"
+            if not response_profile:
+                if fn.__name__ == "local_ai_status":
+                    response_profile = "compact"
+                elif fn.__name__ == "local_ai_repo" and arguments.get("action") in {"context", "search", "code_index"}:
+                    response_profile = "compact"
+                elif fn.__name__ == "local_ai_coord" and arguments.get("action") in {
+                    "task_list", "task_checkpoint", "task_update", "task_get", "plan_board_view", "memory_find", "blackboard_list", "leases"
+                }:
+                    response_profile = "compact"
+                elif fn.__name__ == "local_ai_artifact" and arguments.get("action") in {"list", "slice"}:
+                    response_profile = "compact"
             response_token = services_module._CURRENT_RESPONSE_OPTIONS.set({
                 "action": arguments.get("action", ""),
                 "max_response_tokens": arguments.get("max_response_tokens", 0),
@@ -543,7 +580,9 @@ def _instrumented_tool(services_module: Any = None):
                     if routing_added and (requested_tokens <= 0 or services_module.json_tokens(candidate) <= requested_tokens):
                         clean = candidate
                         handoff_added = True
-            clean = services_module._agent_output(clean, fn.__name__, arguments)
+            clean = services_module._agent_output(
+                clean, fn.__name__, arguments, retain_internal_metadata=True,
+            )
             if (
                 isinstance(clean, dict)
                 and clean.get("unsupported") is True
@@ -562,7 +601,6 @@ def _instrumented_tool(services_module: Any = None):
                     "success": False, "status_code": 500, "terminal": True, "retryable": False,
                     "error": f"MCP output contract failed: {output_error}",
                     "failure_kind": "output_contract_violation",
-                    **({"request_id": clean["request_id"]} if isinstance(clean, dict) and isinstance(clean.get("request_id"), str) else {}),
                 }
             duration_ms = (services_module.time.monotonic() - started) * 1000
             call_success = isinstance(clean, dict) and clean.get("success") is True
@@ -581,7 +619,7 @@ def _instrumented_tool(services_module: Any = None):
                     "measured": measured, "metadata": metadata,
                     "event_id": call_event_id, "duration_ms": duration_ms, "call_success": call_success,
                 })
-            return clean
+            return services_module._agent_output(clean, fn.__name__, arguments)
 
         return wrapped
     return decorator

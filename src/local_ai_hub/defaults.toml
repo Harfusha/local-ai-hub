@@ -207,6 +207,16 @@ max_prompt_tokens = 24000
 context_reserve_tokens = 2048
 thinking = false
 
+[model_execution.opencode]
+context_tokens = 65536
+large_context_tokens = 131072
+max_context_tokens = 131072
+background_context_tokens = 32768
+parallel = 1
+max_prompt_tokens = 120000
+context_reserve_tokens = 4096
+thinking = false
+
 [model_execution.vision]
 # Screenshot review uses a separate conservative single-slot role.
 context_tokens = 8192

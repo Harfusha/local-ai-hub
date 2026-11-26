@@ -29,6 +29,10 @@ export function selectHubTools(catalogTools) {
   return catalogTools.filter(tool => CORE_HUB_TOOLS.has(tool?.name) || OPTIONAL_HUB_TOOLS.has(tool?.name))
 }
 
+export function usesNativeMcp(server) {
+  return server?.nativeMcp === true
+}
+
 export function opencodeEditedPath(tool, input) {
   if (typeof tool !== "string" || !OPENCODE_EDIT_TOOLS.has(tool.toLowerCase()) || !input || typeof input !== "object") return null
   const file = input.file_path ?? input.filePath ?? input.path ?? input.target
@@ -167,11 +171,16 @@ export function appendPostEditContext(event, context) {
 
 export function appendHubContextGuidance(event) {
   if (!Array.isArray(event?.system) || !event.tools || typeof event.tools !== "object") return false
-  const hasHubTool = Object.keys(event.tools).some(name => name.toLowerCase().includes("local_ai_"))
-  if (!hasHubTool || event.system.some(part => typeof part?.text === "string" && part.text.includes("Local AI Hub guidance:"))) return false
+  const names = Object.keys(event.tools)
+  const hasHubTool = names.some(name => name.toLowerCase().includes("local_ai_"))
+  const hasCodeMode = names.some(name => name.toLowerCase() === "execute")
+  if (!hasHubTool && !hasCodeMode) return false
+  if (event.system.some(part => typeof part?.text === "string" && part.text.includes("Local AI Hub guidance:"))) return false
   event.system.push({
     type: "text",
-    text: "Local AI Hub guidance: use available Hub tools for indexed repository evidence and eligible typed Laya advice on bounded routing, context, or retrieval. Treat Laya output as advisory; it never grants access or overrides host permissions and deterministic validation.",
+    text: hasCodeMode
+      ? "Local AI Hub guidance: use Code Mode for Hub actions. Discover the tool catalog with top-level `await search({query: \"local_ai_repo\"})`; this helper is not under `tools`, so never call `tools.search`. Then call the Hub tool directly, for example `const result = await tools[\"local-ai-hub\"].local_ai_repo({action: \"search\", root: \"<absolute repository root>\", query: \"<specific question>\"}); const payload = result.structuredContent ?? result; return {request_id: payload.request_id, first_result_path: payload.results?.[0]?.path}`. Do not treat catalog discovery as repository search or depend on a guessed discovery-result shape. Do not stringify full Hub tool results. Use the exact `tools[\"local-ai-hub\"]` namespace; do not guess underscore namespaces or use `list_mcp_resources` to find tools. Use eligible Hub tools for typed Laya advice on bounded routing, context, or retrieval. Treat Laya output as advisory; it never grants access or overrides host permissions and deterministic validation."
+      : "Local AI Hub guidance: use available Hub tools for indexed repository evidence and eligible typed Laya advice on bounded routing, context, or retrieval. Prioritize local-ai MCP tools (local_ai_repo) over broad shell execution for repository discovery. For code inspection, use local_ai_artifact bounded slices. Mint authentic receipts with local_ai_coord before claiming completion. Treat Laya output as advisory; it never grants access or overrides host permissions and deterministic validation.",
   })
   return true
 }
@@ -267,40 +276,42 @@ export default {
       throw new Error("local-ai-hub: server config missing; please configure the local-ai-hub server in OpenCode")
     }
 
-    const mcp = openMcp(serverConfig)
+    let mcp = null
+    let tools = []
     try {
-      let initialized = false
-      let lastErr = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await mcp.request("initialize", {
-            protocolVersion: "2025-03-26",
-            capabilities: {},
-            clientInfo: { name: "local-ai-hub-opencode", version: "5.0" },
-          })
-          mcp.notify("notifications/initialized")
-          initialized = true
-          break
-        } catch (err) {
-          lastErr = err
-          if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+      if (!usesNativeMcp(serverConfig)) {
+        mcp = openMcp(serverConfig)
+        let initialized = false
+        let lastErr = null
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await mcp.request("initialize", {
+              protocolVersion: "2025-03-26",
+              capabilities: {},
+              clientInfo: { name: "local-ai-hub-opencode", version: "5.0" },
+            })
+            mcp.notify("notifications/initialized")
+            initialized = true
+            break
+          } catch (err) {
+            lastErr = err
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+          }
         }
-      }
-      if (!initialized) {
-        throw lastErr ?? new Error("MCP initialization timed out")
-      }
+        if (!initialized) throw lastErr ?? new Error("MCP initialization timed out")
 
-      const catalog = await mcp.request("tools/list", {})
-      if (!catalog || !Array.isArray(catalog.tools) || catalog.tools.length > MAX_TOOLS) throw new Error("invalid MCP tool catalog")
-      const names = new Set()
-      for (const tool of catalog.tools) {
-        if (!tool || typeof tool.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(tool.name) || names.has(tool.name) ||
-            typeof tool.description !== "string" || !tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema)) {
-          throw new Error("invalid MCP tool definition")
+        const catalog = await mcp.request("tools/list", {})
+        if (!catalog || !Array.isArray(catalog.tools) || catalog.tools.length > MAX_TOOLS) throw new Error("invalid MCP tool catalog")
+        const names = new Set()
+        for (const tool of catalog.tools) {
+          if (!tool || typeof tool.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(tool.name) || names.has(tool.name) ||
+              typeof tool.description !== "string" || !tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema)) {
+            throw new Error("invalid MCP tool definition")
+          }
+          names.add(tool.name)
         }
-        names.add(tool.name)
+        tools = selectHubTools(catalog.tools)
       }
-      const tools = selectHubTools(catalog.tools)
 
       let postEditRegistration = null
       let permissionRegistration = null
@@ -375,10 +386,10 @@ export default {
         try { await postEditRegistration?.dispose?.() } catch {}
         try { await permissionRegistration?.dispose?.() } catch {}
         try { await contextRegistration?.dispose?.() } catch {}
-        mcp.stop()
+        mcp?.stop()
       }
     } catch (error) {
-      mcp.stop()
+      mcp?.stop()
       throw error
     }
   },

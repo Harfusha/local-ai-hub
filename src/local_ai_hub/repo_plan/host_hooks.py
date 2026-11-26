@@ -568,6 +568,49 @@ def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any
 
     hub_online = _is_hub_online()
 
+    # 0. Token Economy: Check verbose / unconstrained git commands
+    if cmd:
+        clean_cmd = " ".join(cmd.split())
+        if re.match(r"^git\s+status(?:\s+\.)?\s*$", clean_cmd, re.IGNORECASE):
+            return {
+                "decision": "deny",
+                "reason": f"Verbose '{cmd}' is blocked by Token Economy. Use 'git status -s' instead.",
+            }
+        if re.match(r"^git\s+log\b", clean_cmd, re.IGNORECASE) and not re.search(
+            r"(?:-n\s*\d+|--max-count\b|-\d+\b|--oneline\b|Select-Object\s+-First|\|\s*head)",
+            clean_cmd,
+            re.IGNORECASE,
+        ):
+            return {
+                "decision": "deny",
+                "reason": f"Unconstrained '{cmd}' is blocked by Token Economy. Use 'git log --oneline -n 10' instead.",
+            }
+        if re.match(r"^git\s+diff\s*$", clean_cmd, re.IGNORECASE):
+            return {
+                "decision": "deny",
+                "reason": "Unconstrained repository 'git diff' is blocked by Token Economy. Use 'git diff --stat' or specify file paths.",
+            }
+        if re.match(r"^git\s+branch\s*$", clean_cmd, re.IGNORECASE):
+            return {
+                "decision": "deny",
+                "reason": "Verbose 'git branch' is blocked by Token Economy. Use 'git branch -v' instead.",
+            }
+        if re.match(r"^git\s+branch\s+(?:-a|--all)\s*$", clean_cmd, re.IGNORECASE):
+            return {
+                "decision": "deny",
+                "reason": "Verbose 'git branch -a' is blocked by Token Economy. Use 'git branch -a --column' instead.",
+            }
+        if re.match(r"^git\s+show\s*$", clean_cmd, re.IGNORECASE):
+            return {
+                "decision": "deny",
+                "reason": "Verbose 'git show' is blocked by Token Economy. Use 'git show --stat -n 1' instead.",
+            }
+        if re.search(r"\bpython\s+(?:-m\s+)?compileall\b", clean_cmd, re.IGNORECASE) and not re.search(r"\s-q\b", clean_cmd):
+            return {
+                "decision": "deny",
+                "reason": f"Verbose compileall '{cmd}' is blocked by Token Economy. Append '-q' (e.g. '{cmd} -q').",
+            }
+
     # Keep repository discovery on indexed Hub evidence while its API is ready.
     # Offline behavior remains available so the hook cannot strand the agent.
     if hub_online and cmd and re.search(

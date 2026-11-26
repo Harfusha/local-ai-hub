@@ -50,3 +50,59 @@ def test_codex_hook_fails_closed_for_invalid_explicit_install(tmp_path, monkeypa
     monkeypatch.setattr(codex_hook.Path, "home", lambda: tmp_path)
 
     assert codex_hook._configured_hub_command() is None
+
+
+def test_codex_hook_blocks_verbose_git_commands(tmp_path, monkeypatch):
+    from local_ai_hub.repo_plan.host_hooks import handle_host_event
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git").mkdir()
+
+    # PreToolUse event denials for unconstrained git commands
+    for cmd, expected_hint in [
+        ("git status", "git status -s"),
+        ("git log", "git log --oneline -n 10"),
+        ("git log -p", "git log --oneline -n 10"),
+        ("git diff", "git diff --stat"),
+        ("git branch", "git branch -v"),
+        ("git branch -a", "git branch -a --column"),
+        ("git show", "git show --stat -n 1"),
+        ("python -m compileall src", "-q"),
+    ]:
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess_1",
+            "cwd": str(root),
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        res = handle_host_event(root, "codex", payload)
+        hso = res.get("hookSpecificOutput", {})
+        assert hso.get("permissionDecision") == "deny"
+        assert expected_hint in hso.get("permissionDecisionReason", "")
+
+    # PermissionRequest event denials
+    perm_payload = {
+        "hook_event_name": "PermissionRequest",
+        "session_id": "sess_1",
+        "cwd": str(root),
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status"},
+    }
+    perm_res = handle_host_event(root, "codex", perm_payload)
+    hso_perm = perm_res.get("hookSpecificOutput", {})
+    assert hso_perm.get("decision", {}).get("behavior") == "deny"
+    assert "git status -s" in hso_perm.get("decision", {}).get("message", "")
+
+    # Concise commands are allowed (no denial output)
+    for cmd in ["git status -s", "git log --oneline -n 10", "git diff --stat", "git branch -v"]:
+        ok_payload = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess_1",
+            "cwd": str(root),
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        assert handle_host_event(root, "codex", ok_payload) == {}
+

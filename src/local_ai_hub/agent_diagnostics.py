@@ -11,6 +11,7 @@ _DETAIL_FIELDS = frozenset({
     # Telemetry, debug, diagnostic traces and raw outputs
     "telemetry", "debug", "diagnostic_artifacts", "raw", "stdout", "stderr",
     "phase_timings_ms", "token_efficiency", "retrieval", "routing",
+    "response_budget", "request_id", "reused",
     "model_trace", "trace", "prompt_budget", "net_cloud_token_delta_est", "cache_hits",
     "coalesced_waiters", "context_budget_factor", "path_hint_usage",
     "model_debug", "raw_model_output", "raw_output", "model_response", "full_trace",
@@ -187,6 +188,9 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
         return [project_agent_response(item, enabled=enabled, _aggregate=_aggregate, extra_fields=extra_fields) for item in value]
     if not isinstance(value, dict):
         return value
+    budget = value.get("response_budget")
+    if isinstance(budget, dict) and budget.get("truncated") is True and value.get("truncated") is not True:
+        value = {**value, "truncated": True}
     requested_extra = set(extra_fields) if isinstance(extra_fields, (set, list, tuple)) else set()
     projected = {}
     for key, item in value.items():
@@ -257,13 +261,6 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
                     if name not in {"stages", "ollama_calls", "mode"}}
             if not item:
                 continue
-        if not enabled and key == "response_budget" and isinstance(item, dict):
-            clean_budget = {name: field for name, field in item.items() if name != "original_tokens"}
-            if clean_budget.get("reused") is False:
-                clean_budget.pop("reused", None)
-            if clean_budget.get("truncated") is False:
-                clean_budget.pop("truncated", None)
-            item = clean_budget
         if not enabled and key == "results" and isinstance(item, list):
             clean_results = []
             for entry in item:

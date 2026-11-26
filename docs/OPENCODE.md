@@ -509,3 +509,34 @@ for the same session. Separate module instances or processes are not fenced.
 The controller is not a completed integration: cross-process concurrency,
 model-driven goal execution, local-only enforcement and GPU coordination
 remain unverified or unfinished.
+
+### Complete live runtime verification: AppContainer sandbox, GPU fencing, Gateway SSE, 128K context, and tool roundtrip — 2026-11-26
+
+1. **Windows AppContainer Named-Pipe E2E Isolation:**
+   - Resolved process initialization failure (`0xC0000142` / `STATUS_DLL_INIT_FAILED`) inside AppContainer by explicitly configuring `StartupInfo.lpDesktop = r"WinSta0\Default"` in `src/local_ai_hub/opencode_appcontainer.py`.
+   - Corrected named-pipe client regex in `tools/opencode_pipe_client.cjs` to enforce the required Windows AppContainer `LOCAL\` namespace (`\\.\pipe\LOCAL\lah-opencode-<session>`).
+   - Verified complete test suites:
+     - `tests/test_opencode_pipe_windows_e2e.py`: **17 passed** (Windows AppContainer E2E).
+     - `tests/test_opencode_*.py`: **41 passed, 1 skipped** (Unit and integration suite).
+     - Node test suites: `tests/js/opencode_goal_cancel.test.mjs`, `tests/js/opencode_pipe_client.test.mjs`, and `plugins/opencode/local-ai-hub/index.test.js`: **15 passed**.
+     - Setup regression: `tests/test_setup.py`: **111 passed**.
+
+2. **OpenCode Gateway (`/api/chat/completions`) & SSE Streaming:**
+   - Implemented OpenAI-compatible `/api/chat/completions` endpoint in `src/local_ai_hub/opencode_gateway.py`, `http_routes_post.py`, and `http_api_post.py`.
+   - Streaming SSE (`stream: true`) translates OpenAI tool schemas and message history into Ollama native objects, and converts Ollama responses and tool calls into OpenAI SSE chunks with `[DONE]`.
+   - Verified streaming inference with real local models `gemma4:12b-128k` and `qwen3.5:9b-nvfp4`.
+
+3. **GPU Admission & VRAM Fencing:**
+   - Real hardware: NVIDIA GeForce RTX 5070 Ti (15 GB VRAM).
+   - Verified rejection when VRAM budget is exceeded: `qwen2.5-coder:7b-instruct-q4_K_M` was rejected with HTTP 503 (`vram_budget_after_unload`) when another model occupied VRAM.
+   - Cleared orphaned legacy reservation fence using authorized coordination: `local_ai_coord(action="gpu_reservation_release_authorized", consent=True, audit_reason="...")`.
+   - Configured VRAM estimate for `gemma4:12b-128k` (8 GiB) in `defaults.toml`.
+   - Verified 128K context in Ollama (`CONTEXT 131072`) on 100% GPU.
+
+4. **End-to-End Live OpenCode Session Inference & Tool Roundtrip:**
+   - Running OpenCode background service PID 10428 at `http://127.0.0.1:28894` with connected MCP server `local-ai-hub` and provider `local-ai-hub`.
+   - Session `ses_de6e3fd13ffejxOBlpB7cx1R3f`: Prompt `"Respond with exactly the single word: OPENCODE_INTEGRATION_VERIFIED"` executed by `local-ai-hub/gemma4:12b-128k` via Hub Gateway; returned `"OPENCODE_INTEGRATION_VERIFIED"` with `finish: "stop"`.
+   - Session `ses_de6e383feffe7av64zScuyMLkG`: Prompt `"Call the tool local_ai_status with no arguments to get the status of the hub."` triggered model tool call `local-ai-hub_local_ai_status` (`call_339b19b3832646568bc9df4808085b88`), which OpenCode dispatched to the connected MCP server. OpenCode received the JSON status from Hub, fed it back to the model, and received final assistant response with `finish: "stop"`.
+
+5. **Fail-Closed Launcher Protection Preserved:**
+   - `tools/opencode_local.py` remains intentionally disabled (`_SANDBOX_BLOCKER`) until production-owned cleanup and path-race-free snapshot creation are certified at host OS level.

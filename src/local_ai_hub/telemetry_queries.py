@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from contextlib import closing
 from typing import Any
 
@@ -14,12 +15,15 @@ class TelemetryQueryMixin:
             return []
         self.flush(0.5)
         limit = max(1, min(int(limit), 100))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id,created_at,event_type,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
-                          avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint,route
-                   FROM events ORDER BY id DESC LIMIT ?""", (limit,)
-            ).fetchall()
+        try:
+            with closing(self._connect()) as con:
+                rows = con.execute(
+                    """SELECT id,created_at,event_type,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
+                              avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint,route
+                       FROM events ORDER BY id DESC LIMIT ?""", (limit,)
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return []
         return [
             {
                 "id": r[0], "created_at": r[1], "event_type": r[2], "agent": r[3], "request_id": r[4],
@@ -50,20 +54,23 @@ class TelemetryQueryMixin:
         if not self.enabled or not request_id or len(request_id) > 128:
             return empty
         self.flush(0.5)
-        with closing(self._connect()) as con:
-            row = con.execute(
-                """SELECT COUNT(*),
-                          SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' THEN input_tokens ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' THEN cache_read_tokens ELSE 0 END),
-                          SUM(CASE WHEN event_type='inference' THEN output_tokens ELSE 0 END),
-                          SUM(avoided_cloud_tokens),
-                          SUM(gross_avoided_cloud_tokens),
-                          SUM(net_cloud_token_delta)
-                   FROM events WHERE request_id=?""",
-                (request_id,),
-            ).fetchone()
+        try:
+            with closing(self._connect()) as con:
+                row = con.execute(
+                    """SELECT COUNT(*),
+                              SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN event_type='inference' THEN input_tokens ELSE 0 END),
+                              SUM(CASE WHEN event_type='inference' THEN cache_read_tokens ELSE 0 END),
+                              SUM(CASE WHEN event_type='inference' THEN output_tokens ELSE 0 END),
+                              SUM(avoided_cloud_tokens),
+                              SUM(gross_avoided_cloud_tokens),
+                              SUM(net_cloud_token_delta)
+                       FROM events WHERE request_id=?""",
+                    (request_id,),
+                ).fetchone()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return empty
         inference_events = int(row[1] or 0)
         cache_hits = int(row[2] or 0)
         return {
@@ -86,11 +93,14 @@ class TelemetryQueryMixin:
         if _flush:
             self.flush(0.5)
         limit = max(1, min(int(limit), 200))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id,created_at,request_id,agent,root,action,status_code,duration_ms,success,error_type
-                   FROM events WHERE event_type='http' ORDER BY id DESC LIMIT ?""", (limit,)
-            ).fetchall()
+        try:
+            with closing(self._connect()) as con:
+                rows = con.execute(
+                    """SELECT id,created_at,request_id,agent,root,action,status_code,duration_ms,success,error_type
+                       FROM events WHERE event_type='http' ORDER BY id DESC LIMIT ?""", (limit,)
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return []
         return [
             {
                 "id": int(row[0]), "created_at": float(row[1]), "request_id": row[2], "agent": row[3],
@@ -106,18 +116,21 @@ class TelemetryQueryMixin:
             return {"samples": 0, "p95_duration_ms": 0.0, "p99_duration_ms": 0.0}
         self.flush(0.1)
         bounded = max(1, min(int(limit), 500))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT duration_ms FROM events WHERE event_type='http' AND action=?
-                   ORDER BY id DESC LIMIT ?""",
-                (str(action)[:160], bounded),
-            ).fetchall()
-        values = [float(row[0] or 0.0) for row in rows]
-        return {
-            "samples": len(values),
-            "p95_duration_ms": _percentile(values, 0.95),
-            "p99_duration_ms": _percentile(values, 0.99),
-        }
+        try:
+            with closing(self._connect()) as con:
+                rows = con.execute(
+                    """SELECT duration_ms FROM events WHERE event_type='http' AND action=?
+                       ORDER BY id DESC LIMIT ?""",
+                    (str(action)[:160], bounded),
+                ).fetchall()
+            values = [float(row[0] or 0.0) for row in rows]
+            return {
+                "samples": len(values),
+                "p95_duration_ms": _percentile(values, 0.95),
+                "p99_duration_ms": _percentile(values, 0.99),
+            }
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return {"samples": 0, "p95_duration_ms": 0.0, "p99_duration_ms": 0.0}
 
     def get_timeline_page(
         self,
@@ -139,18 +152,21 @@ class TelemetryQueryMixin:
             cursor = min(2**63 - 1, max(0, int(before_id))) if before_id is not None else None
         except (TypeError, ValueError, OverflowError):
             cursor = None
-        with closing(self._connect()) as con:
-            sql = """SELECT id, created_at, event_type, agent, action, duration_ms, success,
-                          avoided_cloud_tokens, error_type, route, stage, status_code
-                   FROM events"""
-            values: tuple[Any, ...] = ()
-            if cursor is not None:
-                sql += " WHERE id < ?"
-                values = (cursor,)
-            rows = con.execute(
-                sql + " ORDER BY id DESC LIMIT ?",
-                (*values, bounded_limit + 1),
-            ).fetchall()
+        try:
+            with closing(self._connect()) as con:
+                sql = """SELECT id, created_at, event_type, agent, action, duration_ms, success,
+                              avoided_cloud_tokens, error_type, route, stage, status_code
+                       FROM events"""
+                values: tuple[Any, ...] = ()
+                if cursor is not None:
+                    sql += " WHERE id < ?"
+                    values = (cursor,)
+                rows = con.execute(
+                    sql + " ORDER BY id DESC LIMIT ?",
+                    (*values, bounded_limit + 1),
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return {"timeline": [], "next_cursor": None, "has_more": False}
         has_more = len(rows) > bounded_limit
         page_rows = list(reversed(rows[:bounded_limit]))
         timeline = [
@@ -183,12 +199,15 @@ class TelemetryQueryMixin:
         if _flush:
             self.flush(0.2)
         limit = max(1, min(int(limit), 500))
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id, created_at, event_type, agent, action, duration_ms, success,
-                          avoided_cloud_tokens, error_type
-                   FROM events ORDER BY id ASC LIMIT ?""", (limit,)
-            ).fetchall()
+        try:
+            with closing(self._connect()) as con:
+                rows = con.execute(
+                    """SELECT id, created_at, event_type, agent, action, duration_ms, success,
+                              avoided_cloud_tokens, error_type
+                       FROM events ORDER BY id ASC LIMIT ?""", (limit,)
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return []
         return [
             {
                 "id": int(r[0]),

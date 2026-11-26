@@ -113,6 +113,7 @@ def _is_pid_alive(pid: int) -> bool:
                 return True
         except Exception:
             pass
+
         return False
     try:
         os.kill(pid, 0)
@@ -177,6 +178,7 @@ def _check_and_autostart_hub() -> bool:
             cooldown_file.write_text(str(now), encoding="utf-8")
         except Exception:
             pass
+
 
         repo_root = Path(__file__).resolve().parents[2]
         hubctl = repo_root / "tools" / "hubctl.py"
@@ -474,27 +476,47 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
                 diff = e - s + 1
                 if diff <= max_lines:
                     return {"decision": "allow"}
-                clamped_end = s + max_lines - 1
-                if line_count is not None and clamped_end > line_count:
-                    clamped_end = line_count
+                if os.environ.get("LOCAL_AI_AUTO_CLAMP_READS") == "1":
+                    clamped_end = s + max_lines - 1
+                    if line_count is not None and clamped_end > line_count:
+                        clamped_end = line_count
+                    return {
+                        "decision": "allow",
+                        "overwrite": {
+                            "StartLine": s,
+                            "EndLine": clamped_end,
+                        },
+                    }
+                total_note = f" File '{p.name}' has {line_count} lines total." if (p and line_count is not None) else ""
                 return {
-                    "decision": "allow",
-                    "overwrite": {
-                        "StartLine": s,
-                        "EndLine": clamped_end,
-                    },
+                    "decision": "deny",
+                    "reason": (
+                        f"Requested line range ({s}-{e}, {diff} lines) exceeds the {max_lines}-line limit "
+                        f"(Local AI Hub Token Economy policy).{total_note} Specify a narrower slice (<= {max_lines} lines) "
+                        f'or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", Arguments={{"action": "context", "query": "...", "root": "..."}}).'
+                    ),
                 }
         except (ValueError, TypeError):
             pass
 
-    # Check file on disk if full read attempted - auto-clamp within token budget
+    # Check file on disk if full read attempted
     if p and line_count is not None and line_count > max_lines:
+        if os.environ.get("LOCAL_AI_AUTO_CLAMP_READS") == "1":
+            return {
+                "decision": "allow",
+                "overwrite": {
+                    "StartLine": 1,
+                    "EndLine": min(max_lines, line_count),
+                },
+            }
         return {
-            "decision": "allow",
-            "overwrite": {
-                "StartLine": 1,
-                "EndLine": min(max_lines, line_count),
-            },
+            "decision": "deny",
+            "reason": (
+                f"Full read of '{p.name}' ({line_count} lines > {max_lines}) prohibited by "
+                f"Local AI Hub Token Economy policy. Specify targeted slice with StartLine and EndLine "
+                f'(<= {max_lines} lines) or use call_mcp_tool(ServerName="local-ai-hub_local-ai", ToolName="local_ai_repo", '
+                f'Arguments={{"action": "context", "query": "...", "root": "..."}}).'
+            ),
         }
 
     return {"decision": "allow"}
@@ -516,10 +538,41 @@ def _check_run_command(args: dict[str, Any], conversation_id: str = "") -> dict[
             "decision": "allow",
             "overwrite": {"CommandLine": "git log --oneline -n 10"},
         }
+    if re.match(r"^git\s+log\b", cmd, re.IGNORECASE) and not re.search(
+        r"(?:-n\s*\d+|--max-count\b|-\d+\b|--oneline\b|Select-Object\s+-First|\|\s*head)",
+        cmd,
+        re.IGNORECASE,
+    ):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": f"{cmd} -n 10 --oneline"},
+        }
     if re.match(r"^git\s+diff\s*$", cmd):
         return {
             "decision": "allow",
             "overwrite": {"CommandLine": "git diff --stat"},
+        }
+    if re.match(r"^git\s+branch\s*$", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": "git branch -v"},
+        }
+    if re.match(r"^git\s+branch\s+-a\s*$", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": "git branch -a --column"},
+        }
+    if re.match(r"^git\s+show\s*$", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": "git show --stat -n 1"},
+        }
+
+    # Auto-append quiet flag to verbose test and compiler commands
+    if re.search(r"\bpython\s+(?:-m\s+)?compileall\b", cmd, re.IGNORECASE) and not re.search(r"\s-q\b", cmd):
+        return {
+            "decision": "allow",
+            "overwrite": {"CommandLine": f"{cmd} -q"},
         }
 
     # Guard git commit if unreviewed session edits are pending
@@ -587,8 +640,14 @@ def _check_run_command(args: dict[str, Any], conversation_id: str = "") -> dict[
                         f"Use targeted selectors (e.g. -m 'fast', -m 'critical', or a specific test file path)."
                     ),
                 }
+            if has_selector and not any(a.startswith("-q") or a in ("-v", "-s", "--collect-only", "--help") for a in subargs):
+                return {
+                    "decision": "allow",
+                    "overwrite": {"CommandLine": f"{cmd} -q"},
+                }
         except Exception:
             pass
+
 
     # Unconstrained file dumping in command shell
     if re.search(r"\b(?:Get-Content|gc|cat|type)\s+['\"]?([^'\"\s|;>]+)['\"]?", cmd, re.IGNORECASE):
@@ -816,6 +875,7 @@ def main(argv: list[str] | None = None) -> int:
                 payload = parsed
         except Exception:
             pass
+
 
     if not hook_type:
         event_name = str(payload.get("hookEventName") or "")

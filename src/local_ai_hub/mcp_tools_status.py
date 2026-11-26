@@ -33,15 +33,29 @@ def local_ai_status(
         raw_capabilities = services_module.FEATURES.capability_status()
     else:
         raw_capabilities = services_module._effective_mcp_capabilities(raw_capabilities, services_module.FEATURES.capability_status())
-    capabilities = {
-        str(name): {
-            key: item[key]
-            for key in ("available", "state", "minimum_profile", "reason", "feature_gate", "provider_readiness")
-            if key in item
-        }
-        for name, item in raw_capabilities.items()
-        if isinstance(name, str) and isinstance(item, dict)
-    } if isinstance(raw_capabilities, dict) else {}
+    compact_profile = response_profile in ("compact", "minimal")
+    if compact_profile and isinstance(raw_capabilities, dict):
+        capabilities = {}
+        for name, item in raw_capabilities.items():
+            if not (isinstance(name, str) and isinstance(item, dict)):
+                continue
+            is_avail = bool(item.get("available", False))
+            cap: dict[str, Any] = {"available": is_avail}
+            if not is_avail:
+                for k in ("state", "reason", "minimum_profile"):
+                    if k in item and item[k] is not None:
+                        cap[k] = item[k]
+            capabilities[str(name)] = cap
+    else:
+        capabilities = {
+            str(name): {
+                key: item[key]
+                for key in ("available", "state", "minimum_profile", "reason", "feature_gate", "provider_readiness")
+                if key in item
+            }
+            for name, item in raw_capabilities.items()
+            if isinstance(name, str) and isinstance(item, dict)
+        } if isinstance(raw_capabilities, dict) else {}
     gpu_admission_state = scheduler.get("gpu_admission_state")
     if not isinstance(gpu_admission_state, str) or gpu_admission_state not in {
         "available", "external_reservation", "background_lease",
