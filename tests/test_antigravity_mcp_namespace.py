@@ -24,7 +24,9 @@ def test_generated_guidance_uses_antigravity_plugin_namespace_only_where_needed(
     assert 'ServerName="local-ai"' not in antigravity_policy
 
 
-def test_antigravity_hook_guidance_uses_plugin_namespace():
+def test_antigravity_hook_guidance_uses_plugin_namespace(monkeypatch):
+    import local_ai_hub.antigravity_hook as antigravity_hook
+    monkeypatch.setattr(antigravity_hook, "_is_hub_online", lambda: True)
     message = handle_session_start({"workspacePaths": ["C:/workspace"]})[
         "injectSteps"
     ][0]["systemMessage"]["systemMessage"]

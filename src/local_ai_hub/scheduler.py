@@ -12,15 +12,37 @@ import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .external_gpu_reservation import ExternalGpuReservationStore
 from .model_policy import ModelExecutionPolicy
+from .state_paths import configured_state_dir
 from .trace_context import observer
 
 
 _INVALID_EXTERNAL_RESERVATION = "invalid"
 _MAX_GPU_CAPACITY_SAMPLE_AGE_SECONDS = 5.0
+_EXTERNAL_GPU_RESERVATION_FILENAME = "external-gpu-reservation"
+
+
+def _external_gpu_reservation_path(config: Mapping[str, Any]) -> Path:
+    scheduler_cfg = config.get("scheduler", {})
+    scheduler_cfg = scheduler_cfg if isinstance(scheduler_cfg, Mapping) else {}
+    raw_shared_path = scheduler_cfg.get("external_gpu_reservation_path")
+    if raw_shared_path is None or raw_shared_path == "":
+        return configured_state_dir(config) / _EXTERNAL_GPU_RESERVATION_FILENAME
+    if not isinstance(raw_shared_path, (str, os.PathLike)) or isinstance(raw_shared_path, bool):
+        raise ValueError("scheduler.external_gpu_reservation_path must be an absolute local path")
+    path = Path(raw_shared_path).expanduser()
+    if (not path.is_absolute() or path.name != _EXTERNAL_GPU_RESERVATION_FILENAME
+            or path.drive.startswith("\\\\") or not path.parent.is_dir()):
+        raise ValueError("scheduler.external_gpu_reservation_path must name a fence under an existing local directory")
+    for entry in (path, *path.parents):
+        is_junction = getattr(entry, "is_junction", None)
+        if entry.is_symlink() or (callable(is_junction) and is_junction()):
+            raise ValueError("scheduler.external_gpu_reservation_path cannot traverse a link or junction")
+    return path.resolve()
 
 
 def _gpu_telemetry_freshness_reason(resource: Mapping[str, Any]) -> str | None:
@@ -311,13 +333,17 @@ class AffinityScheduler:
         self._foreground_preempt_hook: Callable[[], bool | None] | None = None
         self._foreground_preempting = False
         self._background_gpu_lease = False
-        server_cfg = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
-        raw_state_dir = server_cfg.get("state_dir")
         self._external_gpu_path = None
         self._external_gpu_store = None
-        if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip():
-            from .state_paths import configured_state_dir
-            self._external_gpu_path = configured_state_dir(config) / "external-gpu-reservation"
+        server_cfg = config.get("server", {}) if isinstance(config, Mapping) else {}
+        scheduler_cfg = config.get("scheduler", {}) if isinstance(config, Mapping) else {}
+        has_state_dir = isinstance(server_cfg, Mapping) and bool(server_cfg.get("state_dir"))
+        has_shared_reservation_path = (
+            isinstance(scheduler_cfg, Mapping)
+            and scheduler_cfg.get("external_gpu_reservation_path") not in (None, "")
+        )
+        if has_state_dir or has_shared_reservation_path:
+            self._external_gpu_path = _external_gpu_reservation_path(config)
             self._external_gpu_store = ExternalGpuReservationStore(self._external_gpu_path)
         self._external_gpu_token = _read_external_reservation(self._external_gpu_path) if self._external_gpu_path else None
         self._external_gpu_owned = False
@@ -2563,21 +2589,10 @@ class AffinityScheduler:
             self._cond.notify_all()
             return True
 
-    def _job_public(
-        self,
-        job: Job,
-        now: float,
-        *,
-        state: str,
-        position: int = 0,
-        external_gpu_blocked: bool | None = None,
-    ) -> dict[str, Any]:
+    def _job_public(self, job: Job, now: float, *, state: str, position: int = 0) -> dict[str, Any]:
         wait_ms = max(0, int(((job.started_at or now) - job.created_at) * 1000))
         service_ms = max(0, int((now - job.started_at) * 1000)) if job.started_at and state == "running" else 0
-        if state == "queued" and (
-            self._external_gpu_blocks_scheduler()
-            if external_gpu_blocked is None else external_gpu_blocked
-        ):
+        if state == "queued" and self._external_gpu_blocks_scheduler():
             wait_reason = "gpu-reservation"
         elif state == "queued" and job.admission.get("reason") == "gpu_capacity_deferred":
             wait_reason = "gpu-capacity"
@@ -2602,20 +2617,14 @@ class AffinityScheduler:
         }
 
     def status(self) -> dict[str, Any]:
-        # Reservation storage and runtime cache inspection may wait on file or
-        # backend locks. Do that before taking the scheduler condition so a slow
-        # status read cannot stall dispatch or foreground admission.
-        external_gpu_reserved = self._external_gpu_reserved()
-        external_gpu_blocked = self._external_gpu_blocks_scheduler()
-        capacity_sharing = self._capacity_sharing_active()
-        cache_stats = self._cache_stats()
         with self._cond:
             by_model: dict[str, int] = {}
             background_queued = 0
             now = time.monotonic()
+            self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 gpu_admission_state = "outcome_unknown"
-            elif external_gpu_blocked:
+            elif self._external_gpu_blocks_scheduler():
                 gpu_admission_state = "external_reservation"
             elif self._background_gpu_lease:
                 gpu_admission_state = "background_lease"
@@ -2633,13 +2642,7 @@ class AffinityScheduler:
                 background_queued += int(job.background)
                 model_positions[job.model] = model_positions.get(job.model, 0) + 1
                 if len(pending_jobs) < self.status_max_items:
-                    item = self._job_public(
-                        job,
-                        now,
-                        state="queued",
-                        position=model_positions[job.model],
-                        external_gpu_blocked=external_gpu_blocked,
-                    )
+                    item = self._job_public(job, now, state="queued", position=model_positions[job.model])
                     pending_jobs.append(item)
             inflight_jobs = [self._job_public(job, now, state="running") for job in sorted(self._inflight_jobs.values(), key=lambda j: j.started_at or j.created_at)]
             return {
@@ -2663,20 +2666,11 @@ class AffinityScheduler:
                 "pending_jobs_truncated": len(self._pending) > self.status_max_items,
                 "inflight_jobs": inflight_jobs,
                 "active_batch_dispatched": self._active_dispatched,
-                "background_allowed": (
-                    not external_gpu_reserved
-                    and not capacity_sharing
-                    and self._inflight - self._inflight_background == 0
-                    and not any(
-                        not job.background and job.capacity_retry_at <= now
-                        for job in self._pending
-                    )
-                    and now - self._last_foreground_activity >= self.background_idle_grace
-                ),
+                "background_allowed": self.background_allowed(),
                 "blocked_models": {m: max(0, int((until - now) * 1000)) for m, until in self._model_blocked_until.items() if until > now},
                 "last_foreground_activity_ms": max(0, int((now - self._last_foreground_activity) * 1000)),
                 "stats": dict(self._stats),
-                "cache_stats": cache_stats,
+                "cache_stats": self._cache_stats(),
             }
 
     def gpu_reservation_operation(
@@ -2749,10 +2743,7 @@ class AffinityScheduler:
                 "lease_id": lease_id, "generation": generation,
             }
             if not released:
-                result.update(
-                    error="lease is missing, changed, reservation-bound, or owner process is not confirmed gone",
-                    error_code="gpu_lease_conflict", status_code=409, terminal=True, retryable=False,
-                )
+                result["error"] = "lease is missing, changed, reservation-bound, or owner process is not confirmed gone"
             return result
         if action == "release_scheduler_capacity_lease":
             parts = owner.split(":") if isinstance(owner, str) else []
@@ -2791,10 +2782,7 @@ class AffinityScheduler:
                 "lease_id": lease_id, "generation": generation,
             }
             if not released:
-                result.update(
-                    error="lease is missing, changed, created during this Hub run, or reservation-bound",
-                    error_code="gpu_lease_conflict", status_code=409, terminal=True, retryable=False,
-                )
+                result["error"] = "lease is missing, changed, created during this Hub run, or reservation-bound"
             return result
         if action != "release":
             return {"success": False, "operation_not_started": True,

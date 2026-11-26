@@ -84,22 +84,3 @@ The scope audit covers all eleven pages:
 All eleven primary pages have a clear page heading and short purpose statement. Content uses a bounded desktop width, consistent typography, spacing, form fields and keyboard focus. Configuration options use labeled cards; advanced capability details are collapsed on Overview. Long repository identities wrap, tables scroll inside their panels and mobile events use compact two-row records. Empty repository selection is a neutral prompt, separate from failed loading. Request outcomes identify operation failure even when HTTP delivery returned 200.
 
 Visual checks cover the deployed dashboard at desktop and phone widths. Passing source/script regressions does not establish that destructive maintenance, configuration saves, imports or model benchmarks were executed.
-
-### Project knowledge (initial V4 slice)
-
-The Projects page includes a read-only knowledge query panel. Select an exact
-registered checkout and search shared declarations. The panel displays the
-record's layer, freshness, source locators, relations, and optional declared
-process flow. It distinguishes incomplete inventory and truncated results from
-a verified absence of matching knowledge. Changing the checkout discards an
-in-flight result. This panel uses the same repository knowledge HTTP query as
-the existing MCP repo tool. Explicit record edits and review publication
-currently use the local hubctl CLI; this is not yet the full V4 editor.
-
-The Projects knowledge panel also includes a quality inbox, review-note
-editor, corrective-task preview and declaration JSON editor. Edits require
-an exact revision preview, explicit apply, and a current checkout. Save
-writes the repository record through the existing journal, not Git commit
-or push. Refresh the query after edits. A corrective-task preview can be explicitly submitted to the existing scoped
-Agent OS task-create API after revalidation. The task is created, not executed
-or completed; all normal verification requirements remain in force.

@@ -516,6 +516,34 @@ def _is_hub_online() -> bool:
         return False
 
 
+def _fetch_hub_task_summary(root_path: str | Path | None) -> str:
+    """Fetch concise active task context from Hub HTTP API if online."""
+    if not _is_hub_online():
+        return ""
+    try:
+        data = json.dumps({"root": str(root_path or ""), "status": "active"}).encode("utf-8")
+        req = urllib.request.Request(
+            "http://127.0.0.1:11435/api/coord/task_list",
+            data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "HostHook"},
+        )
+        with urllib.request.urlopen(req, timeout=0.15) as resp:
+            coord_data = json.loads(resp.read().decode("utf-8"))
+            tasks = coord_data.get("tasks") or coord_data.get("items") or []
+            if tasks and isinstance(tasks, list):
+                first_task = tasks[0]
+                tid = first_task.get("task_id") or first_task.get("id") or "active"
+                t_status = first_task.get("status") or "active"
+                next_act = first_task.get("checkpoint", {}).get("next_action") or ""
+                parts = [f"Active task: {tid} ({t_status})."]
+                if next_act:
+                    parts.append(f"Next: {next_act[:80]}.")
+                return " ".join(parts)
+    except Exception:
+        pass
+    return ""
+
+
 def _is_repository_source_path(path: Path) -> bool:
     return path.suffix.lower() in REPO_SOURCE_SUFFIXES
 
@@ -845,24 +873,48 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
     if event not in valid_events:
         raise ValueError("unsupported hook event")
 
-    if host in {"codex", "claude"} and event == "UserPromptSubmit":
+    if host in {"codex", "claude"} and event == "SessionStart":
+        _trigger_repo_warmup(Path(cwd))
+        task_info = _fetch_hub_task_summary(cwd)
+        guidance = (
+            "When Local AI Hub MCP is available, use it for indexed repository evidence and typed Laya advice "
+            "on bounded routing, context, or retrieval decisions. Treat Laya output as advisory; host "
+            "permissions and deterministic validation remain authoritative."
+        )
+        if task_info:
+            guidance = f"{task_info} {guidance}"
         return {"hookSpecificOutput": {
             "hookEventName": event,
-            "additionalContext": (
-                "When Local AI Hub MCP is available, use it for indexed repository evidence and typed Laya advice "
-                "on bounded routing, context, or retrieval decisions. Treat Laya output as advisory; host "
-                "permissions and deterministic validation remain authoritative."
-            ),
+            "additionalContext": guidance[:512],
+        }}
+
+    if host in {"codex", "claude"} and event == "UserPromptSubmit":
+        guidance = (
+            "When Local AI Hub MCP is available, use it for indexed repository evidence and typed Laya advice "
+            "on bounded routing, context, or retrieval decisions. Treat Laya output as advisory; host "
+            "permissions and deterministic validation remain authoritative."
+        )
+        task_info = _fetch_hub_task_summary(cwd)
+        if task_info:
+            guidance = f"{task_info} {guidance}"
+        return {"hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": guidance[:512],
         }}
 
     if host in {"codex", "claude"} and event == "SubagentStart":
+        subagent_guidance = (
+            "When Local AI Hub MCP is available, use indexed repository evidence and typed Laya advice "
+            "for bounded routing, context, and retrieval decisions. Coordinate work via Local AI Hub MCP, "
+            "respect active task lease boundaries, and treat Laya output as advisory; "
+            "host permissions and deterministic validation remain authoritative."
+        )
+        task_info = _fetch_hub_task_summary(cwd)
+        if task_info:
+            subagent_guidance = f"{task_info} {subagent_guidance}"
         return {"hookSpecificOutput": {
             "hookEventName": event,
-            "additionalContext": (
-                "When Local AI Hub MCP is available, use indexed repository evidence and typed Laya advice "
-                "for bounded routing, context, and retrieval decisions. Treat Laya output as advisory; "
-                "host permissions and deterministic validation remain authoritative."
-            ),
+            "additionalContext": subagent_guidance[:512],
         }}
 
     if host in {"codex", "claude"} and event == "PermissionRequest":

@@ -295,12 +295,6 @@ class FeatureSet:
                 lines.append("- before repeating a failure: check scoped negative knowledge")
         if self.rag:
             lines.append("- `local_ai_rag` only after indexed repository evidence is insufficient")
-        task_actions = set(self.supported_task_actions())
-        semantic_actions = task_actions & {"delegate", "explore", "reason", "review", "second_opinion", "compress"}
-        if semantic_actions:
-            lines.append(
-                "- second-pass semantic QA after evidence, when exposed and qualified: use an exposed semantic action"
-            )
         work_actions = set(self.supported_work_actions())
         if self.work_orchestrator and "submit" in work_actions:
             lines.append("- `local_ai_work(action=\"submit\")` only for explicit, qualified closed delegation; primary agent reviews handoff")
@@ -338,7 +332,7 @@ class FeatureSet:
         task = set(self.supported_task_actions())
         semantic = [action for action in ("review", "reason", "second_opinion", "explore", "compress", "delegate") if action in task]
         if semantic:
-            lines.append(f"- `local_ai_task`: after evidence, default to exposed semantic QA ({'/'.join(semantic)}) when quality/backend gates pass.")
+            lines.append(f"- `local_ai_task`: required after evidence for each independent non-trivial semantic subtask; exposed actions ({'/'.join(semantic)}), subject to privacy, authorization, backend, and quality gates.")
             lines.append(f"- Tier-available semantic actions only: `{'|'.join(semantic)}`; unavailable actions stay omitted.")
         specialties = []
         if task & {"complete_code", "scaffold"}:
@@ -392,11 +386,6 @@ class FeatureSet:
         if self.repo:
             review = "`review_diff` or `security_audit`" if "review_diff" in set(self.supported_repo_actions()) else "`security_audit`"
             lines.append(f"- Recipe — Validate: run bounded repeatable commands with the host-native command tool; use {review} when relevant.")
-        if self.tasks and self.has_any_model():
-            available = set(self.supported_task_actions())
-            semantic = [action for action in ("review", "second_opinion", "explore", "reason", "compress") if action in available]
-            if semantic:
-                lines.append("- Recipe — Semantic work: use exposed `local_ai_task` semantic actions after deterministic/indexed evidence.")
         if self.agent_os:
             receipt_part = "attach explicit verification receipts; "
             lines.append(f"- Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action=\"task_create\")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; {receipt_part}and verify completion (`verify_completion`) before closure.")

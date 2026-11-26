@@ -50,17 +50,24 @@ assert_external_file_writable = _install_ownership_module.assert_external_file_w
 forget_external_record = _install_ownership_module.forget_external_record
 _ACTIVE_INSTALL_ROOT: Path | None = None
 _ADOPT_UNOWNED_HUB_BLOCKS = True
+_REPLACE_EDITED_HUB_BLOCKS = False
+_REFRESH_HUB_SKILLS = False
 
 
-def _assert_or_adopt_external_block(path: Path, owner_marker: dict[str, str], current_block: str) -> None:
+def _assert_or_adopt_external_block(path: Path, owner_marker: dict[str, str], current_block: str) -> bool:
+    """Return True only when an explicit generate-only override replaces an edited Hub block."""
     if _ACTIVE_INSTALL_ROOT is None:
-        return
+        return False
     try:
         assert_external_block_writable(
             _ACTIVE_INSTALL_ROOT, path, owner_marker=owner_marker, current_block=current_block
         )
     except ValueError as exc:
-        if not _ADOPT_UNOWNED_HUB_BLOCKS or "external block has no ownership record" not in str(exc):
+        error = str(exc)
+        if _REPLACE_EDITED_HUB_BLOCKS and "owned external block was edited" in error:
+            log(f"Replacing edited marked Hub block after full-file backup: {path}")
+            return True
+        if not _ADOPT_UNOWNED_HUB_BLOCKS or "external block has no ownership record" not in error:
             raise
         reason = "Operator requested installation of current Local AI Hub agent instructions and MCP settings."
         if adopt_external_block(
@@ -68,6 +75,7 @@ def _assert_or_adopt_external_block(path: Path, owner_marker: dict[str, str], cu
             consent=True, audit_reason=reason,
         ):
             log(f"Adopted existing Local AI Hub block with rollback snapshot: {path}")
+    return False
 
 _update_transaction_spec = importlib.util.spec_from_file_location(
     "_local_ai_hub_update_transaction", Path(__file__).with_name("update_transaction.py")
@@ -369,11 +377,18 @@ def backup(path: Path, enabled: bool) -> None:
     log(f"Backup: {dest}")
 
 
-def install_skill(source_skill: Path, target: Path) -> None:
+def install_skill(source_skill: Path, target: Path, *, refresh_hub_owned: bool = False) -> None:
     install_root = source_skill.parent.parent
     manifest = install_root / ".local-ai-hub-skill-ownership.json"
     try:
-        result = install_owned_skill(source_skill, target, target.parent, manifest, target.name)
+        result = install_owned_skill(
+            source_skill,
+            target,
+            target.parent,
+            manifest,
+            target.name,
+            refresh_hub_owned=refresh_hub_owned or _REFRESH_HUB_SKILLS or _REPLACE_EDITED_HUB_BLOCKS,
+        )
     except ValueError as exc:
         result = f"skill not installed; ownership safety check failed: {exc}"
     log(result)
@@ -520,25 +535,30 @@ def merge_antigravity_skill_policy(path: Path, backup_enabled: bool) -> None:
     updated = policy + separator + unmanaged
     if updated == text or (preimage is not None and preimage.replace("\r\n", "\n") == policy):
         return
-    if preimage is not None:
-        _assert_or_adopt_external_block(path, marker, preimage)
-    backup(path, backup_enabled)
+    replace_edited = _assert_or_adopt_external_block(path, marker, preimage) if preimage is not None else False
+    backup(path, backup_enabled or replace_edited)
     path.write_bytes(updated.encode("utf-8"))
     if _ACTIVE_INSTALL_ROOT is not None:
         record_external_block(
             _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
-            preimage=preimage, postimage=policy,
+            preimage=None if replace_edited else preimage, postimage=policy,
         )
 
 
-def install_agent_skills(install_dir: Path, target_skills_dir: Path, *, include_companion: bool = True) -> None:
+def install_agent_skills(
+    install_dir: Path,
+    target_skills_dir: Path,
+    *,
+    include_companion: bool = True,
+    refresh_hub_owned: bool = False,
+) -> None:
     source_skill = install_dir / "skills" / "local-ai-orchestrator"
-    install_skill(source_skill, target_skills_dir / "local-ai-orchestrator")
+    install_skill(source_skill, target_skills_dir / "local-ai-orchestrator", refresh_hub_owned=refresh_hub_owned)
     if include_companion:
         for skill_name in COMPANION_SKILLS:
             source = install_dir / "skills" / skill_name
             if source.exists():
-                install_skill(source, target_skills_dir / skill_name)
+                install_skill(source, target_skills_dir / skill_name, refresh_hub_owned=refresh_hub_owned)
 
 
 def normalize_gemini_skill_registry(path: Path, home_dir: Path, backup_enabled: bool) -> bool:
@@ -930,7 +950,7 @@ def _antigravity_hook_config(command_prefix: str) -> dict[str, Any]:
             }],
         }],
         "PostToolUse": [{
-            "matcher": "edit_file|write_file",
+            "matcher": "edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content",
             "hooks": [{
                 "type": "command", "command": f"{command_prefix} PostToolUse", "timeout": 15,
             }],
@@ -965,8 +985,12 @@ def sync_antigravity_hooks_json(
         batch_content = (
             "@echo off\r\n"
             f'"{python_exe}" -m local_ai_hub.antigravity_hook %*\r\n'
-            "if %ERRORLEVEL% NEQ 0 (\r\n"
-            '    echo {"decision": "allow"}\r\n'
+            "if errorlevel 1 (\r\n"
+            '    if /I "%~1"=="PreToolUse" (\r\n'
+            '        echo {"decision": "allow"}\r\n'
+            "    ) else (\r\n"
+            "        echo {}\r\n"
+            "    )\r\n"
             "    exit /b 0\r\n"
             ")\r\n"
         )
@@ -975,7 +999,12 @@ def sync_antigravity_hooks_json(
         hook_script = path.parent / "local-ai-hook.sh"
         sh_content = (
             "#!/bin/sh\n"
-            f'"{python_exe}" -m local_ai_hub.antigravity_hook "$@" || echo \'{{"decision": "allow"}}\'\n'
+            f'if ! "{python_exe}" -m local_ai_hub.antigravity_hook "$@"; then\n'
+            '    case "${1-}" in\n'
+            '        PreToolUse) printf \'{"decision":"allow"}\\n\' ;;\n'
+            "        *) printf '{}\\n' ;;\n"
+            "    esac\n"
+            "fi\n"
             "exit 0\n"
         )
         script_content = sh_content
@@ -994,7 +1023,7 @@ def sync_antigravity_hooks_json(
             if current_script != script_content:
                 lines = [line.strip().lower() for line in current_script.decode("utf-8", errors="replace").splitlines() if line.strip()]
                 if os.name == "nt":
-                    recognized_runner = (
+                    legacy_runner = (
                         len(lines) == 6
                         and lines[0] == "@echo off"
                         and lines[1].startswith('"')
@@ -1004,19 +1033,47 @@ def sync_antigravity_hooks_json(
                         and lines[4] == "exit /b 0"
                         and lines[5] == ")"
                     )
+                    current_runner = (
+                        len(lines) == 10
+                        and lines[0] == "@echo off"
+                        and lines[1].startswith('"')
+                        and " -m local_ai_hub.antigravity_hook %*" in lines[1]
+                        and lines[2] == "if errorlevel 1 ("
+                        and lines[3] == 'if /i "%~1"=="pretooluse" ('
+                        and lines[4] == 'echo {"decision": "allow"}'
+                        and lines[5] == ") else ("
+                        and lines[6] == "echo {}"
+                        and lines[7] == ")"
+                        and lines[8] == "exit /b 0"
+                        and lines[9] == ")"
+                    )
                 else:
-                    recognized_runner = (
+                    legacy_runner = (
                         len(lines) == 3
                         and lines[0] == "#!/bin/sh"
                         and "-m local_ai_hub.antigravity_hook \"$@\"" in lines[1]
                         and "decision" in lines[1]
                         and lines[2] == "exit 0"
                     )
+                    current_runner = (
+                        len(lines) == 8
+                        and lines[0] == "#!/bin/sh"
+                        and lines[1].startswith("if ! ")
+                        and "-m local_ai_hub.antigravity_hook \"$@\"" in lines[1]
+                        and lines[2] == 'case "${1-}" in'
+                        and 'PreToolUse) printf \'{"decision":"allow"}\\n\' ;;' in lines[3]
+                        and "printf '{}'" in lines[4]
+                        and lines[5] == "esac"
+                        and lines[6] == "fi"
+                        and lines[7] == "exit 0"
+                    )
+                recognized_runner = legacy_runner or current_runner
                 if not (_ADOPT_UNOWNED_HUB_BLOCKS and recognized_runner):
                     log(f"WARNING: preserving hook script without matching ownership: {hook_script}")
                     return
-                # Existing Hub runner is recognized and preserved byte-for-byte.
-                record_script = False
+                # An explicitly adopted Hub runner may be upgraded to the
+                # event-specific output contract required by Antigravity.
+                record_script = True
     command_prefix = f'"{hook_script.resolve()}"'
     hook_config = _antigravity_hook_config(command_prefix)
 
@@ -1047,7 +1104,7 @@ def sync_antigravity_hooks_json(
                 hook_config, unquoted_current_config, quoted_current_config,
                 legacy_config, legacy_partial_config,
             )
-            if previous_hook == hook_config:
+            if previous_hook == hook_config and not record_script:
                 return
             if not (_ADOPT_UNOWNED_HUB_BLOCKS and recognized_config):
                 log(f"WARNING: preserving unowned local-ai-hub hook configuration in {path}")
@@ -1231,6 +1288,101 @@ def claude_hub_plugin_enabled(settings_path: Path) -> bool:
         raise RuntimeError(f"Claude settings must be an object: {settings_path}")
     enabled = data.get("enabledPlugins")
     return isinstance(enabled, dict) and enabled.get("local-ai-hub@local-ai-hub") is True
+
+
+def refresh_claude_hub_plugin_cache(settings_path: Path, install_dir: Path) -> tuple[bool, str]:
+    """Update an enabled Claude Hub plugin only from this install's local marketplace."""
+    if not claude_hub_plugin_enabled(settings_path):
+        return True, "Claude Hub plugin is not enabled; cache refresh is not applicable"
+    claude_home = settings_path.parent.resolve()
+    source_manifest = install_dir / "plugins" / "claude" / "local-ai-hub" / ".claude-plugin" / "plugin.json"
+    source_version = _provider_manifest_version(source_manifest)
+    if source_version is None:
+        return False, "Claude Hub plugin source manifest is missing a comparable version"
+
+    known_path = claude_home / "plugins" / "known_marketplaces.json"
+    try:
+        known = json.loads(known_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False, "Claude local marketplace registry is unavailable or invalid; cache was not changed"
+    marketplace = known.get("local-ai-hub") if isinstance(known, dict) else None
+    source = marketplace.get("source") if isinstance(marketplace, dict) else None
+    source_path = source.get("path") if isinstance(source, dict) else None
+    expected_marketplace = install_dir / "plugins" / "claude"
+    try:
+        same_source = (
+            isinstance(source_path, str)
+            and source.get("source") == "directory"
+            and os.path.normcase(os.path.normpath(str(Path(source_path).resolve())))
+            == os.path.normcase(os.path.normpath(str(expected_marketplace.resolve())))
+        )
+    except (OSError, RuntimeError, ValueError):
+        same_source = False
+    if not same_source:
+        return False, "Claude local-ai-hub marketplace does not uniquely point to this install; cache was not changed"
+
+    installed_path = claude_home / "plugins" / "installed_plugins.json"
+
+    def installed_user_version() -> tuple[str | None, str | None]:
+        try:
+            installed = json.loads(installed_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None, "Claude installed plugin registry is unavailable or invalid"
+        plugins = installed.get("plugins") if isinstance(installed, dict) else None
+        records = plugins.get("local-ai-hub@local-ai-hub") if isinstance(plugins, dict) else None
+        user_records = [
+            item for item in records
+            if isinstance(item, dict) and str(item.get("scope") or "").casefold() == "user"
+        ] if isinstance(records, list) else []
+        if len(user_records) != 1:
+            return None, "Claude user-scope Hub plugin install is missing or ambiguous"
+        record = user_records[0]
+        version = record.get("version")
+        install_path = record.get("installPath")
+        if not isinstance(version, str) or not version.strip() or not isinstance(install_path, str) or not install_path.strip():
+            return None, "Claude Hub plugin install record lacks its version or path"
+        try:
+            cached_manifest = json.loads(
+                (Path(install_path).expanduser() / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None, "Claude Hub plugin cache manifest is unavailable or invalid"
+        cached_version = cached_manifest.get("version") if isinstance(cached_manifest, dict) else None
+        cached_name = cached_manifest.get("name") if isinstance(cached_manifest, dict) else None
+        if cached_name != "local-ai-hub" or cached_version != version:
+            return None, "Claude plugin registry and cached manifest disagree"
+        return version.strip(), None
+
+    installed_version, installed_error = installed_user_version()
+    if installed_error:
+        return False, f"{installed_error}; cache was not changed"
+    relation = _release_version_relation(installed_version, source_version)
+    if relation is None:
+        return False, "Claude plugin versions cannot be compared safely; cache was not changed"
+    if relation == 0:
+        return True, f"Claude plugin cache already current ({installed_version})"
+    if relation > 0:
+        return True, f"Claude plugin cache already has newer version {installed_version}; preserving cache"
+
+    claude = shutil.which("claude.cmd") or shutil.which("claude")
+    if not claude:
+        return False, f"Claude CLI is unavailable; update the enabled local plugin to {source_version}"
+    try:
+        result = run(
+            [claude, "plugin", "update", "local-ai-hub@local-ai-hub", "--scope", "user"],
+            check=False, timeout=60, capture=True,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"Claude Hub plugin refresh failed: {type(exc).__name__}"
+    if result.returncode != 0:
+        return False, "Claude Hub plugin refresh failed; inspect Claude CLI output"
+    refreshed_version, refreshed_error = installed_user_version()
+    if refreshed_error:
+        return False, f"Claude plugin refresh could not be verified: {refreshed_error}"
+    refreshed_relation = _release_version_relation(refreshed_version, source_version)
+    if refreshed_relation is None or refreshed_relation < 0:
+        return False, f"Claude plugin refresh left installed version {refreshed_version!r} below source {source_version}"
+    return True, f"Claude plugin cache updated from the selected local marketplace ({refreshed_version}); restart Claude Code to activate"
 
 
 def global_hub_mcp_configured(mcp_path: Path) -> bool:
@@ -1582,6 +1734,15 @@ def sync_cursor_plugin_bundle(cursor_dir: Path, backup_enabled: bool) -> bool:
     if not _provider_manifest_named(target_manifest, "local-ai-hub"):
         log(f"WARNING: preserving unrecognized Cursor plugin directory: {target}")
         return False
+    target_version = _provider_manifest_version(target_manifest)
+    source_version = _provider_manifest_version(source_manifest)
+    relation = _release_version_relation(target_version, source_version)
+    if relation is None:
+        log(f"WARNING: preserving Cursor plugin with an uncomparable version: {target_version!r}")
+        return False
+    if relation > 0:
+        log(f"Cursor plugin {target_version} is newer than source {source_version}; preserving installed bundle")
+        return True
 
     for source_file in sorted(source.rglob("*")):
         if not source_file.is_file():
@@ -1861,6 +2022,16 @@ def sync_antigravity_plugin_bundle(
     if target_exists and not _provider_manifest_named(target / "plugin.json", "local-ai-hub"):
         log(f"WARNING: preserving unrecognized Antigravity plugin directory: {target}")
         return False
+    if target_exists:
+        target_version = _provider_manifest_version(target / "plugin.json")
+        source_version = _provider_manifest_version(source / "plugin.json")
+        relation = _release_version_relation(target_version, source_version)
+        if relation is None:
+            log(f"WARNING: preserving Antigravity plugin with an uncomparable version: {target_version!r}")
+            return False
+        if relation > 0:
+            log(f"Antigravity plugin {target_version} is newer than source {source_version}; preserving installed bundle")
+            return True
     for source_file in sorted(source.rglob("*")):
         if not source_file.is_file():
             continue
@@ -1969,6 +2140,11 @@ def _remove_duplicate_antigravity_hooks(path: Path, backup_enabled: bool) -> boo
         _antigravity_hook_config(current_runner),
         _antigravity_hook_config(legacy_runner),
     ]
+    # Recognize the previous exact Hub-owned hook shape so it can be safely
+    # removed when the native plugin becomes active after this upgrade.
+    for config in list(generated_configs):
+        config["PostToolUse"][0]["matcher"] = "edit_file|write_file"
+        generated_configs.append(config)
     # Earlier releases emitted only the narrow PreToolUse policy.
     generated_configs.append({
         "enabled": True,
@@ -1996,6 +2172,29 @@ def _provider_manifest_named(manifest_path: Path, expected_name: str) -> bool:
     if not isinstance(data, dict):
         raise RuntimeError(f"Provider manifest must be an object: {manifest_path}")
     return data.get("name") == expected_name
+
+
+def _provider_manifest_version(manifest_path: Path) -> str | None:
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
+def _release_version_relation(installed: str | None, source: str | None) -> int | None:
+    """Compare stable numeric Hub versions; unknown formats never authorize replacement."""
+    if installed is None or source is None:
+        return None
+    pattern = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+    installed_match = pattern.fullmatch(installed)
+    source_match = pattern.fullmatch(source)
+    if installed_match is None or source_match is None:
+        return None
+    left = tuple(int(part) for part in installed_match.groups())
+    right = tuple(int(part) for part in source_match.groups())
+    return (left > right) - (left < right)
 
 
 def sync_claude_pre_tool_hook(
@@ -2997,9 +3196,8 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
     managed = managed_matches[0] if managed_matches else None
     preimage = managed.group(0) if managed else None
     owner_marker = {"begin": MARKER_BEGIN, "end": MARKER_END}
-    if preimage is not None:
-        _assert_or_adopt_external_block(path, owner_marker, preimage)
-    backup(path, backup_enabled)
+    replace_edited = _assert_or_adopt_external_block(path, owner_marker, preimage) if preimage is not None else False
+    backup(path, backup_enabled or replace_edited)
     existing_servers: dict[str, Any] = {}
     if managed:
         try:
@@ -3052,7 +3250,7 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
     if _ACTIVE_INSTALL_ROOT is not None:
         record_external_block(
             _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=owner_marker,
-            preimage=preimage, postimage=written_block,
+            preimage=None if replace_edited else preimage, postimage=written_block,
         )
     log(f"Codex MCP config updated: {path}")
 
@@ -3124,6 +3322,17 @@ def refresh_codex_hub_plugin_cache(codex_config: Path, install_dir: Path) -> tup
             cached_versions.add(cached_version.strip())
     if expected_version in cached_versions:
         return True, f"Codex plugin cache already current ({expected_version})"
+    cache_relations = {
+        cached_version: _release_version_relation(cached_version, expected_version)
+        for cached_version in cached_versions
+    }
+    if any(relation is None for relation in cache_relations.values()):
+        return False, "Codex plugin cache contains a version that cannot be safely compared; cache was not changed"
+    newer_versions = sorted(
+        version for version, relation in cache_relations.items() if relation is not None and relation > 0
+    )
+    if newer_versions:
+        return True, f"Codex plugin cache already has newer version(s) {', '.join(newer_versions)}; preserving cache"
 
     try:
         install_result = run(
@@ -3165,19 +3374,18 @@ def _merge_owned_text_block(path: Path, block: str, begin: str, end: str, backup
         raise RuntimeError(f"multiple Local AI Hub blocks found in {path}")
     preimage = matches[0].group(0) if matches else None
     marker = {"begin": begin, "end": end}
-    if preimage is not None:
-        _assert_or_adopt_external_block(path, marker, preimage)
+    replace_edited = _assert_or_adopt_external_block(path, marker, preimage) if preimage is not None else False
     updated = pattern.sub(lambda _match: block, text) if preimage is not None else (
         text + ("" if not text or text.endswith("\n") else "\n") + "\n" + block + "\n"
     )
     if updated == text:
         return
-    backup(path, backup_enabled)
+    backup(path, backup_enabled or replace_edited)
     path.write_bytes(updated.encode("utf-8"))
     if _ACTIVE_INSTALL_ROOT is not None:
         record_external_block(
             _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
-            preimage=preimage, postimage=block,
+            preimage=None if replace_edited else preimage, postimage=block,
         )
 
 
@@ -3244,8 +3452,7 @@ def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: 
         return f"Multiple Local AI Hub Windsurf blocks found; existing rule file was preserved: {path}"
     preimage = matches[0].group(0) if matches else None
     marker = {"begin": begin, "end": end}
-    if preimage is not None:
-        _assert_or_adopt_external_block(path, marker, preimage)
+    replace_edited = _assert_or_adopt_external_block(path, marker, preimage) if preimage is not None else False
     updated = pattern.sub(lambda _match: policy, text) if preimage is not None else (
         text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
     )
@@ -3255,12 +3462,12 @@ def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: 
             f"Manually add the Local AI Hub policy to {path} or shorten existing rules."
         )
     if updated != text:
-        backup(path, backup_enabled)
+        backup(path, backup_enabled or replace_edited)
         path.write_text(updated, encoding="utf-8")
         if _ACTIVE_INSTALL_ROOT is not None:
             record_external_block(
                 _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
-                preimage=preimage, postimage=policy,
+                preimage=None if replace_edited else preimage, postimage=policy,
             )
         log(f"Windsurf Local AI Hub rule installed: {path}")
     return None
@@ -3995,6 +4202,14 @@ def _configure_agents_impl(
         claude_settings = Path.home() / ".claude" / "settings.json"
         claude_mcp_config = Path.home() / ".claude.json"
         claude_plugin_enabled = claude_hub_plugin_enabled(claude_settings)
+        if claude_plugin_enabled and _agent_component_enabled(agent_components, "claude", "mcp"):
+            cache_ok, cache_detail = refresh_claude_hub_plugin_cache(claude_settings, install_dir)
+            if not cache_ok:
+                manual_action = f"Claude Hub plugin cache requires review: {cache_detail}"
+                manual_actions.append(manual_action)
+                log(f"Manual agent setup required: {manual_action}")
+            else:
+                log(cache_detail)
         if _agent_component_enabled(agent_components, "claude", "skills"):
             install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)
         if (
@@ -4333,7 +4548,7 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
     return source, cfg, install_dir
 
 def main() -> int:
-    global _ADOPT_UNOWNED_HUB_BLOCKS
+    global _ADOPT_UNOWNED_HUB_BLOCKS, _REPLACE_EDITED_HUB_BLOCKS, _REFRESH_HUB_SKILLS
     if sys.version_info < (3, 11):
         raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a supported Python automatically.")
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
@@ -4352,6 +4567,8 @@ def main() -> int:
     parser.add_argument("--skip-token-economy", action="store_true", default=None, help="Do not install token economy packages or probe external CLI tools")
     parser.add_argument("--skip-companion-skills", action="store_true", default=None, help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
     parser.add_argument("--adopt-existing-hub-blocks", action="store_true", help="Adopt only current marked Hub blocks after saving rollback copies")
+    parser.add_argument("--replace-edited-hub-blocks", action="store_true", help="With --generate-only, replace edited marked Hub instruction/MCP text blocks after full-file backups; preserve all unmarked content")
+    parser.add_argument("--refresh-hub-skills", action="store_true", help="With --generate-only, refresh verifiable Hub-owned skills with automatic quarantine backup; preserve all unmarked/unrelated skills")
     setup_mode = parser.add_mutually_exclusive_group()
     setup_mode.add_argument("--interactive", dest="interactive", action="store_true", default=None, help="Show the installer wizard even when setup is scripted")
     setup_mode.add_argument("--non-interactive", action="store_true", help="Never prompt; use explicit flags, saved choices, and safe defaults")
@@ -4370,6 +4587,10 @@ def main() -> int:
     parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
     args = parser.parse_args()
     _ADOPT_UNOWNED_HUB_BLOCKS = bool(args.adopt_existing_hub_blocks)
+    _REPLACE_EDITED_HUB_BLOCKS = bool(args.replace_edited_hub_blocks)
+    _REFRESH_HUB_SKILLS = bool(args.refresh_hub_skills) or _REPLACE_EDITED_HUB_BLOCKS
+    if (_REPLACE_EDITED_HUB_BLOCKS or args.refresh_hub_skills) and not args.generate_only:
+        parser.error("--replace-edited-hub-blocks and --refresh-hub-skills require --generate-only")
 
     if args.host_project_root is not None or args.host_adapter is not None:
         if args.host_project_root is None or args.host_adapter is None:

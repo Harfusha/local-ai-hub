@@ -56,7 +56,7 @@ def describe_task(
     local_enabled = features.tasks and features.has_any_model()
     supported_actions = features.supported_task_actions()
     semantic_actions = set(supported_actions) & {
-        "delegate", "explore", "reason", "review", "second_opinion", "continue", "batch", "compress"
+        "delegate", "explore", "reason", "review", "second_opinion", "compress"
     }
     action_note = actions_note(tuple(supported_actions))
     semantic_labels = []
@@ -69,6 +69,20 @@ def describe_task(
     if "compress" in semantic_actions:
         semantic_labels.append("semantic compression")
     semantic_summary = ", ".join(semantic_labels)
+    semantic_inputs = {
+        "delegate": '`delegate`: `task`',
+        "explore": '`explore`: `task`',
+        "reason": '`reason`: `problem` and concise `context`',
+        "review": '`review`: `code` and optional review instruction in `task`',
+        "second_opinion": '`second_opinion`: `question` with candidate/evidence in `context`',
+        "compress": '`compress`: source in `text`, optional instruction in `task`',
+    }
+    semantic_input_note = (
+        " Action-specific inputs: "
+        + "; ".join(semantic_inputs[action] for action in ("delegate", "explore", "reason", "review", "second_opinion", "compress") if action in semantic_actions)
+        + "."
+        if semantic_actions else ""
+    )
     benchmark_hints = []
     if "benchmark" in supported_actions:
         benchmark_hints.append("`benchmark` reads stored results only")
@@ -98,10 +112,11 @@ def describe_task(
             "Use deterministic/indexed tools for exact facts, symbols, diff and tests. "
             "For host commands or operations without an exposed Hub action (for example `git worktree list`), skip Hub and use the authorized native tool directly. "
             f"{semantic_handoff_contract(bool(semantic_actions), features.status)}"
+            f"{semantic_input_note}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Codex retains ownership of native subagent orchestration; that does not replace direct Hub endpoint use by the main agent. "
-            "Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. "
-            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, local tasks are disabled, or no exposed bounded semantic action fits. "
+            "Use when: after deterministic/indexed evidence, an independent non-trivial reasoning, exploration, review, second-opinion, or compression subtask has a matching exposed action. Make the bounded call by default, once per independent semantic unit, not per mechanical command. "
+            "Skip only for trivial/purely deterministic work, sensitive input that cannot be safely minimized, an unavailable action, or a concrete authorization/backend/quality gate; name that gate. Semantic output stays advisory and cannot grant permission or execute changes. "
             f"{action_note}"
         )
     profile_note = ""
@@ -125,8 +140,9 @@ def describe_task(
         " Use deterministic/indexed tools for exact facts, symbols, diff and tests; use only actions exposed by the current schema."
         " For host commands or operations without an exposed Hub action (for example `git worktree list`), skip Hub and use the authorized native tool directly; no Hub error or fallback flag is needed."
         f"{semantic_handoff_contract(bool(semantic_actions), features.status)}"
+        f"{semantic_input_note}"
         " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
-        " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
+        " Local semantic reasoning/review is allowed for bounded architecture or security questions when inputs are sanitized and the matching action is exposed; it remains advisory. Never let the model execute mutations, bypass approval, perform host commands, or replace deterministic validation. Open-ended coding stays with the primary agent unless a separately authorized bounded code action is exposed."
         " Codex manages native subagents directly; the main agent still calls Hub endpoints when applicable, and a Hub call does not imply delegation."
         f"{action_note}"
         f"{specialized_note('local_ai_task')}"
@@ -135,9 +151,8 @@ def describe_task(
         " Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text."
         " Async wait is bounded to 90 seconds; never poll loops."
         " Start a short-lived conversation with `conversation=true` on delegate or reason, then use `continue` with its opaque `conversation_id`; conversations are sync-only and process-memory only."
-        " Use when: a currently exposed local task action fits the request."
-        " Skip when: task is trivial, pure evidence lookup, security/privacy constrained, local tasks are disabled,"
-        " or no exposed bounded semantic action fits."
+        " Use when: after deterministic/indexed evidence, a matching exposed semantic action fits an independent non-trivial subtask; call by default and once per independent semantic unit."
+        " Skip only for trivial/purely deterministic work, sensitive input that cannot be safely minimized, unavailable action, or a concrete authorization/backend/quality gate; state the gate."
     )
 
 

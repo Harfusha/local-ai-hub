@@ -200,11 +200,13 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_context_pack_1', frozenset(('/api/context/pack',))),
     RouteRule('post_ingest_document_1', frozenset(('/api/rag/ingest_document',))),
     RouteRule('post_ingest_diagram_1', frozenset(('/api/rag/ingest_diagram',))),
+    RouteRule('post_opencode_gateway_1', frozenset(('/api/chat/completions',))),
     RouteRule('post_chat_1', frozenset(('/api/generate', '/api/chat', '/api/embed'))),
 )
 
 
 POST_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
+    "post_opencode_gateway_1": "_handle_post_opencode_gateway",
     "post_work_orders_1": "_handle_post_work_orders",
     "post_async_jobs_1": "_handle_post_async_jobs",
     "post_config_update_1": "_handle_post_config_update",

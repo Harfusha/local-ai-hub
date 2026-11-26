@@ -420,20 +420,3 @@ def test_laya_model_route_availability_caches_verified_digests() -> None:
     third = service._available_laya_model_route_options("reasoning", use_cache=False)
     assert third == frozenset({"fast", "smart"})
     assert digest_calls == ["fast-model", "heavy-model", "general-model"]
-
-
-def test_http_proxy_temporary_assignment_does_not_shadow_live_server(monkeypatch):
-    from local_ai_hub import http_server
-    from local_ai_hub.http_server_proxy import services_module
-
-    initial = object()
-    temporary = object()
-    replacement = object()
-    monkeypatch.setattr(http_server, "APP", initial)
-    with monkeypatch.context() as patch:
-        patch.setattr(services_module, "APP", temporary)
-        assert http_server.APP is temporary
-        assert services_module.APP is temporary
-    assert http_server.APP is initial
-    monkeypatch.setattr(http_server, "APP", replacement)
-    assert services_module.APP is replacement

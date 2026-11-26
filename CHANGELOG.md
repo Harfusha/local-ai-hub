@@ -1,8 +1,8 @@
 # Changelog
 
-## 8.2.0 — 2026-11-25
+## 8.2.1 — 2026-11-26
 
-- [Changes in v8.2.0](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.2.0)
+- [Changes in v8.2.1](https://github.com/Harfusha/local-ai-hub/releases/tag/v8.2.1)
 - Complete stabilization, verification, and end-to-end audit remediation (LAH-001–LAH-048, A01–A21, NEW-001–NEW-003).
 - Unified resource arbiter for VRAM, scheduler, background GPU, and prompt cache with a 12 GB VRAM cap.
 - Intelligent context planner and token economy with deterministic tool-first symbol routing.

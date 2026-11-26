@@ -166,7 +166,7 @@ class DebugTraceStore:
         elif "terminal_ttl_seconds" not in cfg and "result_ttl_seconds" not in config.get("async_jobs", {}):
             self.retention_days = max(1, min(3650, int(self.terminal_ttl_seconds // 86400)))
         self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
-        self.max_sessions = max(1, int(cfg.get("max_sessions", 1000)))
+        self.max_sessions = max(1, int(cfg.get("max_sessions", 6000)))
         self.max_events_per_session = max(1, int(cfg.get("max_events_per_session", 1000)))
         self.max_event_bytes = max(100, int(cfg.get("max_event_bytes", 8 * 1024 * 1024)))
         self.max_session_text_bytes = max(64, int(cfg.get("max_session_text_bytes", 64 * 1024 * 1024)))

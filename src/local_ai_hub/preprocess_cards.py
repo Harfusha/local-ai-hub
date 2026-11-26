@@ -3,6 +3,26 @@ from __future__ import annotations
 from typing import Any
 
 
+def _is_safe_vram_budget_admission_rejection(result: dict[str, Any]) -> bool:
+    """Permit bounded fallback only when the scheduler rejected before dispatch."""
+    if (
+        result.get("retryable") is not True
+        or result.get("terminal") is True
+        or result.get("outcome_unknown")
+        or result.get("cleanup_unconfirmed")
+        or result.get("in_progress")
+        or result.get("cancelled")
+    ):
+        return False
+    error_text = " ".join(
+        str(result.get(key) or "") for key in ("error", "error_message", "message")
+    ).casefold()
+    return (
+        "model preparation admission rejected" in error_text
+        and "vram_budget_after_unload" in error_text
+    )
+
+
 class PreprocessCardsMixin:
     def _run_background_generate(
         self, model: str, prompt: str, system: str, schema: Any, max_tokens: int, source: str,
@@ -321,21 +341,6 @@ class PreprocessCardsMixin:
 
             # 1. Instant global content-addressed cache hit across all branches & worktrees
             if cached_cards.get(content_hash):
-                from .repo_knowledge_discovery import auto_publish_authorized
-
-                if auto_publish_authorized(self.config, root):
-                    with self._db_lock, services_module.closing(self._connect()) as con:
-                        cached = con.execute(
-                            "SELECT card_json,model FROM content_cards WHERE card_key=? AND content_hash=?",
-                            (cached_cards[content_hash], content_hash),
-                        ).fetchone()
-                    if cached is not None:
-                        try:
-                            card = services_module.json.loads(cached["card_json"])
-                            if isinstance(card, dict):
-                                self._publish_knowledge_card_candidate(root, str(item["path"]), content_hash, card, str(cached["model"]))
-                        except (TypeError, ValueError):
-                            pass
                 continue
 
             if enrich_cards and item["card_key"] is not None:
@@ -436,7 +441,6 @@ class PreprocessCardsMixin:
                         services_module.CARD_SCHEMA,
                         384,
                         "preprocess:draft-card",
-                        allow_model_fallback=False,
                     )
                     if isinstance(draft_res, dict) and draft_res.get("success"):
                         data_draft = draft_res.get("data") or draft_res.get("card")
@@ -574,10 +578,11 @@ class PreprocessCardsMixin:
                 or backend_repeat_limit
             )
             model_circuit_open = result.get("error_code") == "model_circuit_open"
+            safe_vram_fallback = _is_safe_vram_budget_admission_rejection(result)
             if (model not in accepted_models or result.get("stop_reason") == "length"
                     or (
                         self._file_card_deferral_delay(result) is not None
-                        and not (model_circuit_open or repetition_loop)
+                        and not (model_circuit_open or repetition_loop or safe_vram_fallback)
                     )
                     or (result.get("terminal") and not repetition_loop)
                     or any(result.get(key) for key in (
@@ -585,7 +590,7 @@ class PreprocessCardsMixin:
                         "cancelled", "output_truncated",
                     ))):
                 return False
-            if repetition_loop or model_circuit_open:
+            if repetition_loop or model_circuit_open or safe_vram_fallback:
                 return True
             if result.get("success") is True:
                 return not self._valid_enriched_file_card(result.get("data"))

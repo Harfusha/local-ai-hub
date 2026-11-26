@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import os
 import pytest
 from local_ai_hub.config import load_config
 
@@ -531,6 +532,14 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     import os
     assert "local-ai-hub" in data
     assert (tmp_path / ("local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh")).is_file()
+    runner_text = (tmp_path / ("local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh")).read_text(encoding="utf-8")
+    if os.name == "nt":
+        assert 'if /I "%~1"=="PreToolUse"' in runner_text
+        assert "echo {}" in runner_text
+    else:
+        assert 'case "${1-}" in' in runner_text
+        assert "PreToolUse)" in runner_text
+        assert "echo '{}'" in runner_text
     hub_hook = data["local-ai-hub"]
     assert hub_hook["enabled"] is True
     assert "PreInvocation" not in hub_hook
@@ -541,11 +550,23 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     assert len(hub_hook["PreToolUse"]) == 1
     assert hub_hook["PreToolUse"][0]["matcher"] == "read_file|run_command"
     assert "local-ai-hook" in hub_hook["PreToolUse"][0]["hooks"][0]["command"]
+    assert hub_hook["PostToolUse"][0]["matcher"] == (
+        "edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content"
+    )
 
     # Test idempotency
     first_text = hooks_file.read_text(encoding="utf-8")
     setup.sync_antigravity_hooks_json(hooks_file, tmp_path, fake_python, False)
     assert hooks_file.read_text(encoding="utf-8") == first_text
+
+
+def test_canonical_antigravity_plugin_hook_matcher_covers_native_file_tools():
+    import json
+
+    hooks_path = Path(__file__).resolve().parents[1] / "plugins" / "antigravity" / "local-ai-hub" / "hooks.json"
+    hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+    matcher = hooks["local-ai-hub"]["PostToolUse"][0]["matcher"]
+    assert matcher == "edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content"
 
 
 def test_antigravity_global_hook_runner_executes_from_path_with_spaces(tmp_path):
@@ -565,6 +586,65 @@ def test_antigravity_global_hook_runner_executes_from_path_with_spaces(tmp_path)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "{}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="exercises the Windows cmd fallback")
+def test_antigravity_windows_runner_uses_event_specific_fallback_output(tmp_path):
+    import json
+    import shutil
+    import subprocess
+
+    config_dir = tmp_path / "Gemini Home With Spaces" / "config"
+    hooks_file = config_dir / "hooks.json"
+    failing_python = Path(shutil.which("where.exe"))
+    setup.sync_antigravity_hooks_json(hooks_file, tmp_path, failing_python, False)
+    hub_hook = json.loads(hooks_file.read_text(encoding="utf-8"))["local-ai-hub"]
+    pre_command = hub_hook["PreToolUse"][0]["hooks"][0]["command"]
+    post_command = hub_hook["PostToolUse"][0]["hooks"][0]["command"]
+
+    pre = subprocess.run(pre_command, shell=True, text=True, capture_output=True, timeout=20)
+    post = subprocess.run(post_command, shell=True, text=True, capture_output=True, timeout=20)
+
+    assert pre.returncode == 0, pre.stderr
+    assert json.loads(pre.stdout) == {"decision": "allow"}
+    assert post.returncode == 0, post.stderr
+    assert json.loads(post.stdout) == {}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="covers migration of the installed Windows hook")
+def test_sync_updates_recognized_unowned_runner_even_when_hook_config_is_current(tmp_path, monkeypatch):
+    import json
+
+    hooks_file = tmp_path / "config" / "hooks.json"
+    hooks_file.parent.mkdir()
+    runner = hooks_file.parent / "local-ai-hook.cmd"
+    python_exe = tmp_path / "python.exe"
+    python_exe.write_text("", encoding="utf-8")
+    runner.write_text(
+        "@echo off\r\n"
+        f'"{python_exe.resolve()}" -m local_ai_hub.antigravity_hook %*\r\n'
+        "if %ERRORLEVEL% NEQ 0 (\r\n"
+        '    echo {"decision": "allow"}\r\n'
+        "    exit /b 0\r\n"
+        ")\r\n",
+        encoding="utf-8",
+    )
+    hooks_file.write_text(json.dumps({
+        "local-ai-hub": setup._antigravity_hook_config(f'"{runner.resolve()}"'),
+    }), encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", tmp_path / "install")
+    monkeypatch.setattr(setup, "_ADOPT_UNOWNED_HUB_BLOCKS", True)
+    monkeypatch.setattr(setup, "assert_external_file_writable", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("unowned")))
+    monkeypatch.setattr(setup, "assert_external_json_key_writable", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("unowned")))
+    monkeypatch.setattr(setup, "record_external_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(setup, "record_external_json_key", lambda *_a, **_k: None)
+
+    setup.sync_antigravity_hooks_json(hooks_file, tmp_path, python_exe, False)
+
+    updated = runner.read_text(encoding="utf-8")
+    assert "if errorlevel 1 (" in updated
+    assert 'if /I "%~1"=="PreToolUse"' in updated
+    assert "echo {}" in updated
 
 
 @pytest.mark.parametrize("old_runner_kind", ["relative", "quoted_absolute"])
@@ -758,7 +838,7 @@ def test_antigravity_profile_plugin_route_receives_central_hub_path(tmp_path, mo
     source_plugin = source_root / "plugins" / "antigravity" / "local-ai-hub"
     source_plugin.mkdir(parents=True)
     (source_plugin / "plugin.json").write_text(
-        json.dumps({"name": "local-ai-hub"}), encoding="utf-8"
+        json.dumps({"name": "local-ai-hub", "version": "8.2.0"}), encoding="utf-8"
     )
     (source_plugin / "mcp_config.json").write_text(
         json.dumps({"mcpServers": {"local-ai": {
@@ -771,7 +851,7 @@ def test_antigravity_profile_plugin_route_receives_central_hub_path(tmp_path, mo
     installed_plugin = gemini_dir / "config" / "plugins" / "local-ai-hub"
     installed_plugin.mkdir(parents=True)
     (installed_plugin / "plugin.json").write_text(
-        json.dumps({"name": "local-ai-hub"}), encoding="utf-8"
+        json.dumps({"name": "local-ai-hub", "version": "8.1.0"}), encoding="utf-8"
     )
     monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
     hub_install = tmp_path / "installed-hub"
@@ -790,7 +870,7 @@ def test_sync_antigravity_plugin_bundle_installs_missing_profile_idempotently(tm
     source_root = tmp_path / "source"
     source_plugin = source_root / "plugins" / "antigravity" / "local-ai-hub"
     source_plugin.mkdir(parents=True)
-    (source_plugin / "plugin.json").write_text('{"name":"local-ai-hub"}\n', encoding="utf-8")
+    (source_plugin / "plugin.json").write_text('{"name":"local-ai-hub","version":"8.2.0"}\n', encoding="utf-8")
     (source_plugin / "README.md").write_text("Hub plugin\n", encoding="utf-8")
     (source_plugin / "mcp_config.json").write_text(json.dumps({
         "mcpServers": {"local-ai": {"command": "python", "env": {"LOCAL_AI_AGENT": "antigravity"}}}

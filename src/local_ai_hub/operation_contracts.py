@@ -741,12 +741,14 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         feature_requirements=("has_any_model",), action_requirements={"vision": ("vision",)},
         read_only=("status", "wait", "result", "evaluation_report"),
         required={
+            "review": ("code",),
             "submit": ("task",),
             "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
         },
         non_empty={
+            "review": ("code",),
             "submit": ("task",),
             "automation": ("root", "task_id"),
             "candidate_promote": ("candidate", "approver"),
@@ -1453,6 +1455,8 @@ def operation_input_schema(tool: str, action: str, features: Any = None) -> dict
         *action_contract.get("non_empty", ()),
     ]
     schema["required"] = list(dict.fromkeys(required))
+    if tool == "local_ai_task" and action == "review":
+        schema["properties"].setdefault("code", {})["minLength"] = 1
     return schema
 
 
@@ -1543,6 +1547,8 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         then: dict[str, Any] = {}
         if required:
             then["required"] = list(dict.fromkeys((selector, *required)))
+        if tool == "local_ai_task" and action == "review":
+            then.setdefault("properties", {}).setdefault("code", {})["minLength"] = 1
         if tool == "local_ai_work" and action == "submit":
             then.setdefault("required", []).append("mode")
             then.setdefault("properties", {})["mode"] = {"type": "string", "enum": ["bounded"]}
@@ -1570,6 +1576,17 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             },
             "then": then,
         })
+    if tool == "local_ai_repo" and "task" in properties:
+        task_actions = [
+            action for action in actions
+            if contract["actions"][action].get("allowed") is None
+            or "task" in contract["actions"][action].get("allowed", ())
+        ]
+        if task_actions and len(task_actions) < len(actions):
+            conditions.append({
+                "if": {"required": ["task"]},
+                "then": {"properties": {selector: {"enum": task_actions}}},
+            })
     # The handler validates action-specific allowed fields before dispatch.
     # Duplicating every field exclusion in each MCP conditional inflated public
     # schemas by hundreds of kilobytes; keep only conditions that clients need
@@ -2587,7 +2604,13 @@ def validate_operation_arguments(
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 512 <= max_chars <= 12000:
             return "max_chars must be between 512 and 12000 for action='source'"
     for field in action_contract["required"]:
-        if field not in arguments or (field in action_contract["non_empty"] and not arguments[field]):
+        if field not in arguments or (
+            field in action_contract["non_empty"]
+            and (
+                not arguments[field]
+                or isinstance(arguments[field], str) and not arguments[field].strip()
+            )
+        ):
             return f"{field} is required for action='{action}'"
 
     for field, value in arguments.items():

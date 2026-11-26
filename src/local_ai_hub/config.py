@@ -434,13 +434,6 @@ def validate_config(data: dict[str, Any]) -> None:
                 raise ConfigError("security.allowed_roots entries must be absolute paths")
         except (ValueError, OSError) as exc:
             raise ConfigError(f"security.allowed_roots invalid path: {exc}") from exc
-        knowledge_roots = security.get("knowledge_auto_publish_roots", [])
-        if (
-            not isinstance(knowledge_roots, list) or len(knowledge_roots) > 32
-            or any(not isinstance(root, str) or not root.strip() or len(root) > 4096
-                   or "\0" in root or not Path(root).expanduser().is_absolute() for root in knowledge_roots)
-        ):
-            raise ConfigError("security.knowledge_auto_publish_roots must contain at most 32 absolute checkout paths")
         if security.get("allow_anonymous") is True:
             raise ConfigError("security.allow_anonymous was removed; Hub access is loopback-only and uses no API token")
         if "client_host" in server:

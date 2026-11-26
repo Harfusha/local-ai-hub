@@ -28,9 +28,7 @@ remove_skill = skill_ownership.remove_skill
 class SkillOwnershipTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        # macOS TMPDIR commonly lives under the system /var symlink.
-        # Use the real fixture root; intentional symlink attack cases remain.
-        self.root = Path(self.temp.name).resolve()
+        self.root = Path(self.temp.name)
         self.install = self.root / "install"
         self.source_root = self.install / "skills"
         self.tools = self.install / "tools"
@@ -993,6 +991,44 @@ so.install_skill(source, target, root, manifest, name)
         }
         self.assertIn("Hub version\n", preserved_contents)
         self.assertIn("concurrent edit\n", preserved_contents)
+
+    def test_refresh_hub_owned_updates_verifiable_skill_and_quarantines_previous(self) -> None:
+        (self.source / "SKILL.md").write_text("---\nname: example-skill\n---\nHub version 1\n", encoding="utf-8")
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+
+        # Simulate older or modified installed version with matching frontmatter name
+        (self.target / "SKILL.md").write_text("---\nname: example-skill\n---\nStale modified version\n", encoding="utf-8")
+
+        # Without refresh_hub_owned, installation is preserved as modified
+        result_default = install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        self.assertIn("preserved unmanaged or modified skill tree", result_default)
+
+        # With refresh_hub_owned, verifiable Hub skill is refreshed and previous tree quarantined
+        (self.source / "SKILL.md").write_text("---\nname: example-skill\n---\nHub version 2\n", encoding="utf-8")
+        result_refresh = install_skill(
+            self.source, self.target, self.skills_root, self.manifest, "example-skill", refresh_hub_owned=True
+        )
+        self.assertIn("installed Hub-owned skill", result_refresh)
+        self.assertIn("previous version retained at", result_refresh)
+        self.assertEqual(
+            (self.target / "SKILL.md").read_text(encoding="utf-8"),
+            "---\nname: example-skill\n---\nHub version 2\n",
+        )
+        entries = json.loads(self.manifest.read_text(encoding="utf-8"))["skills"]
+        quarantine_records = [r for r in entries.values() if r.get("status") == "unverified"]
+        self.assertGreaterEqual(len(quarantine_records), 1)
+
+    def test_refresh_hub_owned_preserves_non_hub_skill(self) -> None:
+        self.target.mkdir(parents=True)
+        (self.target / "SKILL.md").write_text("---\nname: other-skill\n---\nUser content\n", encoding="utf-8")
+        result = install_skill(
+            self.source, self.target, self.skills_root, self.manifest, "example-skill", refresh_hub_owned=True
+        )
+        self.assertIn("preserved unmanaged or modified skill tree", result)
+        self.assertEqual(
+            (self.target / "SKILL.md").read_text(encoding="utf-8"),
+            "---\nname: other-skill\n---\nUser content\n",
+        )
 
 
 if __name__ == "__main__":

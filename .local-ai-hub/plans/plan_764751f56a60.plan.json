@@ -1,0 +1,44 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Reconcile local master with PR #9; preserve and inspect dirty overlay, restore required Git-first implementation, repair reproducible failures, validate, commit and push verified work.",
+  "id": "plan_764751f56a60",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_pr9_complete": {
+      "acceptance_criteria": [
+        "PR #9 Git-first implementation remains in master.",
+        "Targeted PR, provider, packaging and security tests pass from a clean committed checkout.",
+        "Release checks, compile, lint, selftest and critical suite results recorded.",
+        "Inspected changes committed without losing user work.",
+        "Remote master updated and verified."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Inspect changes, correct regressions and provider bundle drift, validate exact revision, commit and push authorized work.",
+      "kind": "code",
+      "next_action": "",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+          "revision": {
+            "content_sha256": "99caaeccac82b819fc4f4f257bc9ae1a09e79efb06ffd9ddddf316f38780e7f9",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-25-git-first-unified-project-intelligence-v4.md",
+          "revision": {
+            "content_sha256": "efaf4aaa6628866d679523ea876fa14c38fcd80a30ae11c5db86b8cbcea56dfe",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Complete PR #9 integration and publish",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "PR #9 integration, repair, verification and publication"
+}

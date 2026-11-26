@@ -216,15 +216,6 @@ def _project_context_hint_groups(
 
     pinned = configured(resolve_pinned_context(project_root, settings), "pinned_context")
     entry_points = configured(resolve_entry_points(project_root, settings), "entry_point")
-    # Curated repository-search hints use the same containment and path-policy
-    # checks as entry points; they never force reading an excluded path.
-    from dataclasses import replace
-
-    shared = getattr(settings, "shared_path_hints", {}).get("repository_search", ())
-    if shared:
-        shared_settings = replace(settings, entry_points=tuple(shared))
-        curated = configured(resolve_entry_points(project_root, shared_settings), "shared_path_hint")
-        entry_points = (*curated, *entry_points)
     saved: list[ContextPathHint] = []
     for record in project_context.path_hints(
         purpose="repository_search",

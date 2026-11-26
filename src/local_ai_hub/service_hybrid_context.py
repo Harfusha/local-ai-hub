@@ -154,16 +154,6 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
         "retrieval_weights": retrieval_weights,
     }
     retrieval_config_revision = stable_hash(retrieval_config)
-    from .repo_knowledge import attach_knowledge_context, reserve_knowledge_context
-
-    knowledge: dict[str, Any] = {"status": "skipped", "text": ""}
-    technical_budget = request.token_budget
-    if mode == "adaptive":
-        knowledge, technical_budget = reserve_knowledge_context(
-            getattr(self, "config", {}), request.root, request.query, token_budget=request.token_budget,
-            changed_paths=tuple(request.changed_paths),
-        )
-    knowledge_text = str(knowledge.get("text", ""))
     context_cache_identity = {
         "mode": mode,
         "task_id": request.task_id,
@@ -185,7 +175,6 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
         "retrieval_config_revision": retrieval_config_revision,
         "project_config_digest": project_config_digest,
         "retrieval_weights": retrieval_weights,
-        "knowledge_context_digest": stable_hash(knowledge_text) if knowledge_text else "",
         "since_hash": since_hash,
         "approval": request.approval,
         "override_reason": request.override_reason,
@@ -195,7 +184,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             request.root,
             request.query,
             workspace=request.workspace or None,
-            max_tokens=technical_budget,
+            max_tokens=request.token_budget,
             quality_first=mode == "adaptive",
             context_identity=context_cache_identity,
             path_hints=effective_path_hints if mode == "adaptive" else (),
@@ -340,7 +329,6 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             normalized_evidence.append(evidence_item)
         base["evidence"] = merge_overlapping_evidence(normalized_evidence, root=request.root)
     base, preload_warnings = self._apply_context_preloads(request, base, coordination_id=coordination_id)
-    base = attach_knowledge_context(base, knowledge, token_budget=request.token_budget)
     guard = self.consistency_guard
     if guard is None:
         context_id = stable_hash({
@@ -487,7 +475,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
         model_warnings=model_warnings,
     )
     pack_data = pack.to_dict()
-    unchanged = bool(since_hash and since_hash == revision and knowledge["status"] in {"uninitialized", "skipped"})
+    unchanged = bool(since_hash and since_hash == revision)
     ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
     decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
     if (str(request.override_reason or "").strip() or self._guard_truthy(request.approval)) and not decision_persisted:

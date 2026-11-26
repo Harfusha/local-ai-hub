@@ -44,8 +44,7 @@ def prep(tmp_path):
         con.executescript("""
             CREATE TABLE file_refs (
                 root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER,
-                rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL,
-                centrality_score REAL NOT NULL DEFAULT 0.0
+                rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL
             );
             CREATE TABLE file_refs_revision (root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE source_index (root TEXT, path TEXT, content_hash TEXT, text TEXT);
@@ -63,7 +62,7 @@ def prep(tmp_path):
 def add_pending(prep, root, path):
     with closing(prep._connect()) as con:
         con.execute(
-            "INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?,?,?,0,'',0,1,0)",
+            "INSERT INTO file_refs VALUES(?,?,?,0,'',0,1,0)",
             (root, path, "current-hash"),
         )
         con.execute("INSERT INTO source_index VALUES(?,?,?,?)", (root, path, "current-hash", "cached text"))
@@ -85,7 +84,7 @@ def add_completed_project(prep, root, workspace="repo-workspace"):
             (root, workspace),
         )
         con.execute(
-            "INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?,?,?,0,?,0,1,0)",
+            "INSERT INTO file_refs VALUES(?,?,?,0,?,0,1,0)",
             (root, "service.py", "current-hash", "current-hash"),
         )
         con.commit()
@@ -118,7 +117,7 @@ def test_rag_idle_requeues_semantic_paths_missing_from_workspace(prep, tmp_path)
     prep.rag.indexed_paths.return_value = set()
     with closing(prep._connect()) as con:
         con.execute(
-            "INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?,?,?,0,?,0,1,0)",
+            "INSERT INTO file_refs VALUES(?,?,?,0,?,0,1,0)",
             (root, "service.py", "current-hash", "current-hash"),
         )
         con.commit()
@@ -146,7 +145,7 @@ def test_rag_reconciles_missing_synced_paths_while_other_paths_are_pending(prep,
     add_pending(prep, root, "pending.py")
     with closing(prep._connect()) as con:
         con.execute(
-            "INSERT INTO file_refs(root,path,content_hash,needs_hash,rag_hash,last_accessed_at,size,updated_at) VALUES(?,?,?,0,?,0,1,0)",
+            "INSERT INTO file_refs VALUES(?,?,?,0,?,0,1,0)",
             (root, "service.py", "synced-hash", "synced-hash"),
         )
         con.commit()

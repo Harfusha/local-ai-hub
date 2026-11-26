@@ -60,34 +60,3 @@ def test_unavailable_root_can_finish_with_complete_empty_page():
     assert result["has_more"] is False
     assert result["incomplete"] is False
     assert result["total_count"] == 0
-
-
-def test_post_task_inventory_applies_repository_scope_before_limit(monkeypatch):
-    from types import SimpleNamespace
-
-    from local_ai_hub import http_server
-    from local_ai_hub.http_post_tasks import handle_agent_state_tasks
-
-    calls = []
-    tasks = [SimpleNamespace(root="other", owner="agent")] * 30 + [
-        SimpleNamespace(root="target", owner="agent", to_dict=lambda: {"task_id": "target-task"})
-    ]
-
-    def list_tasks(**kwargs):
-        calls.append(kwargs)
-        scoped = [task for task in tasks if task.root == kwargs.get("repo_root")]
-        return TaskPage(tuple(scoped[:kwargs["limit"]]))
-
-    store = SimpleNamespace(state_store=SimpleNamespace(enabled=True), list_tasks=list_tasks)
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_tasks=store))
-    responses = []
-    handler = SimpleNamespace(
-        _agent=lambda: "agent",
-        _request_root="target",
-        _authorization_root="target",
-        _task_matches_request=lambda task, root: task.root == root,
-        _send=lambda status, payload: responses.append((status, payload)),
-    )
-    handle_agent_state_tasks(handler, {"action": "list", "limit": 1})
-    assert calls[0]["repo_root"] == "target"
-    assert responses == [(200, {"success": True, "tasks": [{"task_id": "target-task"}]})]

@@ -19,14 +19,12 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 
 [security]
 # HTTP access is loopback-only and requires no API credential.
-# Exact machine-local checkout opt-in for unreviewed candidate publication.
-knowledge_auto_publish_roots = []
 
 [telemetry]
 mode = "minimal" # Options: "off" (0 overhead) | "minimal" (in-memory request counts & fatal errors) | "full" (detailed traces & endpoint latencies)
 terminal_ttl_seconds = 259200
 max_bytes = 268435456
-max_sessions = 1000
+max_sessions = 6000
 max_detail_response_bytes = 134217728
 cleanup_batch_size = 50
 max_list_limit = 200

@@ -144,22 +144,6 @@ class PreprocessStorageMixin:
             return None
         return tuple(root for root in roots if root and services_module.Path(root).is_absolute())
 
-    @staticmethod
-    def _ensure_file_ref_centrality(con: sqlite3.Connection) -> None:
-        """Upgrade a derived inventory without discarding its source identities."""
-        from .sqlite_support import write_transaction
-
-        def has_column() -> bool:
-            return any(row[1] == "centrality_score" for row in con.execute("PRAGMA table_info(file_refs)"))
-
-        if has_column():
-            return
-        # Recheck under the write lock for concurrent startup. Existing
-        # inventories get a neutral priority, not a fabricated graph score.
-        with write_transaction(con, rollback_label="preprocessor centrality schema"):
-            if not has_column():
-                con.execute("ALTER TABLE file_refs ADD COLUMN centrality_score REAL NOT NULL DEFAULT 0.0")
-
     def _init_db(self) -> None:
         from . import preprocess as services_module
         with self._db_lock, services_module.closing(self._connect()) as con:
@@ -303,7 +287,6 @@ class PreprocessStorageMixin:
                 );
                 """
             )
-            self._ensure_file_ref_centrality(con)
             services_module.initialize_fts_rows(con)
             services_module._ensure_file_refs_revision_tracking(con)
             enrichment_columns = {

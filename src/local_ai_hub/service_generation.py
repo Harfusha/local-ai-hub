@@ -578,6 +578,29 @@ class ServiceGenerationMixin:
                     self.breakers.success(breaker_key, probe_generation=probe_generation)
                     self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate,
                                                 success=False, degraded=index > 0, error_type="model_output_truncated")
+                    safe_completed_preprocess = (
+                        source.startswith("preprocess:")
+                        and result.get("_lah_backend_completed") is True
+                        and not result.get("outcome_unknown")
+                        and not result.get("cleanup_unconfirmed")
+                        and not result.get("in_progress")
+                        and not result.get("cancelled")
+                        and index + 1 < len(candidates)
+                    )
+                    if safe_completed_preprocess:
+                        attempt_failures.append({
+                            "model": candidate,
+                            "error": str(result.get("error") or "preprocessing model output was truncated"),
+                            "error_type": str(result.get("error_type") or "ModelOutputTruncated"),
+                            "error_code": "model_output_truncated",
+                            "retryable": False,
+                            "_lah_backend_completed": True,
+                            "_lah_repetition_loop_detected": False,
+                            "admission": {},
+                        })
+                        errors.append(f"{candidate}: {result.get('error') or 'model output was truncated'}")
+                        continue
+                    record_attempt_failures(recovered=False)
                     return result
                 if result.get("success"):
                     self.breakers.success(breaker_key, probe_generation=probe_generation)

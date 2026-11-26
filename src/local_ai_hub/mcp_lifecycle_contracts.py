@@ -7,12 +7,10 @@ def semantic_handoff_contract(enabled: bool, status_enabled: bool = True) -> str
     if not enabled:
         return " Semantic delegation actions are unavailable under the active profile, feature gates, or local-inference configuration."
     return (
-        " Semantic delegation is on-demand under the active schema and quality gates. After deterministic/indexed evidence,"
-        " use the matching exposed `local_ai_task` action by default for bounded review of non-trivial edits, reasoning"
-        " on uncertain decisions, semantic exploration, independent second opinions, or evidence/log compression."
-        " Check backend and model quality; inference stays advisory. Cloud reasoning and planning"
-        " are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative"
-        " for exact facts, symbols, diff and tests."
+        " Required semantic second pass: after deterministic/indexed evidence, call one matching exposed `local_ai_task`"
+        " action for each independent non-trivial reasoning, exploration, review, second-opinion, or compression subtask;"
+        " review material edits after completion. Follow action-specific inputs and privacy, authorization, backend, and"
+        " quality gates. Output is advisory; deterministic facts, tests, approval, permissions, and model capability limits remain authoritative."
     )
 
 

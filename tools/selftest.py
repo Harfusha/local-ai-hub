@@ -135,7 +135,7 @@ def main() -> int:
         port = _free_port()
         cfg_path = temp / "config.toml"
         cfg_path.write_text(
-            f'''[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state.as_posix()}"\nauto_start_ollama=false\n\n[hardware]\nprofile="cpu"\nauto_tune=true\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n\n[resilience]\nwatchdog_enabled=false\n\n[code_intelligence]\nenabled=false\n\n[observability]\nenabled=false\n''',
+            f'''[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state.as_posix()}"\nauto_start_ollama=false\n\n[hardware]\nprofile="cpu"\nauto_tune=true\n\n[prewarm]\nenabled=false\n\n[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n\n[resilience]\nwatchdog_enabled=false\n\n[code_intelligence]\nenabled=false\n\n[observability]\nenabled=false\n''',
             encoding="utf-8",
         )
         cfg = load_config(str(cfg_path))

@@ -406,11 +406,7 @@ class ServiceContextMixin:
                 max_context_tokens = int(workflow.get("heavy_repo_context_tokens", 4200))
             else:
                 max_context_tokens = int(workflow.get("fast_repo_context_tokens", 2200))
-        from .repo_knowledge import attach_knowledge_context, reserve_knowledge_context
-
-        knowledge, technical_budget = reserve_knowledge_context(self.config, root, task, token_budget=max_context_tokens)
-        packed = self._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=technical_budget)
-        packed = attach_knowledge_context(packed, knowledge, token_budget=max_context_tokens)
+        packed = self._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=max_context_tokens)
         if cancel_event is not None and cancel_event.is_set():
             return {"success": False, "cancelled": True, "reason": "cancelled"}
         if not packed.get("success"):

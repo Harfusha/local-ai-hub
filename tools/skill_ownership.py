@@ -1178,7 +1178,38 @@ def _retain_previous_install(
             source_pin.close()
         if quarantine_directory is not None:
             quarantine_directory.close()
-def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
+def _is_verifiable_hub_skill(target: Path, skill_name: str, previous: dict[str, object] | None) -> bool:
+    if _is_link(target) or not target.is_dir():
+        return False
+    if previous and isinstance(previous, dict) and previous.get("name") == skill_name:
+        return True
+    skill_file = target / "SKILL.md"
+    if not skill_file.is_file() or _is_link(skill_file):
+        return False
+    try:
+        content = skill_file.read_text(encoding="utf-8", errors="ignore")
+        lines = content.splitlines()
+        if len(lines) >= 3 and lines[0].strip() == "---":
+            for line in lines[1:30]:
+                if line.strip() == "---":
+                    break
+                k, sep, v = line.partition(":")
+                if sep and k.strip() == "name" and v.strip() == skill_name:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _install_skill_unlocked(
+    source: Path,
+    target: Path,
+    skills_root: Path,
+    manifest: Path,
+    skill_name: str,
+    *,
+    refresh_hub_owned: bool = False,
+) -> str:
     """Install only into an absent or unchanged Hub-owned skill tree."""
     _validate_manifest(manifest)
     source = _validate_source(source, skill_name)
@@ -1195,7 +1226,8 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
         except ValueError:
             return f"preserved conflicting skill tree: {target}"
         if not previous or previous.get("name") != skill_name or previous.get("sha256") != current_hash:
-            return f"preserved unmanaged or modified skill tree: {target}"
+            if not refresh_hub_owned or not _is_verifiable_hub_skill(target, skill_name, previous):
+                return f"preserved unmanaged or modified skill tree: {target}"
         if _is_link(target):
             return f"preserved conflicting skill tree: {target}"
         if current_hash == source_hash:
@@ -1319,10 +1351,25 @@ def _install_skill_unlocked(source: Path, target: Path, skills_root: Path, manif
     return finish_stage(f"installed Hub-owned skill: {target}")
 
 
-def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path, skill_name: str) -> str:
+def install_skill(
+    source: Path,
+    target: Path,
+    skills_root: Path,
+    manifest: Path,
+    skill_name: str,
+    *,
+    refresh_hub_owned: bool = False,
+) -> str:
     _validate_manifest(manifest)
     with _ownership_lock(manifest):
-        return _install_skill_unlocked(source, target, skills_root, manifest, skill_name)
+        return _install_skill_unlocked(
+            source,
+            target,
+            skills_root,
+            manifest,
+            skill_name,
+            refresh_hub_owned=refresh_hub_owned,
+        )
 
 
 def _remove_skill_quarantined(

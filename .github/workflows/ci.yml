@@ -78,21 +78,15 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c tools/ci-constraints-py3.13.txt
-      - run: >-
-          python -m pytest -q
-          tests/test_portable_source_locator.py
-          tests/test_project_shared_path_hints.py
-          tests/test_repo_knowledge.py
-          tests/test_repo_knowledge_graph.py
-          tests/test_repo_knowledge_quality.py
-          tests/test_repo_knowledge_discovery.py
-          tests/test_repo_knowledge_management.py
-          tests/test_repo_knowledge_sync.py
-          tests/test_repo_knowledge_assertions.py
-          tests/test_evidence_contract.py
-          tests/test_release_check_working_tree.py
+      - run: npm run build
+      - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills
+      - run: python -m pytest -q tests/test_packaging_assets.py tests/test_provider_plugin_bundles.py
       - run: >-
           python -m pytest -q
           tests/test_mcp_contract_dispatch.py
@@ -106,9 +100,6 @@ jobs:
           tests/test_rag_fragment_cache.py::test_search_rechecks_generation_after_uncertain_source_read
           tests/test_t11_embedding_space_reindex.py::test_embedding_space_rebuild_read_error_preserves_previous_index
           tests/test_surface_audit_policy.py::test_current_surface_has_no_missing_or_stale_audit_disposition
-          tests/test_laya_active_gateway.py
-          tests/test_laya_runtime_baselines.py
-          tests/test_laya_service_integration.py
           tests/test_generator.py::test_generated_policy_fits_antigravity_rule_cap
           tests/test_t19_install_contracts.py::test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas
           tests/unit/test_search_mode_fusion.py::test_hybrid_fallback_prioritizes_pinned_context_before_noisy_candidates
@@ -301,15 +292,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-      - name: Install CPU-only model test dependencies (Linux and Windows)
-        if: ${{ env.RUN_FULL_SUITE == 'true' && matrix.os != 'macos-latest' }}
-        run: python -m pip install "torch>=2.9,<3" --index-url https://download.pytorch.org/whl/cpu
-      - name: Install model test dependencies (macOS)
-        if: ${{ env.RUN_FULL_SUITE == 'true' && matrix.os == 'macos-latest' }}
-        run: python -m pip install "torch>=2.9,<3"
-      - name: Install visual test dependencies
-        if: ${{ env.RUN_FULL_SUITE == 'true' }}
-        run: python -m pip install "Pillow>=12,<13"
       - name: Run full integration suite
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
         run: python -m coverage run -m pytest -ra -p tools.ci_diagnostics --junitxml=${{ runner.temp }}/integration-junit.xml

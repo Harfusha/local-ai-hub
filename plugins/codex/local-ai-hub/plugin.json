@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "local-ai-hub",
-  "version": "8.2.0",
+  "version": "8.2.1",
   "description": "Local AI Hub skills, MCP tools, and reviewed Codex lifecycle guidance.",
   "skills": "./skills/",
   "author": {

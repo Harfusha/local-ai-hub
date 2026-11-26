@@ -427,6 +427,85 @@ def test_model_length_stop_is_partial_not_success_or_retry():
     assert result["_cacheable"] is False and calls == ["request"]
 
 
+def test_completed_preprocess_draft_truncation_uses_configured_primary_once():
+    from contextlib import nullcontext
+
+    services = _offline_services()
+    services.config["preprocessing"] = {
+        "model": "prep-primary",
+        "draft_model": "prep-draft",
+    }
+    services.model_policy = ModelExecutionPolicy(services.config)
+    requested_models = []
+
+    class Runtime:
+        def is_online(self):
+            return True
+
+        def request_stream(self, _endpoint, payload, _on_chunk, **_kwargs):
+            model = str(payload.get("model", ""))
+            requested_models.append(model)
+            if model == "prep-draft":
+                return {"response": '{"purpose":', "done": True, "done_reason": "length"}
+            return {"response": '{"purpose":"grounded"}', "done": True, "done_reason": "stop"}
+
+    class Scheduler:
+        def submit(self, _model, *, execute, **_kwargs):
+            return execute()
+
+    services.runtime = Runtime()
+    services.scheduler = Scheduler()
+    services.inference_admission = lambda _action: nullcontext(None)
+
+    result = LocalAIServices._generate(
+        services, "prep-draft", "bounded facts", "", 64, 0.0,
+        source="preprocess:draft-card", priority=0, allow_model_fallback=True,
+    )
+
+    assert result["success"] is True
+    assert result["model"] == "prep-primary"
+    assert result["fallback_used"] is True
+    assert requested_models == ["prep-draft", "prep-primary"]
+
+
+def test_preprocess_truncation_without_confirmed_backend_completion_does_not_fallback():
+    from contextlib import nullcontext
+
+    services = _offline_services()
+    services.config["preprocessing"] = {
+        "model": "prep-primary",
+        "draft_model": "prep-draft",
+    }
+    services.model_policy = ModelExecutionPolicy(services.config)
+    requested_models = []
+
+    class Runtime:
+        def is_online(self):
+            return True
+
+        def request_stream(self, _endpoint, payload, _on_chunk, **_kwargs):
+            requested_models.append(str(payload.get("model", "")))
+            return {"response": '{"purpose":', "done": False, "done_reason": "length"}
+
+    class Scheduler:
+        def submit(self, _model, *, execute, **_kwargs):
+            return execute()
+
+    services.runtime = Runtime()
+    services.scheduler = Scheduler()
+    services.inference_admission = lambda _action: nullcontext(None)
+
+    result = LocalAIServices._generate(
+        services, "prep-draft", "bounded facts", "", 64, 0.0,
+        source="preprocess:draft-card", priority=0, allow_model_fallback=True,
+    )
+
+    assert result["success"] is False
+    assert result["output_truncated"] is True
+    assert result.get("_lah_backend_completed") is not True
+    assert requested_models == ["prep-draft"]
+
+
 @pytest.mark.parametrize("reason", ["stop", None])
 def test_model_normal_or_unreported_stop_does_not_invent_truncation(reason):
     from contextlib import nullcontext

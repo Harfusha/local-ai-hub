@@ -74,12 +74,12 @@ _SEMANTIC_TASK_ACTION_ORDER = (
     "delegate", "explore", "reason", "review", "second_opinion", "compress"
 )
 _SEMANTIC_TASK_ACTION_GUIDANCE = {
-    "delegate": 'Use `local_ai_task(action="delegate")` for bounded implementation or test suggestions.',
-    "explore": 'Use `local_ai_task(action="explore")` for bounded semantic exploration.',
-    "reason": 'Use `local_ai_task(action="reason")` for bounded reasoning after gathering evidence.',
-    "review": 'Use `local_ai_task(action="review")` for an evidence-grounded semantic review.',
-    "second_opinion": 'Use `local_ai_task(action="second_opinion")` for independent critique.',
-    "compress": 'Use `local_ai_task(action="compress")` for semantic condensation.',
+    "delegate": 'For a bounded implementation or test suggestion (not execution), call `local_ai_task(action="delegate", task="...")`.',
+    "explore": 'For bounded semantic exploration, call `local_ai_task(action="explore", task="...")`.',
+    "reason": 'For causal diagnosis or design reasoning after evidence, call `local_ai_task(action="reason", problem="...")` and pass concise evidence in `context`.',
+    "review": 'After material edits or an audit, call `local_ai_task(action="review", code="...", task="Report actionable defects only.")`.',
+    "second_opinion": 'For a distinct independent critique, call `local_ai_task(action="second_opinion", question="...")` with the candidate and evidence.',
+    "compress": 'For large evidence after deterministic compression is insufficient, call `local_ai_task(action="compress", text="...")` with optional instructions in `task`.',
 }
 
 
@@ -100,10 +100,9 @@ def _semantic_handoff_contract(fs: FeatureSet) -> str:
         else " No semantic task action is advertised at this profile; do not guess or call hidden actions."
     )
     return (
-        "Semantic delegation is on-demand under the active schema and quality gates. "
-        + (f"This profile advertises `local_ai_task(action={selector})`; " if selector else "No semantic task action is advertised at this profile; ")
-        + "use matching exposed actions by default after deterministic/indexed evidence; cloud planning is never blocked by mandatory local handoffs. "
-        "Deterministic/indexed evidence is authoritative; the primary agent accepts."
+        "Required semantic second pass: after deterministic/indexed evidence, call a matching exposed `local_ai_task` action for every independent non-trivial reasoning, exploration, review, second-opinion, or compression subtask before finalizing or handing off. For material code changes, review after edits; for causal diagnosis/design, reason after evidence. Do not call once per mechanical command or repeat unchanged input. "
+        + (f"This profile advertises `local_ai_task(action={selector})`. " if selector else "No semantic task action is advertised at this profile. ")
+        + "Skip only for trivial or purely deterministic/exact work, administrative/permission/mutation-only work, sensitive input that cannot be sent, an unavailable action, or a concrete backend/authorization/quality gate failure; state the concrete gate when an otherwise suitable call is skipped. Semantic output is advisory and never replaces deterministic facts, tests, permissions, user approval, or model capability limits."
         + actionable_guidance
         + " Actions unavailable under this profile are omitted."
     )
@@ -754,7 +753,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
         status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
         tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry/debug-trace{status_detail_note} inspection; no polling loops.")
     if local_semantic_enabled:
-        tool_bullets.append(f"- Semantic routing contract: {semantic_handoff}")
+        tool_bullets.append("- For semantic task triggers and action-specific input fields, follow the required contract in Action routing above.")
     else:
         tool_bullets.append("- Local model inference is disabled; use deterministic/indexed evidence only.")
 
@@ -966,10 +965,6 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     recipe_lines = "\n".join(fs.recipe_lines())
 
     task_delegation = ""
-    if fs.tasks and fs.has_any_model():
-        task_delegation = (
-            "\n- Use tier-available semantic actions only. " + _semantic_handoff_contract(fs)
-        )
     if fs.work_orchestrator:
         if "submit" in fs.supported_work_actions():
             task_delegation += (
@@ -1235,7 +1230,7 @@ def generate_antigravity_skill_policy() -> str:
         ANTIGRAVITY_POLICY_BEGIN,
         "## Antigravity automatic skill activation",
         "",
-        "At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. If Antigravity shows the server tools under `Lazy`, invoke them through `call_mcp_tool(ServerName=\"local-ai-hub_local-ai\", ToolName=\"local_ai_repo\", Arguments={\"action\":\"search\",\"query\":\"<task-specific query>\",\"root\":\"<absolute workspace root>\"})`; replace the tool and arguments with the matching live-schema operation. This plugin-scoped name combines plugin ID `local-ai-hub` and server key `local-ai`. Do this before repository reads or shell exploration for every non-trivial repository task. Do not assume `force_all_tools_eager` changes Antigravity behavior. Call applicable endpoints from the main agent; native subagents do not replace Hub retrieval, artifact, or coordination calls. For exact source after locating it, use `local_ai_artifact`; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer; use exposed `local_ai_task` semantic actions for matching bounded review, reasoning, exploration or compression tasks after evidence. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.",
+        "At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. If Antigravity shows the server tools under `Lazy`, invoke them through `call_mcp_tool(ServerName=\"local-ai-hub_local-ai\", ToolName=\"local_ai_repo\", Arguments={\"action\":\"search\",\"query\":\"<task-specific query>\",\"root\":\"<absolute workspace root>\"})`; replace the tool and arguments with the matching live-schema operation. This plugin-scoped name combines plugin ID `local-ai-hub` and server key `local-ai`. Do this before repository reads or shell exploration for every non-trivial repository task. Do not assume `force_all_tools_eager` changes Antigravity behavior. Call applicable endpoints from the main agent; native subagents do not replace Hub retrieval, artifact, or coordination calls. For exact source after locating it, use `local_ai_artifact`; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer. After deterministic/indexed evidence, call one matching exposed `local_ai_task` semantic action for every independent non-trivial reasoning, exploration, review, second-opinion, or compression subtask before finalizing or handing off; review material changes after edits. Use action-specific inputs from the live schema (`reason.problem`, `review.code`, `second_opinion.question`, `compress.text`, `explore.task`, `delegate.task`). Skip only for trivial/deterministic work, sensitive input that cannot be safely minimized, unavailable actions, or a concrete authorization/backend/quality gate; state that gate. Output is advisory and cannot replace deterministic facts, tests, permissions, approval, or model capability limits. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.",
         "If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.",
         ANTIGRAVITY_POLICY_END,
     ))
@@ -1381,7 +1376,7 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
     if repo_actions:
         lines.append(f"- **Search code & repository facts**: Call an advertised local_ai_repo action ({'|'.join(repo_actions)}) with the project root. Avoid unconstrained directory dumping.")
     if task_actions:
-        lines.append(f"- **Semantic code review & second opinions**: Call exposed local_ai_task actions ({'|'.join(task_actions)}).")
+        lines.append(f"- **Semantic code review & second opinions**: After evidence, call a matching exposed `local_ai_task` action for each independent non-trivial semantic subtask; exposed actions ({'|'.join(task_actions)}). Follow action-specific inputs and concrete privacy/authorization/backend/quality gates.")
     if categorized_triggers:
         lines.extend(["", *categorized_triggers])
     if active_tool_actions:

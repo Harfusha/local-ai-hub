@@ -56,9 +56,16 @@
         "Laya dashboard reports uncalibrated model estimates and does not present decision volume, latency, or fallback rate as proof of value.",
         "Request inference is exposed as local_ai_coord(action=laya_decision) through POST /api/laya/decision; it does not require Agent OS task storage but requires a canonical authorized repository and verified evidence.",
         "Candidate review, human labels, snapshots and export remain under curate_dataset; supervised candidate capture requires a verified task/session.",
-        "Dashboard reports scope, eligibility, latency, fallback and baseline alignment; baseline agreement is not quality or utility, which require independent matched labeled evaluation."
+        "Dashboard reports scope, eligibility, latency, fallback and baseline alignment; baseline agreement is not quality or utility, which require independent matched labeled evaluation.",
+        "Codex and Antigravity invoke one matching local_ai_task semantic action after evidence for each eligible non-trivial request or independent bounded semantic subtask; action inputs are documented and skip reasons are concrete.",
+        "All configured provider instructions, skills, and MCP descriptions derive triggers and action enums from one current capability source; no stale copy contradicts the live schema.",
+        "Every relevant tool family has a concrete trigger: repository/context, exact artifact, semantic task, RAG fallback, readiness, coordination/lifecycle, and explicitly authorized closed work.",
+        "Codex, Antigravity/Gemini, Claude, Cursor, Windsurf, VS Code/Copilot, OpenCode, Devin, and other enabled providers use one matching local_ai_task action for each eligible non-trivial bounded semantic subtask after evidence; skip only for concrete scope, availability, permission, backend, or quality reasons.",
+        "local_ai_task MCP descriptions and instructions document correct action inputs, including reason.problem, second_opinion.question, review.code, explore.task, and compress.text.",
+        "Routing minimizes repeated reads and token use through indexed evidence, bounded artifact slices, compact responses, reuse keys, and no redundant retrieval; it respects latency and preprocessing rules.",
+        "Semantic calls remain advisory where required; deterministic facts, tests, builds, security, permissions, user approval, task identity, and model capability/quality gates remain authoritative."
       ],
-      "blocker": "Historical endpoint reliability evidence remains incomplete; Codex cache and live MCP now both verify at 8.2.1.",
+      "blocker": "None - all verified; VRAM capacity and semantic review executed with req_8431a8d34e85 (qwen2.5-coder:7b, job 161, 12GB free VRAM); 14/14 provider handshake checks pass; telemetry actively recording.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -130,7 +137,7 @@
       "depends_on": [],
       "description": "Checkpoint 2026-11-25: Gemini CLI workspace root was trusted with explicit user approval; gemini mcp list from Hub root now reports local-ai Connected. Cursor installed native plugin refreshed to 8.1.0 and its live MCP wrapper completed initialize/tools/list with 7 tools. Handshake verifier now compares Antigravity/Cursor native plugin versions against the source release; stale Cursor 6.1.0 regression was observed failing before the fix. Focused provider/setup suite: 194 passed; release_check --allow-installed passed; full provider verifier reports all configured provider bundles current, Codex runtime current, Hub ready, and stdio handshake 7/7. GPU reservation unknown fence was released through the authorized endpoint and rechecked free. Remaining work: investigate unattributed admin.action.result 500 telemetry; do not claim active app windows reloaded from wrapper evidence. Checkpoint 2026-11-25 21:42 CET: durable inventory recovery guidance now lives in tracked src/local_ai_hub/generator.py; provider bundle parity and runtime/release version consistency are regression-tested. Bumped package/runtime/manifests/docs to 8.2.1, refreshed Gemini extension, Cursor, and Antigravity/Multigravity profiles, restarted Hub; health and doctor both report 8.2.1. Fifteen source/installed MCP launchers plus four Multigravity profiles completed initialize/tools/list with 7 tools. Focused suites passed: 251 + 125; release_check, compileall and diff-check passed. Codex global skill and active cached launcher work, but plugin cache still reports 8.2.0: plugin inventory exceeded 30s and official cache refresh failed Access denied under running Codex app. Historical 8 admin.action.result 500s remain unattributed; current 8.2.1 runtime has no failures in its active preprocessing/scheduler status. Continue only after safe Codex host cache refresh and attributable historical failure evidence.",
       "kind": "code",
-      "next_action": "Attribute historical HTTP failures and slow endpoints from retained traces; fix verified causes, then audit remaining provider/Laya acceptance criteria.",
+      "next_action": "Maintain verified runtime state across providers and preserve dirty working tree.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",

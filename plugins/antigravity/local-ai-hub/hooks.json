@@ -8,9 +8,16 @@
         "timeout": 10
       }
     ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python ./scripts/run_hub.py antigravity_hook PreInvocation",
+        "timeout": 10
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "read_file|run_command",
+        "matcher": "read_file|run_command|invoke_subagent",
         "hooks": [{
           "type": "command",
           "command": "python ./scripts/run_hub.py antigravity_hook PreToolUse",
@@ -20,12 +27,26 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "edit_file|write_file",
+        "matcher": "edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content|run_command",
         "hooks": [{
           "type": "command",
           "command": "python ./scripts/run_hub.py antigravity_hook PostToolUse",
           "timeout": 15
         }]
+      }
+    ],
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python ./scripts/run_hub.py antigravity_hook PostInvocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python ./scripts/run_hub.py antigravity_hook Stop",
+        "timeout": 10
       }
     ]
   }

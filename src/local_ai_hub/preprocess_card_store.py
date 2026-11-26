@@ -527,26 +527,7 @@ class PreprocessCardStoreMixin:
                          (card_key, now, root, item["path"], source_hash))
             return True
 
-        stored = bool(self._write_retry(store))
-        if stored:
-            self._publish_knowledge_card_candidate(root, str(item["path"]), expected_hash or str(item["content_hash"]), data, model)
-        return stored
-
-    def _publish_knowledge_card_candidate(
-        self, root: str, path: str, source_hash: str, card: dict[str, Any], model: str,
-    ) -> None:
-        from . import preprocess as services_module
-        from .repo_knowledge_discovery import publish_file_card_candidate
-
-        try:
-            status = publish_file_card_candidate(self.config, root, path, source_hash, card, model)
-            if status not in {"not_authorized", "no_candidate", "unchanged"}:
-                with self._stats_lock:
-                    key = "knowledge_candidate_" + status
-                    self._stats[key] = self._stats.get(key, 0) + 1
-        except Exception as exc:
-            # Candidate publication is optional, never blocks technical indexing.
-            services_module.logger.warning("Knowledge candidate publication failed (%s)", type(exc).__name__)
+        return bool(self._write_retry(store))
 
     def _record_model_failure_trace(
         self, model: str, prompt: str, system: str, schema: Any,

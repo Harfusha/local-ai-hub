@@ -1692,6 +1692,152 @@ def test_codex_hub_plugin_refresh_does_not_reinstall_an_already_current_version(
     assert len(calls) == 1
 
 
+def test_codex_hub_plugin_refresh_does_not_downgrade_newer_cache(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text('[plugins."local-ai-hub@local-ai-hub"]\nenabled = true\n', encoding="utf-8")
+    manifest = tmp_path / "plugins" / "codex" / "local-ai-hub" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"local-ai-hub","version":"8.2.0"}', encoding="utf-8")
+    cached_manifest = codex_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.2.1" / "plugin.json"
+    cached_manifest.parent.mkdir(parents=True)
+    cached_manifest.write_text('{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8")
+    calls = []
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "codex.exe" if name == "codex" else None)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1:4] == ["plugin", "marketplace", "list"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"marketplaces": [
+                {"name": "local-ai-hub", "root": str(tmp_path)},
+            ]}), "")
+        raise AssertionError(f"newer cache must not be replaced: {command}")
+
+    monkeypatch.setattr(setup, "run", fake_run)
+
+    success, detail = setup.refresh_codex_hub_plugin_cache(config, tmp_path)
+
+    assert success is True
+    assert "newer" in detail.lower()
+    assert len(calls) == 1
+
+
+def test_claude_hub_plugin_refresh_updates_only_the_enabled_local_marketplace(tmp_path, monkeypatch):
+    claude_home = tmp_path / ".claude"
+    settings = claude_home / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"enabledPlugins": {"local-ai-hub@local-ai-hub": True}}), encoding="utf-8")
+    source_marketplace = tmp_path / "hub" / "plugins" / "claude"
+    source_manifest = source_marketplace / "local-ai-hub" / ".claude-plugin" / "plugin.json"
+    source_manifest.parent.mkdir(parents=True)
+    source_manifest.write_text('{"name":"local-ai-hub","version":"8.2.0"}', encoding="utf-8")
+    known = claude_home / "plugins" / "known_marketplaces.json"
+    known.parent.mkdir(parents=True)
+    known.write_text(json.dumps({"local-ai-hub": {"source": {
+        "source": "directory", "path": str(source_marketplace),
+    }}}), encoding="utf-8")
+    old_install = claude_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.1.0"
+    old_manifest = old_install / ".claude-plugin" / "plugin.json"
+    old_manifest.parent.mkdir(parents=True)
+    old_manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    installed_path = claude_home / "plugins" / "installed_plugins.json"
+    installed_path.write_text(json.dumps({"plugins": {"local-ai-hub@local-ai-hub": [{
+        "scope": "user", "installPath": str(old_install), "version": "8.1.0",
+    }]}}), encoding="utf-8")
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        new_install = claude_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.2.0"
+        new_manifest = new_install / ".claude-plugin" / "plugin.json"
+        new_manifest.parent.mkdir(parents=True)
+        new_manifest.write_text(source_manifest.read_text(encoding="utf-8"), encoding="utf-8")
+        installed_path.write_text(json.dumps({"plugins": {"local-ai-hub@local-ai-hub": [{
+            "scope": "user", "installPath": str(new_install), "version": "8.2.0",
+        }]}}), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "updated", "")
+
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(setup, "run", fake_run)
+
+    success, detail = setup.refresh_claude_hub_plugin_cache(settings, tmp_path / "hub")
+
+    assert success is True
+    assert "8.2.0" in detail
+    assert calls == [["claude.exe", "plugin", "update", "local-ai-hub@local-ai-hub", "--scope", "user"]]
+
+
+def test_claude_hub_plugin_refresh_preserves_newer_cache(tmp_path, monkeypatch):
+    claude_home = tmp_path / ".claude"
+    settings = claude_home / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"enabledPlugins": {"local-ai-hub@local-ai-hub": True}}), encoding="utf-8")
+    marketplace = tmp_path / "hub" / "plugins" / "claude"
+    source_manifest = marketplace / "local-ai-hub" / ".claude-plugin" / "plugin.json"
+    source_manifest.parent.mkdir(parents=True)
+    source_manifest.write_text('{"name":"local-ai-hub","version":"8.2.0"}', encoding="utf-8")
+    known = claude_home / "plugins" / "known_marketplaces.json"
+    known.parent.mkdir(parents=True)
+    known.write_text(json.dumps({"local-ai-hub": {"source": {"source": "directory", "path": str(marketplace)}}}), encoding="utf-8")
+    new_install = claude_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.2.1"
+    cached_manifest = new_install / ".claude-plugin" / "plugin.json"
+    cached_manifest.parent.mkdir(parents=True)
+    cached_manifest.write_text('{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8")
+    installed = claude_home / "plugins" / "installed_plugins.json"
+    installed.write_text(json.dumps({"plugins": {"local-ai-hub@local-ai-hub": [{
+        "scope": "user", "installPath": str(new_install), "version": "8.2.1",
+    }]}}), encoding="utf-8")
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: (_ for _ in ()).throw(AssertionError("newer cache must not update")))
+
+    success, detail = setup.refresh_claude_hub_plugin_cache(settings, tmp_path / "hub")
+
+    assert success is True
+    assert "newer" in detail.lower()
+    assert "8.2.1" in detail
+
+
+def test_cursor_bundle_sync_preserves_newer_installed_plugin(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "home" / ".cursor"
+    source = source_root / "plugins" / "cursor" / "local-ai-hub"
+    source_manifest = source / ".cursor-plugin" / "plugin.json"
+    source_manifest.parent.mkdir(parents=True)
+    source_manifest.write_text('{"name":"local-ai-hub","version":"8.2.0"}', encoding="utf-8")
+    (source / "README.md").write_text("source bundle", encoding="utf-8")
+    target = target_root / "plugins" / "local" / "local-ai-hub"
+    target_manifest = target / ".cursor-plugin" / "plugin.json"
+    target_manifest.parent.mkdir(parents=True)
+    target_manifest.write_text('{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8")
+    (target / "README.md").write_text("installed newer bundle", encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+
+    assert setup.sync_cursor_plugin_bundle(target_root, backup_enabled=False) is True
+    assert json.loads(target_manifest.read_text(encoding="utf-8"))["version"] == "8.2.1"
+    assert (target / "README.md").read_text(encoding="utf-8") == "installed newer bundle"
+
+
+def test_antigravity_bundle_sync_preserves_newer_installed_plugin(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "home" / ".gemini"
+    source = source_root / "plugins" / "antigravity" / "local-ai-hub"
+    source_manifest = source / "plugin.json"
+    source.mkdir(parents=True)
+    source_manifest.write_text('{"name":"local-ai-hub","version":"8.2.0"}', encoding="utf-8")
+    (source / "README.md").write_text("source bundle", encoding="utf-8")
+    target = target_root / "config" / "plugins" / "local-ai-hub"
+    target.mkdir(parents=True)
+    target_manifest = target / "plugin.json"
+    target_manifest.write_text('{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8")
+    (target / "README.md").write_text("installed newer bundle", encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source_root)
+
+    assert setup.sync_antigravity_plugin_bundle(target_root, backup_enabled=False) is True
+    assert json.loads(target_manifest.read_text(encoding="utf-8"))["version"] == "8.2.1"
+    assert (target / "README.md").read_text(encoding="utf-8") == "installed newer bundle"
+
+
 def test_codex_unowned_files_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):
     root_home = tmp_path / "root"
     profile_home = tmp_path / "profile"

@@ -7,6 +7,41 @@ import pytest
 
 import local_ai_hub.preprocess as preprocess_module
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.preprocess_cards import _is_safe_vram_budget_admission_rejection
+
+
+def test_retryable_vram_budget_rejection_allows_bounded_model_fallback():
+    result = {
+        "success": False,
+        "model": "qwen2.5-coder:7b-instruct-q4_K_M",
+        "error": "model preparation admission rejected: vram_budget_after_unload",
+        "retryable": True,
+    }
+
+    assert _is_safe_vram_budget_admission_rejection(result) is True
+
+
+@pytest.mark.parametrize("unsafe", [
+    {"terminal": True},
+    {"outcome_unknown": True},
+    {"cleanup_unconfirmed": True},
+    {"retryable": False},
+])
+def test_vram_budget_fallback_never_bypasses_unknown_or_terminal_outcomes(unsafe):
+    result = {
+        "error": "model preparation admission rejected: vram_budget_after_unload",
+        "retryable": True,
+        **unsafe,
+    }
+
+    assert _is_safe_vram_budget_admission_rejection(result) is False
+
+
+def test_unrelated_retryable_model_error_does_not_expand_fallback_policy():
+    assert _is_safe_vram_budget_admission_rejection({
+        "error": "local model inference failed",
+        "retryable": True,
+    }) is False
 
 
 def test_rag_pending_batch_does_not_enumerate_entire_inventory(tmp_path):
@@ -176,11 +211,11 @@ def test_stale_rag_refs_are_invalidated_in_bounded_write_batches(tmp_path, monke
 
     db = tmp_path / "index.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL, centrality_score REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
         con.executemany(
-            "INSERT INTO file_refs VALUES(?, ?, ?, 0, ?, 0, 3, 0)",
+            "INSERT INTO file_refs VALUES(?, ?, ?, 0, ?, 0, 3, 0, 0.0)",
             [(str(root), name, old_hash, None) for name in names],
         )
         con.executemany(

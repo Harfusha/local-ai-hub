@@ -127,6 +127,54 @@ def test_codex_plugin_cache_reports_version_drift_from_source(tmp_path):
     assert "8.1.0" in detail
 
 
+def test_codex_plugin_cache_accepts_newer_provider_snapshot(tmp_path):
+    codex_home = tmp_path / ".codex"
+    cached = codex_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.2.1" / "plugin.json"
+    cached.parent.mkdir(parents=True)
+    cached.write_text('{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8")
+
+    status, detail = verify_agent_handshake.check_codex_plugin_cache(codex_home, "8.2.0")
+
+    assert status == "PLUGIN_CACHE_CURRENT"
+    assert "newer" in detail.lower()
+    assert "8.2.1" in detail
+
+
+def test_claude_plugin_cache_detects_stale_active_user_install(tmp_path):
+    claude_home = tmp_path / ".claude"
+    install = claude_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.1.0"
+    manifest = install / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"local-ai-hub","version":"8.1.0"}', encoding="utf-8")
+    installed = claude_home / "plugins" / "installed_plugins.json"
+    installed.write_text(json.dumps({"plugins": {"local-ai-hub@local-ai-hub": [{
+        "scope": "user", "installPath": str(install), "version": "8.1.0",
+    }]}}), encoding="utf-8")
+
+    status, detail = verify_agent_handshake.check_claude_plugin_cache(claude_home, "8.2.0")
+
+    assert status == "STALE_PLUGIN_CACHE"
+    assert "8.1.0" in detail
+    assert "8.2.0" in detail
+
+
+def test_claude_plugin_cache_accepts_newer_active_user_install(tmp_path):
+    claude_home = tmp_path / ".claude"
+    install = claude_home / "plugins" / "cache" / "local-ai-hub" / "local-ai-hub" / "8.2.1"
+    manifest = install / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8")
+    installed = claude_home / "plugins" / "installed_plugins.json"
+    installed.write_text(json.dumps({"plugins": {"local-ai-hub@local-ai-hub": [{
+        "scope": "user", "installPath": str(install), "version": "8.2.1",
+    }]}}), encoding="utf-8")
+
+    status, detail = verify_agent_handshake.check_claude_plugin_cache(claude_home, "8.2.0")
+
+    assert status == "PLUGIN_CACHE_CURRENT"
+    assert "8.2.1" in detail
+
+
 def test_codex_runtime_reports_stale_live_plugin_process(tmp_path):
     codex_home = tmp_path / ".codex"
     stale_command = (
@@ -304,3 +352,31 @@ def test_cursor_native_plugin_stale_version_is_reported(tmp_path):
     assert status == "STALE_PLUGIN_VERSION"
     assert "6.1.0" in detail
     assert verify_agent_handshake.source_hub_version() in detail
+
+
+def test_cursor_native_plugin_newer_version_is_not_stale(tmp_path):
+    manifest = tmp_path / ".cursor-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '{"name":"local-ai-hub","version":"8.2.1"}', encoding="utf-8"
+    )
+
+    status, detail = verify_agent_handshake.check_plugin_manifest(manifest, "local-ai-hub")
+
+    assert status == "PLUGIN_MANIFEST_PRESENT"
+    assert "newer" in detail.lower()
+
+
+def test_codex_runtime_accepts_newer_live_plugin_process(tmp_path):
+    codex_home = tmp_path / ".codex"
+    newer_command = (
+        f'"{codex_home}\\plugins\\cache\\local-ai-hub\\local-ai-hub\\8.2.1/'
+        'scripts/run_hub.py mcp_server'
+    )
+
+    status, detail = verify_agent_handshake.check_codex_active_mcp_processes(
+        codex_home, "8.2.0", process_commands=[newer_command]
+    )
+
+    assert status == "ACTIVE_MCP_PROCESS_CURRENT"
+    assert "newer" in detail.lower()

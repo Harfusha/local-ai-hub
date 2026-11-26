@@ -161,15 +161,7 @@ class EvidenceStore:
                 info.st_ctime_ns,
             )
 
-        if (
-            identity(path_before) != identity(current)
-            or identity(before) != identity(after)
-            or (
-                (path_before.st_dev, path_before.st_ino, path_before.st_size, path_before.st_mtime_ns)
-                != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            )
-            or (os.name != "nt" and path_before.st_ctime_ns != before.st_ctime_ns)
-        ):
+        if identity(path_before) != identity(current) or identity(before) != identity(after):
             raise ValueError("source file changed during hashing")
         if size != before.st_size:
             raise ValueError("source file changed during hashing")

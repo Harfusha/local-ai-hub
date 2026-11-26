@@ -24,6 +24,18 @@ def check_json_file(path: Path) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"JSON error: {exc}"
 
+
+def release_version_relation(installed: str, source: str) -> int | None:
+    """Compare stable numeric releases; unknown forms remain unverified."""
+    pattern = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+    installed_match = pattern.fullmatch(installed)
+    source_match = pattern.fullmatch(source)
+    if installed_match is None or source_match is None:
+        return None
+    left = tuple(int(part) for part in installed_match.groups())
+    right = tuple(int(part) for part in source_match.groups())
+    return (left > right) - (left < right)
+
 def check_file_exists(path: Path) -> tuple[bool, str]:
     if not path.exists():
         return False, "Not found"
@@ -96,11 +108,62 @@ def check_codex_plugin_cache(codex_home: Path, expected_version: str) -> tuple[s
         return "PLUGIN_CACHE_NOT_OBSERVED", "No installed Local AI Hub Codex plugin cache found"
     if expected_version in versions:
         return "PLUGIN_CACHE_CURRENT", f"Codex plugin cache includes source version {expected_version}"
+    relations = {version: release_version_relation(version, expected_version) for version in versions}
+    if any(relation is None for relation in relations.values()):
+        rendered = ", ".join(sorted(versions))
+        return "STALE_PLUGIN_CACHE", f"Codex plugin cache version(s) {rendered} cannot be compared safely with source {expected_version}"
+    newer = sorted(version for version, relation in relations.items() if relation is not None and relation > 0)
+    if newer:
+        return "PLUGIN_CACHE_CURRENT", f"Codex plugin cache has newer verified release(s) {', '.join(newer)} than source {expected_version}"
     rendered = ", ".join(sorted(versions))
     return (
         "STALE_PLUGIN_CACHE",
         f"Codex plugin cache version(s) {rendered} differ from source {expected_version}; reload the Local AI Hub plugin",
     )
+
+
+def check_claude_plugin_cache(claude_home: Path, expected_version: str) -> tuple[str, str]:
+    """Check the enabled Claude plugin's recorded install and cached manifest versions."""
+    installed_path = claude_home / "plugins" / "installed_plugins.json"
+    try:
+        installed = json.loads(installed_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "PLUGIN_CACHE_NOT_OBSERVED", "Claude plugin installation registry is missing"
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return "INVALID_CONFIG", f"Claude plugin installation registry is invalid: {type(exc).__name__}"
+    plugins = installed.get("plugins") if isinstance(installed, dict) else None
+    records = plugins.get("local-ai-hub@local-ai-hub") if isinstance(plugins, dict) else None
+    if not isinstance(records, list):
+        return "PLUGIN_CACHE_NOT_OBSERVED", "No installed Claude Local AI Hub plugin record found"
+    user_records = [
+        item for item in records
+        if isinstance(item, dict) and str(item.get("scope") or "").casefold() == "user"
+    ]
+    if len(user_records) != 1:
+        return "PLUGIN_CACHE_NOT_OBSERVED", "Claude user-scope Hub plugin install is missing or ambiguous"
+    record = user_records[0]
+    installed_version = record.get("version")
+    install_path = record.get("installPath")
+    if not isinstance(installed_version, str) or not installed_version.strip() or not isinstance(install_path, str) or not install_path.strip():
+        return "INVALID_CONFIG", "Claude Hub plugin install record lacks its version or install path"
+    manifest_path = Path(install_path).expanduser() / ".claude-plugin" / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return "INVALID_CONFIG", f"Claude Hub plugin cache manifest is invalid: {type(exc).__name__}"
+    cached_version = manifest.get("version") if isinstance(manifest, dict) else None
+    manifest_name = manifest.get("name") if isinstance(manifest, dict) else None
+    if manifest_name != "local-ai-hub" or cached_version != installed_version:
+        return "INVALID_CONFIG", "Claude Hub plugin registry and cached manifest disagree"
+    relation = release_version_relation(installed_version.strip(), expected_version)
+    if relation is None or relation < 0:
+        return (
+            "STALE_PLUGIN_CACHE",
+            f"Enabled Claude plugin cache version {installed_version.strip()} is older than Hub source {expected_version}; update the plugin and restart Claude Code",
+        )
+    if relation > 0:
+        return "PLUGIN_CACHE_CURRENT", f"Enabled Claude plugin cache version {installed_version.strip()} is newer than Hub source {expected_version}"
+    return "PLUGIN_CACHE_CURRENT", f"Enabled Claude plugin cache matches Hub source {expected_version}"
 
 
 def check_codex_active_mcp_processes(
@@ -160,11 +223,15 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLin
         })
     if not versions:
         return "RUNTIME_NOT_OBSERVED", "No running Codex Local AI Hub MCP subprocess was observed"
-    if any(version != expected_version for version in versions):
+    relations = {version: release_version_relation(version, expected_version) for version in versions}
+    if any(relation is None or relation < 0 for relation in relations.values()):
         return (
             "STALE_ACTIVE_MCP_PROCESS",
             f"Running Codex MCP cache version(s) {', '.join(versions)} differ from source {expected_version}; restart Codex to reload",
         )
+    newer = sorted(version for version, relation in relations.items() if relation is not None and relation > 0)
+    if newer:
+        return "ACTIVE_MCP_PROCESS_CURRENT", f"Running Codex MCP process uses newer release(s) {', '.join(newer)} than source {expected_version}"
     return "ACTIVE_MCP_PROCESS_CURRENT", f"Running Codex MCP process uses source cache version {expected_version}"
 
 def check_claude_settings(path: Path) -> tuple[str, str]:
@@ -208,11 +275,14 @@ def check_plugin_manifest(manifest_path: Path, expected_name: str) -> tuple[str,
     installed_version = data.get("version")
     if not isinstance(installed_version, str) or not installed_version.strip():
         return "INVALID_CONFIG", "Plugin manifest does not declare a version"
-    if installed_version.strip() != expected_version:
+    relation = release_version_relation(installed_version.strip(), expected_version)
+    if relation is None or relation < 0:
         return (
             "STALE_PLUGIN_VERSION",
             f"Installed plugin version {installed_version.strip()} differs from Hub source {expected_version}; refresh the provider bundle",
         )
+    if relation > 0:
+        return "PLUGIN_MANIFEST_PRESENT", f"Installed plugin version {installed_version.strip()} is newer than Hub source {expected_version}"
     return "PLUGIN_MANIFEST_PRESENT", f"Native Hub plugin manifest present: {manifest_path}"
 
 def check_antigravity_plugin(plugin_dir: Path) -> tuple[str, str]:
@@ -479,10 +549,23 @@ def main() -> int:
     # 3. Claude Code
     claude_mcp = user_home / ".claude.json"
     claude_status, msg_claude = check_claude_settings(user_home / ".claude" / "settings.json")
+    if claude_status == "PLUGIN_ENABLED_CONFIGURED":
+        expected_claude_version = source_hub_version()
+        if expected_claude_version is None:
+            claude_status, msg_claude = "SOURCE_VERSION_UNAVAILABLE", "Cannot verify Claude plugin version without the Hub source version"
+        else:
+            cache_status, cache_detail = check_claude_plugin_cache(
+                user_home / ".claude", expected_claude_version,
+            )
+            if cache_status != "PLUGIN_CACHE_CURRENT":
+                claude_status, msg_claude = cache_status, cache_detail
+            else:
+                msg_claude = f"{msg_claude}; {cache_detail}"
     if claude_status != "PLUGIN_ENABLED_CONFIGURED":
-        mcp_status, mcp_detail = check_mcp_json_file(claude_mcp)
-        if mcp_status in {"HUB_ROUTE_CONFIGURED", "INVALID_CONFIG"}:
-            claude_status, msg_claude = mcp_status, mcp_detail
+        if claude_status not in {"STALE_PLUGIN_CACHE", "INVALID_CONFIG", "SOURCE_VERSION_UNAVAILABLE"}:
+            mcp_status, mcp_detail = check_mcp_json_file(claude_mcp)
+            if mcp_status in {"HUB_ROUTE_CONFIGURED", "INVALID_CONFIG"}:
+                claude_status, msg_claude = mcp_status, mcp_detail
     results.append({"agent": "Claude Code", "status": claude_status, "detail": msg_claude})
 
     # 4. Cursor
@@ -523,7 +606,7 @@ def main() -> int:
 
     # Print table: file presence and syntax do not prove host trust or a live MCP connection.
     for r in results:
-        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT", "EXTENSION_ROUTE_CONFIGURED"} else "[-]"
+        status_sym = "[x]" if r["status"] in {"OK", "CONFIGURED_WHEN_OPENCODE_INSTALLED", "HUB_ROUTE_CONFIGURED", "PLUGIN_ENABLED_CONFIGURED", "PLUGIN_MANIFEST_PRESENT", "EXTENSION_MANIFEST_PRESENT", "EXTENSION_ROUTE_CONFIGURED", "ACTIVE_MCP_PROCESS_CURRENT"} else "[-]"
         print(f"{status_sym} {r['agent']:<32} | {r['status']:<32} | {r['detail']}")
 
     print("-" * 60)

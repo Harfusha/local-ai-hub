@@ -1217,9 +1217,10 @@ def test_task_schema_rejects_retired_batch_and_media_aliases():
 
 
 def test_semantic_task_actions_use_canonical_inputs():
-    from local_ai_hub.operation_contracts import operation_tool_input_schema
+    from local_ai_hub.operation_contracts import operation_input_schema, operation_tool_input_schema
 
-    properties = operation_tool_input_schema("local_ai_task")["properties"]
+    task_schema = operation_tool_input_schema("local_ai_task")
+    properties = task_schema["properties"]
     assert {"query", "diff"}.isdisjoint(properties)
     assert validate_operation_arguments(
         "local_ai_task", "reason", {"action": "reason", "problem": "why?"},
@@ -1233,6 +1234,22 @@ def test_semantic_task_actions_use_canonical_inputs():
     assert validate_operation_arguments(
         "local_ai_task", "second_opinion", {"action": "second_opinion", "task": "safe?"},
     ) is not None
+    review_schema = operation_input_schema("local_ai_task", "review")
+    assert "code" in review_schema["required"]
+    assert review_schema["properties"]["code"].get("minLength") == 1
+    review_condition = next(
+        item for item in task_schema["then"]["allOf"]
+        if item["if"].get("properties", {}).get("action", {}).get("const") == "review"
+    )
+    assert "code" in review_condition["then"]["required"]
+    assert review_condition["then"]["properties"]["code"]["minLength"] == 1
+    assert validate_operation_arguments("local_ai_task", "review", {"action": "review"}) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "review", {"action": "review", "code": "  "},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "review", {"action": "review", "code": "print('ok')"},
+    ) is None
 
 
 def test_repo_schema_rejects_file_and_symbol_aliases():

@@ -32,13 +32,12 @@ def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Pa
     monkeypatch.setattr(uninstall, "_owned_hub_pids", lambda _install: [])
     monkeypatch.setattr(sys, "argv", ["uninstall.py", "--keep-install"])
 
-    devin_home = home / "AppData" / "Roaming" / "devin" if sys.platform == "win32" else home / ".config" / "devin"
     placements = [
         (home / ".agents" / "skills", "ponytail"),
         (home / ".codex" / "skills", "plan-led-work"),
         (home / ".cursor" / "skills", "ponytail-audit"),
         (home / ".codeium" / "windsurf" / "skills", "ponytail-review"),
-        (devin_home / "skills", "local-ai-orchestrator"),
+        (home / "AppData" / "Roaming" / "devin" / "skills", "local-ai-orchestrator"),
         (home / ".copilot" / "skills", "token-economizer"),
         (profile_home / ".gemini" / "config" / "skills", "using-superpowers"),
         (home / ".gemini" / "skills", "former-managed-skill"),
@@ -80,14 +79,13 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     codex_home = home / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-    devin_config = "AppData/Roaming/devin/mcp_config.json" if sys.platform == "win32" else ".config/devin/mcp_config.json"
     config_roots = {
         ".claude.json": "mcpServers",
         ".gemini/settings.json": "mcpServers",
         ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
-        devin_config: "mcpServers",
+        "AppData/Roaming/devin/mcp_config.json": "mcpServers",
         ".copilot/mcp-config.json": "mcpServers",
         ".local-ai/generic-mcp.json": "mcpServers",
         ".local-ai/vscode-mcp.json": "servers",

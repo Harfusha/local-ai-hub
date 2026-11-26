@@ -1,8 +1,8 @@
 # Multi-agent coordination
 
-Local AI Hub provides bounded microtasks via `qwen2.5-coder:3b` (local_ai_task). External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
+Local AI Hub provides bounded microtasks via `qwen2.5-coder:7b-instruct-q4_K_M` (local_ai_task). External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
  Agent OS through `local_ai_coord` handles non-trivial multi-step, long-running, delegated, or acceptance-criteria work: create a task contract, checkpoint phases, and verify receipts before completion.
-
+ For explicitly requested closed whole-task delegation, use `local_ai_work`; routine planning and integration stay with the main agent.
 
 Cross-Agent Coordination Primitives:
 - **Resource Semaphores (`semaphore_acquire`, `semaphore_release`, `semaphore_status`)**: Serialize access to exclusive single-instance tools, processes, or engines (e.g. Unity Editor, specialized hardware/ports, single-writer state) across agents and sessions. Never busy-loop; use capacity and ttl_seconds.

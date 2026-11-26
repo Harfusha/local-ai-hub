@@ -864,6 +864,14 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
         preprocessing_model = preprocessing.get("model") if isinstance(preprocessing, dict) else None
         if requested == preprocessing_model:
             return []
+        preprocessing_draft_model = preprocessing.get("draft_model") if isinstance(preprocessing, dict) else None
+        if (
+            requested == preprocessing_draft_model
+            and isinstance(preprocessing_model, str)
+            and preprocessing_model.strip()
+            and preprocessing_model != requested
+        ):
+            return [preprocessing_model][: int(cfg.get("max_model_fallbacks", 2))]
         mapping = {
             models.get("heavy_code"): [models.get("reasoning"), models.get("fast_code"), models.get("general")],
             models.get("reasoning"): [models.get("heavy_code"), models.get("fast_code")],

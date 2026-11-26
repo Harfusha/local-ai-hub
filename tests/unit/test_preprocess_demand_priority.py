@@ -26,10 +26,10 @@ def test_file_cards_prioritize_learned_queries_but_keep_regular_work(tmp_path):
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("""CREATE TABLE file_refs(root TEXT,path TEXT,size INTEGER,card_key TEXT,last_accessed_at REAL,
-                                              content_hash TEXT,needs_hash INTEGER,centrality_score REAL NOT NULL DEFAULT 0.0)""")
+                                              content_hash TEXT,needs_hash INTEGER)""")
         _lexical_fixture_schema(con)
         for name in ["a.py", "b.py", "c.py", "z_hot.py"]:
-            con.execute("INSERT INTO file_refs(root,path,size,card_key,last_accessed_at,content_hash,needs_hash) VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
             _lexical_fixture_row(con, root, name, "hash", "rare_demand" if name == "z_hot.py" else "other")
         con.commit()
 
@@ -55,8 +55,8 @@ def test_file_cards_prioritize_learned_queries_but_keep_regular_work(tmp_path):
     assert paths == ["z_hot.py", "a.py"]
     other = str(tmp_path / "other")
     with closing(connect()) as con:
-        con.execute("INSERT INTO file_refs(root,path,size,card_key,last_accessed_at,content_hash,needs_hash) VALUES(?,?,10,NULL,0,'hash',0)", (other, "a.py"))
-        con.execute("INSERT INTO file_refs(root,path,size,card_key,last_accessed_at,content_hash,needs_hash) VALUES(?,?,10,NULL,0,'hash',0)", (other, "z_hot.py"))
+        con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (other, "a.py"))
+        con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (other, "z_hot.py"))
         _lexical_fixture_row(con, other, "z_hot.py", "hash", "unrelated")
         con.commit()
     assert [row["path"] for row in pre._find_next_files(other, 2)] == ["a.py", "z_hot.py"]
@@ -69,12 +69,12 @@ def test_rag_batches_reserve_regular_work_when_demand_is_hot(tmp_path):
     root.mkdir()
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, centrality_score REAL NOT NULL DEFAULT 0.0)")
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL)")
         _lexical_fixture_schema(con)
         content_hash = hashlib.sha256(b"body").hexdigest()
         for name in ["a.py", "b.py", "z_hot.py"]:
             (root / name).write_text("body", encoding="utf-8")
-            con.execute("INSERT INTO file_refs(root,path,size,content_hash,needs_hash,rag_hash,last_accessed_at) VALUES(?,?,10,?,0,NULL,0)", (str(root), name, content_hash))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,?,0,NULL,0)", (str(root), name, content_hash))
             _lexical_fixture_row(con, str(root), name, content_hash, "rare_demand" if name == "z_hot.py" else "other")
         con.commit()
 
@@ -344,15 +344,15 @@ def test_sustained_hot_queries_do_not_starve_regular_file_cards(tmp_path):
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("""CREATE TABLE file_refs(root TEXT,path TEXT,size INTEGER,card_key TEXT,last_accessed_at REAL,
-                                              content_hash TEXT,needs_hash INTEGER,centrality_score REAL NOT NULL DEFAULT 0.0)""")
+                                              content_hash TEXT,needs_hash INTEGER)""")
         _lexical_fixture_schema(con)
         for i in range(8):
             name = f"hot_{i:02}.py"
-            con.execute("INSERT INTO file_refs(root,path,size,card_key,last_accessed_at,content_hash,needs_hash) VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
             _lexical_fixture_row(con, root, name, "hash", "rare_demand")
         for i in range(12):
             name = f"cold_{i:02}.py"
-            con.execute("INSERT INTO file_refs(root,path,size,card_key,last_accessed_at,content_hash,needs_hash) VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,NULL,0,'hash',0)", (root, name))
             _lexical_fixture_row(con, root, name, "hash", "ordinary")
         con.commit()
 
@@ -411,22 +411,3 @@ def test_repository_benchmark_uses_scoped_learned_query_without_emitting_it(tmp_
     assert result["query_length"] == len(query)
     assert result["query_sha256"] == hashlib.sha256(query.encode("utf-8")).hexdigest()
     assert "private learned query" not in repr(result)
-
-
-def test_centrality_schema_upgrade_preserves_inventory_and_scores(tmp_path):
-    from local_ai_hub.preprocess_storage import PreprocessStorageMixin
-
-    db = tmp_path / "legacy.sqlite"
-    with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT)")
-        con.execute("INSERT INTO file_refs VALUES('repo', 'a.py', 'hash-a')")
-        con.commit()
-        PreprocessStorageMixin._ensure_file_ref_centrality(con)
-        assert con.execute("SELECT root,path,content_hash,centrality_score FROM file_refs").fetchall() == [
-            ("repo", "a.py", "hash-a", 0.0)
-        ]
-        con.execute("UPDATE file_refs SET centrality_score=0.75")
-        con.commit()
-        PreprocessStorageMixin._ensure_file_ref_centrality(con)
-        assert con.execute("SELECT centrality_score FROM file_refs").fetchone() == (0.75,)
-        assert sum(row[1] == "centrality_score" for row in con.execute("PRAGMA table_info(file_refs)")) == 1

@@ -36,6 +36,13 @@ def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path
     assert DebugTraceStore(default_config).max_list_limit == 200
 
 
+def test_trace_default_session_capacity_covers_multiday_retention_window(tmp_path):
+    config = _config(tmp_path / "default")
+    del config["telemetry"]["max_sessions"]
+
+    assert DebugTraceStore(config).max_sessions == 6000
+
+
 def test_trace_purge_transaction_timeout_is_retryable(monkeypatch, tmp_path):
     store = DebugTraceStore(_config(tmp_path))
 

@@ -23,8 +23,26 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TELEMETRY_DIR = Path(".local-ai-hub") / "telemetry"
-DEFAULT_LOG_FILE = DEFAULT_TELEMETRY_DIR / "agents.jsonl"
+def _resolve_telemetry_dir() -> Path:
+    env_dir = os.environ.get("LOCAL_AI_TELEMETRY_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
+    hub_dir = os.environ.get("LOCAL_AI_HUB_DIR")
+    if hub_dir:
+        candidate = Path(hub_dir) / ".local-ai-hub" / "telemetry"
+        return candidate.resolve()
+    return (Path(".local-ai-hub") / "telemetry").resolve()
+
+
+def _resolve_telemetry_file() -> Path:
+    env_file = os.environ.get("LOCAL_AI_TELEMETRY_LOG")
+    if env_file:
+        return Path(env_file).resolve()
+    return _resolve_telemetry_dir() / "agents.jsonl"
+
+
+DEFAULT_TELEMETRY_DIR = _resolve_telemetry_dir()
+DEFAULT_LOG_FILE = _resolve_telemetry_file()
 
 
 def _resolve_default_mode() -> str:
@@ -34,7 +52,20 @@ def _resolve_default_mode() -> str:
         return env_mode.strip().lower()
 
     # 2. Config file check
-    for cfg_candidate in (Path("config.toml"), Path(".local-ai-hub/config.toml"), Path("defaults.toml")):
+    hub_dir = os.environ.get("LOCAL_AI_HUB_DIR")
+    candidates = [
+        Path("config.toml"),
+        Path(".local-ai-hub/config.toml"),
+        Path("defaults.toml"),
+    ]
+    if hub_dir:
+        h = Path(hub_dir)
+        candidates.extend([
+            h / "config.toml",
+            h / ".local-ai-hub" / "config.toml",
+            h / "defaults.toml",
+        ])
+    for cfg_candidate in candidates:
         if cfg_candidate.is_file():
             try:
                 import tomllib
@@ -52,10 +83,10 @@ class AgentTelemetryRecorder:
 
     def __init__(
         self,
-        log_path: Path | str = DEFAULT_LOG_FILE,
+        log_path: Path | str | None = None,
         mode: Optional[str] = None,
     ):
-        self.log_path = Path(log_path).resolve()
+        self.log_path = Path(log_path if log_path is not None else _resolve_telemetry_file()).resolve()
         self.mode = (mode or _resolve_default_mode()).strip().lower()
         self._lock = threading.Lock()
         self._mem_buffer: collections.deque[dict[str, Any]] = collections.deque(maxlen=2000)

@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id task_canonical_cleanup`.
-<!-- coverage-task-id: task_canonical_cleanup -->
+Reproduce with `python tools/surface_inventory.py --check --task-id task_ff7542021ce7`.
+<!-- coverage-task-id: task_ff7542021ce7 -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -116,6 +116,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | HTTP POST | /api/bundle/export | confirmed | src/local_ai_hub/http_route_registry.py | op-21ec1373e039 |
 | HTTP POST | /api/bundle/import | confirmed | src/local_ai_hub/http_route_registry.py | op-e64c615a36e2 |
 | HTTP POST | /api/chat | confirmed | src/local_ai_hub/http_route_registry.py | op-168f9dbce8b8 |
+| HTTP POST | /api/chat/completions | confirmed | src/local_ai_hub/http_route_registry.py | op-eef1414d8141 |
 | HTTP POST | /api/code-intelligence/control | confirmed | src/local_ai_hub/http_route_registry.py | op-630137102c4b |
 | HTTP POST | /api/code-intelligence/query | confirmed | src/local_ai_hub/http_route_registry.py | op-ef992b94de5b |
 | HTTP POST | /api/code/ | confirmed | src/local_ai_hub/http_routes_post.py | op-9d31b4f0bf67 |
@@ -673,7 +674,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | CLI operation | dashboard | confirmed | tools/hubctl.py | op-a7abef5e4884 |
 | CLI operation | doctor | confirmed | tools/hubctl.py | op-b33c959eab65 |
 | CLI operation | generate | confirmed | tools/hubctl.py | op-53d2882e6404 |
-| CLI operation | knowledge | confirmed | tools/hubctl.py | op-32c5a41228d0 |
 | CLI operation | logs | confirmed | tools/hubctl.py | op-7a6e42f71891 |
 | CLI operation | memory | confirmed | tools/hubctl.py | op-ee8a4e3836f2 |
 | CLI operation | mode | confirmed | tools/hubctl.py | op-9dc37e51eae5 |

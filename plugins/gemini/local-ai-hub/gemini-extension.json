@@ -1,6 +1,6 @@
 {
   "name": "local-ai-hub",
-  "version": "8.2.0",
+  "version": "8.2.1",
   "description": "Local AI Hub MCP, shared skills, and Gemini CLI lifecycle and tool hooks.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {

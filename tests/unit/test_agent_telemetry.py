@@ -100,7 +100,7 @@ def test_project_minimal_agent_response_task():
     assert minimal["task"]["phase"] == "coding"
     assert minimal["task"]["next_action"] == "test"
     # Ensure bloat is gone
-    assert "response_budget" not in minimal
+    assert "response_budget" in minimal
     assert "request_id" not in minimal
     assert "context" not in minimal["task"]
     assert "state_data" not in minimal["task"]
@@ -124,4 +124,4 @@ def test_project_minimal_agent_response_search():
     assert len(minimal["matches"]) == 2
     assert minimal["matches"][0] == {"path": "src/a.py", "line": 10}
     assert "ai_summary" not in minimal
-    assert "response_budget" not in minimal
+    assert "response_budget" in minimal

@@ -825,22 +825,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <div class="prep-note">Overall progress is an estimate based on phase weights. File counts are coverage of the inventory, not a promise that every file needs every index. Open a project for details.</div>
     <div class="table-wrap prep-list-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
-  <section class="section" style="margin-top:12px">
-    <h2>Project knowledge <span class="tiny">Git-versioned declarations and source freshness</span></h2>
-    <form id="projectKnowledgeForm" class="project-toolbar">
-      <label for="projectKnowledgeRoot" class="tiny">Checkout</label>
-      <select id="projectKnowledgeRoot" required aria-label="Knowledge checkout"><option value="">Choose registered checkout</option></select>
-      <label for="projectKnowledgeQuery" class="tiny">Question or terms</label>
-      <input id="projectKnowledgeQuery" type="search" required maxlength="2000" placeholder="e.g. paid order rescheduling" aria-label="Search project knowledge" autocomplete="off" style="flex:1;min-width:200px">
-      <button id="projectKnowledgeSearch" type="submit" class="btn primary">Search knowledge</button>
-      <button id="projectKnowledgeAudit" type="button" class="btn">Review findings</button>
-      <button id="projectKnowledgeSync" type="button" class="btn">Git sync status</button>
-      <button id="projectKnowledgeHandoffs" type="button" class="btn">Shared handoffs</button>
-    </form>
-    <p class="tiny muted">Repository declarations are not verified runtime behavior or task completion evidence. Select the exact checkout. Edits require a preview and explicit save; no Git commit or push is performed.</p>
-    <div id="projectKnowledgeStatus" class="tiny muted" role="status" aria-live="polite">Choose a checkout and enter a query.</div>
-    <div id="projectKnowledgeResults" style="padding:12px"></div>
-  </section>
 </div>
 
 <div id="commands" class="page">

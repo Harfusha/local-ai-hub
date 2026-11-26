@@ -645,11 +645,10 @@ Trigger map:
 - reusable project facts: find scoped memory; record only verified findings
 - before repeating a failure: check scoped negative knowledge
 - `local_ai_rag` only after indexed repository evidence is insufficient
-- second-pass semantic QA after evidence, when exposed and qualified: use an exposed semantic action
 - `local_ai_work`: existing work status, wait, get and cancel actions only; new work submission is unavailable at this profile
 - `local_ai_repo` generation/mutation: explicit scoped requests only; preserve approval/review gates.
 - `local_ai_repo` preprocessing: register unindexed roots once; maintenance actions only on request, never retries.
-- `local_ai_task`: after evidence, default to exposed semantic QA (compress) when quality/backend gates pass.
+- `local_ai_task`: required after evidence for each independent non-trivial semantic subtask; exposed actions (compress), subject to privacy, authorization, backend, and quality gates.
 - Tier-available semantic actions only: `compress`; unavailable actions stay omitted.
 - `local_ai_task` specialized work (audio, browser/desktop, benchmark/evaluation, candidate workflows, routing/batch, async jobs): matching requests and exposed actions only.
 - `local_ai_task` async jobs (status/wait/result/cancel): require a known job ID; readiness uses `local_ai_status`.
@@ -659,14 +658,12 @@ Recommended Hub routes (apply the matching route by default):
 - Recipe — Explore: on first work in a stable root, inspect project config and register with one idempotent preprocess call; use bounded indexed/source lookup for exact file or symbol facts and adaptive context when evidence is insufficient; never force-refresh or poll preprocessing.
 - Recipe — Change: gather indexed evidence, initialize an Agent OS contract, use `local_ai_repo(action="context")` when exposed, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
 - Recipe — Validate: run bounded repeatable commands with the host-native command tool; use `security_audit` when relevant.
-- Recipe — Semantic work: use exposed `local_ai_task` semantic actions after deterministic/indexed evidence.
 - Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action="task_create")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; attach explicit verification receipts; and verify completion (`verify_completion`) before closure.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
 - Apply the matching Hub route by default. Skip only when irrelevant, unavailable in the active schema/config, or fresh sufficient evidence already exists; after one terminal Hub failure, use one bounded native fallback and continue without retries.
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks or routine work; see the simplified workflow spec.
 
-- Use tier-available semantic actions only. Semantic delegation is on-demand under the active schema and quality gates. This profile advertises `local_ai_task(action="compress")`; use matching exposed actions by default after deterministic/indexed evidence; cloud planning is never blocked by mandatory local handoffs. Deterministic/indexed evidence is authoritative; the primary agent accepts. Use `local_ai_task(action="compress")` for semantic condensation. Actions unavailable under this profile are omitted.
 - `local_ai_work` is limited to status, wait, get and cancel on this hardware profile; new submissions remain disabled by the active profile or release gate.
 - Use native Codex subagents only for independent bounded implementation or an explicit user request.
 - Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit request. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
