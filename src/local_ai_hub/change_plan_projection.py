@@ -28,6 +28,9 @@ def project_change_plan(
             "verification_status", "risks", "line_totals", "semantic_change_counts",
             "semantic_observed_scopes", "observed_hunk_count", "task_candidates", "task_candidates_omitted",
         ) if k in group}
+        dependencies = group.get("dependency_group_candidates", [])
+        item["dependency_group_candidates"] = dependencies[:8]
+        item["dependency_groups_omitted"] = max(0, len(dependencies) - 8)
         item["file_count"] = len(files)
         item["files"] = files[:6]
         item["files_omitted"] = max(0, len(files) - 6)
@@ -53,6 +56,13 @@ def project_change_plan(
         page.append(item)
     unavailable = result.get("unavailable_patch_scopes", [])
     output = {k: v for k, v in result.items() if k not in {"clusters", "unavailable_patch_scopes"}}
+    dependency_plan = output.get("dependency_plan")
+    if isinstance(dependency_plan, dict):
+        output["dependency_plan"] = dict(dependency_plan)
+        for field in ("candidate_order", "blocked_group_keys"):
+            values = dependency_plan.get(field, [])
+            output["dependency_plan"][field] = values[:16]
+            output["dependency_plan"][field + "_omitted"] = max(0, len(values) - 16)
     output.update({
         "clusters": page, "offset": offset, "limit": limit,
         "has_more": offset + len(page) < len(groups),

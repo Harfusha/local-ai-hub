@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .change_atoms import PatchBudgetExceeded, identity, inspect_change_atoms
+from .change_dependencies import annotate_dependencies
 from .process_utils import clean_git_env, run_hidden
 
 
@@ -308,6 +309,7 @@ def run_split_changes(
             str(top), statuses, staged, unstaged, atom_git,
             staged_scope="committed" if comparison else "staged",
             persistent_cache=getattr(engine, "_change_summary_cache", None),
+            fact_extractor=getattr(engine, "_extract_source_facts", None),
         )
         if comparison is None and (
             git(*args) != before or _git_snapshot_metadata(git) != snapshot_before
@@ -353,7 +355,7 @@ def run_split_changes(
                 f"+{added}/-{deleted} tracked lines across observed scopes"
             )
             if semantic_counts:
-                cluster["summary"] += "; AST: " + ", ".join(
+                cluster["summary"] += "; structural/fact changes: " + ", ".join(
                     f"{count} {kind}" for kind, count in sorted(semantic_counts.items())
                 )
             if semantic_observed:
@@ -373,6 +375,7 @@ def run_split_changes(
                     cluster["suggested_commit_message"] = f"{kind}: update {first}{suffix}"
             if any(item["path"] in cluster["files"] for item in observed["unavailable"]):
                 cluster["risks"] = sorted(set(cluster["risks"]) | {"patch_coverage_incomplete"})
+        dependency_plan = annotate_dependencies(clusters)
     except (OSError, ValueError, subprocess_module.SubprocessError):
         return {
             "success": False,
@@ -385,6 +388,7 @@ def run_split_changes(
         "root": str(resolved_root),
         "total_files": len(statuses),
         "comparison": comparison,
+        "dependency_plan": dependency_plan,
         "inventory_file_count": full_status_count,
         "inventory_scope": "selected_paths" if changed_files is not None else "git_visible_changes",
         "git_snapshot_metadata": snapshot_before,
@@ -412,7 +416,7 @@ def run_split_changes(
         "commit_ready": False,
         "limitations": [
             "Read-only observed patch identities; not a complete worktree fingerprint or authorization to stage or commit.",
-            "File-level grouping only; dependencies and renames are not resolved.",
+            "File-level groups with candidate import ordering and hunk symbol overlaps; dependencies and renames are not fully verified.",
             "Git patch identities and line counts do not establish semantic intent or verification freshness.",
         ],
     }

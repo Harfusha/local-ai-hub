@@ -273,3 +273,29 @@ def test_binary_patch_identity(tmp_path):
     assert first["git_visible_observation_complete"]
     path.write_bytes(b"\0other")
     assert _plan(tmp_path)["observed_change_set_id"] != first["observed_change_set_id"]
+
+
+def test_import_candidate_order_and_hunk_symbol_overlap(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "cache.py").write_text("def get():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "payment.py").write_text("from cache import get\n\ndef pay():\n    return get()\n", encoding="utf-8")
+    result = _plan(tmp_path)
+    payment = next(g for g in result["clusters"] if "payment.py" in g["files"])
+    cache = next(g for g in result["clusters"] if "cache.py" in g["files"])
+    assert payment["dependency_group_candidates"] == [cache["group_key"]]
+    order = result["dependency_plan"]["candidate_order"]
+    assert order.index(cache["group_key"]) < order.index(payment["group_key"])
+    assert not result["dependency_plan"]["dependencies_verified"]
+    assert any("pay" in h["symbol_candidates"] for h in payment["changes"][0]["atoms"][0]["hunks"])
+
+
+def test_source_fact_delta_is_not_behavior_proof():
+    from local_ai_hub.change_source_facts import summarize_facts
+
+    def extract(path, text):
+        return [{"kind": "php_class", "name": text, "value": text, "extra": {"fqn": text}}]
+
+    result = summarize_facts("src/Foo.php", "Old", "New", extract)
+    assert result["change_counts"] == {"added": 1, "removed": 1}
+    assert result["structural_equivalence_unknown"]
+    assert not result["behavior_equivalence_proven"]

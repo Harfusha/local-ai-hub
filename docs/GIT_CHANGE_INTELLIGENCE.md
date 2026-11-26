@@ -36,6 +36,10 @@ Small regular untracked files (up to 512 KiB) and link metadata are observed and
 
 Compact worktree plans can link bounded, repository-scoped tasks through exact checkpoint path overlaps. An explicit `task_id` narrows the task set. Existing Agent OS completion evaluates receipts against a freshly observed Hub repository revision; only satisfied criteria with matching receipt revisions are candidates. The plan explicitly distinguishes whole-worktree task completion from commit verification, and never authorizes skipping per-commit checks. The older synthesis service now requires scoped tasks and no longer inserts unchecked or stale receipt claims into commit messages. Cross-project and unscoped tasks are excluded.
 
+## Polyglot fact deltas, hunk associations and dependency candidates
+
+The existing deterministic source-fact extractor is reused for supported PHP/CakePHP, JS/TS and other known file formats. Exact source pairs produce bounded added/removed/changed declaration/fact identities; only selected identifier kinds and value hashes are compared. This is lexical fact analysis, not full semantic equivalence or proof that function bodies are unchanged. Python AST results additionally include source ranges and import candidates. The planner associates hunks with overlapping changed symbols and proposes group ordering from uniquely matched changed Python module paths, relative JS imports and PHP declaration/import names. Cycles and their blocked dependents remain explicit. The graph is incomplete by design, is not a proof of dependency closure, and cannot authorize separate commits. The compact view reports omitted candidates.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.

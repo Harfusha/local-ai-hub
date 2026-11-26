@@ -14,7 +14,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
-from .change_semantics import summarize_python_patch, summarize_python_sources
+from .change_semantics import summarize_source_patch, summarize_source_bytes
+from .change_source_facts import supports_facts
 from .change_untracked import observe_untracked
 
 _MAX_PATCH_BYTES = 512 * 1024
@@ -125,6 +126,7 @@ def inspect_change_atoms(
     *,
     persistent_cache: Any | None = None,
     staged_scope: str = "staged",
+    fact_extractor: Callable[[str, str], Any] | None = None,
 ) -> dict[str, Any]:
     """Inspect tracked textual patches twice and publish only matched observations.
 
@@ -151,12 +153,12 @@ def inspect_change_atoms(
                 continue
             atom_id = identity("untracked-v1", root, path, json.dumps(metadata, sort_keys=True))
             semantic = {"status": "unavailable", "reason": "unsupported_language_or_type"}
-            if path.lower().endswith(".py") and content is not None:
+            if content is not None and (path.lower().endswith(".py") or (fact_extractor is not None and supports_facts(path))):
                 if semantic_attempts < 8 and time.monotonic() < deadline:
                     semantic_attempts += 1
-                    semantic = summarize_python_sources(
-                        b"", content, cache=persistent_cache,
-                        key=identity("python-ast-summary-v1", atom_id),
+                    semantic = summarize_source_bytes(
+                        b"", content, path=path, cache=persistent_cache,
+                        key=identity("source-summary-v2", atom_id), fact_extractor=fact_extractor,
                     )
                 else:
                     semantic = {"status": "unavailable", "reason": "analysis_budget"}
@@ -205,12 +207,12 @@ def inspect_change_atoms(
             cache_hits += int(source != "computed")
             persistent_hits += int(source == "persistent")
             semantic = {"status": "unavailable", "reason": "unsupported_language"}
-            if not binary and not any(line.endswith(b"120000") for line in patch.split(b"\n", 5)[1:5]) and path.lower().endswith(".py"):
+            if not binary and not any(line.endswith(b"120000") for line in patch.split(b"\n", 5)[1:5]) and (path.lower().endswith(".py") or (fact_extractor is not None and supports_facts(path))):
                 if semantic_attempts < 8 and time.monotonic() < deadline:
                     semantic_attempts += 1
-                    semantic = summarize_python_patch(
-                        patch, git, cache=persistent_cache,
-                        key=identity("python-ast-summary-v1", atom_id),
+                    semantic = summarize_source_patch(
+                        patch, git, path=path, cache=persistent_cache,
+                        key=identity("source-summary-v2", atom_id), fact_extractor=fact_extractor,
                     )
                 else:
                     semantic = {"status": "unavailable", "reason": "analysis_budget"}

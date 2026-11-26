@@ -631,7 +631,7 @@ def _local_ai_repo_impl(
                           "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id",
                           "projection_mode", "projection_partial", "comparison", "offset", "limit", "has_more",
                           "next_offset", "model_advice_status", "task_context", "git_snapshot_metadata",
-                          "inventory_scope", "inventory_file_count", "git_visible_observation_complete"])
+                          "inventory_scope", "inventory_file_count", "git_visible_observation_complete", "dependency_plan"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,
