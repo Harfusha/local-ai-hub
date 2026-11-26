@@ -2140,6 +2140,8 @@ def test_verified_execution_problem_survives_checkpoint_and_requires_new_receipt
     projection = verifier.completion(task.task_id)
     assert not projection.complete
     assert projection.execution["problems"]["blocking_open"] == 1
+    assert projection.execution["coverage"]["verified"] == 0
+    assert projection.execution["next_obligation"]["criterion"] == "review"
     with pytest.raises(ValueError, match="server-managed"):
         task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"_verified_execution_problems": {}}))
     with pytest.raises(CompletionGateError, match="blocking problems"):

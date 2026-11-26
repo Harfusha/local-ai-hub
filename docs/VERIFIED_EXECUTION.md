@@ -107,8 +107,11 @@ observations may be unlinked and remain visible in audit output.
 Reported evidence references are leads, not verified evidence. A blocking
 problem remains open until a different, fresh canonically validated receipt
 for its linked criterion is recorded after reporting. Stale verification
-reopens it. The completion preview includes problem counts and open reports;
-a receipt waiver does not close a blocking report. Resolution is not proof
+reopens it. Open blocking reports also invalidate the corresponding
+obligation in the work graph and its dependent coverage, so the next action
+cannot disappear behind an older passing receipt. The completion preview
+includes problem counts and open reports; a receipt waiver does not close a
+blocking report. Resolution is not proof
 of independent expert review: the criterion and actual evidence still
 must adequately cover the reported problem.
 

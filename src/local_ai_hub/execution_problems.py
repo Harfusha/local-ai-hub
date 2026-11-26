@@ -104,6 +104,7 @@ def project_problems(
     records = _validated_records(raw)
     valid = set(satisfied)
     open_count = blocking = resolved = 0
+    blocking_criteria: set[str] = set()
     preview: list[dict[str, Any]] = []
     for record in records.values():
         report = record["report"]
@@ -121,11 +122,14 @@ def project_problems(
         else:
             open_count += 1
             blocking += int(report["blocking"])
+            if report["blocking"]:
+                blocking_criteria.add(criterion)
             if len(preview) < 12:
                 preview.append({"id": report["id"], "title": report["title"],
                                 "criterion": criterion, "blocking": report["blocking"]})
     return {
         "total": len(records), "open": open_count, "resolved": resolved,
-        "blocking_open": blocking, "open_preview": preview,
+        "blocking_open": blocking, "blocking_criteria": sorted(blocking_criteria),
+        "open_preview": preview,
         "preview_truncated": open_count > len(preview),
     }

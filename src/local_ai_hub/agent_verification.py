@@ -1907,18 +1907,21 @@ class VerificationStore:
         from .verified_execution import EXECUTION_KEY, execution_projection
 
         if task_state is not None and EXECUTION_KEY in task_state.contract.slo_profile:
-            execution = execution_projection(
-                required_criteria, task_state.contract.slo_profile[EXECUTION_KEY],
-                satisfied=satisfied, unsatisfied=unsatisfied, stale=stale,
-                receipt_ids={receipt.criterion: receipt.receipt_id for receipt in visible_receipts},
-                receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
-            )
             from .execution_problems import PROBLEM_STATE_KEY, project_problems
 
             problems = project_problems(
                 task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
                 satisfied=satisfied,
                 receipts={receipt.criterion: receipt for receipt in visible_receipts},
+            )
+            blocking_criteria = set(problems["blocking_criteria"])
+            execution = execution_projection(
+                required_criteria, task_state.contract.slo_profile[EXECUTION_KEY],
+                satisfied=[criterion for criterion in satisfied if criterion not in blocking_criteria],
+                unsatisfied=list(dict.fromkeys((*unsatisfied, *sorted(blocking_criteria)))),
+                stale=stale,
+                receipt_ids={receipt.criterion: receipt.receipt_id for receipt in visible_receipts},
+                receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
             )
             execution["problems"] = problems
             if problems["blocking_open"]:
