@@ -50,6 +50,7 @@ def rebuild_agent_state_projection(
         return {"success": False, "error": "Repository incident scope could not be derived"}
     db_path = Path(state_dir).resolve() / "agent_state.sqlite"
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    ownership_db_path = db_path.parent / "agent_project_projection.sqlite"
 
     counts = {"tasks": 0, "memory": 0, "incidents": 0}
     now = time.time()
@@ -58,6 +59,15 @@ def rebuild_agent_state_projection(
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
         _ensure_projection_schema(con)
+        con.execute("ATTACH DATABASE ? AS project_projection_meta", (str(ownership_db_path),))
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS project_projection_meta.records (
+                repo_root TEXT NOT NULL,
+                record_kind TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                PRIMARY KEY (repo_root, record_kind, record_id)
+            )"""
+        )
         con.execute("BEGIN IMMEDIATE")
 
         # 1. Rebuild tasks projection
@@ -79,7 +89,7 @@ def rebuild_agent_state_projection(
             status = payload.get("status", "planned")
 
             existing = con.execute(
-                "SELECT checkpoint FROM agent_tasks_projection WHERE task_id=?", (task_id,)
+                "SELECT checkpoint, owner FROM agent_tasks_projection WHERE task_id=?", (task_id,)
             ).fetchone()
             if existing:
                 try:
@@ -93,6 +103,13 @@ def rebuild_agent_state_projection(
                 if existing_root and existing_root != str(root):
                     con.rollback()
                     return {"success": False, "error": f"Task ID is already projected from another repository: {task_id}"}
+                owned = con.execute(
+                    "SELECT 1 FROM project_projection_meta.records WHERE repo_root=? AND record_kind='task' AND record_id=?",
+                    (str(root), task_id),
+                ).fetchone()
+                if not owned and existing[1] != "canonical-git":
+                    con.rollback()
+                    return {"success": False, "error": f"Task ID belongs to live runtime state and cannot be overwritten: {task_id}"}
             con.execute(
                 """INSERT INTO agent_tasks_projection (
                     task_id, status, contract, checkpoint, context, owner, lease_id, receipts,
@@ -122,16 +139,36 @@ def rebuild_agent_state_projection(
                 "_agent_project_scope": {"repo_root": str(root), "project_id": project_id}
             })
             existing = con.execute(
-                "SELECT provenance FROM agent_memory_records WHERE record_id=?", (record_id,)
+                """SELECT kind, scope, scope_id, key, value, provenance
+                   FROM agent_memory_records WHERE record_id=?""",
+                (record_id,),
             ).fetchone()
             if existing:
                 try:
-                    existing_root = json.loads(existing[0] or "{}").get("_agent_project_scope", {}).get("repo_root")
+                    existing_scope = json.loads(existing[5] or "{}").get("_agent_project_scope", {})
+                    existing_root = existing_scope.get("repo_root")
                 except (TypeError, ValueError, AttributeError):
+                    existing_scope = {}
                     existing_root = None
                 if existing_root and existing_root != str(root):
                     con.rollback()
                     return {"success": False, "error": f"Memory ID is already projected from another repository: {record_id}"}
+                owned = con.execute(
+                    "SELECT 1 FROM project_projection_meta.records WHERE repo_root=? AND record_kind='memory' AND record_id=?",
+                    (str(root), record_id),
+                ).fetchone()
+                matches_canonical = (
+                    existing_root == str(root)
+                    and existing_scope.get("project_id") == project_id
+                    and existing[0] == payload.get("kind", "fact")
+                    and existing[1] == payload.get("scope", "project")
+                    and existing[2] == project_id
+                    and existing[3] == payload.get("key", "")
+                    and existing[4] == value_str
+                )
+                if not owned and not matches_canonical:
+                    con.rollback()
+                    return {"success": False, "error": f"Memory ID belongs to unmarked runtime state and cannot be overwritten: {record_id}"}
             con.execute(
                 """INSERT INTO agent_memory_records (
                     record_id, kind, scope, scope_id, key, value, status, confidence,
@@ -186,11 +223,27 @@ def rebuild_agent_state_projection(
             if not incident_id:
                 continue
             existing = con.execute(
-                "SELECT repository_key FROM agent_incidents WHERE incident_id=?", (incident_id,)
+                "SELECT operation_class, error_class, signature_hash, repository_key, redacted_message, resolved, verified_fix "
+                "FROM agent_incidents WHERE incident_id=?",
+                (incident_id,),
             ).fetchone()
-            if existing and existing[0] and existing[0] != repository_key:
-                con.rollback()
-                return {"success": False, "error": f"Incident ID is already projected from another repository: {incident_id}"}
+            if existing:
+                owned = con.execute(
+                    "SELECT 1 FROM project_projection_meta.records WHERE repo_root=? AND record_kind='incident' AND record_id=?",
+                    (str(root), incident_id),
+                ).fetchone()
+                matches_canonical = (
+                    existing[0] == payload.get("operation_class", "agent")
+                    and existing[1] == payload.get("error_class", "RuntimeError")
+                    and existing[2] == payload.get("signature_hash", "")
+                    and existing[3] == repository_key
+                    and existing[4] == payload.get("redacted_message", "")
+                    and existing[5] == (1 if payload.get("resolved") else 0)
+                    and existing[6] == payload.get("verified_fix", "")
+                )
+                if not owned and not matches_canonical:
+                    con.rollback()
+                    return {"success": False, "error": f"Incident ID belongs to unmarked runtime state and cannot be overwritten: {incident_id}"}
             con.execute(
                 """INSERT INTO agent_incidents (
                     incident_id, operation_class, error_class, signature_hash, resolved,
@@ -225,37 +278,46 @@ def rebuild_agent_state_projection(
             )
             counts["incidents"] += 1
 
-        # Reconcile deletions without touching rows projected from other repos.
+        # Track only records written by this Git projection; runtime rows are
+        # retained until the explicit legacy publication workflow migrates them.
         task_ids = {str(row.get("payload", {}).get("task_id")) for row in tasks}
-        for task_id, checkpoint_raw in con.execute(
-            "SELECT task_id, checkpoint FROM agent_tasks_projection"
-        ).fetchall():
-            try:
-                scope_root = json.loads(checkpoint_raw or "{}").get("state_data", {}).get(
-                    "_agent_task_scope", {}
-                ).get("repo_root")
-            except (TypeError, ValueError, AttributeError):
-                scope_root = None
-            if scope_root == str(root) and task_id not in task_ids:
-                con.execute("DELETE FROM agent_tasks_projection WHERE task_id=?", (task_id,))
-
         memory_ids = {str(row.get("payload", {}).get("record_id")) for row in memory_records}
-        for record_id, provenance_raw in con.execute(
-            "SELECT record_id, provenance FROM agent_memory_records"
-        ).fetchall():
-            try:
-                scope_root = json.loads(provenance_raw or "{}").get("_agent_project_scope", {}).get("repo_root")
-            except (TypeError, ValueError, AttributeError):
-                scope_root = None
-            if scope_root == str(root) and record_id not in memory_ids:
-                con.execute("DELETE FROM agent_memory_records WHERE record_id=?", (record_id,))
-
         incident_ids = {str(row.get("payload", {}).get("incident_id")) for row in incidents}
-        for (incident_id,) in con.execute(
-            "SELECT incident_id FROM agent_incidents WHERE repository_key=?", (repository_key,)
+        current_ids = {"task": task_ids, "memory": memory_ids, "incident": incident_ids}
+        for record_kind, record_id in con.execute(
+            "SELECT record_kind, record_id FROM project_projection_meta.records WHERE repo_root=?",
+            (str(root),),
         ).fetchall():
-            if incident_id not in incident_ids:
-                con.execute("DELETE FROM agent_incidents WHERE incident_id=?", (incident_id,))
+            if record_id in current_ids.get(record_kind, set()):
+                continue
+            if record_kind == "task":
+                con.execute(
+                    "DELETE FROM agent_tasks_projection WHERE task_id=? AND owner='canonical-git'",
+                    (record_id,),
+                )
+            elif record_kind == "memory":
+                con.execute(
+                    """DELETE FROM agent_memory_records
+                       WHERE record_id=?
+                         AND json_valid(provenance)
+                         AND json_extract(provenance, '$._agent_project_scope.repo_root')=?""",
+                    (record_id, str(root)),
+                )
+            elif record_kind == "incident":
+                con.execute(
+                    "DELETE FROM agent_incidents WHERE incident_id=? AND repository_key=?",
+                    (record_id, repository_key),
+                )
+            con.execute(
+                "DELETE FROM project_projection_meta.records WHERE repo_root=? AND record_kind=? AND record_id=?",
+                (str(root), record_kind, record_id),
+            )
+        for record_kind, record_ids in current_ids.items():
+            for record_id in record_ids:
+                con.execute(
+                    "INSERT OR IGNORE INTO project_projection_meta.records (repo_root, record_kind, record_id) VALUES (?, ?, ?)",
+                    (str(root), record_kind, record_id),
+                )
 
         con.commit()
 
@@ -293,5 +355,57 @@ def _ensure_projection_schema(con: sqlite3.Connection) -> None:
             updated_at REAL NOT NULL, expires_at REAL, affected_paths TEXT NOT NULL DEFAULT '[]',
             ignored INTEGER NOT NULL DEFAULT 0, repository_key TEXT NOT NULL DEFAULT ''
         );
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
+            ON agent_tasks_projection (status, heartbeat_expires_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_updated
+            ON agent_tasks_projection (updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated
+            ON agent_tasks_projection (status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_scope_key
+            ON agent_memory_records (scope, key, status);
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_scope_identity
+            ON agent_memory_records (scope, scope_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_root
+            ON agent_memory_records (
+                scope,
+                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'),
+                status, updated_at DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_repository
+            ON agent_memory_records (
+                scope,
+                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'),
+                status, updated_at DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_clone_id
+            ON agent_memory_records (
+                scope,
+                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.clone_id'),
+                status, updated_at DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_worktree_id
+            ON agent_memory_records (
+                scope,
+                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.worktree_id'),
+                status, updated_at DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_branch
+            ON agent_memory_records (
+                scope,
+                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.branch'),
+                status, updated_at DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_updated
+            ON agent_memory_records (updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_expires
+            ON agent_memory_records (expires_at) WHERE expires_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_agent_incidents_fp
+            ON agent_incidents (error_class, operation_class, signature_hash, state_revision);
+        CREATE INDEX IF NOT EXISTS idx_agent_incidents_lookup
+            ON agent_incidents (operation_class, signature_hash, state_revision, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_incidents_recent
+            ON agent_incidents (operation_class, signature_hash, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_incidents_scope
+            ON agent_incidents (repository_key, ignored, updated_at DESC);
         """
     )

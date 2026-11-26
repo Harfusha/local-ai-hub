@@ -5,6 +5,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from local_ai_hub.repo_project_memory import build_project_memory_record
 from local_ai_hub.repo_project_incidents import build_project_incident_record
 from local_ai_hub.repo_agent_state import rebuild_agent_state_projection, ensure_agent_os_layout
 from local_ai_hub.agent_incidents import _incident_scope_key
+from local_ai_hub.agent_events import AgentStateStore
 
 
 def test_rebuild_projection_from_canonical_git(tmp_path: Path):
@@ -69,6 +71,9 @@ def test_rebuild_projection_from_canonical_git(tmp_path: Path):
 
     # Verify queryable from SQLite
     with closing(sqlite3.connect(db)) as con:
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_project_projection_records'"
+        ).fetchone() is None
         t_row = con.execute("SELECT status, contract FROM agent_tasks_projection WHERE task_id='task-rebuild-1'").fetchone()
         assert t_row is not None
         assert t_row[0] == "in_progress"
@@ -85,6 +90,10 @@ def test_rebuild_projection_from_canonical_git(tmp_path: Path):
         assert con.execute(
             "SELECT repository_key FROM agent_incidents WHERE incident_id='inc-rebuild-1'"
         ).fetchone()[0] == _incident_scope_key("repository", str(root))
+
+    with closing(sqlite3.connect(state_dir / "agent_project_projection.sqlite")) as con:
+        assert con.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3
+    AgentStateStore(db)._preflight_schema_read_only()
 
     t_rec["payload"]["status"] = "completed"
     (root / ".local-ai-hub/agent-os/tasks/task-rebuild-1.json").write_text(
@@ -168,6 +177,27 @@ def test_rebuild_removes_deleted_canonical_records_without_touching_other_projec
 
     assert rebuild_agent_state_projection(project_a, state_dir)["success"]
     assert rebuild_agent_state_projection(project_b, state_dir)["success"]
+    task_db = state_dir / "agent_state.sqlite"
+    runtime_checkpoint = {
+        "phase": "working",
+        "next_action": "continue active runtime task",
+        "blockers": [],
+        "affected_paths": [],
+        "state_data": {"_agent_task_scope": {"version": 2, "repo_root": str(project_a)}},
+    }
+    with closing(sqlite3.connect(task_db)) as con:
+        con.execute(
+            """INSERT INTO agent_tasks_projection (
+                task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                heartbeat_expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "runtime-task-shop-a", "active", "codex", "lease-active",
+                json.dumps({"goal": "runtime task"}), "{}", json.dumps(runtime_checkpoint),
+                "[]", 0, 10, 10,
+            ),
+        )
+        con.commit()
     collision = rebuild_agent_state_projection(project_c, state_dir)
     assert collision["success"] is False
     assert "another repository" in collision["error"]
@@ -186,9 +216,106 @@ def test_rebuild_removes_deleted_canonical_records_without_touching_other_projec
     assert rebuilt["rebuilt"] == {"tasks": 0, "memory": 0, "incidents": 0}
 
     with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as con:
-        assert con.execute("SELECT task_id FROM agent_tasks_projection ORDER BY task_id").fetchall() == [("task-shop-b",)]
+        assert con.execute("SELECT task_id FROM agent_tasks_projection ORDER BY task_id").fetchall() == [
+            ("runtime-task-shop-a",), ("task-shop-b",)
+        ]
         assert con.execute("SELECT record_id FROM agent_memory_records ORDER BY record_id").fetchall() == [("mem-shop-b",)]
         assert con.execute("SELECT incident_id FROM agent_incidents ORDER BY incident_id").fetchall() == [("inc-shop-b",)]
+
+
+def test_projection_rebuild_fails_closed_on_unmarked_memory_and_incident_collisions(tmp_path: Path):
+    def make_project(name: str, *, memory_id: str | None = None, incident_id: str | None = None) -> Path:
+        root = tmp_path / name
+        local = root / ".local-ai-hub"
+        local.mkdir(parents=True)
+        project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+        local.joinpath("project.json").write_text(
+            json.dumps({"schema_version": 1, "project_id": project_id, "mode": "shared"}),
+            encoding="utf-8",
+        )
+        ensure_agent_os_layout(root)
+        store = RepoKnowledgeStore(root)
+        if memory_id:
+            memory = build_project_memory_record(store, {
+                "record_id": memory_id, "kind": "fact", "scope": "project",
+                "key": "business_rule", "value": "canonical value",
+            })
+            (root / f".local-ai-hub/agent-os/memory/{memory_id}.json").write_text(
+                json.dumps(memory), encoding="utf-8"
+            )
+        if incident_id:
+            incident = build_project_incident_record(store, {
+                "incident_id": incident_id, "operation_class": "agent",
+                "error_class": "TimeoutError", "signature_hash": "0123456789abcdef",
+                "redacted_message": "canonical timeout", "resolved": False,
+            })
+            (root / f".local-ai-hub/agent-os/incidents/{incident_id}.json").write_text(
+                json.dumps(incident), encoding="utf-8"
+            )
+        return root
+
+    memory_root = make_project("memory-collision", memory_id="shared-memory-id")
+    memory_state = tmp_path / "memory-state"
+    assert rebuild_agent_state_projection(memory_root, memory_state)["success"]
+    memory_project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "memory-collision"))
+    memory_provenance = json.dumps({"_agent_project_scope": {
+        "repo_root": str(memory_root), "project_id": memory_project_id
+    }})
+    with closing(sqlite3.connect(memory_state / "agent_project_projection.sqlite")) as con:
+        con.execute("DELETE FROM records WHERE record_kind='memory' AND record_id='shared-memory-id'")
+        con.commit()
+    with closing(sqlite3.connect(memory_state / "agent_state.sqlite")) as con:
+        con.execute(
+            """INSERT OR REPLACE INTO agent_memory_records (
+                record_id, kind, scope, scope_id, key, value, status, confidence,
+                source, evidence_ids, sensitivity, contradicts_record_id,
+                supersedes_record_id, quarantine_reason, provenance, created_at,
+                updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("shared-memory-id", "fact", "project", memory_project_id, "business_rule",
+             "runtime value", "active", 1.0, "codex", "[]", "internal", "", "", "",
+             memory_provenance, 1.0, 1.0, None),
+        )
+        con.commit()
+
+    memory_result = rebuild_agent_state_projection(memory_root, memory_state)
+    assert memory_result["success"] is False
+    assert "unmarked runtime state" in memory_result["error"]
+    with closing(sqlite3.connect(memory_state / "agent_state.sqlite")) as con:
+        assert con.execute(
+            "SELECT value FROM agent_memory_records WHERE record_id='shared-memory-id'"
+        ).fetchone() == ("runtime value",)
+
+    incident_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "shared-incident-id"))
+    incident_root = make_project("incident-collision", incident_id=incident_id)
+    incident_state = tmp_path / "incident-state"
+    assert rebuild_agent_state_projection(incident_root, incident_state)["success"]
+    incident_key = _incident_scope_key("repository", str(incident_root.resolve()))
+    with closing(sqlite3.connect(incident_state / "agent_project_projection.sqlite")) as con:
+        con.execute("DELETE FROM records WHERE record_kind='incident' AND record_id=?", (incident_id,))
+        con.commit()
+    with closing(sqlite3.connect(incident_state / "agent_state.sqlite")) as con:
+        con.execute(
+            """INSERT OR REPLACE INTO agent_incidents (
+                incident_id, operation_class, error_class, signature_hash, resolved,
+                redacted_message, root_cause, verified_fix, confidence,
+                affected_paths, created_at, updated_at, state_revision, attempts,
+                evidence_ids, repository_key, ignored, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (incident_id, "agent", "TimeoutError", "fedcba9876543210", 0,
+             "runtime incident", "", "", 0.5, "[]", 1.0, 1.0, "1", 1, "[]",
+             incident_key, 0, None),
+        )
+        con.commit()
+
+    incident_result = rebuild_agent_state_projection(incident_root, incident_state)
+    assert incident_result["success"] is False
+    assert "unmarked runtime state" in incident_result["error"]
+    with closing(sqlite3.connect(incident_state / "agent_state.sqlite")) as con:
+        assert con.execute(
+            "SELECT signature_hash, redacted_message FROM agent_incidents WHERE incident_id=?",
+            (incident_id,),
+        ).fetchone() == ("fedcba9876543210", "runtime incident")
 
 
 def test_projection_rebuild_cli_works_for_a_clean_project(tmp_path: Path):

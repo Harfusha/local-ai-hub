@@ -294,6 +294,15 @@ def _project_minimal_agent_response(result: dict[str, Any], tool: str, action: s
                 min_task["phase"] = cp["phase"]
             if "next_action" in cp:
                 min_task["next_action"] = cp["next_action"]
+            state_data = cp.get("state_data")
+            if isinstance(state_data, dict):
+                contract_state = {
+                    key: state_data[key]
+                    for key in ("memory_context", "memory_audit")
+                    if key in state_data
+                }
+                if contract_state:
+                    min_task["checkpoint"] = {"state_data": contract_state}
         minimal["task"] = min_task
 
     if "completion" in result:
@@ -317,7 +326,10 @@ def _project_minimal_agent_response(result: dict[str, Any], tool: str, action: s
     for key in ("path", "line_start", "line_end", "total_lines", "virtualized", "lease_id", "released_rows", "lease", "mutation_applied"):
         if key in result:
             minimal[key] = result[key]
-    for key in ("advisory_only", "semantic_quality", "review_consistency", "quality_warning", "bypass_reason", "response_budget"):
+    for key in (
+        "advisory_only", "semantic_quality", "review_consistency", "quality_warning",
+        "bypass_reason", "response_budget", "task_id", "request_id", "reused",
+    ):
         if key in result:
             minimal[key] = result[key]
 
@@ -354,16 +366,8 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
         }
         result["runtime"] = {key: item for key, item in value["runtime"].items() if key in allowed}
 
-    if isinstance(result, dict) and not detail_enabled:
-        task = result.get("task")
-        if isinstance(task, dict):
-            cp = task.get("checkpoint")
-            if isinstance(cp, dict) and isinstance(cp.get("state_data"), dict):
-                mem = cp["state_data"].get("memory_context")
-                if isinstance(mem, dict):
-                    mem.pop("instruction", None)
-
     profile = str(arguments.get("response_profile") or "").strip().lower()
+
     # local_ai_status already has a dedicated compact projection above. The
     # generic minimal projection drops its required readiness identity fields.
     if profile == "minimal" and tool != "local_ai_status" and isinstance(result, dict) and result.get("success") is True:

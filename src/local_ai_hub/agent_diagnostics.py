@@ -346,21 +346,9 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
             item = clean_warnings
         if not enabled and key == "state_data" and isinstance(item, dict):
             item = {k: v for k, v in item.items() if not str(k).startswith("_") or k == "_agent_task_scope"}
-            if isinstance(item.get("memory_context"), dict):
-                mem = dict(item["memory_context"])
-                mem.pop("instruction", None)
-                if isinstance(mem.get("warnings"), list) and not mem["warnings"]:
-                    mem.pop("warnings", None)
-                if isinstance(mem.get("context"), dict):
-                    clean_ctx = {k: v for k, v in mem["context"].items() if v not in ("", None, {}, [])}
-                    mem["context"] = clean_ctx
-                if isinstance(mem.get("items"), list):
-                    mem["items"] = [
-                        {k: v for k, v in entry.items() if k not in {"origin", "version", "validity"} and not (k == "volatile" and v is False) and not (k == "provenance" and v == {})}
-                        if isinstance(entry, dict) else entry
-                        for entry in mem["items"]
-                    ]
-                item["memory_context"] = mem
+            # Memory snapshots are canonical task inputs. Their instruction,
+            # provenance and empty fields are part of the contract and must
+            # survive response projection unchanged.
         projected[key] = item if key in _DOCUMENT_FIELDS else project_agent_response(item, enabled=enabled, _aggregate=_aggregate)
     return projected
 

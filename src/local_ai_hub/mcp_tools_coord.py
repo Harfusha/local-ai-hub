@@ -10,6 +10,8 @@ def local_ai_coord(
     action: CoordAction,
     root: str = ".",
     paths: list[str] | None = None,
+    changed_paths: list[str] | None = None,
+    id: str = "",
     lease_id: str = "",
     owner: str = "",
     purpose: str = "agent edit",
@@ -179,6 +181,9 @@ def local_ai_coord(
                         if name in signature.parameters and value != signature.parameters[name].default}
         else:
             supplied = dict(supplied)
+        # Host-injected path hints are shared transport metadata, not part of
+        # the file-backed plan operation contract.
+        supplied.pop("changed_paths", None)
         error = services_module.validate_operation_arguments("local_ai_coord", action, supplied)
         if error:
             return services_module.contract_error(error, status_code=400)
@@ -847,17 +852,6 @@ def local_ai_coord(
         task_result = services_module.CLIENT.coord(
             **task_kwargs,
         )
-        if (action == "task_checkpoint" and budget_enabled
-                and isinstance(task_result, dict)
-                and task_result.get("success") is False
-                and task_result.get("status_code") == 413
-                and task_result.get("operation_not_started") is True
-                and task_result.get("error") == "checkpoint_response_budget_too_small"):
-            response_budget = task_result.get("response_budget")
-            required_tokens = response_budget.get("required_tokens") if isinstance(response_budget, dict) else None
-            if type(required_tokens) is int and required_tokens > requested:
-                task_kwargs["response_budget_tokens"] = required_tokens
-                task_result = services_module.CLIENT.coord(**task_kwargs)
         task_projection = services_module._compact(task_result, "task_memory")
         if (action == "task_list" and isinstance(task_result, dict)
                 and task_result.get("success") is True and task_result.get("tasks") == []
