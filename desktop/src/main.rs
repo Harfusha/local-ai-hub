@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod records;
+mod trace;
 
 use eframe::egui;
 use serde_json::{json, Value};
@@ -163,6 +164,7 @@ struct Desktop {
     snapshot: Option<Value>,
     snapshot_view: String,
     raw_view: bool,
+    reveal_trace: bool,
     record_detail: Option<Value>,
     visible: Vec<usize>,
     detail: Option<usize>,
@@ -187,7 +189,7 @@ impl Desktop {
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
             reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
-            rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
+            rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
             auto_probe: true, installation_open: false,
@@ -236,9 +238,14 @@ impl Desktop {
                     }
                     Ok(value) => {
                         self.rows.clear();
+                        self.reveal_trace = false;
                         self.detail = None;
                         self.record_detail = None;
-                        flatten(&value, "", 0, &mut self.rows);
+                        if done.label == "Trace detail" || done.label == "Trace index" {
+                            flatten(&trace::sanitize(&value), "", 0, &mut self.rows);
+                        } else {
+                            flatten(&value, "", 0, &mut self.rows);
+                        }
                         if done.label == "Updates" {
                             self.update_version = value.pointer("/check/target_version").and_then(Value::as_str).unwrap_or("").into();
                             self.update_revision = value.pointer("/check/revision").and_then(Value::as_str).unwrap_or("").into();
@@ -270,7 +277,7 @@ impl Desktop {
     }
     fn clear_response(&mut self) {
         self.rows.clear(); self.visible.clear(); self.detail = None; self.record_detail = None;
-        self.snapshot = None; self.snapshot_view.clear();
+        self.snapshot = None; self.snapshot_view.clear(); self.reveal_trace = false;
     }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
@@ -660,6 +667,40 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.raw_view, "Raw fields");
             });
             if self.rows.is_empty() { ui.label("Load this view to inspect data. No hidden screen is polled."); }
+            if self.snapshot_view == "Trace detail" && !self.raw_view {
+                if let Some(projection) = self.snapshot.as_ref().and_then(trace::trace) {
+                    ui.heading("Retained trace");
+                    ui.label(format!("{} · {}", records::display(&projection.session["action"]),
+                        records::display(&projection.session["state"])));
+                    egui::ScrollArea::vertical().id_salt("trace_primary").show(ui, |ui| {
+                        for (label, value) in [("Input", projection.input), ("Output", projection.output)] {
+                            ui.heading(format!("{label} — {}", trace::capture_state(value, "")));
+                            if let Some(value) = value {
+                                let safe = trace::sanitize(value);
+                                let content = if let Some(text) = safe.as_str() { text.to_owned() }
+                                    else { serde_json::to_string_pretty(&safe).unwrap_or_default() };
+                                ui.label(content);
+                            }
+                        }
+                        ui.collapsing(format!("Events ({})", projection.events.len()), |ui| {
+                            for event in projection.events.iter().take(100) {
+                                let title = format!("{} · {}", records::display(&event["seq"]), records::display(&event["event_type"]));
+                                ui.collapsing(title, |ui| { ui.label(serde_json::to_string_pretty(&trace::sanitize(event)).unwrap_or_default()); });
+                            }
+                        });
+                        ui.collapsing("Technical session details (redacted)", |ui| {
+                            ui.label(serde_json::to_string_pretty(&trace::sanitize(projection.session)).unwrap_or_default());
+                        });
+                        ui.checkbox(&mut self.reveal_trace, "Show complete stored response as recorded (may contain sensitive material)");
+                        if self.reveal_trace {
+                            let raw = serde_json::to_string_pretty(self.snapshot.as_ref().unwrap()).unwrap_or_default();
+                            if ui.button("Copy complete stored response").clicked() { ui.ctx().copy_text(raw.clone()); }
+                            ui.label(raw);
+                        }
+                    });
+                    return;
+                }
+            }
             if !self.raw_view && self.snapshot_view == self.current() {
                 if let Some(snapshot) = &self.snapshot {
                     if self.current() == "Plan board" {
@@ -719,7 +760,7 @@ impl eframe::App for Desktop {
                                     let item = filtered[index];
                                     ui.horizontal(|ui| {
                                         for (col, field) in table.columns.iter().enumerate() {
-                                            let value = records::display(&item[*field]);
+                                            let value = if self.current() == "Trace index" { records::display(&trace::sanitize(&item[*field])) } else { records::display(&item[*field]) };
                                             let display: String = value.chars().take(32).collect();
                                             if col == 0 {
                                                 if ui.add_sized([155.0, height], egui::Button::new(display)).clicked() { selected = Some(item.clone()); }
@@ -737,7 +778,7 @@ impl eframe::App for Desktop {
                                 if let Some(revision) = item["file_revision"].as_str() { self.revision = revision.to_owned(); }
                                 if let Some(title) = item["title"].as_str() { self.plan_title = title.to_owned(); }
                             }
-                            self.record_detail = Some(item);
+                            self.record_detail = Some(if self.current() == "Trace index" { trace::sanitize(&item) } else { item });
                         }
                         return;
                     }
