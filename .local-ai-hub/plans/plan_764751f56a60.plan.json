@@ -16,12 +16,12 @@
         "Offline legacy migration preview is bounded, read-only, snapshot-bound, and publishes only an explicitly reviewed record.",
         "Projection rebuild CLI works on a clean project; HTTP/MCP acceptance and authorization boundaries pass, including non-critical MCP routing contract checks."
       ],
-      "blocker": "Commit fe9a7644 restored 17 creation-only streams and was pushed. Live status healthy after restart; tasks=704. Practical validation: 209 passed, 1 symlink skip; route contract 79 passed; targeted roundtrip 12 passed. Fixed payload loss at HTTP/MCP second projection and added PR9 route inventory entries. Five unrelated dirty-response-cleanup transport assertions still fail; 575 history-changing task streams stay skipped by explicit approval. Agent OS verify_completion still lacks authentic broker command receipts; native exec exposes no trusted command_id.",
+      "blocker": "Code and route contracts are pushed through 633bf987; runtime restarted and healthy at 8.2.1 (704 tasks). Practical validation includes 209 passed/1 symlink skip, 79 route registry, 108 MCP/HTTP contracts, and 3 bounded-envelope cases. Missing 575 changed-history task streams remain skipped by explicit approval. verify_completion still lacks authentic broker receipts for the seven criteria; available native exec exposes no trusted command_id.",
       "clarifications": [],
       "depends_on": [],
       "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified work.",
       "kind": "code",
-      "next_action": "Commit and push only reviewed PR9-relevant regression/test updates while preserving remaining dirty overlay. Then obtain authentic task-bound broker receipts for the seven acceptance criteria; do not close while unavailable.",
+      "next_action": "Acquire an exposed task-bound trusted CommandBroker session and collect authentic receipts for all seven acceptance criteria. Do not close the task until receipts exist.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
