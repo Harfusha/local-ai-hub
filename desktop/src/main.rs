@@ -13,15 +13,16 @@ use std::{
 
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware"]),
-    ("Requests", &["Requests", "Trace index"]),
+    ("Requests", &["Requests", "Trace index", "Endpoint analytics"]),
     ("Tasks", &["Tasks", "Memory", "Incidents"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
-    ("Models & search", &["Models & search", "Search workspaces"]),
+    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Benchmark", "Telemetry report"]),
     ("Service health", &["Runtime health", "Service health", "Diagnostics"]),
     ("Settings", &["Settings", "Settings — activity mode"]),
     ("Activity", &["Activity"]),
+    ("Transfers", &["Search workspaces"]),
 ];
 const MAINTENANCE: &[&str] = &[
     "Optimize databases", "Purge expired cache (7 days)", "Cleanup stale agent state",
@@ -139,6 +140,13 @@ struct Desktop {
     incident_kind: String,
     incident_message: String,
     plan_title: String,
+    revision: String,
+    plan_task: String,
+    description: String,
+    archive_path: String,
+    semaphore: String,
+    capacity: i64,
+    trace_cursor: i64,
     filter: String,
     rows: Vec<Row>,
     visible: Vec<usize>,
@@ -163,7 +171,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, filter: String::new(),
             rows: Vec::new(), visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -242,6 +250,20 @@ impl Desktop {
     }
     fn operations(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.page {
+            1 => {
+                if self.current() == "Trace index" {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Trace ID");
+                        ui.text_edit_singleline(&mut self.entity);
+                        ui.label("After sequence");
+                        ui.add(egui::DragValue::new(&mut self.trace_cursor).range(0..=i64::MAX));
+                        if ui.button("Load trace events").clicked() {
+                            self.submit(ctx, "Trace detail".into(), request("trace_detail",
+                                json!({"id": self.entity, "after": self.trace_cursor})));
+                        }
+                    });
+                }
+            }
             2 => {
                 if self.view == 1 {
                     ui.label("Repository fact key and value (text or JSON)");
@@ -292,16 +314,57 @@ impl Desktop {
                 });
             }
             3 => {
-                ui.horizontal(|ui| {
-                    ui.label("Plan ID");
+                if self.current() == "Semaphores" {
+                    ui.label("Semaphore name; owner ID (acquire) or lease ID (release)");
+                    ui.text_edit_singleline(&mut self.semaphore);
                     ui.text_edit_singleline(&mut self.entity);
+                    ui.add(egui::DragValue::new(&mut self.capacity).range(1..=100));
+                    ui.horizontal(|ui| {
+                        for (title, op) in [("Acquire", "semaphore_acquire"), ("Release", "semaphore_release")] {
+                            if ui.button(title).clicked() {
+                                self.confirm(title, request(op, json!({"name": self.semaphore,
+                                    "id": self.entity, "capacity": self.capacity, "confirmed": true})));
+                            }
+                        }
+                    });
+                    return;
+                }
+                if self.current() == "File leases" {
+                    ui.label("Lease ID");
+                    ui.text_edit_singleline(&mut self.entity);
+                    if ui.button("Release lease").clicked() {
+                        self.confirm("Release file lease", request("lease_release", json!({"id": self.entity, "confirmed": true})));
+                    }
+                    return;
+                }
+                if self.current() == "Worktrees" {
+                    self.worktrees(ui);
+                    return;
+                }
+                ui.label("Plan ID, current file revision (required for edits)");
+                ui.text_edit_singleline(&mut self.entity);
+                ui.text_edit_singleline(&mut self.revision);
+                ui.label("Plan/task title and description");
+                ui.text_edit_singleline(&mut self.plan_title);
+                ui.text_edit_multiline(&mut self.description);
+                ui.label("Plan task ID (for task edit/delete)");
+                ui.text_edit_singleline(&mut self.plan_task);
+                ui.horizontal_wrapped(|ui| {
+                    for (title, op) in [("Create plan", "plan_create"), ("Update plan", "plan_update"),
+                        ("Edit plan task", "plan_task_edit"), ("Delete plan task", "plan_task_delete")] {
+                        if ui.button(title).clicked() {
+                            self.confirm(title, request(op, json!({"root": self.repo, "id": self.entity,
+                                "title": self.plan_title, "description": self.description, "revision": self.revision,
+                                "task_id": self.plan_task, "confirmed": true})));
+                        }
+                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("New plan title");
-                    ui.text_edit_singleline(&mut self.plan_title);
-                    if ui.button("Create plan").clicked() {
-                        self.confirm("Create plan", request("plan_create", json!({"root": self.repo,
-                            "id": self.entity, "title": self.plan_title, "confirmed": true})));
+                ui.collapsing("Session briefing", |ui| {
+                    ui.label("Agent ID");
+                    ui.text_edit_singleline(&mut self.reason);
+                    if ui.button("Load briefing").clicked() {
+                        self.submit(ctx, "Session briefing".into(), request("session_briefing",
+                            json!({"id": self.reason, "confirmed": true})));
                     }
                 });
             }
@@ -323,6 +386,7 @@ impl Desktop {
                     }
                 });
             }
+            5 => { if self.current() == "Worktrees" { self.worktrees(ui); } }
             6 => {
                 ui.label("Compare automatic and high-complexity model routes (runs inference twice)");
                 ui.text_edit_multiline(&mut self.prompt);
@@ -363,8 +427,32 @@ impl Desktop {
                     }
                 });
             }
+            10 => {
+                ui.label("ZIP file path (export requires a new file; import requires repository root)");
+                ui.text_edit_singleline(&mut self.archive_path);
+                ui.horizontal_wrapped(|ui| {
+                    for (title, op) in [("Export project", "bundle_export"), ("Import project", "bundle_import"),
+                        ("Export encrypted diagnostics", "diagnostics_export")] {
+                        if ui.button(title).clicked() {
+                            self.confirm(title, request(op, json!({"file": self.archive_path,
+                                "root": self.repo, "confirmed": true})));
+                        }
+                    }
+                });
+            }
             _ => {}
         }
+    }
+    fn worktrees(&mut self, ui: &mut egui::Ui) {
+        ui.label("Worktree path (release); repository root above");
+        ui.text_edit_singleline(&mut self.entity);
+        ui.horizontal(|ui| {
+            for (title, op) in [("Prune stale worktrees", "worktree_prune"), ("Release worktree", "worktree_release")] {
+                if ui.button(title).clicked() {
+                    self.confirm(title, request(op, json!({"root": self.repo, "id": self.entity, "confirmed": true})));
+                }
+            }
+        });
     }
 }
 impl eframe::App for Desktop {
