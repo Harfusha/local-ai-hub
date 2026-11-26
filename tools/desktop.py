@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import http.client
+import uuid
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -37,6 +39,11 @@ VIEWS = {
     "Search workspaces": "/api/rag/workspaces",
     "File leases": "/api/leases",
     "Hardware": "/api/hardware/system",
+    "Model inventory": "/api/models",
+    "Endpoint analytics": "/api/telemetry/endpoint-stats",
+    "Benchmark": "/api/benchmark/summary",
+    "Telemetry report": "/api/telemetry/report",
+    "Capabilities": "/api/capabilities",
 }
 SCOPED = frozenset({"Tasks", "Memory", "Incidents"})
 MAINTENANCE = {
@@ -172,12 +179,139 @@ def scoped_read(control: HubControl, route: str, root: str) -> dict[str, Any]:
         client.close()
 
 
+def transfer(control: HubControl, op: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Binary-only local API transport; no redirects, retry or arbitrary URLs."""
+    if args.get("confirmed") is not True:
+        raise ValueError("Explicit confirmation required")
+    file = Path(text_field(args, "file", 4096)).expanduser()
+    client = control._client()
+    connection = None
+    created = False
+    try:
+        if not client._online(timeout=2.0):
+            raise RuntimeError("Hub is not reachable.")
+        connection = http.client.HTTPConnection("127.0.0.1", client._http_port, timeout=120)
+        headers = {"X-LocalAI-Agent": client.agent, "X-LocalAI-Request-ID": "req_" + uuid.uuid4().hex[:12]}
+        if op == "bundle_import":
+            root = explicit_root(args.get("root"))
+            cap = min(512 * 1024 * 1024, max(1024, int(client.config.get("bundles", {}).get("max_bundle_bytes", 128 * 1024 * 1024))))
+            if not file.is_file() or file.stat().st_size > cap:
+                raise ValueError("Choose an existing ZIP within the configured size limit.")
+            with file.open("rb") as stream:
+                body = stream.read(cap + 1)
+            if len(body) > cap or not body.startswith(b"PK"):
+                raise ValueError("Invalid or oversized ZIP.")
+            headers["Content-Type"] = "application/zip"
+            connection.request("POST", "/api/bundle/import?" + urlencode({"target_root": root}), body, headers)
+            response = connection.getresponse()
+            raw = response.read(8_000_001)
+            if len(raw) > 8_000_000:
+                raise RuntimeError("Import response too large; verify outcome before retrying.")
+            result = json.loads(raw)
+            if response.status != 200 or result.get("success") is not True:
+                raise RuntimeError(str(result.get("error") or "Import not confirmed"))
+            return result
+        if file.exists() or file.is_symlink():
+            raise ValueError("Destination exists; select a new filename.")
+        root = explicit_root(args.get("root")) if op == "bundle_export" else None
+        route = "/api/bundle/export" if op == "bundle_export" else "/api/diagnostics/export"
+        headers.update({"Content-Type": "application/json", "Accept": "application/zip"})
+        connection.request("POST", route, json.dumps({"root": root} if root else {}).encode(), headers)
+        response = connection.getresponse()
+        if response.status != 200 or response.getheader("Content-Type", "").split(";")[0] != "application/zip":
+            raise RuntimeError(f"Archive export rejected (HTTP {response.status}).")
+        password = response.getheader("X-Local-AI-Export-Password")
+        if op == "diagnostics_export" and not password:
+            raise RuntimeError("Missing support archive password.")
+        cap = 512 * 1024 * 1024
+        length = int(response.getheader("Content-Length", "0"))
+        if length <= 0 or length > cap:
+            raise RuntimeError("Invalid or oversized archive length.")
+        with file.open("xb") as stream:
+            created = True
+            received = 0
+            while chunk := response.read(65536):
+                received += len(chunk)
+                if received > length:
+                    raise RuntimeError("Archive exceeded announced size.")
+                stream.write(chunk)
+            if received != length:
+                raise RuntimeError("Incomplete archive.")
+        result = {"success": True, "file": str(file.resolve()), "bytes": received}
+        if password:
+            result["archive_password"] = password
+        return result
+    except Exception:
+        if created:
+            file.unlink(missing_ok=True)
+        raise
+    finally:
+        if connection is not None:
+            connection.close()
+        client.close()
+
+
 def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
     """No caller-supplied route, executable, shell, or arbitrary action payload."""
     op = request.get("op")
     args = request.get("args", {})
     if not isinstance(args, dict):
         raise ValueError("args must be an object")
+    if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
+        return transfer(control, op, args)
+    if op == "trace_detail":
+        trace_id = text_field(args, "id", 200)
+        if not all(c.isalnum() or c in "_-" for c in trace_id):
+            raise ValueError("Invalid trace identifier")
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            cursor = args.get("after", 0)
+            if type(cursor) is not int or cursor < 0:
+                raise ValueError("Invalid trace cursor")
+            result = client.get("/api/debug-traces/" + quote(trace_id, safe="") + "?" +
+                                urlencode({"since_seq": cursor, "limit": 100, "max_bytes": 4_000_000}))
+            if result.get("success") is False:
+                raise RuntimeError(str(result.get("error") or "Trace unavailable"))
+            return result
+        finally:
+            client.close()
+    if op in {"plan_update", "plan_task_edit", "plan_task_delete", "lease_release",
+              "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release", "session_briefing"}:
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        if op == "lease_release":
+            return checked_post(control, "/api/leases/release", {"lease_id": text_field(args, "id", 200)})
+        if op == "session_briefing":
+            return checked_post(control, "/api/coord/session_briefing", {"agent_id": text_field(args, "id", 200)})
+        if op.startswith("semaphore_"):
+            payload = {"name": text_field(args, "name", 200)}
+            if op == "semaphore_release":
+                payload["lease_id"] = text_field(args, "id", 200)
+            else:
+                capacity = args.get("capacity", 1)
+                if type(capacity) is not int or not 1 <= capacity <= 100:
+                    raise ValueError("Capacity must be 1–100")
+                payload.update({"owner": text_field(args, "id", 200), "capacity": capacity, "ttl_seconds": 300})
+            return checked_post(control, "/api/coord/" + op, payload)
+        root = explicit_root(args.get("root"))
+        if op.startswith("worktree_"):
+            payload = {"root": root}
+            if op == "worktree_release":
+                payload["worktree_path"] = explicit_root(args.get("id"))
+            return checked_post(control, "/api/coord/" + op, payload)
+        payload = {"root": root, "plan_id": text_field(args, "id", 85),
+                   "expected_revision": text_field(args, "revision", 200),
+                   "owner": "desktop", "idempotency_key": "desktop-" + uuid.uuid4().hex}
+        if op == "plan_update":
+            payload.update({"title": text_field(args, "title", 160), "description": str(args.get("description", ""))[:12000]})
+        else:
+            payload["task_id"] = text_field(args, "task_id", 200)
+            if op == "plan_task_edit":
+                payload["task_data"] = {"title": text_field(args, "title", 240),
+                    "description": str(args.get("description", ""))[:12000]}
+        return checked_post(control, "/api/coord/" + op, payload)
     if op == "probe":
         return {"online": control.online()}
     if op == "read":
@@ -255,7 +389,6 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                     value = raw
                 payload.update({"value": value, "kind": "fact", "confidence": 1.0})
             return checked_post(control, "/api/agent-state/memory", payload)
-        import uuid
         return checked_post(control, "/api/coord/plan_create", {"root": root,
             "plan_id": text_field(args, "id", 85), "title": text_field(args, "title", 160),
             "description": "", "lifecycle": "active", "owner": "desktop",
