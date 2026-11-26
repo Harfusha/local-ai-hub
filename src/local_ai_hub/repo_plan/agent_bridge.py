@@ -298,6 +298,10 @@ class TaskBindingManager:
         )
         return self._save(binding, task_store=task_store)
 
+    def bindings_for_plan(self, plan_id: str) -> tuple[TaskBinding, ...]:
+        """Read the plan's bindings from a fresh, validated local snapshot."""
+        return tuple(binding for binding in self._read_disk().values() if binding.plan_id == plan_id)
+
     def get_binding(self, task_id: str) -> TaskBinding | None:
         return self._bindings.get(task_id)
 
