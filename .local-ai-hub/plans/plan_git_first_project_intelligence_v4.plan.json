@@ -1,0 +1,211 @@
+{
+  "accountable_role": "primary",
+  "default_target_ref": "refs/heads/master",
+  "description": "Complete the scope and explicit V4 Definition of Done in PR #9, then integrate to master and run authentic end-to-end acceptance.",
+  "id": "plan_git_first_project_intelligence_v4",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+      "revision": {
+        "content_sha256": "73b4c189bf51b0278657833fcecc3fdcf12858b5957079ee0acfb60209959b1e",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-25-git-first-unified-project-intelligence-v4.md",
+      "revision": {
+        "content_sha256": "409edda429e2412e92b3dc77d8c828f11d66628384258f085ab872ea1ac558b2",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_v4_business": {
+      "acceptance_criteria": [
+        "Business knowledge is source-grounded, freshness-aware, and used by ordinary task/solve/review/test flows.",
+        "Findings preserve uncertainty, scope, provenance, review rationale, expiry, and verification status.",
+        "Dashboard, HTTP, MCP, CLI, and supported provider setup expose consistent safe operations.",
+        "Laya remains advisory; deterministic policy, evidence, permissions, and abstention govern effects."
+      ],
+      "accountable_role": "primary",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_git_first_project_intelligence_v4",
+          "task_id": "task_v4_cutover"
+        }
+      ],
+      "description": "Finish process/rule extraction, query and task context, findings lifecycle, review/remediation, UI/API/CLI surfaces, Laya gates, and provider workflow integration.",
+      "kind": "code",
+      "next_action": "Completed and verified.",
+      "order": 2,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+          "revision": {
+            "commit": "723238125f90aed2a9bd535acf07d72b428fed81",
+            "kind": "git_commit"
+          }
+        }
+      ],
+      "title": "Complete business intelligence and human workflow",
+      "work_status": "completed"
+    },
+    "task_v4_cutover": {
+      "acceptance_criteria": [
+        "Every durable state store and consumer is classified with verified evidence; no unowned durable local-only state remains.",
+        "Canonical records have stable identity, provenance, scope, atomic revisions, conflict-safe merge, crash recovery, and safe Git publication.",
+        "Agent OS migrations are reviewable, idempotent, restartable, rollback-safe, and avoid dual authority or private state leakage.",
+        "Two independent clones and linked worktrees demonstrate safe freshness, divergence, revalidation, and recovery."
+      ],
+      "accountable_role": "primary",
+      "blocker": null,
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_3e0760f6a00b0b40a204_64b16337aa8e68cb00a44f3d3b36ce41_r2",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+              "revision": {
+                "content_sha256": "a7e0d3d168b8e59e9e4fd4e1d41f1af22a3762e856b70b6ae17aa16e58807ee0",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "Upřesnit migrační mapping: živé/leased active a verifying zůstávají blokované; jen bezpečné neaktivní historické tasky se importují do needs_revalidation bez attempt/receipt.",
+          "supersedes": []
+        },
+        {
+          "adoption": "adopted",
+          "id": "change_e966feb87833f05caf51_f490a171b5ed3c8bfee92b4bac35fd47_r3",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+              "revision": {
+                "content_sha256": "f5149af85bef7b1963dcfc96c94458add54d7365e61cb17d285f4ad30eb8f896",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "Všechny offline memory/incident/task migrační stránky nyní používají bounded SHA-256 úplného SQLite souboru s kontrolou identity deskriptoru/cesty a timeoutem.",
+          "supersedes": []
+        },
+        {
+          "adoption": "adopted",
+          "id": "change_7b5e1c0c6ebd8976ad83_205ff238b74a2165d2347af4dc452734_r4",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+              "revision": {
+                "content_sha256": "d70fc8a5343863c5215e07a3ac43011ed1b221819b4d3eca95512c13657837d4",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "Svázat migrační cursory s SHA-256 úplné SQLite DB v limitu 512 MiB/15 s a identifikovat blokované live task rows canonical ID bez soukromých polí.",
+          "supersedes": []
+        },
+        {
+          "adoption": "adopted",
+          "id": "change_2ecf0cc10a4f5a0701ed_889d3c8c45aac57e78be1ab53b1e6135_r5",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+              "revision": {
+                "content_sha256": "b01ac5c8d524eda0a9032c32ac86b57f27b1c14eff11f9f1cbde0abfb9781fc1",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "Obnovit úplnou specifikaci z plného tracked zdroje a zachovaných PR dodatků; zachovat 40.11–40.30, úplnou E2E matici, navíc přesný DB snapshot a ID live blockers.",
+          "supersedes": []
+        }
+      ],
+      "depends_on": [],
+      "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
+      "kind": "code",
+      "next_action": "Completed and verified.",
+      "order": 1,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+          "revision": {
+            "commit": "723238125f90aed2a9bd535acf07d72b428fed81",
+            "kind": "git_commit"
+          }
+        }
+      ],
+      "title": "Complete canonical Git-backed durable state",
+      "work_phase": "implementation",
+      "work_status": "completed"
+    },
+    "task_v4_e2e": {
+      "acceptance_criteria": [
+        "All required V4 E2E scenarios pass with real files, clones, local state, and available UI/adapters.",
+        "Focused regressions, full pytest suite, release checks, selftest, compilation, security, and CI gates pass or have evidence-backed external blockers.",
+        "Performance, churn, privacy, and migration/rollback requirements meet specification limits.",
+        "Definition of Done and backlog state match actual receipts; no partial evidence is called complete."
+      ],
+      "accountable_role": "primary",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_git_first_project_intelligence_v4",
+          "task_id": "task_v4_business"
+        }
+      ],
+      "description": "Run the full acceptance matrix from actual clones and the supported UI/adapters; fix all defects and verify CI, performance, security, docs, and full tests.",
+      "kind": "operation",
+      "next_action": "Completed and verified.",
+      "order": 3,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+          "revision": {
+            "commit": "723238125f90aed2a9bd535acf07d72b428fed81",
+            "kind": "git_commit"
+          }
+        }
+      ],
+      "title": "Close E2E, security, quality, and release gates",
+      "work_status": "completed"
+    },
+    "task_v4_master": {
+      "acceptance_criteria": [
+        "All required PR changes are integrated on master with existing dirty work preserved and classified.",
+        "Master passes required final verification at integrated revision.",
+        "PR completion status is reported accurately; remote merge only if available and authorized."
+      ],
+      "accountable_role": "primary",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_git_first_project_intelligence_v4",
+          "task_id": "task_v4_e2e"
+        }
+      ],
+      "description": "Integrate reviewed V4 implementation without losing existing local work; update acceptance records and verify on master.",
+      "kind": "operation",
+      "next_action": "Commit changes to codex/pr-9-complete and merge into master.",
+      "order": 4,
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+          "revision": {
+            "commit": "723238125f90aed2a9bd535acf07d72b428fed81",
+            "kind": "git_commit"
+          }
+        }
+      ],
+      "title": "Integrate completed change into master",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Git-first unified project intelligence V4"
+}

@@ -70,6 +70,12 @@ def _path_for(kind: Any, record_id: Any) -> str:
         raise _invalid()
     if kind == "handoff":
         return f".local-ai-hub/agent-os/handoffs/{record_id}.json"
+    if kind == "task":
+        return f".local-ai-hub/agent-os/tasks/{record_id}.json"
+    if kind == "memory":
+        return f".local-ai-hub/agent-os/memory/{record_id}.json"
+    if kind == "incident":
+        return f".local-ai-hub/agent-os/incidents/{record_id}.json"
     if kind not in _KINDS:
         raise _invalid()
     return f"{_DIR}/{_KINDS[kind]}/{record_id}.json"
@@ -98,6 +104,21 @@ def validate_knowledge_file(rel_path: str, data: bytes) -> dict[str, Any]:
         from .repo_task_handoff import validate_handoff_payload
 
         validate_handoff_payload(record)
+        return record
+    if record["kind"] == "task":
+        from .repo_project_tasks import validate_project_task_payload
+
+        validate_project_task_payload(record)
+        return record
+    if record["kind"] == "memory":
+        from .repo_project_memory import validate_project_memory_payload
+
+        validate_project_memory_payload(record)
+        return record
+    if record["kind"] == "incident":
+        from .repo_project_incidents import validate_project_incident_payload
+
+        validate_project_incident_payload(record)
         return record
     payload = record["payload"]
     provenance = record["provenance"]

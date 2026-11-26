@@ -198,6 +198,7 @@ def test_real_git_clone_and_checkout_keep_shared_knowledge_without_local_journal
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "fixture@example.invalid")
     _git(root, "config", "user.name", "Knowledge fixture")
+    _git(root, "config", "core.autocrlf", "false")
     (root / ".local-ai-hub").mkdir()
     (root / ".local-ai-hub/.gitignore").write_text("local/\n", encoding="utf-8")
     (root / "order.py").write_bytes(b"paid = True\n")
@@ -211,7 +212,7 @@ def test_real_git_clone_and_checkout_keep_shared_knowledge_without_local_journal
     _git(root, "commit", "-m", "knowledge")
     assert not _git(root, "ls-files", ".local-ai-hub/local")
     clone = tmp_path / "clone"
-    _git(tmp_path, "clone", str(root), str(clone))
+    _git(tmp_path, "clone", "-c", "core.autocrlf=false", str(root), str(clone))
     copied = RepoKnowledgeStore(clone)
     assert copied.get("business_rule", "order-paid")["freshness"] == "matching_sources"
     assert not (clone / ".local-ai-hub/local").exists()

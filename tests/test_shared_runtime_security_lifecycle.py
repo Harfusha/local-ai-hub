@@ -1459,15 +1459,15 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
     list_calls = []
     count_calls = []
 
-    def list_tasks(*, status, limit, offset, include_stale, query):
+    def list_tasks(*, status, limit, offset, include_stale, query, repo_root=None):
         list_calls.append({
             "status": status, "limit": limit, "offset": offset,
             "include_stale": include_stale, "query": query,
         })
         return http_server.TaskPage()
 
-    def count_tasks(status=None):
-        count_calls.append(status)
+    def count_tasks(status=None, *, repo_root=None):
+        count_calls.append((status, repo_root))
         return 0
 
     app = SimpleNamespace(
@@ -1497,7 +1497,12 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
         "status": None, "limit": 8, "offset": 3,
         "include_stale": True, "query": "security",
     }]
-    assert count_calls == [None, http_server.TaskStatus.ACTIVE]
+    assert count_calls == [
+        (None, canonical_root),
+        (http_server.TaskStatus.ACTIVE, canonical_root),
+        (None, None),
+        (http_server.TaskStatus.ACTIVE, None),
+    ]
     assert responses[0][1]["total_count"] == 0
     assert responses[0][1]["active_count"] == 0
     assert responses[0][1]["offset"] == 3

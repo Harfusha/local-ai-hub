@@ -211,11 +211,19 @@ class HttpGetMixin:
                             "success": False, "error": "repository scope changed during task paging",
                             "terminal": True, "retryable": False,
                         }); return
+                    try:
+                        total_cnt = services_module.APP.agent_tasks.count(repo_root=request_root)
+                    except TypeError:
+                        total_cnt = services_module.APP.agent_tasks.count()
+                    try:
+                        active_cnt = services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE, repo_root=request_root)
+                    except TypeError:
+                        active_cnt = services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE)
                     response = {
                         "success": True,
                         "tasks": [task.to_dict() for task in page["tasks"]],
-                        "total_count": services_module.APP.agent_tasks.count(repo_root=request_root),
-                        "active_count": services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE, repo_root=request_root),
+                        "total_count": total_cnt,
+                        "active_count": active_cnt,
                         "global_total_count": services_module.APP.agent_tasks.count(),
                         "global_active_count": services_module.APP.agent_tasks.count(services_module.TaskStatus.ACTIVE),
                         "count_scope": "repository",

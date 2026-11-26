@@ -239,6 +239,8 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | HTTP POST | /api/repo/hotspots | confirmed | src/local_ai_hub/http_route_registry.py | op-8f1284076a73 |
 | HTTP POST | /api/repo/impact | confirmed | src/local_ai_hub/http_route_registry.py | op-fa743531dea7 |
 | HTTP POST | /api/repo/investigate | confirmed | src/local_ai_hub/http_route_registry.py | op-165f8f13c2d9 |
+| HTTP POST | /api/repo/knowledge/manage | confirmed | src/local_ai_hub/http_route_registry.py | op-b0e3ed3617e0 |
+| HTTP POST | /api/repo/knowledge/query | confirmed | src/local_ai_hub/http_route_registry.py | op-f04ca0b3e21e |
 | HTTP POST | /api/repo/map | confirmed | src/local_ai_hub/http_route_registry.py | op-818aacd7413b |
 | HTTP POST | /api/repo/migration_drift | confirmed | src/local_ai_hub/http_route_registry.py | op-526633e15c34 |
 | HTTP POST | /api/repo/mutation_test | confirmed | src/local_ai_hub/http_route_registry.py | op-1a92aa96c72c |
@@ -414,6 +416,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | MCP action local_ai_repo | implementations | confirmed | src/local_ai_hub/generator.py | op-ceab3e1c5af6 |
 | MCP action local_ai_repo | intelligence | confirmed | src/local_ai_hub/generator.py | op-f2d29611e85a |
 | MCP action local_ai_repo | investigate | confirmed | src/local_ai_hub/generator.py | op-6346bf6420bb |
+| MCP action local_ai_repo | knowledge_query | confirmed | src/local_ai_hub/generator.py | op-8a2c1e536b35 |
 | MCP action local_ai_repo | map | confirmed | src/local_ai_hub/generator.py | op-ffcc4f1f70ef |
 | MCP action local_ai_repo | migration_drift | confirmed | src/local_ai_hub/generator.py | op-b80f01da674b |
 | MCP action local_ai_repo | mutation_test | confirmed | src/local_ai_hub/generator.py | op-0edd2f8d89ca |
@@ -667,6 +670,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | CLI operation | dashboard | confirmed | tools/hubctl.py | op-a7abef5e4884 |
 | CLI operation | doctor | confirmed | tools/hubctl.py | op-b33c959eab65 |
 | CLI operation | generate | confirmed | tools/hubctl.py | op-53d2882e6404 |
+| CLI operation | knowledge | confirmed | tools/hubctl.py | op-32c5a41228d0 |
 | CLI operation | logs | confirmed | tools/hubctl.py | op-7a6e42f71891 |
 | CLI operation | memory | confirmed | tools/hubctl.py | op-ee8a4e3836f2 |
 | CLI operation | mode | confirmed | tools/hubctl.py | op-9dc37e51eae5 |
