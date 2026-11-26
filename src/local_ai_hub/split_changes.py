@@ -1,6 +1,127 @@
+"""Read-only, conservative change grouping for the existing split_changes action."""
+
 from __future__ import annotations
 
+import os
+import re
+from pathlib import PurePosixPath
 from typing import Any
+
+
+def _component(path: str) -> tuple[str, str]:
+    p = PurePosixPath(path)
+    parts = p.parts
+    stem = p.stem.lower()
+    is_test = any(part.lower() in {"tests", "test", "spec", "__tests__"} for part in parts[:-1]) or bool(
+        re.search(r"(^test_|_test$|[._-](?:test|spec)$)", stem)
+    )
+    stem = re.sub(r"^test_|_test$|[._-](?:test|spec)$", "", stem)
+    stem = re.sub(r"(?:controller|service|repository|model|test)$", "", stem, flags=re.I)
+    key = re.sub(r"[^a-z0-9]+", "", stem)
+    if is_test:
+        return key, "test"
+    if p.suffix.lower() in {".md", ".rst", ".txt"} or "docs" in parts[:-1]:
+        return key, "docs"
+    if p.suffix.lower() in {".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock"}:
+        return key, "config"
+    return key, "implementation"
+
+
+def _parse_status(raw: bytes) -> dict[str, str]:
+    if raw and not raw.endswith(b"\0"):
+        raise ValueError("Incomplete Git status")
+    result = {}
+    for record in raw.split(b"\0")[:-1]:
+        if len(record) < 4 or record[2:3] != b" ":
+            raise ValueError("Malformed Git status")
+        status = record[:2].decode("ascii")
+        path = os.fsdecode(record[3:])
+        if path in result or not path or any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF for c in path):
+            raise ValueError("Unsupported or duplicate Git path")
+        result[path] = status
+    return result
+
+
+def _parse_numstat(raw: bytes) -> dict[str, tuple[int | None, int | None]]:
+    if raw and not raw.endswith(b"\0"):
+        raise ValueError("Incomplete Git numstat")
+    result = {}
+    for record in raw.split(b"\0")[:-1]:
+        fields = record.split(b"\t", 2)
+        if len(fields) != 3 or not fields[2]:
+            raise ValueError("Malformed Git numstat")
+        a, d, path = fields
+        result[os.fsdecode(path)] = (
+            None if a == b"-" else int(a),
+            None if d == b"-" else int(d),
+        )
+    return result
+
+
+def _group(
+    statuses: dict[str, str],
+    staged: dict[str, tuple[int | None, int | None]],
+    unstaged: dict[str, tuple[int | None, int | None]],
+) -> list[dict[str, Any]]:
+    # Exact normalized component names are only a heuristic. Do not merge
+    # different production paths with the same basename or infer dependencies.
+    components = {path: _component(path) for path in statuses}
+    implementations: dict[str, list[str]] = {}
+    for path, (key, role) in components.items():
+        if key and role == "implementation" and statuses[path] != "??":
+            implementations.setdefault(key, []).append(path)
+    buckets: dict[str, list[str]] = {}
+    for path, (key, role) in sorted(components.items()):
+        status = statuses[path]
+        candidates = implementations.get(key, [])
+        blocked = status in {"DD", "AU", "UD", "UA", "DU", "AA", "UU", "??"} or "D" in status
+        anchor = (
+            candidates[0]
+            if role in {"test", "docs"} and len(candidates) == 1 and not blocked
+            and "D" not in statuses[candidates[0]] and statuses[candidates[0]] not in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+            else path
+        )
+        buckets.setdefault(anchor, []).append(path)
+
+    clusters = []
+    for index, (anchor, files) in enumerate(sorted(buckets.items()), 1):
+        details = []
+        risks = {"dependencies_not_verified", "ownership_unknown", "review_not_verified"}
+        for path in files:
+            xy = statuses[path]
+            if xy == "??":
+                risks.add("untracked_content_not_analyzed")
+            if xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
+                risks.add("unmerged")
+            if xy not in {"??", "!!"} and xy[0] != " " and xy[1] != " ":
+                risks.add("mixed_staged_unstaged")
+            if "D" in xy:
+                risks.add("deletion_or_rename_requires_review")
+            s, u = staged.get(path), unstaged.get(path)
+            if s == (None, None) or u == (None, None):
+                risks.add("binary_change")
+            details.append({
+                "path": path, "status": xy,
+                "staged_lines": list(s) if s is not None else None,
+                "unstaged_lines": list(u) if u is not None else None,
+            })
+        name = PurePosixPath(anchor).stem
+        label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name)[:60] or "component"
+        role = components[anchor][1]
+        kind = {"docs": "docs", "test": "test"}.get(role, "chore")
+        message = f"{kind}: update {label}"
+        clusters.append({
+            "cluster_id": index,
+            "name": name,
+            "category": role,
+            "files": files,
+            "summary": f"{len(files)} changed file(s) grouped by component name: {label}",
+            "suggested_commit_message": message,
+            "verification_status": "unknown",
+            "risks": sorted(risks),
+            "changes": details,
+        })
+    return clusters
 
 
 def run_split_changes(
@@ -13,76 +134,60 @@ def run_split_changes(
     hidden_run_kwargs_fn: Any,
 ) -> dict[str, Any]:
     resolved_root = path_type(engine._root(root))
-    files = list(changed_files or [])
-    if not files:
-        try:
-            cp = subprocess_module.run(
-                ["git", "status", "--porcelain"],
-                cwd=str(resolved_root),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=engine.git_status_timeout,
-                **hidden_run_kwargs_fn(),
-            )
-            if cp.returncode == 0:
-                for line in cp.stdout.splitlines():
-                    parts = line.strip().split(maxsplit=1)
-                    if len(parts) == 2:
-                        files.append(parts[1].replace("\\", "/"))
-        except Exception:
-            pass
 
-    if not files:
-        return {"success": True, "clusters": [], "total_files": 0, "message": "No changed files detected"}
+    def git(*args: str) -> bytes:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        cp = subprocess_module.run(
+            ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", *args],
+            cwd=str(resolved_root),
+            capture_output=True,
+            check=False,
+            timeout=engine.git_status_timeout,
+            env=env,
+            **hidden_run_kwargs_fn(),
+        )
+        if cp.returncode != 0:
+            raise ValueError("Git inventory unavailable")
+        return cp.stdout
 
-    categories: dict[str, list[str]] = {
-        "docs": [],
-        "config": [],
-        "core": [],
-        "api_or_services": [],
-        "models_or_schemas": [],
-        "tests": [],
-        "other": [],
-    }
-
-    for f in files:
-        norm = f.lower().replace("\\", "/")
-        if norm.startswith("docs/") or norm.endswith((".md", ".rst", ".txt")):
-            categories["docs"].append(f)
-        elif norm.endswith((".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock")) or "config" in norm:
-            categories["config"].append(f)
-        elif "test" in norm or norm.startswith("tests/"):
-            categories["tests"].append(f)
-        elif any(k in norm for k in ("model", "schema", "entity", "dto")):
-            categories["models_or_schemas"].append(f)
-        elif any(k in norm for k in ("api", "service", "route", "controller", "endpoint")):
-            categories["api_or_services"].append(f)
-        elif any(k in norm for k in ("core", "engine", "util", "helper", "lib")):
-            categories["core"].append(f)
-        else:
-            categories["other"].append(f)
-
-    clusters = []
-    cluster_id = 1
-    order = ["models_or_schemas", "core", "api_or_services", "tests", "config", "docs", "other"]
-    for cat in order:
-        cat_files = categories[cat]
-        if cat_files:
-            clusters.append({
-                "cluster_id": cluster_id,
-                "name": cat.replace("_", " ").title(),
-                "category": cat,
-                "suggested_commit_message": f"feat({cat}): update {cat.replace('_', ' ')} components",
-                "files": sorted(cat_files),
-            })
-            cluster_id += 1
+    try:
+        top = path_type(os.fsdecode(git("rev-parse", "--show-toplevel").rstrip(b"\r\n"))).resolve()
+        if top != resolved_root.resolve():
+            raise ValueError("Expected the Git worktree root")
+        args = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=none")
+        before = git(*args)
+        statuses = _parse_status(before)
+        diff_args = ("diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none")
+        staged = _parse_numstat(git(*diff_args, "--cached", "--"))
+        unstaged = _parse_numstat(git(*diff_args, "--"))
+        if git(*args) != before:
+            raise ValueError("Worktree inventory changed during inspection")
+        if changed_files is not None:
+            if not isinstance(changed_files, list) or any(not isinstance(p, str) or p not in statuses for p in changed_files):
+                raise ValueError("Requested path is not in the current dirty worktree")
+            statuses = {p: statuses[p] for p in dict.fromkeys(changed_files)}
+        clusters = _group(statuses, staged, unstaged)
+    except (OSError, ValueError, subprocess_module.SubprocessError):
+        return {
+            "success": False,
+            "error": "Cannot obtain a consistent Git change inventory; check root, requested paths and Git state.",
+            "retryable": True,
+        }
 
     return {
         "success": True,
         "root": str(resolved_root),
-        "total_files": len(files),
+        "total_files": len(statuses),
         "cluster_count": len(clusters),
         "clusters": clusters,
+        "summary": f"{len(statuses)} dirty file(s), {len(clusters)} proposed component group(s)",
+        "method": "component_name_heuristic_v1",
+        "verification_status": "unknown",
+        "commit_ready": False,
+        "limitations": [
+            "Read-only proposal; not a content fingerprint or authorization to stage or commit.",
+            "File-level grouping only; dependencies and renames are not resolved.",
+            "Git status and line counts do not establish semantic intent or verification freshness.",
+        ],
     }
-
