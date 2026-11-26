@@ -880,7 +880,7 @@ class ServiceRepositoryMixin:
     def split_changes(
         self, root: str, changed_files: list[str] | None = None, *,
         mode: str = "full", limit: int = 8, offset: int = 0,
-        base: str | None = None, head: str = "HEAD",
+        base: str | None = None, head: str = "HEAD", task_id: str = "",
     ) -> dict[str, Any]:
         from .change_plan_projection import project_change_plan
 
@@ -888,8 +888,26 @@ class ServiceRepositoryMixin:
             return {"success": False, "error": "invalid change plan mode"}
         if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return {"success": False, "error": "invalid change plan page"}
+        from .repository_scope import authorized_repository_root
+        from .change_task_context import attach_task_context, current_task_revision, scoped_tasks
+
+        root = authorized_repository_root(self.config, root)
+        tasks: list[Any] = []
+        truncated = False
+        revision_before = ""
+        if base is None and (mode != "full" or task_id):
+            try:
+                tasks, truncated = scoped_tasks(getattr(self, "task_store", None), root, task_id)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+            if tasks:
+                revision_before = current_task_revision(self, root)
+        elif task_id:
+            return {"success": False, "error": "task_id is only supported for worktree changes"}
         result = (self.deterministic.split_changes(root, changed_files, base=base, head=head)
                   if base is not None else self.deterministic.split_changes(root, changed_files))
+        if base is None and (mode != "full" or task_id):
+            attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
         if mode == "full":
             return result
         return project_change_plan(

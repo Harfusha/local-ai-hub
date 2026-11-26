@@ -608,7 +608,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "git_log": ("root", "query", "max_commits", "author", "since", "until", "path", "limit"),
             "mutation_test": ("root", "path", "diff"),
             "type_stubs": ("root", "path"),
-            "split_changes": ("root", "path", "mode", "limit", "offset", "base", "head"),
+            "split_changes": ("root", "path", "mode", "limit", "offset", "base", "head", "task_id"),
             "generate_tests_for_diff": ("root", "diff", "path"),
             "cross_repo_contract": ("root", "path"),
             "circular_dependencies": ("root", "language"),

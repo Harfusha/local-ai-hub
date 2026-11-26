@@ -66,6 +66,7 @@ def test_services_synthesize_commit_queries_task_and_verification_stores(tmp_pat
         GoalContract(goal="support sse events stream", acceptance_criteria=("stream_events_live",)),
         ScopeContext(task_id="task-sse-1"),
         task_id="task-sse-1",
+        repo_root=str(tmp_path),
     )
     # Record verification receipt
     rcpt = VerificationReceipt.create(
@@ -91,9 +92,9 @@ def test_services_synthesize_commit_queries_task_and_verification_stores(tmp_pat
     assert dummy_det.last_call is not None
     assert len(dummy_det.last_call["tasks"]) == 1
     assert dummy_det.last_call["tasks"][0]["task_id"] == "task-sse-1"
-    assert len(dummy_det.last_call["receipts"]) == 1
-    assert dummy_det.last_call["receipts"][0]["criterion"] == "stream_events_live"
-    assert dummy_det.last_call["receipts"][0]["evidence_id"] == "E-sse-stream"
+    assert dummy_det.last_call["receipts"] == []
+    assert res["task_verification_candidates"][0]["status"] == "unknown"
+    assert res["commit_verified"] is False
 
 
 def test_services_synthesize_commit_does_not_silently_ignore_task_store_failure(tmp_path: Path):
@@ -117,11 +118,16 @@ def test_services_synthesize_commit_does_not_silently_ignore_receipt_store_failu
     from local_ai_hub.services import LocalAIServices
 
     class BrokenVerificationStore:
-        def completion(self, task_id):
+        def completion(self, task_id, **kwargs):
             raise RuntimeError("receipt store unavailable")
 
     services = LocalAIServices.__new__(LocalAIServices)
-    services.task_store = None
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    task_store = TaskStore(state_store)
+    task_store.create(GoalContract(goal="task"), ScopeContext(task_id="task-1"), task_id="task-1", repo_root=str(tmp_path))
+    services.task_store = task_store
+    from types import SimpleNamespace
+    services.repo_state = SimpleNamespace(fingerprint=lambda root, force: {"fingerprint": "revision"})
     services.verification_store = BrokenVerificationStore()
     services.deterministic = _DummyDeterministic()
     services.deterministic_operation = lambda op, root, params, fn: fn()

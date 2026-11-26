@@ -26,7 +26,7 @@ def project_change_plan(
         item = {k: group[k] for k in (
             "cluster_id", "group_key", "name", "category", "summary", "suggested_commit_message",
             "verification_status", "risks", "line_totals", "semantic_change_counts",
-            "semantic_observed_scopes", "observed_hunk_count",
+            "semantic_observed_scopes", "observed_hunk_count", "task_candidates", "task_candidates_omitted",
         ) if k in group}
         item["file_count"] = len(files)
         item["files"] = files[:6]
@@ -76,7 +76,8 @@ def _advise(page: list[dict[str, Any]], delegate: Callable[..., Any] | None, roo
         return "unavailable"
     candidates = [
         {"id": g["cluster_id"], "summary": g["summary"][:240], "files": [p[:160] for p in g["files"][:4]],
-         "fallback": g["suggested_commit_message"], "structural_counts": g.get("semantic_change_counts", {})}
+         "fallback": g["suggested_commit_message"], "structural_counts": g.get("semantic_change_counts", {}),
+         "task_hints": [t["goal"] for t in g.get("task_candidates", [])[:2]]}
         for g in page
     ]
     try:

@@ -32,6 +32,10 @@ Supply `base` and `head` to `split_changes` (or `hubctl changes --root ... --bas
 
 Small regular untracked files (up to 512 KiB) and link metadata are observed and rechecked without following symlinks. Their scoped identities include content digest and mode. Python source is structurally summarized from an empty before-state when within the AST budget. Binary patches are captured with Git's binary format and hashed, but not semantically interpreted. Large, unreadable, conflicted, submodule and budget-limited scopes remain explicit gaps. No untracked file is staged; provenance and commit readiness remain unknown. The completeness flag means only Git-visible observations (not ignored/assume-unchanged paths or an atomic filesystem snapshot).
 
+## Scoped Agent OS context
+
+Compact worktree plans can link bounded, repository-scoped tasks through exact checkpoint path overlaps. An explicit `task_id` narrows the task set. Existing Agent OS completion evaluates receipts against a freshly observed Hub repository revision; only satisfied criteria with matching receipt revisions are candidates. The plan explicitly distinguishes whole-worktree task completion from commit verification, and never authorizes skipping per-commit checks. The older synthesis service now requires scoped tasks and no longer inserts unchecked or stale receipt claims into commit messages. Cross-project and unscoped tasks are excluded.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.
