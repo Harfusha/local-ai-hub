@@ -1,6 +1,7 @@
 """Bounded structural summaries of exact Git blobs, without source retention."""
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 from typing import Any
@@ -13,14 +14,83 @@ _MAX_SYMBOLS = 24
 _KINDS = {"added", "removed", "modified", "renamed", "moved", "reordered", "module_modified"}
 
 
+_HUNK = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)")
+
+
+def _blob_matches(content: bytes, oid: str) -> bool:
+    algorithm = "sha1" if len(oid) == 40 else "sha256" if len(oid) == 64 else ""
+    if not algorithm:
+        return False
+    return hashlib.new(algorithm, b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest() == oid
+
+
+def _lines(content: bytes) -> list[bytes]:
+    parts = content.split(b"\n")
+    return [p + b"\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def reconstruct_blob(before: bytes, patch: bytes, oid: str) -> bytes | None:
+    """Apply an observed unified patch in memory; trust only the resulting Git hash."""
+    source = _lines(before)
+    patch_lines = _lines(patch)
+    output: list[bytes] = []
+    cursor = 0
+    i = 0
+    while i < len(patch_lines) and not patch_lines[i].startswith(b"@@ "):
+        i += 1
+    if i == len(patch_lines):
+        return before if _blob_matches(before, oid) else None
+    while i < len(patch_lines):
+        match = _HUNK.match(patch_lines[i].rstrip(b"\n"))
+        if match is None:
+            return None
+        old, old_count, new, new_count = match.groups()
+        old_n, new_n = int(old_count or b"1"), int(new_count or b"1")
+        old_at = int(old) - (1 if old_n else 0)
+        new_at = int(new) - (1 if new_n else 0)
+        if not cursor <= old_at <= len(source):
+            return None
+        output.extend(source[cursor:old_at])
+        cursor = old_at
+        if len(output) != new_at:
+            return None
+        i += 1
+        removed = added = 0
+        while i < len(patch_lines) and not patch_lines[i].startswith(b"@@ "):
+            row = patch_lines[i]
+            if not row or row[:1] not in {b" ", b"-", b"+"}:
+                return None
+            flag, content = row[:1], row[1:]
+            i += 1
+            if i < len(patch_lines) and patch_lines[i] == b"\\ No newline at end of file\n":
+                if not content.endswith(b"\n"):
+                    return None
+                content = content[:-1]
+                i += 1
+            if flag in {b" ", b"-"}:
+                if cursor >= len(source) or source[cursor] != content:
+                    return None
+                cursor += 1
+                removed += 1
+            if flag in {b" ", b"+"}:
+                output.append(content)
+                added += 1
+        if (removed, added) != (old_n, new_n):
+            return None
+    output.extend(source[cursor:])
+    result = b"".join(output)
+    if len(result) > _MAX_SOURCE or not _blob_matches(result, oid):
+        return None
+    return result
+
+
 def summarize_python_patch(
     patch: bytes, git: Callable[..., bytes], *, cache: Any | None = None, key: str,
 ) -> dict[str, Any]:
     """Summarize only full object identities that Git can actually resolve.
 
-    An unstaged worktree blob usually does not exist in the object database.
-    Reconstructing it from a validated patch is separate work; never substitute
-    an arbitrary live filesystem read or mutate Git by writing the blob.
+    Missing unstaged blobs are reconstructed from the observed patch and
+    verified against their full Git object ID; no filesystem read or write.
     """
     match = _INDEX.search(patch)
     if match is None:
@@ -29,25 +99,41 @@ def summarize_python_patch(
         stored = cache.get(key)
         if _valid(stored):
             return stored
-    sources = []
-    for raw in match.groups():
+    sources: list[bytes] = []
+    for side, raw in enumerate(match.groups()):
         oid = raw.decode("ascii")
+        if len(oid) not in {40, 64}:
+            return {"status": "unavailable", "reason": "unsupported_object_id"}
         if not oid.strip("0"):
-            sources.append("")
+            sources.append(b"")
             continue
         try:
-            if git("cat-file", "-t", oid).strip() != b"blob":
-                return {"status": "unavailable", "reason": "not_blob"}
+            object_type = git("cat-file", "-t", oid).strip()
+        except ValueError:
+            object_type = b"missing"
+        if object_type == b"missing" and side == 1:
+            content = reconstruct_blob(sources[0], patch, oid)
+            if content is None:
+                return {"status": "unavailable", "reason": "patch_reconstruction_failed"}
+            sources.append(content)
+            continue
+        if object_type != b"blob":
+            return {"status": "unavailable", "reason": "not_blob"}
+        try:
             size = int(git("cat-file", "-s", oid).strip())
             if not 0 <= size <= _MAX_SOURCE:
                 return {"status": "unavailable", "reason": "source_budget"}
             content = git("cat-file", "blob", oid)
-            if len(content) != size:
-                return {"status": "unavailable", "reason": "blob_size_mismatch"}
-            sources.append(content.decode("utf-8"))
-        except (ValueError, UnicodeError):
+            if len(content) != size or not _blob_matches(content, oid):
+                return {"status": "unavailable", "reason": "blob_hash_mismatch"}
+            sources.append(content)
+        except ValueError:
             return {"status": "unavailable", "reason": "blob_unavailable"}
-    result = ast_diff(*sources)
+    try:
+        decoded = [content.decode("utf-8") for content in sources]
+    except UnicodeError:
+        return {"status": "unavailable", "reason": "non_utf8_source"}
+    result = ast_diff(*decoded)
     if not result.get("success"):
         return {"status": "unavailable", "reason": "ast_analysis_failed"}
     symbols = []

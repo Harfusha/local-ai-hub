@@ -183,3 +183,31 @@ def test_staged_python_ast_summary_is_structural_not_verification(tmp_path):
     assert group["semantic_change_counts"] == semantic["change_counts"]
     assert not semantic["behavior_equivalence_proven"]
     assert result["verification_status"] == "unknown"
+
+
+def test_unstaged_python_blob_reconstruction(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "payment.py"
+    path.write_text("def pay():\n    return 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "payment.py")
+    _git(tmp_path, "commit", "-m", "python fixture")
+    path.write_text("def pay():\n    return 987654\n", encoding="utf-8")
+    result = _plan(tmp_path)
+    group = result["clusters"][0]
+    atom = group["changes"][0]["atoms"][0]
+    assert atom["scope"] == "unstaged"
+    assert atom["semantic"]["status"] == "observed"
+    assert atom["semantic"]["change_counts"] == {"modified": 1}
+    assert "pay" in group["suggested_commit_message"]
+
+
+def test_reconstruction_requires_exact_blob_identity():
+    import hashlib
+    from local_ai_hub.change_semantics import reconstruct_blob
+
+    before, after = b"old", b"new"
+    oid = hashlib.sha1(b"blob 3\0" + after).hexdigest()
+    patch = b"@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n"
+    assert reconstruct_blob(before, patch, oid) == after
+    assert reconstruct_blob(before, patch, "1" * 40) is None
+    assert reconstruct_blob(b"different", patch, oid) is None

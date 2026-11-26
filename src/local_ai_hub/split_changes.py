@@ -276,6 +276,21 @@ def run_split_changes(
                 cluster["summary"] += "; AST: " + ", ".join(
                     f"{count} {kind}" for kind, count in sorted(semantic_counts.items())
                 )
+            if semantic_observed:
+                symbols = [
+                    symbol for change in cluster["changes"] for atom in change["atoms"]
+                    if atom["semantic"]["status"] == "observed"
+                    for symbol in atom["semantic"]["symbols"]
+                ]
+                names = sorted({
+                    re.sub(r"[^a-zA-Z0-9_.-]", "", symbol["symbol"])
+                    for symbol in symbols if symbol["symbol"] != "<module>"
+                } - {""})
+                if names:
+                    first = names[0][:40]
+                    suffix = " and related symbols" if len(names) > 1 else ""
+                    kind = {"test": "test", "docs": "docs"}.get(cluster["category"], "chore")
+                    cluster["suggested_commit_message"] = f"{kind}: update {first}{suffix}"
             if any(item["path"] in cluster["files"] for item in observed["unavailable"]):
                 cluster["risks"] = sorted(set(cluster["risks"]) | {"patch_coverage_incomplete"})
     except (OSError, ValueError, subprocess_module.SubprocessError):
