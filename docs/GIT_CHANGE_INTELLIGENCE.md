@@ -4,6 +4,10 @@
 
 Use existing `local_ai_repo(action="split_changes", root="/absolute/worktree")` before proposing a commit. The existing HTTP route is unchanged. The deterministic proposal uses a NUL-delimited Git inventory, staged/unstaged line counts, and component-name matching for tracked implementation/test/documentation files. Unknown, ambiguous and untracked changes are conservative candidates, not authorization. No Git mutation occurs. Legacy explicit-path classification outside a Git repository remains available, labeled as caller-supplied and unverified. The result is **not** a content fingerprint, dependency proof, semantic review, ownership claim or valid verification receipt. Use `synthesize_commit` for existing task/receipt-based synthesis, subject to independent freshness checks. Do not infer readiness from the proposal.
 
+## Incremental patch observation
+
+Tracked textual changes now expose separate staged/unstaged content-addressed patch IDs, hunk ranges, group keys and an observed change-set ID. A second read detects same-line-count edits during inspection. A bounded in-process LRU reuses only derived hunk metadata (no raw source, no verification). Untracked, conflicted, non-text, oversized or budget-limited scopes are explicitly unavailable. The observed change-set ID is **not** a full snapshot, and must not authorize staging, commit or receipt reuse. Scope and full-tree/dependency/environment validation remain required. The subprocess still captures stdout before applying the analysis byte limit; hard transport limits and durable cache are follow-up work.
+
 ## Target architecture and remaining delivery
 
 Extend the existing repository analysis, Agent OS, artifact, context ledger, verification and Git-first services; do not create a second task or evidence store.

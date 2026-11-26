@@ -48,6 +48,8 @@ def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
             output = str(tmp_path).encode() + b"\n"
         elif "status" in argv:
             output = b" M source.py\0"
+        elif "--patch" in argv:
+            output = b"diff --git a/source.py b/source.py\n@@ -1 +1 @@\n-old\n+new\n"
         elif "--cached" in argv:
             output = b""
         else:
@@ -59,7 +61,7 @@ def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
     result = engine.split_changes(str(tmp_path))
 
     assert result["total_files"] == 1
-    assert timeouts == [0.7] * 5
+    assert timeouts == [0.7] * 7
 
 
 def test_synthesize_rules(tmp_path: Path) -> None:

@@ -7,6 +7,8 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
+from .change_atoms import identity, inspect_change_atoms
+
 
 def _component(path: str) -> tuple[str, str]:
     p = PurePosixPath(path)
@@ -227,13 +229,30 @@ def run_split_changes(
         diff_args = ("diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none")
         staged = _parse_numstat(git(*diff_args, "--cached", "--"))
         unstaged = _parse_numstat(git(*diff_args, "--"))
-        if git(*args) != before:
-            raise ValueError("Worktree inventory changed during inspection")
         if changed_files is not None:
             if not isinstance(changed_files, list) or any(not isinstance(p, str) or p not in statuses for p in changed_files):
                 raise ValueError("Requested path is not in the current dirty worktree")
             statuses = {p: statuses[p] for p in dict.fromkeys(changed_files)}
+        observed = inspect_change_atoms(str(top), statuses, staged, unstaged, git)
+        if git(*args) != before:
+            raise ValueError("Worktree inventory changed during inspection")
         clusters = _group(statuses, staged, unstaged)
+        by_path = observed["observations"]
+        for cluster in clusters:
+            atom_ids = []
+            hunk_count = 0
+            for change in cluster["changes"]:
+                path = change["path"]
+                atoms = by_path.get(path, [])
+                change["atoms"] = atoms
+                atom_ids.extend(atom["atom_id"] for atom in atoms)
+                hunk_count += sum(atom["hunk_count"] for atom in atoms)
+            cluster["group_key"] = identity("group-v1", str(top), *cluster["files"])
+            cluster["observed_atom_ids"] = sorted(atom_ids)
+            cluster["observed_hunk_count"] = hunk_count
+            cluster["summary"] += f"; {hunk_count} observed text hunk(s)"
+            if any(item["path"] in cluster["files"] for item in observed["unavailable"]):
+                cluster["risks"] = sorted(set(cluster["risks"]) | {"patch_coverage_incomplete"})
     except (OSError, ValueError, subprocess_module.SubprocessError):
         return {
             "success": False,
@@ -248,12 +267,20 @@ def run_split_changes(
         "cluster_count": len(clusters),
         "clusters": clusters,
         "summary": f"{len(statuses)} dirty file(s), {len(clusters)} proposed component group(s)",
-        "method": "component_name_heuristic_v1",
+        "method": "component_name_heuristic_v2",
+        "patch_coverage_complete": not observed["unavailable"],
+        "unavailable_patch_scopes": observed["unavailable"],
+        "summary_cache_hits": observed["cache_hits"],
+        "observed_change_set_id": identity(
+            "observed-change-set-v1", str(top),
+            *(atom["atom_id"] for path in sorted(observed["observations"])
+              for atom in observed["observations"][path]),
+        ),
         "verification_status": "unknown",
         "commit_ready": False,
         "limitations": [
-            "Read-only proposal; not a content fingerprint or authorization to stage or commit.",
+            "Read-only observed patch identities; not a complete worktree fingerprint or authorization to stage or commit.",
             "File-level grouping only; dependencies and renames are not resolved.",
-            "Git status and line counts do not establish semantic intent or verification freshness.",
+            "Git patch identities and line counts do not establish semantic intent or verification freshness.",
         ],
     }

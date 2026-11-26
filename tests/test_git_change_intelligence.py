@@ -71,3 +71,38 @@ def test_ambiguous_test_stays_separate(tmp_path):
     for path in ("payment.py", "other/payment.py", "tests/test_payment.py"):
         (tmp_path / path).write_text("changed\n", encoding="utf-8")
     assert _plan(tmp_path)["cluster_count"] == 3
+
+
+def test_content_identity_changes_with_same_line_counts(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "payment.py"
+    path.write_text("first\n", encoding="utf-8")
+    first = _plan(tmp_path)
+    second = _plan(tmp_path)
+    assert second["summary_cache_hits"] >= 1
+    assert first["observed_change_set_id"] == second["observed_change_set_id"]
+    group = first["clusters"][0]
+    assert group["observed_hunk_count"] == 1
+    path.write_text("other\n", encoding="utf-8")
+    third = _plan(tmp_path)
+    assert third["observed_change_set_id"] != first["observed_change_set_id"]
+    assert third["clusters"][0]["group_key"] == group["group_key"]
+    assert third["clusters"][0]["line_totals"] == group["line_totals"]
+    assert third["verification_status"] == "unknown"
+
+
+def test_patch_scopes_and_partial_coverage(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "payment.py"
+    path.write_text("first\n", encoding="utf-8")
+    _git(tmp_path, "add", "payment.py")
+    path.write_text("other\n", encoding="utf-8")
+    (tmp_path / "new.py").write_text("private content\n", encoding="utf-8")
+    result = _plan(tmp_path)
+    assert not result["patch_coverage_complete"]
+    group = next(g for g in result["clusters"] if "payment.py" in g["files"])
+    atoms = group["changes"][0]["atoms"]
+    assert {a["scope"] for a in atoms} == {"staged", "unstaged"}
+    assert len({a["atom_id"] for a in atoms}) == 2
+    assert "private content" not in str(result)
+    assert "first" not in str(atoms)
