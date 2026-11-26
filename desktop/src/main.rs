@@ -16,12 +16,12 @@ use std::{
 
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
-    ("Requests", &["Requests", "Trace index", "Endpoint analytics"]),
+    ("Requests", &["Requests", "Active requests", "Async jobs", "Work orders", "Trace index", "Endpoint analytics"]),
     ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
-    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report"]),
+    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Laya"]),
     ("Service health", &["Runtime health", "Service health", "Diagnostics", "Audit"]),
     ("Settings", &["Settings", "Settings — activity mode", "Updates"]),
     ("Activity", &["Activity", "Agent event stream"]),
@@ -140,6 +140,11 @@ struct Desktop {
     criteria: String,
     memory_key: String,
     memory_value: String,
+    memory_scope: String,
+    memory_kind: String,
+    memory_scope_id: String,
+    task_scope: String,
+    task_risk: String,
     incident_kind: String,
     incident_message: String,
     plan_title: String,
@@ -191,7 +196,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -311,6 +316,25 @@ impl Desktop {
     fn operations(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.page {
             1 => {
+                if matches!(self.current(), "Async jobs" | "Work orders") {
+                    let async_job = self.current() == "Async jobs";
+                    let op = if async_job { "async_job" } else { "work_order" };
+                    ui.label(if async_job { "Async job ID" } else { "Work order ID" });
+                    ui.text_edit_singleline(&mut self.entity);
+                    if !async_job { ui.label("Answer for continuation"); ui.text_edit_multiline(&mut self.reason); }
+                    ui.horizontal_wrapped(|ui| {
+                        let actions: &[(&str, &str)] = if async_job { &[("Status", "status"), ("Result", "result"), ("Cancel", "cancel")] }
+                            else { &[("Status", "status"), ("Result", "get"), ("Cancel", "cancel"), ("Continue", "continue")] };
+                        for (title, action) in actions {
+                            if ui.button(*title).clicked() {
+                                let data = request(op, json!({"id": self.entity, "action": action, "answer": self.reason, "confirmed": true}));
+                                if matches!(*action, "cancel" | "continue") { self.confirm(title, data); }
+                                else { self.submit(ctx, (*title).into(), data); }
+                            }
+                        }
+                    });
+                    return;
+                }
                 if self.current() == "Trace index" {
                     ui.small("Full inputs and outputs are captured only when detailed telemetry is enabled. Stored details appear as recorded; local access only; separate local retention policy.");
                     ui.horizontal_wrapped(|ui| {
@@ -339,14 +363,33 @@ impl Desktop {
                     return;
                 }
                 if self.view == 1 {
-                    ui.label("Repository fact key and value (text or JSON)");
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("memory_scope").selected_text(&self.memory_scope).show_ui(ui, |ui| {
+                            for scope in ["global", "repository", "clone", "worktree", "branch", "task", "session"] {
+                                ui.selectable_value(&mut self.memory_scope, scope.into(), scope);
+                            }
+                        });
+                        egui::ComboBox::from_id_salt("memory_kind").selected_text(&self.memory_kind).show_ui(ui, |ui| {
+                            for kind in ["fact", "decision", "convention", "gotcha", "hypothesis", "assumption", "playbook",
+                                "capability_observation", "environment_capsule", "finding", "reusable_candidate", "contract_mapping",
+                                "rejected_approach", "unknown", "validation"] {
+                                ui.selectable_value(&mut self.memory_kind, kind.into(), kind);
+                            }
+                        });
+                    });
+                    if matches!(self.memory_scope.as_str(), "task" | "session") {
+                        ui.label("Task or session identity");
+                        ui.text_edit_singleline(&mut self.memory_scope_id);
+                    }
+                    ui.label("Memory key and value (text or JSON)");
                     ui.text_edit_singleline(&mut self.memory_key);
                     ui.text_edit_multiline(&mut self.memory_value);
                     ui.horizontal(|ui| {
                         for (title, op) in [("Record fact", "memory_record"), ("Delete fact", "memory_delete")] {
                             if ui.button(title).clicked() {
                                 self.confirm(title, request(op, json!({"root": self.repo, "key": self.memory_key,
-                                    "value": self.memory_value, "confirmed": true})));
+                                    "value": self.memory_value, "scope": self.memory_scope, "kind": self.memory_kind,
+                                    "task_id": self.memory_scope_id, "session_id": self.memory_scope_id, "confirmed": true})));
                             }
                         }
                     });
@@ -370,20 +413,28 @@ impl Desktop {
                         self.task_offset = self.task_offset.saturating_sub(100); self.refresh(ctx);
                     }
                     let more = self.snapshot_view == "Tasks" && self.snapshot.as_ref()
-                        .is_some_and(|v| v["has_more"].as_bool() == Some(true) || v["tasks"].as_array().is_some_and(|a| a.len() == 100));
+                        .is_some_and(|v| v["has_more"].as_bool().unwrap_or_else(|| v["tasks"].as_array().is_some_and(|a| a.len() == 100)));
                     if ui.add_enabled(more, egui::Button::new("Next 100")).clicked() {
                         self.task_offset = (self.task_offset + 100).min(i32::MAX as i64); self.refresh(ctx);
                     }
                     ui.label(format!("Offset {}", self.task_offset));
                 });
                 ui.collapsing("Create task contract", |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("task_scope").selected_text(&self.task_scope).show_ui(ui, |ui| {
+                            for scope in ["task", "session", "repository", "system"] { ui.selectable_value(&mut self.task_scope, scope.into(), scope); }
+                        });
+                        egui::ComboBox::from_id_salt("task_risk").selected_text(&self.task_risk).show_ui(ui, |ui| {
+                            for risk in ["low", "normal", "high"] { ui.selectable_value(&mut self.task_risk, risk.into(), risk); }
+                        });
+                    });
                     ui.label("Goal");
                     ui.text_edit_multiline(&mut self.goal);
                     ui.label("Acceptance criteria (one per line)");
                     ui.text_edit_multiline(&mut self.criteria);
                     if ui.button("Create task").clicked() {
                         self.confirm("Create task", request("task_create", json!({"root": self.repo,
-                            "goal": self.goal, "criteria": self.criteria, "confirmed": true})));
+                            "goal": self.goal, "criteria": self.criteria, "scope": self.task_scope, "risk": self.task_risk, "confirmed": true})));
                     }
                 });
                 ui.label("Task ID and reason (repository required)");
@@ -438,7 +489,7 @@ impl Desktop {
                 ui.text_edit_singleline(&mut self.plan_task);
                 ui.horizontal_wrapped(|ui| {
                     for (title, op) in [("Create plan", "plan_create"), ("Update plan", "plan_update"),
-                        ("Edit plan task", "plan_task_edit"), ("Delete plan task", "plan_task_delete")] {
+                        ("Add plan task", "plan_task_create"), ("Edit plan task", "plan_task_edit"), ("Delete plan task", "plan_task_delete")] {
                         if ui.button(title).clicked() {
                             self.confirm(title, request(op, json!({"root": self.repo, "id": self.entity,
                                 "title": self.plan_title, "description": self.description, "revision": self.revision,
@@ -801,7 +852,7 @@ impl eframe::App for Desktop {
                             });
                         });
                         if let Some(item) = selected {
-                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["id"].as_str()) { self.entity = id.to_owned(); }
+                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { self.entity = id.to_owned(); }
                             if self.current() == "Plans" {
                                 if let Some(revision) = item["file_revision"].as_str() { self.revision = revision.to_owned(); }
                                 if let Some(title) = item["title"].as_str() { self.plan_title = title.to_owned(); }

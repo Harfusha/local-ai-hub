@@ -25,6 +25,10 @@ MODES = ("active", "gaming", "maintenance", "preprocessing")
 VIEWS = {
     "Overview": "/api/live/status?light=1&scope=1h",
     "Requests": "/api/live/status?light=1&scope=1h",
+    "Active requests": "/api/live/status?light=1&scope=1h",
+    "Async jobs": "/api/live/status?light=1&scope=1h",
+    "Work orders": "/api/live/status?light=1&scope=1h",
+    "Laya": "/api/live/status?light=1&scope=1h",
     "Commands": "/api/live/status?light=1&scope=1h",
     "Models & search": "/api/live/status?light=1&scope=1h",
     "Runtime health": "/api/live/status?light=1&scope=1h",
@@ -390,6 +394,16 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         image = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
         return checked_post(control, "/api/vision/review", {"prompt": prompt, "source": "upload",
                             "image": image}, timeout=360.0)
+    if op in {"async_job", "work_order"}:
+        action = text_field(args, "action", 20)
+        if action not in ({"status", "result", "cancel"} if op == "async_job" else {"status", "get", "cancel", "continue"}):
+            raise ValueError("Unsupported work action")
+        if action in {"cancel", "continue"} and args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        payload = {"action": action, "job_id" if op == "async_job" else "work_id": text_field(args, "id", 200)}
+        if action == "continue":
+            payload["answer"] = text_field(args, "answer", 12000)
+        return checked_post(control, "/api/async-jobs" if op == "async_job" else "/api/work-orders", payload)
     if op == "setting":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
@@ -418,7 +432,7 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             return result
         finally:
             client.close()
-    if op in {"plan_update", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
+    if op in {"plan_update", "plan_task_create", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
               "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release", "session_briefing"}:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
@@ -449,9 +463,18 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             payload.update({"title": text_field(args, "title", 160), "description": str(args.get("description", ""))[:12000]})
         else:
             payload["task_id"] = text_field(args, "task_id", 200)
-            if op == "plan_task_edit":
-                payload["task_data"] = {"title": text_field(args, "title", 240),
-                    "description": str(args.get("description", ""))[:12000]}
+            if op in {"plan_task_create", "plan_task_edit"}:
+                data = {"title": text_field(args, "title", 240),
+                        "description": str(args.get("description", ""))[:12000]}
+                for key in ("next_action", "accountable_role", "blocker"):
+                    if key in args:
+                        data[key] = str(args[key])[:2000] or None
+                if "criteria" in args:
+                    data["acceptance_criteria"] = [line.strip() for line in str(args["criteria"])[:12000].splitlines() if line.strip()]
+                if op == "plan_task_create":
+                    data.update({"kind": "code", "work_status": "planned", "depends_on": [], "clarifications": []})
+                    op = "plan_task_edit"
+                payload["task_data"] = data
             if op == "plan_task_move":
                 status = text_field(args, "status", 30)
                 if status not in {"planned", "ready", "in_progress", "blocked"}:
@@ -520,25 +543,36 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                                 {"action": "update", "settings": {f"features.{feature}": args["enabled"]}})
         root = explicit_root(args.get("root"))
         if op == "task_create":
-            criteria = text_field(args, "criteria", 12000)
+            criteria = args.get("criteria", "")
+            scope, risk = args.get("scope", "task"), args.get("risk", "normal")
+            if not isinstance(criteria, str) or len(criteria) > 12000:
+                raise ValueError("Invalid acceptance criteria")
+            if scope not in {"task", "session", "repository", "system"} or risk not in {"low", "normal", "high"}:
+                raise ValueError("Invalid task scope or risk")
             return checked_post(control, "/api/agent-state/tasks", {"root": root, "action": "create",
                 "contract": {"goal": text_field(args, "goal", 12000),
                              "acceptance_criteria": [line.strip() for line in criteria.splitlines() if line.strip()],
-                             "scope": "task", "risk_profile": "normal"}})
+                             "scope": scope, "risk_profile": risk}})
         if op in {"memory_record", "memory_delete"}:
+            from local_ai_hub.agent_identity import AgentScope, MemoryKind
+            scope = AgentScope(args.get("scope", "repository")).value
             payload = {"root": root, "action": "record" if op == "memory_record" else "delete",
-                       "key": text_field(args, "key", 200), "scope": "repository"}
+                       "key": text_field(args, "key", 200), "scope": scope}
+            if scope == "task":
+                payload["task_id"] = text_field(args, "task_id", 200)
+            if scope == "session":
+                payload["session_id"] = text_field(args, "session_id", 200)
             if op == "memory_record":
                 raw = text_field(args, "value", 12000)
                 try:
                     value = json.loads(raw)
                 except ValueError:
                     value = raw
-                payload.update({"value": value, "kind": "fact", "confidence": 1.0})
+                payload.update({"value": value, "kind": MemoryKind(args.get("kind", "fact")).value, "confidence": 1.0})
             return checked_post(control, "/api/agent-state/memory", payload)
         return checked_post(control, "/api/coord/plan_create", {"root": root,
             "plan_id": text_field(args, "id", 85), "title": text_field(args, "title", 160),
-            "description": "", "lifecycle": "active", "owner": "desktop",
+            "description": str(args.get("description", ""))[:12000], "lifecycle": "active", "owner": "desktop",
             "idempotency_key": "desktop-" + uuid.uuid4().hex})
     if op == "incident":
         if args.get("confirmed") is not True:

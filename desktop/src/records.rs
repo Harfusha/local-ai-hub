@@ -9,6 +9,9 @@ pub struct Records<'a> {
 pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
     let (paths, columns): (&[&str], &[&str]) = match view {
         "Requests" => (&["/observability/recent_http"], &["request_id", "project", "agent", "action", "status_code", "duration_ms", "error_type"]),
+        "Active requests" => (&["/observability/active_requests"], &["request_id", "agent", "action", "project", "duration_ms", "state"]),
+        "Async jobs" => (&["/async_jobs/recent", "/async_jobs/jobs", "/async_jobs/items"], &["job_id", "action", "state", "created_at", "updated_at", "error"]),
+        "Work orders" => (&["/work_orchestrator/recent", "/work_orchestrator/orders", "/work_orchestrator/items"], &["work_id", "goal", "state", "updated_at", "error"]),
         "Trace index" => (&["/items"], &["trace_id", "request_id", "action", "agent", "kind", "status", "updated_at"]),
         "Tasks" => (&["/tasks", "/items"], &["task_id", "goal", "status", "updated_at", "root"]),
         "Memory" => (&["/records", "/memory", "/items"], &["key", "scope", "kind", "confidence", "updated_at"]),
@@ -69,6 +72,11 @@ pub fn merge_events(buffer: &mut Vec<Value>, incoming: &[Value], limit: usize) {
     }
     buffer.sort_by_key(|v| v["seq"].as_i64().unwrap_or_default());
     if buffer.len() > limit { buffer.drain(..buffer.len() - limit); }
+    let mut bytes = 0usize;
+    let retained = buffer.iter().rev().take_while(|event| {
+        bytes = bytes.saturating_add(event.to_string().len()); bytes <= 8_000_000
+    }).count();
+    if retained < buffer.len() { buffer.drain(..buffer.len() - retained); }
 }
 
 #[cfg(test)]
