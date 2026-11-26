@@ -21,7 +21,7 @@
       "depends_on": [],
       "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified changes.",
       "kind": "code",
-      "next_action": "Commit and push verified practical acceptance fixes; confirm remote master.",
+      "next_action": "",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
@@ -46,7 +46,7 @@
         }
       ],
       "title": "Complete PR #9 practical business acceptance",
-      "work_status": "in_progress"
+      "work_status": "completed"
     }
   },
   "title": "PR #9 integration, repair, verification and publication"
