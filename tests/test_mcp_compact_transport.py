@@ -1014,7 +1014,6 @@ def test_registered_mcp_context_uses_actual_http_context_pack(tmp_path, monkeypa
             envelope["structuredContent"] = wire[1]
         assert "response_budget" not in result
         assert json_tokens(envelope) <= response_tokens
-        assert json_tokens(envelope) <= response_tokens
         if result["success"] is False:
             # The full text + structured envelope may exceed 512 when mandatory
             # repository/citation identities contain longer platform paths.
