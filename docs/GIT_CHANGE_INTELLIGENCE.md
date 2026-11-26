@@ -2,7 +2,7 @@
 
 ## Initial implementation
 
-Use existing `local_ai_repo(action="split_changes", root="/absolute/worktree")` before proposing a commit. The existing HTTP route is unchanged. The deterministic proposal uses a NUL-delimited Git inventory, staged/unstaged line counts, and component-name matching for tracked implementation/test/documentation files. Unknown, ambiguous and untracked changes are conservative candidates, not authorization. No Git mutation occurs. The result is **not** a content fingerprint, dependency proof, semantic review, ownership claim or valid verification receipt. Use `synthesize_commit` for existing task/receipt-based synthesis, subject to independent freshness checks. Do not infer readiness from the proposal.
+Use existing `local_ai_repo(action="split_changes", root="/absolute/worktree")` before proposing a commit. The existing HTTP route is unchanged. The deterministic proposal uses a NUL-delimited Git inventory, staged/unstaged line counts, and component-name matching for tracked implementation/test/documentation files. Unknown, ambiguous and untracked changes are conservative candidates, not authorization. No Git mutation occurs. Legacy explicit-path classification outside a Git repository remains available, labeled as caller-supplied and unverified. The result is **not** a content fingerprint, dependency proof, semantic review, ownership claim or valid verification receipt. Use `synthesize_commit` for existing task/receipt-based synthesis, subject to independent freshness checks. Do not infer readiness from the proposal.
 
 ## Target architecture and remaining delivery
 

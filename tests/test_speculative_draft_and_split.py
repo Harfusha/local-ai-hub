@@ -44,14 +44,22 @@ def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
 
     def fake_run(argv, **kwargs):
         timeouts.append(kwargs.get("timeout"))
-        return subprocess.CompletedProcess(argv, 0, " M source.py\n", "")
+        if "rev-parse" in argv:
+            output = str(tmp_path).encode() + b"\n"
+        elif "status" in argv:
+            output = b" M source.py\0"
+        elif "--cached" in argv:
+            output = b""
+        else:
+            output = b"1\t1\tsource.py\0"
+        return subprocess.CompletedProcess(argv, 0, output, b"")
 
     monkeypatch.setattr(deterministic_module.subprocess, "run", fake_run)
 
     result = engine.split_changes(str(tmp_path))
 
     assert result["total_files"] == 1
-    assert timeouts == [0.7]
+    assert timeouts == [0.7] * 5
 
 
 def test_synthesize_rules(tmp_path: Path) -> None:

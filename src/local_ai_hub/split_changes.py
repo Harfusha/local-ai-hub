@@ -105,6 +105,14 @@ def _group(
                 "staged_lines": list(s) if s is not None else None,
                 "unstaged_lines": list(u) if u is not None else None,
             })
+        totals = {}
+        for scope, inventory in (("staged", staged), ("unstaged", unstaged)):
+            counts = [inventory[path] for path in files if path in inventory]
+            totals[scope] = {
+                "added": sum(a for a, _ in counts if a is not None),
+                "deleted": sum(d for _, d in counts if d is not None),
+                "non_text_files": sum(a is None or d is None for a, d in counts),
+            }
         name = PurePosixPath(anchor).stem
         label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name)[:60] or "component"
         role = components[anchor][1]
@@ -120,8 +128,51 @@ def _group(
             "verification_status": "unknown",
             "risks": sorted(risks),
             "changes": details,
+            "line_totals": totals,
         })
     return clusters
+
+
+def _explicit_path_proposal(files: list[str]) -> dict[str, Any]:
+    """Retain the legacy explicit-file classification for non-Git callers."""
+    categories: dict[str, list[str]] = {}
+    for path in sorted(set(files)):
+        norm = path.lower().replace("\\", "/")
+        if norm.startswith("docs/") or norm.endswith((".md", ".rst", ".txt")):
+            category = "docs"
+        elif norm.endswith((".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock")) or "config" in norm:
+            category = "config"
+        elif "test" in norm:
+            category = "tests"
+        elif any(key in norm for key in ("model", "schema", "entity", "dto")):
+            category = "models_or_schemas"
+        elif any(key in norm for key in ("api", "service", "route", "controller", "endpoint")):
+            category = "api_or_services"
+        elif any(key in norm for key in ("core", "engine", "util", "helper", "lib")):
+            category = "core"
+        else:
+            category = "other"
+        categories.setdefault(category, []).append(path)
+    clusters = [
+        {
+            "cluster_id": index,
+            "name": category.replace("_", " ").title(),
+            "category": category,
+            "files": paths,
+            "summary": f"{len(paths)} caller-supplied path(s); contents not inspected",
+            "suggested_commit_message": f"chore: update {category.replace('_', ' ')}",
+            "verification_status": "unknown",
+            "risks": ["inventory_not_verified", "ownership_unknown", "dependencies_not_verified"],
+        }
+        for index, (category, paths) in enumerate(sorted(categories.items()), 1)
+    ]
+    return {
+        "success": True, "total_files": sum(map(len, categories.values())),
+        "cluster_count": len(clusters), "clusters": clusters,
+        "summary": "Caller-supplied paths only; no Git inventory available",
+        "method": "explicit_path_only", "verification_status": "unknown",
+        "commit_ready": False, "limitations": ["No Git inventory, content, or verification inspected."],
+    }
 
 
 def run_split_changes(
@@ -151,8 +202,23 @@ def run_split_changes(
             raise ValueError("Git inventory unavailable")
         return cp.stdout
 
+    # The historical explicit-list API also supports synthetic paths outside Git.
+    # Never use that fallback after a worktree has been detected.
     try:
-        top = path_type(os.fsdecode(git("rev-parse", "--show-toplevel").rstrip(b"\r\n"))).resolve()
+        top_raw = git("rev-parse", "--show-toplevel")
+    except ValueError:
+        if (
+            isinstance(changed_files, list) and changed_files
+            and all(isinstance(p, str) and p and not any(ord(c) < 32 for c in p) for p in changed_files)
+            and not (resolved_root / ".git").exists()
+        ):
+            return {"root": str(resolved_root), **_explicit_path_proposal(changed_files)}
+        return {"success": False, "error": "Git inventory unavailable", "retryable": True}
+    except (OSError, subprocess_module.SubprocessError):
+        return {"success": False, "error": "Git inventory unavailable", "retryable": True}
+
+    try:
+        top = path_type(os.fsdecode(top_raw.rstrip(b"\r\n"))).resolve()
         if top != resolved_root.resolve():
             raise ValueError("Expected the Git worktree root")
         args = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=none")
