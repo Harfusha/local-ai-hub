@@ -67,6 +67,10 @@ class DeterministicIndexMixin:
             configured_state_dir(config) / "cache.sqlite", "dependency-audit:osv",
             ttl_seconds=max(60, int(audit_cfg.get("osv_cache_ttl_seconds", 6 * 3600))), max_entries=20000,
         )
+        self._change_summary_cache = SQLiteCache(
+            configured_state_dir(config) / "cache.sqlite", "git-change:hunk-summary-v2",
+            ttl_seconds=7 * 86400, max_entries=4096, busy_timeout_seconds=0.05, busy_retries=1,
+        )
         self._fact_blob_max = int(cfg.get("fact_blob_max_entries", 100000))
         self._manifest_blob_max = int(cfg.get("manifest_blob_max_entries", 20000))
         self._fact_blob_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=3600)

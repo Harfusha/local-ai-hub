@@ -615,7 +615,7 @@ def _local_ai_repo_impl(
     if action == "split_changes":
         return services_module._compact(services_module.CLIENT.post("/api/repo/split_changes", {
             "root": root, "paths": [path] if path else None,
-        }, timeout=services_module._timeout("quick")), "architecture", extra_fields=["clusters", "cluster_count", "total_files", "summary", "method", "verification_status", "commit_ready", "limitations", "patch_coverage_complete", "unavailable_patch_scopes", "summary_cache_hits", "observed_change_set_id"])
+        }, timeout=services_module._timeout("quick")), "architecture", extra_fields=["clusters", "cluster_count", "total_files", "summary", "method", "verification_status", "commit_ready", "limitations", "patch_coverage_complete", "unavailable_patch_scopes", "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,

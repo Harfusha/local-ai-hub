@@ -233,7 +233,10 @@ def run_split_changes(
             if not isinstance(changed_files, list) or any(not isinstance(p, str) or p not in statuses for p in changed_files):
                 raise ValueError("Requested path is not in the current dirty worktree")
             statuses = {p: statuses[p] for p in dict.fromkeys(changed_files)}
-        observed = inspect_change_atoms(str(top), statuses, staged, unstaged, git)
+        observed = inspect_change_atoms(
+            str(top), statuses, staged, unstaged, git,
+            persistent_cache=getattr(engine, "_change_summary_cache", None),
+        )
         if git(*args) != before:
             raise ValueError("Worktree inventory changed during inspection")
         clusters = _group(statuses, staged, unstaged)
@@ -250,7 +253,13 @@ def run_split_changes(
             cluster["group_key"] = identity("group-v1", str(top), *cluster["files"])
             cluster["observed_atom_ids"] = sorted(atom_ids)
             cluster["observed_hunk_count"] = hunk_count
-            cluster["summary"] += f"; {hunk_count} observed text hunk(s)"
+            totals = cluster["line_totals"]
+            added = sum(scope["added"] for scope in totals.values())
+            deleted = sum(scope["deleted"] for scope in totals.values())
+            cluster["summary"] += (
+                f"; {hunk_count} observed text hunk(s), "
+                f"+{added}/-{deleted} tracked lines across staged and unstaged scopes"
+            )
             if any(item["path"] in cluster["files"] for item in observed["unavailable"]):
                 cluster["risks"] = sorted(set(cluster["risks"]) | {"patch_coverage_incomplete"})
     except (OSError, ValueError, subprocess_module.SubprocessError):
@@ -271,6 +280,7 @@ def run_split_changes(
         "patch_coverage_complete": not observed["unavailable"],
         "unavailable_patch_scopes": observed["unavailable"],
         "summary_cache_hits": observed["cache_hits"],
+        "persistent_summary_cache_hits": observed["persistent_cache_hits"],
         "observed_change_set_id": identity(
             "observed-change-set-v1", str(top),
             *(atom["atom_id"] for path in sorted(observed["observations"])

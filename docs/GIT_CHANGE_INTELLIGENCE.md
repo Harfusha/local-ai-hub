@@ -6,7 +6,13 @@ Use existing `local_ai_repo(action="split_changes", root="/absolute/worktree")` 
 
 ## Incremental patch observation
 
-Tracked textual changes now expose separate staged/unstaged content-addressed patch IDs, hunk ranges, group keys and an observed change-set ID. A second read detects same-line-count edits during inspection. A bounded in-process LRU reuses only derived hunk metadata (no raw source, no verification). Untracked, conflicted, non-text, oversized or budget-limited scopes are explicitly unavailable. The observed change-set ID is **not** a full snapshot, and must not authorize staging, commit or receipt reuse. Scope and full-tree/dependency/environment validation remain required. The subprocess still captures stdout before applying the analysis byte limit; hard transport limits and durable cache are follow-up work.
+Tracked textual changes now expose separate staged/unstaged content-addressed patch IDs, hunk ranges, group keys and an observed change-set ID. A second read detects same-line-count edits during inspection. A bounded in-process LRU reuses only derived hunk metadata (no raw source, no verification). Untracked, conflicted, non-text, oversized or budget-limited scopes are explicitly unavailable. The observed change-set ID is **not** a full snapshot, and must not authorize staging, commit or receipt reuse. Scope and full-tree/dependency/environment validation remain required. The subprocess still captures stdout before applying the analysis byte limit; hard transport limits and a task-linked ledger are follow-up work.
+
+## Persistent derived change summaries
+
+The deterministic engine uses its existing SQLite cache infrastructure and a versioned `git-change:hunk-summary-v2` namespace, with a seven-day TTL and 4096-entry target. It retains only numeric ranges, counts and digests; no raw source or verification receipts. Cached metadata is reused only after hashing the current patch; malformed cache entries are recomputed. The process cache remains an L1. Hunk IDs include root/path/scope and exact hunk header/body digest, so unrelated hunks can retain their identity if their offsets remain unchanged. Offset changes conservatively invalidate identity. This does not establish semantic equivalence, full snapshot identity or independent commit readiness.
+
+The grouping summary now includes tracked line totals by stage; totals may count intermediate edits in both scopes. Persistent cache hits are reported separately. This is a disposable derived cache, **not** yet an authoritative task-linked Change Ledger or receipt store.
 
 ## Target architecture and remaining delivery
 

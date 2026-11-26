@@ -11,9 +11,9 @@ def _git(root: Path, *args: str) -> bytes:
     return subprocess.check_output(["git", *args], cwd=root)
 
 
-def _plan(root: Path, paths=None):
+def _plan(root: Path, paths=None, cache=None):
     return run_split_changes(
-        SimpleNamespace(_root=lambda value: value, git_status_timeout=10),
+        SimpleNamespace(_root=lambda value: value, git_status_timeout=10, _change_summary_cache=cache),
         str(root), paths, path_type=Path, subprocess_module=subprocess,
         hidden_run_kwargs_fn=lambda: {},
     )
@@ -106,3 +106,62 @@ def test_patch_scopes_and_partial_coverage(tmp_path):
     assert len({a["atom_id"] for a in atoms}) == 2
     assert "private content" not in str(result)
     assert "first" not in str(atoms)
+
+
+def test_persistent_metadata_cache_survives_memory_eviction(tmp_path):
+    from local_ai_hub.cache import SQLiteCache
+    from local_ai_hub.change_atoms import _CACHE, _LOCK
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _repo(root)
+    (root / "payment.py").write_text("private new value\n", encoding="utf-8")
+    cache_path = tmp_path / "cache.sqlite"
+    first = _plan(root, cache=SQLiteCache(cache_path, "test-hunk-cache"))
+    assert first["persistent_summary_cache_hits"] == 0
+    with _LOCK:
+        _CACHE.clear()
+    second = _plan(root, cache=SQLiteCache(cache_path, "test-hunk-cache"))
+    assert second["persistent_summary_cache_hits"] == 1
+    assert first["clusters"] == second["clusters"]
+    assert b"private new value" not in cache_path.read_bytes()
+
+
+def test_unchanged_hunk_id_survives_unrelated_edit(tmp_path):
+    _repo(tmp_path)
+    path = tmp_path / "payment.py"
+    original = [f"line {i}" for i in range(20)]
+    path.write_text("\n".join(original) + "\n", encoding="utf-8")
+    _git(tmp_path, "add", "payment.py")
+    _git(tmp_path, "commit", "-m", "multi-line fixture")
+    modified = original.copy()
+    modified[2] = "first change"
+    modified[17] = "second change"
+    path.write_text("\n".join(modified) + "\n", encoding="utf-8")
+    first = _plan(tmp_path)["clusters"][0]["changes"][0]["atoms"][0]
+    modified[17] = "other change"
+    path.write_text("\n".join(modified) + "\n", encoding="utf-8")
+    second = _plan(tmp_path)["clusters"][0]["changes"][0]["atoms"][0]
+    assert first["atom_id"] != second["atom_id"]
+    assert first["hunks"][0]["hunk_id"] == second["hunks"][0]["hunk_id"]
+    assert first["hunks"][1]["hunk_id"] != second["hunks"][1]["hunk_id"]
+
+
+def test_malformed_persistent_cache_is_recomputed(tmp_path):
+    from local_ai_hub.change_atoms import _CACHE, _LOCK
+
+    class InvalidCache:
+        def get(self, key):
+            return {"schema": 2, "rows": [[1, 1, 1, 1, "invalid"]], "count": 1}
+
+        def set(self, key, value):
+            assert value["schema"] == 2
+
+    _repo(tmp_path)
+    (tmp_path / "payment.py").write_text("different\n", encoding="utf-8")
+    with _LOCK:
+        _CACHE.clear()
+    result = _plan(tmp_path, cache=InvalidCache())
+    assert result["success"]
+    assert result["persistent_summary_cache_hits"] == 0
+    assert result["clusters"][0]["observed_hunk_count"] == 1

@@ -19,7 +19,9 @@ _MAX_PATCHES = 64
 _MAX_LINES = 10000
 _MAX_HUNKS = 64
 _CACHE_SIZE = 256
-_CACHE: OrderedDict[str, tuple[tuple[tuple[int, int, int, int], ...], int]] = OrderedDict()
+_HunkRow = tuple[int, int, int, int, str]
+_CacheValue = tuple[tuple[_HunkRow, ...], int]
+_CACHE: OrderedDict[str, _CacheValue] = OrderedDict()
 _LOCK = threading.Lock()
 _HUNK = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)")
 
@@ -28,29 +30,83 @@ def identity(*parts: str) -> str:
     return hashlib.sha256(json.dumps(parts, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _hunks(patch: bytes, key: str) -> tuple[tuple[tuple[int, int, int, int], ...], int, bool]:
-    with _LOCK:
-        cached = _CACHE.get(key)
-        if cached is not None:
-            _CACHE.move_to_end(key)
-            return cached[0], cached[1], True
+def _decode_cache(value: Any) -> _CacheValue | None:
+    if not isinstance(value, dict) or value.get("schema") != 2:
+        return None
+    rows, count = value.get("rows"), value.get("count")
+    if (
+        not isinstance(rows, list) or type(count) is not int
+        or not 0 <= count <= _MAX_LINES
+        or len(rows) != min(count, _MAX_HUNKS)
+    ):
+        return None
+    decoded = []
+    for row in rows:
+        if (
+            not isinstance(row, list) or len(row) != 5
+            or any(type(n) is not int or n < 0 for n in row[:4])
+            or not isinstance(row[4], str) or re.fullmatch(r"[0-9a-f]{64}", row[4]) is None
+        ):
+            return None
+        decoded.append((row[0], row[1], row[2], row[3], row[4]))
+    return tuple(decoded), count
 
-    ranges = []
-    count = 0
-    for line in patch.split(b"\n"):
-        match = _HUNK.match(line)
-        if match:
-            count += 1
-            if len(ranges) < _MAX_HUNKS:
-                old, old_count, new, new_count = match.groups()
-                ranges.append((int(old), int(old_count or b"1"), int(new), int(new_count or b"1")))
-    value = (tuple(ranges), count)
+
+def _remember(key: str, value: _CacheValue) -> None:
     with _LOCK:
         _CACHE[key] = value
         _CACHE.move_to_end(key)
         while len(_CACHE) > _CACHE_SIZE:
             _CACHE.popitem(last=False)
-    return value[0], value[1], False
+
+
+def _hunks(
+    patch: bytes, key: str, *, persistent_cache: Any | None = None,
+) -> tuple[tuple[_HunkRow, ...], int, str]:
+    with _LOCK:
+        cached = _CACHE.get(key)
+        if cached is not None:
+            _CACHE.move_to_end(key)
+            return cached[0], cached[1], "memory"
+
+    if persistent_cache is not None:
+        cached = _decode_cache(persistent_cache.get(key))
+        if cached is not None:
+            _remember(key, cached)
+            return cached[0], cached[1], "persistent"
+
+    # Include exact header and body in the digest. An unrelated hunk at another
+    # location does not invalidate this one; offset changes conservatively do.
+    lines = patch.split(b"\n")
+    ranges = []
+    count = 0
+    header: tuple[int, int, int, int] | None = None
+    digest: Any = None
+
+    def finish() -> None:
+        if header is not None and digest is not None:
+            ranges.append((*header, digest.hexdigest()))
+
+    for line in lines:
+        match = _HUNK.match(line)
+        if match:
+            finish()
+            header = None
+            digest = None
+            count += 1
+            if count <= _MAX_HUNKS:
+                old, old_count, new, new_count = match.groups()
+                header = (int(old), int(old_count or b"1"), int(new), int(new_count or b"1"))
+                digest = hashlib.sha256()
+        if digest is not None:
+            digest.update(line)
+            digest.update(b"\n")
+    finish()
+    value = (tuple(ranges), count)
+    _remember(key, value)
+    if persistent_cache is not None:
+        persistent_cache.set(key, {"schema": 2, "rows": [list(row) for row in ranges], "count": count})
+    return value[0], value[1], "computed"
 
 
 def inspect_change_atoms(
@@ -59,6 +115,8 @@ def inspect_change_atoms(
     staged: dict[str, tuple[int | None, int | None]],
     unstaged: dict[str, tuple[int | None, int | None]],
     git: Callable[..., bytes],
+    *,
+    persistent_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Inspect tracked textual patches twice and publish only matched observations.
 
@@ -69,6 +127,7 @@ def inspect_change_atoms(
     unavailable: list[dict[str, str]] = []
     pending: list[tuple[str, str, tuple[str, ...], str]] = []
     cache_hits = 0
+    persistent_hits = 0
     deadline = time.monotonic() + 10
     for path, xy in sorted(statuses.items()):
         if xy == "??" or xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
@@ -97,15 +156,21 @@ def inspect_change_atoms(
                 continue
             digest = hashlib.sha256(patch).hexdigest()
             atom_id = identity("patch-v1", root, path, scope, digest)
-            ranges, count, reused = _hunks(patch, atom_id)
-            cache_hits += int(reused)
+            ranges, count, source = _hunks(
+                patch, identity("hunk-summary-v2", atom_id), persistent_cache=persistent_cache,
+            )
+            cache_hits += int(source != "computed")
+            persistent_hits += int(source == "persistent")
             observations.setdefault(path, []).append({
                 "atom_id": atom_id,
                 "scope": scope,
                 "hunk_count": count,
                 "hunks": [
-                    {"old_start": a, "old_count": b, "new_start": c, "new_count": d}
-                    for a, b, c, d in ranges
+                    {
+                        "old_start": a, "old_count": b, "new_start": c, "new_count": d,
+                        "hunk_id": identity("hunk-v1", root, path, scope, digest),
+                    }
+                    for a, b, c, d, digest in ranges
                 ],
                 "hunks_truncated": count > len(ranges),
             })
@@ -125,4 +190,5 @@ def inspect_change_atoms(
         "observations": observations,
         "unavailable": unavailable,
         "cache_hits": cache_hits,
+        "persistent_cache_hits": persistent_hits,
     }
