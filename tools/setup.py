@@ -4718,7 +4718,11 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             return 1
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
-            sync_packaged_defaults(install_dir)
+            # Generate-only does not copy/install a source checkout. Only sync
+            # an actual existing installation; never require a fresh target to
+            # contain a repository defaults file.
+            if (install_dir / "defaults.toml").is_file():
+                sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
             for manual_action in configure_agents(
                 install_dir, hub_python, None, cfg,

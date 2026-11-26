@@ -149,7 +149,7 @@ files = [
 ]
 
 [tool.ruff]
-target-version = "8.2.0"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
