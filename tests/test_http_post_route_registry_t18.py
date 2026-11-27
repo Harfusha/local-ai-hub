@@ -193,7 +193,7 @@ _CURRENT_ADDED_ROUTES = {
  'post_repo_file_info_1': {'paths': ['/api/repo/file_info'], 'before': 'post_implementations_1'},
  'post_telemetry_endpoint_stats_reset_1': {'paths': ['/api/telemetry/endpoint-stats/reset'], 'before': 'post_work_orders_1'},
  'post_debug_trace_purge_1': {'paths': ['/api/debug-traces/purge'], 'before': 'post_maintenance_resolve_errors_1'},
- 'post_opencode_gateway_1': {'paths': ['/api/chat/completions'], 'before': 'post_chat_1'}}
+}
 _ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 
