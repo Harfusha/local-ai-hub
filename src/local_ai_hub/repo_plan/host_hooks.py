@@ -603,7 +603,7 @@ def _verified_execution_stop(root: Path, payload: dict[str, Any]) -> dict[str, A
         scope = execution.get("scope_check")
         if scope and (not isinstance(scope, dict) or scope.get("complete") is not True):
             return {}
-        if execution.get("progress", {}).get("status") in {"no_recent_verified_evidence", "repeated_failed_verification"}:
+        if execution.get("progress", {}).get("status") in {"no_recent_verified_evidence", "repeated_failed_verification", "repeated_checkpoint_pattern"}:
             return {}
         next_obligation = execution.get("next_obligation")
         if isinstance(next_obligation, dict) and next_obligation.get("criterion") in execution.get("problems", {}).get("owner_handoff_criteria", []):
