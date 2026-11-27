@@ -2243,3 +2243,35 @@ def test_verified_execution_problem_reopens_when_prerequisite_is_refreshed(store
         task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
     verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=verifier.artifact_store))
     assert verifier.completion(task.task_id).complete
+
+
+def test_verified_execution_problem_requires_separate_confirmation(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="repair consumer", acceptance_criteria=("repair consumer", "review resolution"),
+            slo_profile={"verified_execution": {
+                "units": {"review resolution": {"depends_on": ["repair consumer"]}},
+            }},
+        ),
+        ScopeContext(task_id="problem-confirmation"),
+        task_id="problem-confirmation",
+    )
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {
+            "id": "consumer-issue", "title": "consumer contract mismatch",
+            "criterion": "repair consumer", "resolution_criterion": "review resolution",
+        },
+    }))
+    verifier.record(receipt_for(task.task_id, "repair consumer", artifact_store=verifier.artifact_store))
+    pending = verifier.completion(task.task_id)
+    assert not pending.complete
+    assert pending.execution["problems"]["blocking_open"] == 1
+    assert pending.execution["coverage"]["verified"] == 1
+    assert pending.execution["next_obligation"]["criterion"] == "review resolution"
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    verifier.record(receipt_for(task.task_id, "review resolution", artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+    assert verifier.completion(task.task_id).execution["problems"]["resolved"] == 1
+    assert task_store.complete(task.task_id).status is TaskStatus.COMPLETED
