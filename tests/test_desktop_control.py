@@ -429,7 +429,7 @@ def test_plan_text_patch_does_not_overwrite_omitted_fields():
         "acceptance_criteria": ["one", "two"],
     }
     with pytest.raises(ValueError, match="description"):
-        desktop.plan_text_patch({"description": "a" * 12001}, task=True)
+        desktop.plan_text_patch({"description": "a" * 32769}, task=True)
     with pytest.raises(ValueError, match="next_action"):
         desktop.plan_text_patch({"next_action": 1}, task=True)
     with pytest.raises(ValueError, match="No plan fields"):
@@ -928,3 +928,32 @@ def test_task_transition_requires_exact_task_and_target_status(tmp_path, task):
                 "root": str(tmp_path), "id": "task_a", "action": "transition",
                 "status": "waiting", "reason": "waiting for input", "confirmed": True,
             }})
+
+
+def test_plan_metadata_patch_is_exact_and_does_not_claim_completion():
+    assert desktop.plan_text_patch({
+        "lifecycle": "paused", "default_target_ref": "", "accountable_role": "reviewer",
+    }, task=False) == {"lifecycle": "paused", "default_target_ref": None, "accountable_role": "reviewer"}
+    for field, value in (("lifecycle", "completed"), ("lifecycle", "archived"),
+                         ("default_target_ref", "master"), ("accountable_role", "")):
+        with pytest.raises(ValueError):
+            desktop.plan_text_patch({field: value}, task=False)
+
+
+def test_task_dependency_patch_is_exact_and_bounded():
+    dependency = {"plan_id": "plan_1", "task_id": "task_2"}
+    assert desktop.plan_text_patch({
+        "depends_on_json": json.dumps([dependency]), "kind": "analysis",
+        "work_phase": "verification", "order": "42",
+    }, task=True) == {"depends_on": [dependency], "kind": "analysis",
+                      "work_phase": "verification", "order": 42}
+    assert desktop.plan_text_patch({"depends_on_json": "[]"}, task=True) == {"depends_on": []}
+    for value in (None, "{}", "[1]", json.dumps([dependency, dependency]),
+                  json.dumps([{"plan_id": "other", "task_id": "task_2"}]),
+                  json.dumps([{**dependency, "unexpected": True}]), "a" * 50001):
+        with pytest.raises(ValueError):
+            desktop.plan_text_patch({"depends_on_json": value}, task=True)
+    for field, value in (("kind", "unknown"), ("work_phase", "done"), ("order", "-1"),
+                         ("order", "1000000001"), ("accountable_role", "")):
+        with pytest.raises(ValueError):
+            desktop.plan_text_patch({field: value}, task=True)
