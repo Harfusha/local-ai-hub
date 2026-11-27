@@ -124,7 +124,7 @@ def _mcp_task_memory_wire(value: dict[str, Any], requested: int) -> Any:
                     return fitted
     raise ValueError("Task-memory budget cannot represent the rejection envelope")
 
-def _mcp_bounded_error(value: dict[str, Any], requested: int) -> Any:
+def _mcp_bounded_error(value: dict[str, Any], requested: int, *, include_budget: bool = False) -> Any:
     services_module = _get_services_module()
     command_failure = value.get("success") is False and (
         "execution_id" in value or value.get("exit_code") not in (None, 0)
@@ -132,19 +132,23 @@ def _mcp_bounded_error(value: dict[str, Any], requested: int) -> Any:
     if not command_failure:
         if value.get("next_action") == "request_larger_response_budget":
             rejection = dict(value)
-            rejection["response_budget"] = {
-                "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
-            }
+            if include_budget:
+                rejection["response_budget"] = {
+                    "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
+                }
+            else:
+                rejection.pop("response_budget", None)
             content = [services_module.mcp_types.TextContent(type="text", text="Increase max_response_tokens.")]
             wire = {
                 "content": [item.model_dump(mode="json", exclude_none=True) for item in content],
                 "structuredContent": rejection, "isError": False,
             }
-            for _ in range(16):
-                returned = services_module.json_tokens(wire)
-                rejection["response_budget"]["returned_tokens"] = returned
-                if services_module.json_tokens(wire) == returned:
-                    break
+            if include_budget:
+                for _ in range(16):
+                    returned = services_module.json_tokens(wire)
+                    rejection["response_budget"]["returned_tokens"] = returned
+                    if services_module.json_tokens(wire) == returned:
+                        break
             if services_module.json_tokens(wire) <= requested:
                 return content, rejection
         # Preserve the existing context/evidence projection for other tools;
@@ -349,13 +353,32 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
         if memory_wire is not None:
             return memory_wire
 
+    budgeted_error = services_module.copy.deepcopy(value) if isinstance(value, dict) else {}
+    if isinstance(budgeted_error, dict) and "response_budget" not in budgeted_error:
+        budgeted_error["response_budget"] = {
+            "requested_tokens": requested, "returned_tokens": 0,
+            "unit": "estimated_tokens", "rejected": True,
+        }
+    metadata_wire_exceeds_budget = (
+        isinstance(budgeted_error, dict)
+        and services_module.json_tokens(services_module._mcp_wire_view(budgeted_error, structured=True)) > requested
+    )
     if (
         isinstance(value, dict)
         and value.get("success") is False
         and "error" in value
-        and ("review_scope_complete" in value or services_module.json_tokens(services_module._mcp_wire_view(value, structured=True)) > requested)
+        and (
+            "review_scope_complete" in value
+            or services_module.json_tokens(services_module._mcp_wire_view(value, structured=True)) > requested
+            or (value.get("next_action") == "request_larger_response_budget" and metadata_wire_exceeds_budget)
+        )
     ):
-        bounded_error = services_module._mcp_bounded_error(value, requested)
+        detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
+        include_budget = bool(detail_checker and detail_checker(services_module.CFG, arguments))
+        include_budget = include_budget or "response_budget" in (arguments.get("extra_fields") or ())
+        bounded_error = services_module._mcp_bounded_error(
+            value, requested, include_budget=include_budget,
+        )
         if bounded_error is not None:
             return bounded_error
 
@@ -729,6 +752,17 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
         detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
         safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
+        if name == "local_ai_status" and len(contents) == 1:
+            try:
+                text_value = services_module.json.loads(contents[0].text)
+            except (AttributeError, TypeError, ValueError):
+                text_value = None
+            if isinstance(text_value, dict):
+                safe_text = projector(text_value, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
+                if safe_text != text_value:
+                    contents = [services_module.mcp_types.TextContent(
+                        type="text", text=services_module.json_dumps(safe_text),
+                    )]
         if safe != structured:
             try:
                 mirror = len(contents) == 1 and services_module.json.loads(contents[0].text) == structured
@@ -845,7 +879,8 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                 )
     if not isinstance(structured, dict):
         return contents, structured
-    projector = (services_module.project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
+    projector = (services_module.project_status_response if name == "local_ai_status"
+                 else services_module.project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
                  else services_module.project_agent_response)
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
@@ -859,6 +894,17 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         mirror = len(contents) == 1 and services_module.json.loads(contents[0].text) == structured
     except (ValueError, AttributeError):
         mirror = False
+    if name == "local_ai_status" and len(contents) == 1:
+        try:
+            text_value = services_module.json.loads(contents[0].text)
+        except (AttributeError, TypeError, ValueError):
+            text_value = None
+        if isinstance(text_value, dict):
+            safe_text = projector(text_value, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
+            if safe_text != text_value:
+                contents = [services_module.mcp_types.TextContent(
+                    type="text", text=services_module.json_dumps(safe_text),
+                )]
     # Task-memory responses can have a short human-readable text companion.
     # Keep that companion; JSON mirrors must match the structured result.
     budget = safe.get("response_budget")

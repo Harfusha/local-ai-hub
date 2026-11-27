@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="Hub configuration path")
     parser.add_argument("--executable", type=Path, help="Verified OpenCode 2.2.5 executable")
     parser.add_argument("--timeout-seconds", type=float, default=28_800)
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     if os.name != "nt":
         print("Experimental launcher currently supports Windows only.", file=sys.stderr)
         return 2

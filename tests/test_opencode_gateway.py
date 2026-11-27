@@ -155,6 +155,16 @@ def test_opencode_auto_model_routes_with_authorized_repository_scope(tmp_path, m
     assert service.scheduled_models == ["smart-model"]
 
 
+def test_http_server_proxy_forwards_attribute_assignment(monkeypatch):
+    from local_ai_hub import http_server
+    from local_ai_hub.http_server_proxy import services_module
+
+    sentinel = object()
+    monkeypatch.setattr(services_module, "APP", sentinel)
+
+    assert http_server.APP is sentinel
+
+
 @pytest.mark.parametrize("payload", [
     {"model": "cloud/model", "messages": [{"role": "user", "content": "hi"}]},
     {"model": "gemma4:12b-128k", "messages": [{"role": "user", "content": "hi"}], "stream": "yes"},
