@@ -57,7 +57,7 @@
       "depends_on": [],
       "description": "Deliver every requirement in the supplied goal document, sections 1–35, including branch synchronization, complete native UI and CLI parity, system and workload views, Agent OS and knowledge workflows, project/model/telemetry features, security, performance, cross-platform runtime, installation/updater, documentation, complete validation, independent audit, and actual PR merge/post-merge verification. No runtime backward compatibility or legacy behavior; the only exception is one-time migration during update.",
       "kind": "code",
-      "next_action": "Removed legacy direct compression --apply from hubctl while retaining digest-bound staged review/apply/restore. Added regression for rejected no-write invocation and exercised staged apply; 43 focused compression/client/knowledge tests pass; pyflakes, compileall and diff-check pass. Continue parity/runtime audit and full scope.",
+      "next_action": "Pushed legacy compression removal as 68cd657fdf0c781ded09011fc319601615170838; 43 focused compression/client/knowledge tests, pyflakes, compileall and diff-check passed. PR #10 is open/draft; current exact-head CI and Native desktop checks are in progress. Hub semantic review returned a terminal argument error (required code), so no independent review receipt. Continue parity/runtime audit; origin/master is still 8fa0dbf3c411618bb1b01ea86f007ea400e52fbc and remains ancestor.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
