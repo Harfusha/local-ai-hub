@@ -170,7 +170,7 @@
         "Focused tests cover changed config, routing, lifecycle/recovery, receipts, GPU fencing and sandbox behavior; final acceptance separately records a real local-model and GPU run, live client handshake, installation state, and sandbox evidence."
       ],
       "accountable_role": "primary_agent",
-      "blocker": "Windows handle-relative copyback is integrated and verified (18 workspace tests passed, 2 symlink tests skipped for unavailable privilege); concurrent destination and delete-disposition failure tests verify conflict preservation and rollback. The focused integration suite passed (285 passed, 4 skipped). Production acceptance remains blocked: no listener on 127.0.0.1:28894; Ollama currently has qwen2.5-coder:3b active, not the requested Gemma 4 12B Q4_K_M; VRAM pressure unknown. Live AppContainer/pipe/token cleanup, GPU admission, real task receipts, and Gemma 128k acceptance remain unverified; launcher stays fail-closed.",
+      "blocker": "Windows copyback is integrated and focused validation passed (285 passed, 4 skipped); real OpenCode 2.2.5 AppContainer startup and token/pipe cleanup succeeded. Live MCP remains blocked: installed OpenCode cannot spawn its internal server under AppContainer (Access is denied); a staged copy starts the server, but its Python MCP child also exits Access is denied. No Hub tool call succeeded. No Hub listener is active on 127.0.0.1:11435 or OpenCode listener 28894; current model is qwen2.5-coder:7b-instruct-q4_K_M, not the requested Gemma 4 12B Q4_K_M, and VRAM pressure is unknown. Keep launcher fail-closed.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -191,7 +191,7 @@
       "depends_on": [],
       "description": "Dodat úplnou, nativní a bezpečnostně ověřenou integraci OpenCode s Local AI Hubem podle Superpowers specifikace a plánu; cílový model Gemma 4 12B Q4_K_M, runtime context 128k a Q4 KV pouze při živém potvrzení.",
       "kind": "code",
-      "next_action": "Verify adversarial Windows AppContainer file/pipe/token behavior end to end; then start OpenCode only through the managed launcher and capture live Hub task, GPU admission, and Gemma routing receipts before considering the blocker.",
+      "next_action": "Find a supported, least-privilege way to launch the MCP runtime and route the named-pipe bridge to the live Hub. Prove OpenCode initialize/tools/list and one safe Hub status call; then capture GPU admission, Agent OS task and Gemma 4 12B Q4_K_M 128k/Q4 KV receipts. Recheck Laya routing and cleanup before considering the launcher gate.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-opencode-max-integration.md",
