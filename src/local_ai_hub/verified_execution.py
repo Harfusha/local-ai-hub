@@ -19,6 +19,28 @@ def _canonical(value: Any, label: str, limit: int = 512) -> str:
     return value
 
 
+def normalize_exclusions(raw: Any) -> list[dict[str, str]]:
+    """Exact, auditable exclusions; never accept globs or implicit path prefixes."""
+    if type(raw) is not list or len(raw) > 128:
+        raise ValueError("inventory exclusions must be a bounded array")
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if type(item) is not dict or set(item) != {"path", "reason"}:
+            raise ValueError("inventory exclusion requires path and reason")
+        path = _canonical(item["path"], "excluded path", 360)
+        reason = _canonical(item["reason"], "exclusion reason", 240)
+        if (any(c in path for c in "\\*?[]:")
+                or any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF for c in path)
+                or any(part in {"", ".", ".."} for part in path.split("/"))):
+            raise ValueError("inventory exclusion requires an exact relative path")
+        if path in seen:
+            raise ValueError("duplicate inventory exclusion")
+        seen.add(path)
+        result.append({"path": path, "reason": reason})
+    return sorted(result, key=lambda item: item["path"])
+
+
 def expand_declared_inventory(
     criteria: Sequence[str], raw: Any,
 ) -> tuple[tuple[str, ...], Any]:
@@ -31,7 +53,7 @@ def expand_declared_inventory(
         return tuple(criteria), raw
     inventory = raw["inventory"]
     if (type(inventory) is not dict or not {"resources", "checks"}.issubset(inventory)
-            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision", "include_mapped_tests", "policy_sha256"}):
+            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision", "include_mapped_tests", "policy_sha256", "exclusions"}):
         raise ValueError("inventory must contain resources and checks")
     scope = inventory.get("scope", "declared")
     if scope not in ("declared", "repository", "changes"):
@@ -49,6 +71,9 @@ def expand_declared_inventory(
         raise ValueError("mapped tests require a server-compiled project policy digest")
     if not mapped and "policy_sha256" in inventory:
         raise ValueError("unexpected mapped test policy digest")
+    exclusions = normalize_exclusions(inventory.get("exclusions", []))
+    if "exclusions" in inventory and scope == "declared":
+        raise ValueError("exclusions require server-checked inventory scope")
     resources = inventory["resources"]
     checks = inventory["checks"]
     if type(resources) is not list or not 1 <= len(resources) <= MAX_OBLIGATIONS:
@@ -61,6 +86,8 @@ def expand_declared_inventory(
         _canonical(resource, "resource", 360)
     if len(set(resources)) != len(resources):
         raise ValueError("duplicate inventory resource")
+    if set(resources) & {item["path"] for item in exclusions}:
+        raise ValueError("excluded paths cannot remain in the resource matrix")
     partition = inventory.get("partition")
     if "partition" in inventory:
         if scope not in ("repository", "changes") or type(partition) is not dict or set(partition) != {
@@ -147,6 +174,7 @@ def expand_declared_inventory(
             **({"base_revision": base_revision} if base_revision else {}),
             **({"include_mapped_tests": True, "policy_sha256": policy_digest} if mapped else {}),
             **({"partition": dict(partition)} if partition is not None else {}),
+            **({"exclusions": exclusions} if exclusions else {}),
         },
     }
 
@@ -300,6 +328,8 @@ def execution_projection(
     total = len(ordered)
     inventory_summary = ({
         "authority": "declared", "resources": len(inventory["resources"]),
+        "excluded_count": len(inventory.get("exclusions", [])),
+        "exclusions_preview": inventory.get("exclusions", [])[:MAX_PREVIEW],
         "checks": len(inventory["checks"]),
         "obligations": len(inventory["resources"]) * len(inventory["checks"]),
         **({"partition": dict(inventory["partition"])} if "partition" in inventory else {}),
