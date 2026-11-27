@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -272,6 +273,7 @@ def execution_projection(
     receipt_ids: Mapping[str, str],
     receipt_gate_complete: bool,
     blockers: Sequence[str] = (),
+    receipt_observed_at: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Compute coverage from the canonical evaluator, never from claimed progress."""
     normalized = normalize_execution(criteria, config)
@@ -290,14 +292,27 @@ def execution_projection(
     states: Counter[str] = Counter()
     dimensions: dict[str, Counter[str]] = defaultdict(Counter)
     rows: list[dict[str, Any]] = []
+    dependency_stale: list[str] = []
     ready: list[dict[str, Any]] = []
     fanout: Counter[str] = Counter(dep for metadata in units.values() for dep in metadata["depends_on"])
     for criterion in ordered:
         metadata = units.get(criterion, {})
         dimension = metadata.get("dimension", "general" if criterion in declared else "project_verification")
-        waiting = [dep for dep in metadata.get("depends_on", []) if dep not in verified]
+        dependencies = metadata.get("depends_on", [])
+        waiting = [dep for dep in dependencies if dep not in verified]
+        superseded: list[str] = []
+        if receipt_observed_at is not None and criterion in verified_receipts and not waiting:
+            observed = receipt_observed_at.get(criterion, 0.0)
+            for dep in dependencies:
+                prerequisite = receipt_observed_at.get(dep, 0.0)
+                if (not math.isfinite(observed) or not math.isfinite(prerequisite)
+                        or observed <= 0 or prerequisite <= 0 or observed < prerequisite):
+                    superseded.append(dep)
         if waiting:
             status = "dependency_blocked"
+        elif superseded:
+            status = "stale"
+            dependency_stale.append(criterion)
         elif criterion in verified_receipts:
             status = "verified"
             verified.add(criterion)
@@ -318,7 +333,10 @@ def execution_projection(
         if waiting:
             row["waiting_on"] = waiting[:MAX_PREVIEW]
             row["waiting_on_count"] = len(waiting)
-        if criterion in verified_receipts and criterion in receipt_ids:
+        if superseded:
+            row["superseded_by"] = superseded[:MAX_PREVIEW]
+            row["superseded_by_count"] = len(superseded)
+        if status == "verified" and criterion in receipt_ids:
             row["verified_receipt_id"] = receipt_ids[criterion]
         if status != "verified":
             rows.append(row)
@@ -347,6 +365,7 @@ def execution_projection(
             for name, counts in sorted(dimensions.items())
         },
         "receipt_gate_complete": receipt_gate_complete,
+        **({"dependency_stale_criteria": dependency_stale} if dependency_stale else {}),
         "ready_for_completion_attempt": receipt_gate_complete and len(verified) == total and not blockers,
         "checkpoint_blocker_count": len(blockers),
         "next_obligation": ready[0] if ready else None,
