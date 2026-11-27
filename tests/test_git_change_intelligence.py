@@ -499,6 +499,11 @@ def test_large_dirty_worktree_batches_all_supported_patch_scopes(tmp_path):
     assert result["patch_scope_limit"] == 256
     assert result["git_visible_observation_complete"], result["unavailable_patch_scopes"]
     assert result["patch_batch_reads"] >= 20
+    from local_ai_hub.change_commit_preflight import commit_preflight
+
+    group = next(group for group in result["clusters"] if names[0] in group["files"])
+    preflight = commit_preflight(result, group["files"], result["observed_change_set_id"])
+    assert preflight["staging_preview_available"], preflight
     changes = {change["path"]: change for group in result["clusters"] for change in group["changes"]}
     assert set(changes) == set(names)
     assert all(len(change["atoms"]) == 1 for change in changes.values())

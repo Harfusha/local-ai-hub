@@ -15,14 +15,14 @@ def publish_change_plan(result: dict[str, Any], store: Any) -> dict[str, Any]:
         return {"success": False, "error": "Artifact store unavailable", "artifact_status": "unavailable"}
     # Exclude task context from globally addressable derived artifacts. Task
     # associations remain available from the authorized live plan interface.
-    safe = {k: v for k, v in result.items() if k not in {"clusters", "task_context", "local_ledger"}}
+    safe = {k: v for k, v in result.items() if k not in {"clusters", "task_context", "local_ledger", "watcher_context", "broker_postimage_context", "indexed_impact"}}
     safe["clusters"] = [
-        {k: v for k, v in group.items() if k not in {"task_candidates", "task_candidates_omitted", "local_ledger", "changes"}}
+        {k: v for k, v in group.items() if k not in {"task_candidates", "task_candidates_omitted", "local_ledger", "changes", "watcher_candidate_paths", "broker_postimage_candidate_paths"}}
         for group in result.get("clusters", [])
     ]
     for group, source in zip(safe["clusters"], result.get("clusters", [])):
         group["changes"] = [
-            {**{k: v for k, v in change.items() if k != "atoms"}, "atoms": [
+            {**{k: v for k, v in change.items() if k not in {"atoms", "watcher_candidate", "broker_postimage_candidate"}}, "atoms": [
                 {k: v for k, v in atom.items() if k not in {"local_annotations", "local_annotations_omitted"}}
                 for atom in change.get("atoms", [])
             ]}
@@ -31,7 +31,11 @@ def publish_change_plan(result: dict[str, Any], store: Any) -> dict[str, Any]:
     safe["commit_ready"] = False
     safe["verification_status"] = "unknown"
     safe["artifact_historical_observation"] = True
-    size = len(json.dumps(safe, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    try:
+        size = len(json.dumps(safe, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    except (UnicodeError, ValueError, TypeError):
+        return {"success": False, "error": "Change plan contains metadata unsupported by the JSON artifact store",
+                "artifact_status": "unavailable", "commit_ready": False}
     if size > _MAX_ARTIFACT_BYTES:
         return {"success": False, "error": "Change plan metadata exceeds artifact budget; narrow the scope",
                 "artifact_status": "too_large", "commit_ready": False}

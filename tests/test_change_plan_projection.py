@@ -181,3 +181,37 @@ def test_delta_pages_all_deleted_groups_even_without_changed_groups():
             break
         offset = page["next_offset"]
     assert collected == sorted(group["group_key"] for group in groups)
+
+
+def test_change_plan_artifact_does_not_export_private_local_provenance():
+    from unittest.mock import MagicMock
+
+    from local_ai_hub.change_plan_artifact import publish_change_plan
+
+    source = {"success": True, "watcher_context": {"private": "watcher"}, "broker_postimage_context": {},
+              "indexed_impact": {"private": "index"}, "clusters": [
+        {"files": ["a.py"], "watcher_candidate_paths": 1, "broker_postimage_candidate_paths": 1,
+         "changes": [{"path": "a.py", "watcher_candidate": {"observed_at": 1},
+                      "broker_postimage_candidate": {"task_id": "private-task", "attempt_id": "private-attempt"},
+                      "atoms": [{"atom_id": "a" * 64, "local_annotations": [{"actor": "private-actor"}]}]}]}
+    ]}
+    store = MagicMock()
+    store.put_json.return_value = "art_example"
+    assert publish_change_plan(source, store)["success"]
+    payload = store.put_json.call_args.args[0]
+    assert "private" not in str(payload)
+    assert "broker_postimage_context" not in payload
+    assert "watcher_context" not in payload
+    assert payload["clusters"][0]["changes"][0]["atoms"] == [{"atom_id": "a" * 64}]
+    assert source["clusters"][0]["changes"][0]["broker_postimage_candidate"]["task_id"] == "private-task"
+
+
+def test_change_plan_artifact_rejects_non_utf8_metadata_without_storage():
+    from unittest.mock import MagicMock
+
+    from local_ai_hub.change_plan_artifact import publish_change_plan
+
+    store = MagicMock()
+    result = publish_change_plan({"success": True, "clusters": [{"files": ["invalid-" + chr(0xDCFF)]}]}, store)
+    assert not result["success"] and not result["commit_ready"]
+    store.put_json.assert_not_called()
