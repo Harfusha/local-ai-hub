@@ -2360,7 +2360,8 @@ def test_verified_execution_checkpoint_loop_is_persisted_and_server_managed(stor
                      slo_profile={"verified_execution": {}}),
         ScopeContext(task_id="checkpoint-loop"), task_id="checkpoint-loop",
     )
-    task_store.claim(task.task_id, "agent", actor="agent")
+    task_store.transition(task.task_id, TaskStatus.ACTIVE, reason="start review",
+                          actor="agent", idempotency_key="start-loop")
     for index in range(8):
         task_store.checkpoint(task.task_id, TaskCheckpoint(
             phase="review", next_action="first" if index % 2 else "second",
@@ -2376,3 +2377,38 @@ def test_verified_execution_checkpoint_loop_is_persisted_and_server_managed(stor
     result = verifier.completion(task.task_id)
     assert not result.complete
     assert result.execution["progress"]["status"] != "repeated_checkpoint_pattern"
+
+
+def test_verified_execution_graph_amendment_retires_only_affected_receipts(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="review", acceptance_criteria=("a", "b", "c"),
+                     slo_profile={"verified_execution": {"units": {"c": {"depends_on": ["b"]}}}}),
+        ScopeContext(task_id="graph-amendment"), task_id="graph-amendment",
+    )
+    for criterion in ("a", "b", "c"):
+        verifier.record(receipt_for(task.task_id, criterion, artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+    patch = {"add_criteria": ["d"], "units": {"b": {"depends_on": ["d"]}}}
+    command = {"expected_revision": 1, "reason": "new prerequisite", "patch": patch}
+    changed = task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_graph_revision": command,
+    }))
+    assert changed.contract.acceptance_criteria == ("a", "b", "c", "d")
+    assert set(changed.verification_receipts) == {"a"}
+    assert changed.checkpoint.state_data["contract_revision"] == 2
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.satisfied_criteria == ("a",)
+    assert result.execution["next_obligation"]["criterion"] == "d"
+    task_store.checkpoint(task.task_id, TaskCheckpoint(phase="review"))
+    assert task_store.get(task.task_id).checkpoint.state_data["contract_revision"] == 2
+    with pytest.raises(ValueError, match="history is server-managed"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"contract_revision": 1}))
+    with pytest.raises(ConcurrentTaskUpdateError):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+            "execution_graph_revision": command,
+        }))
+    for criterion in ("d", "b", "c"):
+        verifier.record(receipt_for(task.task_id, criterion, artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
