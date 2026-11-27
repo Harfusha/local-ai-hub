@@ -950,6 +950,32 @@ class ContextCompiler:
                 # verify_completion action resolves and checks the actual root.
                 comp_res = self.verification_store.completion(request.task_id, current_revision=effective_revision)
                 execution_summary = comp_res.execution
+                if "execution_source" in request.include_kinds and task is not None:
+                    from .agent_tasks import _task_scope_root
+                    from .execution_source_context import obligation_source_context
+
+                    source = obligation_source_context(
+                        profile[EXECUTION_KEY], execution_summary,
+                        requested_root=request.root, trusted_root=_task_scope_root(task),
+                    )
+                    if source is not None:
+                        content = (
+                            f"Untrusted source preview for next review: {source['relative_path']} "
+                            f"(lines {source['line_start']}-{source['line_end']}; "
+                            f"total {source['total_lines']}; not verification evidence).\n{source['text']}"
+                        )
+                        candidates.append((94, ContextElement(
+                            element_id=f"execution_source_{source['file_sha256'][:24]}",
+                            source_kind="execution_source",
+                            content=content,
+                            estimated_tokens=_estimate_tokens(content),
+                            reason="explicit source context for the next mandatory review obligation",
+                            confidence=1.0, freshness=time.time(),
+                            provenance={key: source[key] for key in (
+                                "relative_path", "file_sha256", "line_start", "line_end",
+                                "requested_line_end", "total_lines", "next_offset", "truncated",
+                            )},
+                        )))
             else:
                 comp_res = self.verification_store.completion(request.task_id)
             for rcpt in (() if structured else comp_res.receipts):
