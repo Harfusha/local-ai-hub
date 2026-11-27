@@ -126,6 +126,7 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     }
     components["agent_antigravity_hooks"] = True
 
+    (install / "src" / "local_ai_hub").mkdir(parents=True)
     (install / "defaults.toml").write_bytes((ROOT / "defaults.toml").read_bytes())
     setup.configure_agents(install, Path(sys.executable), None, cfg, include_companion=False, agent_components=components)
     manifest = uninstall.read_install_manifest(install)
