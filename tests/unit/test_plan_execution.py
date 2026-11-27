@@ -20,3 +20,13 @@ def test_partitions_never_combine_different_checks_or_manifests():
                                  config(2, digest="b" * 64)])
     assert len(groups) == 3
     assert not any(group["complete"] for group in groups)
+
+
+def test_partitions_never_combine_different_exclusion_reasons():
+    first, second, third = config(0), config(1), config(2)
+    for item in (first, second):
+        item["inventory"]["exclusions"] = [{"path": "a.py", "reason": "generated"}]
+    third["inventory"]["exclusions"] = [{"path": "a.py", "reason": "out of scope"}]
+    groups = partition_coverage([first, second, third])
+    assert len(groups) == 2
+    assert not any(group["complete"] for group in groups)
