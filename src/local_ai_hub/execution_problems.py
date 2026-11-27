@@ -72,7 +72,7 @@ def validate_resolution_order(
             raise ValueError("resolution criterion cannot be a prerequisite of the primary criterion")
         if current not in visited:
             visited.add(current)
-            pending.extend(dependencies.get(current, ()))
+            pending.extend(dependencies.get(current, set()))
 
 
 def record_problem(
@@ -132,7 +132,7 @@ def project_problems(
     satisfied: Sequence[str],
     receipts: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Resolve only via a new, fresh receipt for the linked criterion.
+    """Resolve only via a new, fresh receipt and optional separate confirmation.
 
     A later stale or failed receipt reopens the report automatically. Reported
     evidence references are unverified leads; they never satisfy the gate.
