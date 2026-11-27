@@ -39,3 +39,20 @@ def test_partitions_never_combine_different_static_import_policies():
     groups = partition_coverage([first, second, third])
     assert len(groups) == 2
     assert not any(group["complete"] for group in groups)
+
+
+def test_partition_presence_does_not_imply_verified_coverage():
+    configs = [config(0), config(1), config(2)]
+    result = partition_coverage(configs, verified=[True, False, True])[0]
+    assert result["complete"]
+    assert not result["verified_complete"]
+    assert result["verified_partitions"] == 2
+    assert result["unverified_preview"] == [1]
+    assert partition_coverage(configs, verified=[True] * 3)[0]["verified_complete"]
+
+
+def test_duplicate_verified_partitions_do_not_complete_manifest():
+    result = partition_coverage([config(0), config(1), config(2), config(2)],
+                                verified=[True] * 4)[0]
+    assert result["verified_partitions"] == 3
+    assert not result["verified_complete"]
