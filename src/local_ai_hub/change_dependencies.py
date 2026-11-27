@@ -31,6 +31,8 @@ def _python_module_paths(path: str, name: str, available: set[str]) -> set[str]:
         level = len(name) - len(name.lstrip("."))
         parent = PurePosixPath(path).parent
         for _ in range(level - 1):
+            if parent == PurePosixPath("."):
+                return set()
             parent = parent.parent
         tail = name[level:].replace(".", "/")
         base = posixpath.normpath(posixpath.join(parent.as_posix(), tail))
@@ -51,7 +53,12 @@ def _js_module_paths(path: str, name: str, available: set[str]) -> set[str]:
     if base.startswith("../") or base == ".." or base.startswith("/"):
         return set()
     extensions = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte")
-    return available & ({base} | {base + ext for ext in extensions} | {base + "/index" + ext for ext in extensions})
+    targets = {base} | {base + ext for ext in extensions} | {base + "/index" + ext for ext in extensions}
+    # TypeScript Node-style imports may name the emitted JS extension.
+    for emitted, source_extensions in ((".js", (".ts", ".tsx")), (".mjs", (".mts",)), (".cjs", (".cts",))):
+        if base.endswith(emitted):
+            targets.update(base[:-len(emitted)] + ext for ext in source_extensions)
+    return available & targets
 
 
 def _dependency_units(edges: dict[str, set[str]]) -> list[list[str]]:
@@ -118,15 +125,23 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
     owner = {path: group["group_key"] for group in groups for path in group["files"]}
     available = set(owner)
     declarations: dict[str, set[str]] = {}
+    old_declarations: dict[str, set[str]] = {}
     for group in groups:
         for change in group["changes"]:
             for atom in change.get("atoms", []):
                 for name in atom.get("semantic", {}).get("declarations_after", []):
                     declarations.setdefault(name.lower(), set()).add(change["path"])
+                for name in atom.get("semantic", {}).get("declarations_before", []):
+                    old_declarations.setdefault(name.lower(), set()).add(change["path"])
                 annotate_hunks(atom)
     edges: dict[str, set[str]] = {group["group_key"]: set() for group in groups}
     evidence: dict[str, list[dict[str, str]]] = {key: [] for key in edges}
     ambiguous = 0
+    unmatched = 0
+    import_observations = 0
+    unavailable_scopes = 0
+    truncated_scopes = 0
+    removed_declarations = 0
     removed_paths = {change["path"] for group in groups for change in group["changes"]
                      if change.get("status") in {"D", "D ", " D"}}
     removal_edges = 0
@@ -137,15 +152,33 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
             path = change["path"]
             suffix = PurePosixPath(path).suffix.lower()
             for atom in change.get("atoms", []):
-                for name in atom.get("semantic", {}).get("imports_after", []):
+                semantic = atom.get("semantic", {})
+                if semantic.get("status") != "observed":
+                    unavailable_scopes += 1
+                if semantic.get("imports_truncated") or semantic.get("imports_before_truncated") or semantic.get("declarations_truncated") or semantic.get("declarations_before_truncated"):
+                    truncated_scopes += 1
+                for name in semantic.get("imports_after", []):
+                    import_observations += 1
                     if suffix == ".py":
                         matches = _python_module_paths(path, name, available)
                     elif suffix in {".php", ".ctp"}:
                         matches = declarations.get(name.lower(), set())
+                        if not matches:
+                            before_matches = old_declarations.get(name.lower(), set())
+                            if len(before_matches) == 1:
+                                old_path = next(iter(before_matches))
+                                if old_path in removed_paths:
+                                    matches = before_matches
+                                else:
+                                    # A renamed or removed declaration in a surviving file
+                                    # is not a dependency proof. Surface it for review.
+                                    removed_declarations += 1
+                                    group["risks"] = sorted(set(group["risks"]) | {"import_candidate_points_to_removed_declaration"})
                     else:
                         matches = _js_module_paths(path, name, available)
                     if len(matches) != 1:
                         ambiguous += int(len(matches) > 1)
+                        unmatched += int(not matches)
                         continue
                     target = next(iter(matches))
                     other = owner[target]
@@ -166,13 +199,16 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                 # file has one observed scope (mixed stages are ambiguous).
                 if (len(change.get("atoms", [])) != 1 or semantic.get("status") != "observed"
                         or semantic.get("imports_before_truncated") is not False
-                        or semantic.get("imports_truncated") is not False
-                        or suffix in {".php", ".ctp"}):
+                        or semantic.get("imports_truncated") is not False):
                     continue
                 removed_imports = set(semantic.get("imports_before", [])) - set(semantic.get("imports_after", []))
                 for name in sorted(removed_imports):
-                    matches = (_python_module_paths(path, name, available) if suffix == ".py"
-                               else _js_module_paths(path, name, available))
+                    if suffix in {".php", ".ctp"}:
+                        matches = old_declarations.get(name.lower(), set())
+                    elif suffix == ".py":
+                        matches = _python_module_paths(path, name, available)
+                    else:
+                        matches = _js_module_paths(path, name, available)
                     if len(matches) != 1:
                         continue
                     target = next(iter(matches))
@@ -212,6 +248,11 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
         "candidate_commit_units": units,
         "cyclic_unit_count": sum(len(unit) > 1 for unit in units),
         "ambiguous_import_count": ambiguous,
+        "unmatched_import_count": unmatched,
+        "observed_import_count": import_observations,
+        "unavailable_semantic_scopes": unavailable_scopes,
+        "truncated_import_or_declaration_scopes": truncated_scopes,
+        "removed_declaration_import_candidates": removed_declarations,
         "removed_import_ordering_edges": removal_edges,
         "unresolved_removed_import_count": unresolved_removed_imports,
         "dependencies_verified": False,

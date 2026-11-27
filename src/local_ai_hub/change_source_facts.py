@@ -104,6 +104,7 @@ def summarize_facts(
     imports, imports_truncated = import_candidates(path, after)
     imports_before, before_truncated = import_candidates(path, before)
     declarations = sorted({name for kind, name in new if kind in {"php_class", "php_trait", "php_interface", "php_enum"}})
+    old_declarations = sorted({name for kind, name in old if kind in {"php_class", "php_trait", "php_interface", "php_enum"}})
     return {
         "status": "observed", "method": "source_fact_delta_v1",
         "structural_equal": False, "formatting_only": False,
@@ -115,5 +116,7 @@ def summarize_facts(
         "imports_after": imports, "imports_truncated": imports_truncated,
         "imports_before": imports_before, "imports_before_truncated": before_truncated,
         "declarations_after": declarations[:32], "declarations_truncated": len(declarations) > 32,
+        "declarations_before": old_declarations[:32],
+        "declarations_before_truncated": old_truncated or len(old_declarations) > 32,
         "behavior_equivalence_proven": False,
     }

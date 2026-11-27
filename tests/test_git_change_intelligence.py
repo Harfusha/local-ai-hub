@@ -414,3 +414,43 @@ def test_paired_benchmark_refuses_estimated_or_inconsistent_usage():
     run["usage_source"] = "estimated"
     with pytest.raises(ValueError, match="Provider-reported"):
         evaluate({"schema": 1, "cases": [case]})
+
+
+def test_php_deleted_provider_orders_removed_import_and_reports_retained_import():
+    from local_ai_hub.change_dependencies import annotate_dependencies
+    from local_ai_hub.change_source_facts import summarize_facts
+
+    def extract(path, text):
+        return [{"kind": "php_class", "name": "App\\Foo", "value": text,
+                 "extra": {"fqn": "App\\Foo"}}] if text else []
+
+    provider = summarize_facts("src/Foo.php", "class Foo {}", "", extract)
+    assert provider["declarations_before"] == ["App\\Foo"]
+    assert provider["declarations_after"] == []
+    groups = [
+        {"group_key": "provider", "files": ["src/Foo.php"], "risks": [],
+         "changes": [{"path": "src/Foo.php", "status": "D", "atoms": [{"semantic": provider}]}]},
+        {"group_key": "consumer", "files": ["src/Use.php"], "risks": [],
+         "changes": [{"path": "src/Use.php", "status": "M", "atoms": [{"semantic": {
+             "status": "observed", "imports_before": ["App\\Foo"], "imports_after": [],
+             "imports_before_truncated": False, "imports_truncated": False,
+         }}]}]},
+    ]
+    graph = annotate_dependencies(groups)
+    assert graph["candidate_order"] == ["consumer", "provider"]
+    assert graph["removed_import_ordering_edges"] == 1
+    groups[1]["changes"][0]["atoms"][0]["semantic"]["imports_after"] = ["App\\Foo"]
+    graph = annotate_dependencies(groups)
+    assert graph["unresolved_removed_import_count"] == 1
+    assert "import_candidate_points_to_removed_path" in groups[1]["risks"]
+    assert graph["dependencies_verified"] is False
+
+
+def test_module_path_candidates_typescript_emitted_extensions_and_python_overshoot():
+    from local_ai_hub.change_dependencies import _js_module_paths, _python_module_paths
+
+    paths = {"src/api.ts", "src/api.js", "src/entry.mts", "src/worker.cts"}
+    assert _js_module_paths("src/main.ts", "./api.js", paths) == {"src/api.ts", "src/api.js"}
+    assert _js_module_paths("src/main.ts", "./entry.mjs", paths) == {"src/entry.mts"}
+    assert _js_module_paths("src/main.ts", "./worker.cjs", paths) == {"src/worker.cts"}
+    assert _python_module_paths("pkg/main.py", "...api", {"api.py"}) == set()
