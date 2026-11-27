@@ -332,6 +332,7 @@ impl Desktop {
         });
     }
     fn confirm(&mut self, label: &str, payload: Value) {
+        if !self.can_edit_context() { return; }
         self.pending = Some(Pending { label: label.to_owned(), payload });
     }
     fn refilter(&mut self) {
@@ -414,13 +415,24 @@ impl Desktop {
                             if self.rows.len() >= MAX_ROWS { " (display capped)" } else { "" });
                         self.last_probe = Instant::now() - Duration::from_secs(30);
                     }
-                    Err(error) => { if done.live { self.auto_live = false; self.last_live = Instant::now(); }
-                        self.status = format!("{}: {error} (previous response, if any, is not fresh)", done.label); }
+                    Err(error) => {
+                        // A failed load/mutation must not leave a previously
+                        // successful snapshot looking current or enable another
+                        // write against its stale plan revision.
+                        self.clear_response();
+                        self.plan_draft = None;
+                        self.revision.clear();
+                        if done.live { self.last_live = Instant::now(); }
+                        self.status = format!("{}: {error} — reload to obtain fresh state", done.label);
+                    }
                 }
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.busy = None; self.receiver = None;
-                self.status = "Operation worker disconnected; outcome unknown.".into();
+                self.clear_response();
+                self.plan_draft = None;
+                self.revision.clear();
+                self.status = "Operation worker disconnected; outcome unknown. Reload before retrying.".into();
             }
             _ => {}
         }
@@ -454,6 +466,15 @@ impl Desktop {
         self.memory_key.clear();
         self.memory_value.clear();
         self.memory_query.clear();
+        self.goal.clear();
+        self.criteria.clear();
+        self.reason.clear();
+        self.prompt.clear();
+        self.incident_kind.clear();
+        self.incident_message.clear();
+        self.vision_path.clear();
+        self.archive_path.clear();
+        self.semaphore.clear();
         self.lease_owner.clear();
         self.stream_id.clear();
         self.task_offset = 0;
@@ -1236,7 +1257,11 @@ impl eframe::App for Desktop {
                     }
                     if ui.button("Load / refresh").clicked() { self.refresh(ctx); }
                 });
-                self.operations(ui, ctx);
+                // Long forms (plans, operator catalog, traces) must not push
+                // their action buttons and the response table outside the window.
+                let control_height = (ui.available_height() * 0.45).max(100.0);
+                egui::ScrollArea::vertical().id_salt(("view_controls", self.page, self.view))
+                    .max_height(control_height).auto_shrink([false, true]).show(ui, |ui| self.operations(ui, ctx));
             });
             ui.separator();
             ui.horizontal(|ui| {
@@ -1629,6 +1654,10 @@ mod tests {
         app.plan_task = "old-plan-card".into();
         app.revision = "old-revision".into();
         app.memory_scope_id = "old-session".into();
+        app.goal = "old repository goal".into();
+        app.prompt = "old prompt".into();
+        app.incident_message = "old incident".into();
+        app.archive_path = "old export path".into();
         app.stream_id = "old-stream".into();
         app.history_cursor = 42;
         app.event_cursor = 42;
@@ -1644,6 +1673,7 @@ mod tests {
         assert!(app.pending.is_none() && app.snapshot.is_none());
         assert!(app.entity.is_empty() && app.plan_task.is_empty() && app.revision.is_empty());
         assert!(app.memory_scope_id.is_empty() && app.stream_id.is_empty());
+        assert!(app.goal.is_empty() && app.prompt.is_empty() && app.incident_message.is_empty() && app.archive_path.is_empty());
         assert_eq!((app.history_cursor, app.event_cursor, app.trace_offset, app.trace_content_offset, app.task_offset), (0, 0, 0, 0, 0));
         assert!(app.operator_fields.is_empty());
         app.installation_open = true;
