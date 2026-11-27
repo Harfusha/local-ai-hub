@@ -91,10 +91,12 @@ jobs:
           tests/unit/test_verified_execution.py
           tests/unit/test_execution_inventory.py
           tests/unit/test_execution_problems.py
+          tests/unit/test_plan_execution.py
+          tests/test_desktop_control.py
           tests/test_agent_verification.py
           tests/test_agent_context.py
           tests/test_hubctl_dispatch_acceptance.py
-          -k "verified_execution or execution_cli or execution_inventory or execution_problems"
+          -k "verified_execution or execution_cli or execution_inventory or execution_problems or plan_execution or work_center or evidence_progress or inventory_check"
       - run: >-
           python -m pytest -q
           tests/test_mcp_contract_dispatch.py

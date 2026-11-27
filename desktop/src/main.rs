@@ -795,6 +795,10 @@ impl eframe::App for Desktop {
                         egui::ScrollArea::vertical().id_salt("execution_status").show(ui, |ui| execution::render(ui, snapshot));
                         return;
                     }
+                    if self.current() == "Plan execution" {
+                        egui::ScrollArea::vertical().id_salt("execution_plan").show(ui, |ui| execution::render_plan(ui, snapshot));
+                        return;
+                    }
                     summary::render(ui, self.current(), snapshot);
                     if self.current() == "Plan board" {
                         if let Some(columns) = records::board_columns(snapshot) {

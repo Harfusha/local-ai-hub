@@ -346,4 +346,6 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
         parts.append("Evidence preview ready; run the authoritative completion gate.")
     else:
         parts.append("Completion not ready; inspect remaining obligations and blockers.")
+    if progress.get("status") == "no_recent_verified_evidence":
+        parts.append("No recent verified evidence; check for blocked or repetitive work.")
     return "\n".join(parts)

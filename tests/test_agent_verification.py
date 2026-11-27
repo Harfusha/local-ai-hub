@@ -2091,7 +2091,10 @@ def test_verified_execution_uses_persisted_receipts_after_restart(tmp_path: Path
     reopened_state = AgentStateStore(db_path)
     reopened_tasks = TaskStore(reopened_state)
     reopened_verifier = VerificationStore(reopened_state, task_store=reopened_tasks, artifact_store=artifacts)
-    assert reopened_verifier.completion(task.task_id).execution == first.execution
+    reopened = reopened_verifier.completion(task.task_id).execution
+    assert {k: v for k, v in reopened.items() if k != "progress"} == {
+        k: v for k, v in first.execution.items() if k != "progress"
+    }
     reopened_verifier.record(receipt_for(task.task_id, "review api", artifact_store=artifacts))
     assert reopened_verifier.completion(task.task_id).execution["coverage"]["verified"] == 2
     assert reopened_tasks.complete(task.task_id).status is TaskStatus.COMPLETED

@@ -30,6 +30,9 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
         && execution["ready_for_completion_attempt"].as_bool() == Some(true);
     ui.label(if ready { "Ready for completion attempt — not a completed task." }
         else { "Incomplete or blocked." });
+    if execution["progress"]["status"].as_str() == Some("no_recent_verified_evidence") {
+        ui.label("No recent verified evidence. Check for blocked or repetitive work.");
+    }
     let coverage = &execution["coverage"];
     if let Some((verified, total)) = progress(coverage) {
         ui.label(format!("{verified}/{total} verified obligations"));
@@ -82,6 +85,48 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
         }
     }
     if problems["preview_truncated"].as_bool() == Some(true) { ui.label("Additional reports exist."); }
+}
+
+pub fn render_plan(ui: &mut egui::Ui, snapshot: &Value) {
+    let plan = &snapshot["execution"];
+    if !plan.is_object() {
+        ui.label("Plan verification unavailable.");
+        return;
+    }
+    ui.heading("Plan execution");
+    ui.label(if plan["complete"].as_bool() == Some(true) {
+        "All scanned plan tasks and partitions verified (snapshot)."
+    } else { "Plan incomplete or verification unavailable." });
+    ui.label(format!("Status: {}", label(plan, "status")));
+    if let (Some(scanned), Some(total)) = (count(plan, "scanned_tasks"), count(plan, "total_tasks")) {
+        ui.label(format!("Scanned {scanned}/{total} tasks"));
+    }
+    if plan["truncated"].as_bool() == Some(true) {
+        ui.label("Scan limit reached. Unscanned tasks cannot be counted as complete.");
+    }
+    if let Some(tasks) = plan["tasks"].as_array() {
+        for task in tasks.iter().take(64) {
+            ui.separator();
+            ui.label(format!("{} — {}", label(task, "plan_task_id"), label(task, "status")));
+            if let Some((verified, total)) = progress(&task["coverage"]) {
+                ui.label(format!("{verified}/{total} obligations verified"));
+            }
+            if task["next_obligation"].is_object() {
+                ui.small(format!("Next: {}", label(&task["next_obligation"], "criterion")));
+            }
+        }
+    }
+    if let Some(partitions) = plan["partition_groups"].as_array() {
+        ui.heading("Partition manifests");
+        for group in partitions.iter().take(64) {
+            ui.label(format!("{} — {}/{} partitions, missing {}, duplicate {}",
+                label(group, "manifest_sha256"),
+                count(group, "present_partitions").unwrap_or(0),
+                count(group, "expected_partitions").unwrap_or(0),
+                count(group, "missing_count").unwrap_or(0),
+                count(group, "duplicate_count").unwrap_or(0)));
+        }
+    }
 }
 
 #[cfg(test)]
