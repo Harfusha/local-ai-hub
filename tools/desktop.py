@@ -730,6 +730,28 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                 or len(include) != len(set(include))):
             raise ValueError("Invalid session briefing sections")
         return checked_post(control, "/api/coord/session_briefing", {"root": root, "include": include})
+    if op == "plan_bind_task":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        root = explicit_root(args.get("root"))
+        task_id = text_field(args, "execution_id", 200)
+        plan_id = text_field(args, "id", 85)
+        plan_task_id = text_field(args, "task_id", 85)
+        revision = text_field(args, "revision", 200)
+        observed = checked_post(control, "/api/agent-state/tasks", {"root": root, "action": "get", "task_id": task_id})
+        task = observed.get("task")
+        context = task.get("context") if isinstance(task, dict) else None
+        session = context.get("session_id") if isinstance(context, dict) else None
+        if (observed.get("success") is not True or not isinstance(task, dict) or task.get("task_id") != task_id
+                or not isinstance(session, str) or not session or len(session) > 200):
+            raise ValueError("Execution task has no confirmed persisted session; load or create a session-bound task first")
+        result = checked_post(control, "/api/coord/plan_bind_task", {"root": root, "task_id": task_id,
+            "plan_id": plan_id, "plan_task_id": plan_task_id, "expected_revision": revision, "session_id": session})
+        if (result.get("success") is not True or result.get("task_id") != task_id
+                or result.get("plan_id") != plan_id or result.get("plan_task_id") != plan_task_id
+                or result.get("session_id") != session or not result.get("file_revision")):
+            raise RuntimeError("Binding receipt incomplete; reload exact task and plan before retrying")
+        return result
     if op in {"plan_update", "plan_archive", "plan_task_create", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
               "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release"}:
         if args.get("confirmed") is not True:
@@ -993,12 +1015,20 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             if not isinstance(profile, dict):
                 raise ValueError("Task SLO profile must be a JSON object")
             contract.update({"description": description, "slo_profile": profile})
-            result = checked_post(control, "/api/agent-state/tasks", {"root": root, "action": "create",
-                "contract": contract})
+            session = args.get("session_id", "")
+            if (not isinstance(session, str) or len(session) > 200 or session.strip() != session
+                    or any(ord(char) < 32 or ord(char) == 127 for char in session)):
+                raise ValueError("Invalid task session ID")
+            payload = {"root": root, "action": "create", "contract": contract}
+            if session:
+                payload["context"] = {"session_id": session}
+            result = checked_post(control, "/api/agent-state/tasks", payload)
             task = result.get("task")
             if (result.get("success") is not True or not isinstance(task, dict)
                     or not isinstance(task.get("task_id"), str) or not task["task_id"]
-                    or task.get("status") != "planned"):
+                    or task.get("status") != "planned"
+                    or (session and (not isinstance(task.get("context"), dict)
+                                     or task["context"].get("session_id") != session))):
                 raise RuntimeError("Task creation not confirmed")
             return result
         if op in {"memory_record", "memory_delete"}:
@@ -1018,9 +1048,10 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                     raise ValueError("Worktree deletion requires a verified scope; use the authorized Hub route")
                 payload["record_id"] = text_field(args, "record_id", 200)
             return checked_post(control, "/api/agent-state/memory", payload)
+        patch = plan_text_patch(args, task=False, create=True)
+        patch.setdefault("lifecycle", "active")
         return checked_post(control, "/api/coord/plan_create", {"root": root,
-            "plan_id": text_field(args, "id", 85), **plan_text_patch(args, task=False, create=True),
-            "lifecycle": "active", "owner": "desktop",
+            "plan_id": text_field(args, "id", 85), **patch, "owner": "desktop",
             "idempotency_key": "desktop-" + uuid.uuid4().hex})
     if op == "incident_list":
         root = explicit_root(args.get("root"))
