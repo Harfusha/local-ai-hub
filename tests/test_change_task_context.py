@@ -28,3 +28,28 @@ def test_task_receipts_are_current_candidates_not_commit_proof(tmp_path):
     assert not result["clusters"][1]["task_candidates"]
     assert result["task_context"]["commit_receipt_reuse_authorized"] is False
     assert task_verification_candidates(service, task, "")["status"] == "unknown"
+
+
+def test_index_impact_hints_remain_bounded_and_non_authoritative():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from local_ai_hub.change_task_context import attach_index_impact
+
+    index = MagicMock()
+    index.impact.return_value = {
+        "success": True, "root": "/repo", "indexed_changed_files": 1, "truncated": False,
+        "likely_dependents": [{"path": "consumer.py"}, {"path": "source.py"}, {"path": "../outside.py"}],
+        "suggested_tests": [{"path": "tests/test_source.py"}, {"path": "/outside.py"}],
+    }
+    plan = {"success": True, "clusters": [{"files": ["source.py"]}]}
+    attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
+    hints = plan["indexed_impact"]
+    assert hints["dependent_paths"] == ["consumer.py"]
+    assert hints["test_paths"] == ["tests/test_source.py"]
+    assert hints["freshness"] == "not_checked"
+    assert not hints["complete"] and not hints["dependencies_verified"]
+    assert not hints["verification_reuse_authorized"]
+    index.impact.assert_called_once_with("/repo", ["source.py"], max_symbols=48, max_dependents=24)
+    index.impact.return_value["root"] = "/other"
+    attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
+    assert plan["indexed_impact"]["status"] == "unavailable"
