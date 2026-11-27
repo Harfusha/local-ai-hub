@@ -24,8 +24,10 @@ def test_companion_skill_frontmatter_and_declaration(name):
 
 
 def test_orchestrator_scopes_file_inventory_and_recovers_from_time_limit() -> None:
-    source = REPO_ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md"
-    content = source.read_text(encoding="utf-8")
+    # The orchestrator is generated from the live feature configuration.
+    from local_ai_hub.generator import generate_skill_markdown
+
+    content = generate_skill_markdown({})
 
     assert "Use the trusted repository root for `local_ai_repo(action=\"find_files\")`" in content
     assert "`repository_inventory_incomplete` or `time_limit`" in content
