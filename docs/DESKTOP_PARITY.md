@@ -32,10 +32,7 @@ lifecycle and desktop lifecycle remain separate. Closing during operations
 is blocked to avoid interrupting a mutation.
 
 CI: .github/workflows/desktop.yml builds and runs Rust tests on Ubuntu 22.04, Windows and macOS, runs focused bridge/HTTP/packaging tests, and measures first window and 60 seconds of idle RSS/CPU under Linux Xvfb/software OpenGL with Hub absent. Linux baseline was pinned after a real CI artifact required GLIBC_2.43 and could not launch on the available older runtime. Native binaries
-are CI artifacts, not signed installers. Cargo.lock must be generated and
-committed after a successful dependency resolution; no reproducible build
-claim until then. Full runtime portability, GPU/driver behavior and resource
-consumption remain unmeasured.
+are unsigned portable builds. Cargo.lock is committed from a successful CI resolution (390 packages); CI uses --locked. Stable release publication requires native verification and validated four-platform ZIP receipts. Versioned binary installation is integrated into setup/update, with persistent headless opt-out. Full runtime portability, GPU/driver behavior and resource consumption remain unverified.
 
 ## Page-level parity matrix
 
@@ -45,13 +42,13 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 | Dashboard page / workflow | Desktop location | Current coverage | Acceptance verification still required |
 |---|---|---|---|
 | Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshots, recent request duration chart, health and project progress; no full workload drilldown | Compare cards, periods, health/warming/stale states and workload drilldowns |
-| Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial native recent-request and trace tables, bounded trace event pages, endpoint analytics | Compare filtering/paging, cancellation, retry, trace links, job failures |
+| Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial native recent-request and trace tables, before/after event paging, metrics, opt-in stored content paging and redacted trace export, endpoint analytics | Compare filtering/paging, cancellation, retry, trace links, job failures |
 | Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists, create/get/complete/fail, repository fact record/delete, incident record, bounded trace event pages | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
 | Coordination: plans, board, dependencies, locks, semaphore | Plans, Plan board, Semaphores, File leases, Worktrees | Partial native Kanban and verified progress, plan create/update and task edit/delete with expected revision, semaphore/lease/worktree actions and briefing | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |
 | Projects & preprocessing | Projects | Partial status and project config reads, register/reindex/pause/resume/unregister and global controls | Register, configure, remove, pause, resume, progress and unavailable indexes |
-| Commands | Commands, Worktrees | Partial shared status and scoped worktree reads/actions; no broker drilldown | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
+| Commands | Commands, Worktrees | Partial running command table, counters, blocked-reason breakdown, record detail and scoped worktree actions; no broker execution form | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
 | Models & search | Search workspaces, Hardware, Overview | Partial snapshots, model inventory, benchmark and telemetry report, two-route comparison | Model compare, runtime inventory, statistics, profiles, cache, agents, route/token/latency metrics, evals, benchmarks, Laya, embedding/rerank, optimization |
-| Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart, encrypted diagnostics export in Transfers | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
+| Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart, process-session and error tables, encrypted diagnostics export in Transfers | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
 | Settings | Settings — activity mode, toolbar | Partial config read, activity mode, telemetry mode, selected feature flags and override reset | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures |
 | Transfers | Transfers | Partial bounded ZIP export/import and encrypted diagnostics export with returned password | Export/import ZIP, scope, password, integrity, failure and cancellation |
 | Activity | Activity | Partial bounded event snapshot and focus-only SSE follow with cursor/deduplication | Cursor, filters, SSE, pause, stale/reconnect and detail modals |
@@ -73,25 +70,25 @@ surface or the required future surface, not a completed implementation.
 | `start` | Start Hub | Controller present; run focused tests and real CLI/API integration |
 | `stop` | Stop Hub | Controller present; run focused tests and real CLI/API integration |
 | `restart` | Restart Hub | Controller present; run focused tests and real CLI/API integration |
-| `watch` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
+| `watch` | Focus-only health and event polling; terminal watch remains CLI-only | Implemented surface (not all flags); real integration and acceptance pending |
 | `desktop` / legacy `dashboard` | Native launcher | No HTTP URL; verify launch and missing binary error |
-| `service-status` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `agent-state` | Scoped Tasks/Memory/Incidents reads only | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `cleanup` | Confirmed stale agent state cleanup only | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `clean` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `generate` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `tasks` | Scoped Tasks read only | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `plans` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `memory` | Scoped Memory read only | Incomplete; classify subcommands/options and test parity or document exclusion |
+| `service-status` | Operator tools: supervisor status | Implemented surface (not all flags); real integration and acceptance pending |
+| `agent-state` | Tasks/Memory/Incidents plus storage inventory | Implemented surface (not all flags); real integration and acceptance pending |
+| `cleanup` | Maintenance and Operator tools: cleanup, ports, offline database optimization | Implemented surface (not all flags); real integration and acceptance pending |
+| `clean` | Operator tools: clean build/cache files | Implemented surface (not all flags); real integration and acceptance pending |
+| `generate` | Operator tools: generate/deploy agent artifacts | Implemented surface (not all flags); real integration and acceptance pending |
+| `tasks` | Scoped paged Tasks with mutations | Implemented surface (not all flags); real integration and acceptance pending |
+| `plans` | Plans / Plan board with revision-aware actions | Implemented surface (not all flags); real integration and acceptance pending |
+| `memory` | Scoped Memory list/record/delete | Implemented surface (not all flags); real integration and acceptance pending |
 | `doctor` | Diagnostics | Controller present; run focused tests and real CLI/API integration |
 | `logs` | Service health log tail | Controller present; run focused tests and real CLI/API integration |
-| `pause` | Activity mode selector only; alias semantics not verified | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `resume` | Activity mode selector only; alias semantics not verified | Incomplete; classify subcommands/options and test parity or document exclusion |
+| `pause` | Activity mode selector; explicit confirmation | Implemented surface (not all flags); real integration and acceptance pending |
+| `resume` | Activity mode selector; explicit confirmation | Implemented surface (not all flags); real integration and acceptance pending |
 | `mode` | Activity mode selector | Controller present; run focused tests and real CLI/API integration |
-| `caveman-compress` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `compress-instructions` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `client` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `knowledge` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
+| `caveman-compress` | Operator tools: stage candidates; in-place apply CLI-only (review binding missing) | Implemented surface (not all flags); real integration and acceptance pending |
+| `compress-instructions` | Operator tools: stage candidates; in-place apply CLI-only | Implemented surface (not all flags); real integration and acceptance pending |
+| `client` | Operator tools: status/detect/preview/inject/remove/config | Implemented surface (not all flags); real integration and acceptance pending |
+| `knowledge` | Operator tools: typed catalog, query, audit, validation, mutations, batches, migration and handoff | Implemented surface (not all flags); real integration and acceptance pending |
 
 ## Static dashboard control inventory
 
@@ -295,3 +292,10 @@ actual results plus hardware/OS/Rust/eframe/Python versions. No threshold claime
 - The runtime cutover removes browser routes and the source cutover removes HTML/TypeScript and the frontend compiler. The AST cutover check exposed thirteen additional stale test imports; these were migrated in `747a34f`. Do not interpret this source migration as a passing test run.
 - Native controls now include task paging, vision PNG/JPEG review, scoped SSE, typed settings, explicit local update confirmation, revision-aware plan actions, asynchronous work status/results/cancellation, memory/task enums, portable ZIP packaging and SHA-256-verified atomic binary installation.
 - Previous native workflows succeeded at `15ddb42` and `a2c30d2` before the latest changes. Current head requires fresh full CI, Linux startup/idle metrics, Windows/macOS runtime acceptance, parity review and Cargo.lock. No verified completion claim.
+
+
+## Implementation evidence, 2026-11-27
+
+- CI-generated lockfile committed (`f016c71`); macOS build and bridge checks passed on `f74beef`. Earlier revision `9f186ee` passed Rust tests and builds on Windows/macOS and the Linux build, but the Linux runtime smoke failed. Xvfb diagnostics and dependencies were corrected; latest runtime and resource evidence remains pending.
+- Operator catalog (`d205aa6`), release integration (`f93b19a`), trace/command/session UI (`b956d57`), and confirmation/headless hardening (`30ab53c`) are implementation evidence, not acceptance receipts.
+- `master` was merged through `7c42227`. Existing master CI failures were confirmed independently; the invalid linter config, optional serializer typing, and selected stale fixtures were corrected without disabling the tests. Full CI and parity remain required before merge.

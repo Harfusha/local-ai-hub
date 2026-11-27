@@ -848,13 +848,18 @@ impl eframe::App for Desktop {
             });
             if self.rows.is_empty() { ui.label("Load this view to inspect data. No hidden screen is polled."); }
             if self.snapshot_view == "Trace content" {
-                if let Some(page) = self.snapshot.as_ref() {
+                if let Some(page) = self.snapshot.as_ref().and_then(|response| response.get("content_page")) {
                     ui.label(format!("Stored content: {} · offset {} · next {} · more {} · storage truncated {}",
                         page["field"], page["offset"], page["next_offset"], page["has_more"], page["storage_truncated"]));
+                    if page["has_more"] == true && ui.button("Use next content offset").clicked() {
+                        if let Some(offset) = page["next_offset"].as_i64() { self.trace_content_offset = offset; }
+                    }
                     ui.checkbox(&mut self.reveal_trace, "Reveal raw stored content (sensitive)");
                     if self.reveal_trace {
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            ui.label(serde_json::to_string_pretty(page).unwrap_or_default());
+                            let text = page["text"].as_str().unwrap_or("Stored content unavailable");
+                            if ui.button("Copy sensitive content").clicked() { ui.ctx().copy_text(text.to_owned()); }
+                            ui.label(text);
                         });
                     }
                     return;
@@ -865,6 +870,9 @@ impl eframe::App for Desktop {
                     ui.heading("Retained trace");
                     if let Some(snapshot) = self.snapshot.as_ref() {
                         ui.label(format!("Page: next sequence {} · more {} · retained range {}–{} · truncated {}", snapshot["next_seq"], snapshot["has_more"], snapshot["first_retained_seq"], snapshot["last_seq"], snapshot["page_truncated"]));
+                        if snapshot["has_more"] == true && ui.button("Use next event cursor").clicked() {
+                            if let Some(next) = snapshot["next_seq"].as_i64() { self.trace_cursor = next; self.trace_before = 0; }
+                        }
                     }
                     ui.label(format!("{} · {}", records::display(&projection.session["action"]),
                         records::display(&projection.session["state"])));

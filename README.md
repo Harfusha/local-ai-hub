@@ -309,7 +309,7 @@ Savings sources are intentionally deduplicated: overlapping input-side transform
 
 ## Native desktop and diagnostics
 
-The desktop is a native Rust/egui application. From a trusted Hub checkout, build it with `cargo build --manifest-path desktop/Cargo.toml --release`, then run `python tools/hubctl.py desktop`. The legacy `dashboard` CLI name launches the same native application; it no longer returns a browser URL. The HTTP and MCP APIs remain available. See [desktop installation and operation](docs/DESKTOP.md) and the [parity register](docs/DESKTOP_PARITY.md) for verification and migration status.
+The desktop is a native Rust/egui application. From a trusted Hub checkout, build it with `cargo build --manifest-path desktop/Cargo.toml --release --locked`, then run `python tools/hubctl.py desktop`. The legacy `dashboard` CLI name launches the same native application; it no longer returns a browser URL. The HTTP and MCP APIs remain available. See [desktop installation and operation](docs/DESKTOP.md) and the [parity register](docs/DESKTOP_PARITY.md) for verification and migration status.
 
 ```bash
 python tools/doctor.py

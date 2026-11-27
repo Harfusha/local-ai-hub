@@ -39,7 +39,7 @@ def main() -> int:
         archive.writestr("README.txt", "Local AI Hub native Rust desktop\n"
                          "Requires an existing Local AI Hub installation.\n"
                          "Extract this archive, then from the trusted Hub installation run:\n"
-                         f"python tools/install_desktop.py /path/to/{binary.name} --sha256 {digest}\n"
+                         f"python tools/install_desktop.py /path/to/{binary.name} --sha256 {digest} --version {version}\n"
                          "python tools/hubctl.py desktop\n")
     return 0
 
