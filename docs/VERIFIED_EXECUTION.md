@@ -254,9 +254,14 @@ valid, and the confirmation must be recorded no earlier than the new primary
 receipt and use a different receipt ID and evidence artifact. This supports,
 for example, a source review followed by a command-backed regression test.
 Confirmation reopens if its evidence or prerequisite becomes stale. A nonblocking
-report does not add a mandatory graph edge. Different artifacts alone do not
-establish independent human or agent identity; choose appropriate criteria and
-evidence types. An operator receipt waiver still cannot bypass an open blocking report.
+report does not add a mandatory graph edge. Set `require_distinct_owner: true` on a report with a resolution criterion to
+also require a different authorized receipt owner. The existing authorized task
+claim/adoption flow preserves the previous owner's evidence and permits a new
+owner to submit confirmation. The projection identifies pending owner handoffs;
+the context and Stop hook do not force the current owner to repeat impossible
+confirmation work. This is separation of Hub receipt identities on a single-owner
+installation, not cryptographic proof of different humans, models or security
+principals. Choose appropriate criteria and evidence types. An operator receipt waiver still cannot bypass an open blocking report.
 
 ## Context recovery
 
@@ -331,9 +336,9 @@ evidence age is advisory. The web dashboard is retired.
 Remaining acceptance work (not claimed complete):
 
 1. Semantic dependency expansion beyond explicit affected-test rules and static Python imports, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds.
-2. Authorized rejection/defer dispositions, independent reviewer identity and
+2. Authorized rejection/defer dispositions, independent reviewer authentication and
    cross-task/Git knowledge sharing for problem reports (separate ordered
-   confirmation evidence is implemented).
+   confirmation evidence and distinct authorized receipt owner are implemented).
 3. Full graph metadata steering and replay beyond additive criteria.
 4. Dependency-selective receipt invalidation across repository mutations (prerequisite
    receipt ordering is implemented) with conservative fallback and
