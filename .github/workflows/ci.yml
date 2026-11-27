@@ -303,6 +303,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: Install visual verification test dependency
+        if: ${{ env.RUN_FULL_SUITE == 'true' }}
+        run: python -m pip install "Pillow>=10,<13"
+      - name: Install CPU tensor test dependency (Linux and Windows)
+        if: ${{ env.RUN_FULL_SUITE == 'true' && matrix.os != 'macos-latest' }}
+        run: python -m pip install "torch>=2.6,<3" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install tensor test dependency (macOS)
+        if: ${{ env.RUN_FULL_SUITE == 'true' && matrix.os == 'macos-latest' }}
+        run: python -m pip install "torch>=2.6,<3"
       - name: Run full integration suite
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
         run: python -m coverage run -m pytest -ra -p tools.ci_diagnostics --junitxml=${{ runner.temp }}/integration-junit.xml
