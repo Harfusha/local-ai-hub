@@ -304,8 +304,10 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply", "annotate"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply", "sequence-suggest", "annotate"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
+        if args.sub_arg == "sequence-suggest" and (args.apply or args.base or args.changed_path or args.record_file):
+            parser.error("sequence-suggest is read-only and observes the complete staged scope")
         if args.sub_arg == "annotate":
             if not args.apply or args.dry_run or args.base or not args.expected_revision or not args.record_file:
                 parser.error("annotate requires --apply, --expected-revision and --record-file")
@@ -396,6 +398,16 @@ def main() -> int:
         requested_mode = None
 
     if args.action == "changes":
+        if args.sub_arg == "sequence-suggest":
+            from local_ai_hub.change_commit_sequence import suggest_sequence
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.repository_scope import authorized_repository_root
+
+            config = load_config(_config_arg(args.config))
+            root = authorized_repository_root(config, str(args.root.resolve()))
+            result = suggest_sequence(DeterministicEngine(config).split_changes(root, None), args.expected_revision)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
         if args.sub_arg == "annotate":
             from local_ai_hub.change_ledger import ChangeLedger
             from local_ai_hub.deterministic import DeterministicEngine
