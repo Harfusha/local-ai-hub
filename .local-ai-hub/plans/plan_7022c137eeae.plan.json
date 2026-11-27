@@ -1,0 +1,59 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Complete the user-supplied 28-section Git Change Intelligence & Commit Orchestration specification end to end. Enforce no backward compatibility or legacy runtime behavior except a one-time update migration. Update docs and PR #11, then merge through the standard workflow only after all gates pass.",
+  "id": "plan_7022c137eeae",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-27-git-change-intelligence-commit-orchestration.md",
+      "revision": {
+        "content_sha256": "19c76c3613eb7610ee334c6be1fbd06a5440e6225db4c163bb1cefbc53c5695c",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-27-git-change-intelligence-completion.md",
+      "revision": {
+        "content_sha256": "3df9d651eb2e41ad61ef0addcabff67cd604fbe15be97a55386302c32a1796bc",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_gci_audit_and_architecture": {
+      "acceptance_criteria": [
+        "All 28 user requirements implemented or explicitly principled/blocked with evidence",
+        "No legacy runtime behavior or backward compatibility; only one-time update migration",
+        "Complete traceability matrix linked to implementation, tests, evidence",
+        "Current-head CI and required validation pass",
+        "PR #11 updated and merged through the standard workflow when all gates allow"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Audit and complete all GCI acceptance requirements, resolve verified findings, validate current PR head and integrate safely.",
+      "kind": "code",
+      "next_action": "Complete typed dependency evidence, audit requirements, then implement verified fixes and acceptance evidence.",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-27-git-change-intelligence-commit-orchestration.md",
+          "revision": {
+            "content_sha256": "19c76c3613eb7610ee334c6be1fbd06a5440e6225db4c163bb1cefbc53c5695c",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-27-git-change-intelligence-completion.md",
+          "revision": {
+            "content_sha256": "3df9d651eb2e41ad61ef0addcabff67cd604fbe15be97a55386302c32a1796bc",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Complete GCI requirements and PR #11 acceptance",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Complete GCI requirements and PR #11 acceptance"
+}

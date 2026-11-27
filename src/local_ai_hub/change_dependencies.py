@@ -136,6 +136,14 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                 annotate_hunks(atom)
     edges: dict[str, set[str]] = {group["group_key"]: set() for group in groups}
     evidence: dict[str, list[dict[str, str]]] = {key: [] for key in edges}
+    relation_evidence: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+
+    def record_relation(source: str, target: str, item: dict[str, str]) -> None:
+        key = (source, target, item["kind"])
+        entries = relation_evidence.setdefault(key, [])
+        if item not in entries and len(entries) < 16:
+            entries.append(item)
+
     ambiguous = 0
     unmatched = 0
     import_observations = 0
@@ -146,6 +154,32 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                      if change.get("status") in {"D", "D ", " D"}}
     removal_edges = 0
     unresolved_removed_imports = 0
+    unresolved_import_candidates: list[dict[str, Any]] = []
+    unresolved_import_candidates_omitted = 0
+
+    def record_unresolved_import(source_group: str, source_path: str, name: str,
+                                matches: set[str], *, removal: bool = False) -> None:
+        nonlocal unresolved_import_candidates_omitted, unresolved_removed_imports
+        if removal:
+            unresolved_removed_imports += 1
+        paths = sorted(matches)
+        candidate_groups = sorted({owner[path] for path in paths if path in owner})
+        resolution = "ambiguous" if len(paths) > 1 else "unmatched"
+        kind = f"{resolution}_{'import_removal' if removal else 'import'}_candidate"
+        item = {
+            "source_group_key": source_group,
+            "source": source_path,
+            "import_name": name,
+            "kind": kind,
+            "candidate_group_keys": candidate_groups[:16],
+            "candidate_groups_omitted": max(0, len(candidate_groups) - 16),
+            "candidate_paths": paths[:16],
+            "candidate_paths_omitted": max(0, len(paths) - 16),
+        }
+        if len(unresolved_import_candidates) < 256:
+            unresolved_import_candidates.append(item)
+        else:
+            unresolved_import_candidates_omitted += 1
     for group in groups:
         key = group["group_key"]
         for change in group["changes"]:
@@ -179,6 +213,7 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                     if len(matches) != 1:
                         ambiguous += int(len(matches) > 1)
                         unmatched += int(not matches)
+                        record_unresolved_import(key, path, name, matches)
                         continue
                     target = next(iter(matches))
                     other = owner[target]
@@ -192,6 +227,8 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                         item = {"source": path, "target": target, "kind": "import_candidate"}
                         if item not in evidence[key]:
                             evidence[key].append(item)
+                    record_relation(key, other, {"source": path, "target": target,
+                                                 "kind": "import_candidate"})
                 semantic = atom.get("semantic", {})
                 # For a removed module, consumers must drop their imports
                 # before the provider disappears. Only reverse the edge when
@@ -210,6 +247,7 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                     else:
                         matches = _js_module_paths(path, name, available)
                     if len(matches) != 1:
+                        record_unresolved_import(key, path, name, matches, removal=True)
                         continue
                     target = next(iter(matches))
                     other = owner[target]
@@ -221,6 +259,7 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                     item = {"source": target, "target": path, "kind": "import_removal_candidate"}
                     if len(evidence[other]) < 16 and item not in evidence[other]:
                         evidence[other].append(item)
+                    record_relation(other, key, item)
     remaining = {key: set(deps) for key, deps in edges.items()}
     order = []
     while remaining:
@@ -241,8 +280,18 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
         group["dependency_evidence"] = evidence[key]
         if len(membership[key]) > 1:
             group["risks"] = sorted(set(group["risks"]) | {"dependency_cycle_requires_joint_commit"})
+    uncertain_candidates = [
+        {"source_group_key": source, "target_group_key": target,
+         "kind": kind, "evidence": items}
+        for (source, target, kind), items in sorted(relation_evidence.items())
+    ]
     return {
         "method": "observed_import_candidates_v1",
+        "hard_dependencies": [],
+        "soft_dependencies": [],
+        "uncertain_candidates": uncertain_candidates,
+        "unresolved_import_candidates": unresolved_import_candidates,
+        "unresolved_import_candidates_omitted": unresolved_import_candidates_omitted,
         "candidate_order": order,
         "blocked_group_keys": sorted(remaining),
         "candidate_commit_units": units,

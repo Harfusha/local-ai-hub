@@ -1,5 +1,7 @@
 # GOAL: Complete Git Change Intelligence & Commit Orchestration end-to-end
 
+Execution map: [`../plans/2026-11-27-git-change-intelligence-completion.md`](../plans/2026-11-27-git-change-intelligence-completion.md). The Hub plan `.local-ai-hub/plans/plan_7022c137eeae.plan.json` remains the sole source of task state and completion evidence.
+
 ## 1. Zadání a pracovní prostředí
 
 Pracuj přímo v repozitáři:
