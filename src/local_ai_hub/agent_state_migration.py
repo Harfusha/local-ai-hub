@@ -143,10 +143,15 @@ def _is_project_checkout(candidate: Path, canonical_root: Path, project_id: str)
         candidate = candidate.resolve(strict=True)
         if candidate == canonical_root.resolve(strict=True):
             return True
-        if project_scope_id(candidate) == project_id:
-            return True
     except (OSError, RuntimeError, TypeError, ValueError):
         return False
+    manifest = candidate / ".local-ai-hub" / "project.json"
+    if manifest.is_file() and not manifest.is_symlink() and not getattr(manifest, "is_junction", lambda: False)():
+        try:
+            return project_scope_id(candidate) == project_id
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+    # This origin match is migration-only enrollment for an old checkout.
     return _same_git_origin(candidate, canonical_root)
 
 
@@ -167,9 +172,7 @@ def _registered_project_roots(root: Path, project_id: str) -> tuple[str, ...]:
         candidate = Path(line[len("worktree "):])
         try:
             candidate = candidate.resolve(strict=True)
-            if candidate.is_dir() and (
-                project_scope_id(candidate) == project_id or _same_git_origin(candidate, root)
-            ):
+            if candidate.is_dir() and _is_project_checkout(candidate, root, project_id):
                 roots.add(str(candidate))
         except (OSError, RuntimeError, TypeError, ValueError):
             continue
@@ -540,11 +543,15 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
     root = Path(repo_root).resolve(strict=True)
     store = RepoKnowledgeStore(root)
     manifest_path = root / ".local-ai-hub" / "project.json"
-    legacy_repository_key = ""
+    legacy_repository_keys: tuple[str, ...] = ()
     if not manifest_path.exists():
         from .agent_incidents import _incident_scope_key
 
-        legacy_repository_key = _incident_scope_key("repository", str(root))
+        path_identity = "local:" + hashlib.sha256(str(root).casefold().encode("utf-8")).hexdigest()
+        legacy_repository_keys = tuple(dict.fromkeys((
+            _incident_scope_key("repository", str(root)),
+            hashlib.sha256(f"agent-incident:repository\0{path_identity}".encode("utf-8")).hexdigest(),
+        )))
         origin = _git_origin_identity(root)
         if not origin:
             raise RepoPlanValidationError(
@@ -616,8 +623,8 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
             batch = previewer(
                 state, store, limit=16,
                 **{cursor_name: cursor, "expected_snapshot": source_snapshot, "repository_roots": repository_roots},
-                **({"repository_key_aliases": (legacy_repository_key,)}
-                   if kind == "incident" and legacy_repository_key else {}),
+                **({"repository_key_aliases": legacy_repository_keys}
+                   if kind == "incident" and legacy_repository_keys else {}),
             )
             states = batch["states"]
             blocked = [item for item in states if item["state"] not in {"review_required", "already_published", "blocked_live_attempt"}]

@@ -63,6 +63,32 @@ def test_build_and_validate_canonical_task(tmp_path: Path):
     assert all_tasks[0]["id"] == "task-v4-core"
 
 
+def test_canonical_task_rejects_legacy_in_progress_status(tmp_path: Path):
+    store = _setup_repo(tmp_path)
+    record = build_project_task_record(store, {
+        "task_id": "task-status-contract",
+        "status": "planned",
+        "contract": {
+            "goal": "Enforce canonical task statuses",
+            "description": "No runtime legacy aliases",
+            "acceptance_criteria": ["Legacy aliases are rejected"],
+            "non_goals": [],
+            "constraints": [],
+            "risk_profile": "normal",
+        },
+        "checkpoint": {
+            "phase": "test",
+            "next_action": "validate status",
+            "blockers": [],
+            "affected_paths": [],
+        },
+    })
+    record["payload"]["status"] = "in_progress"
+
+    with pytest.raises(RepoPlanValidationError):
+        validate_project_task_payload(record)
+
+
 def test_task_validation_rejects_missing_criteria(tmp_path: Path):
     store = _setup_repo(tmp_path)
     invalid_task = {

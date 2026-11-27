@@ -26,6 +26,12 @@ def project_scope_id(repo_root: str | Path) -> str:
         except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ValueError("project manifest has no valid stable project_id") from exc
         return project_id
+    # A Git checkout must be enrolled by the one-time update migration before
+    # project-scoped state can be read or written. A path-derived identity here
+    # silently splits one repository into different projects after relocation.
+    git_marker = root / ".git"
+    if git_marker.exists() or git_marker.is_symlink():
+        raise ValueError("Git checkout has no migrated stable project_id")
     local_key = str(root).casefold().encode("utf-8")
     return f"local:{hashlib.sha256(local_key).hexdigest()}"
 

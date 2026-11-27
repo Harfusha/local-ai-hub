@@ -19,7 +19,7 @@ _CONTRACT_FIELDS = {
     "goal", "description", "acceptance_criteria", "non_goals", "constraints", "risk_profile",
 }
 _CHECKPOINT_FIELDS = {"phase", "next_action", "blockers", "affected_paths"}
-_ALLOWED_STATUSES = set(status.value for status in TaskStatus) | {"in_progress"}
+_ALLOWED_STATUSES = {status.value for status in TaskStatus}
 
 
 def _reject(message: str = "Invalid canonical project task") -> RepoPlanValidationError:

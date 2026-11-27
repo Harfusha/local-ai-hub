@@ -62,7 +62,7 @@
         "Two independent clones and linked worktrees demonstrate safe freshness, divergence, revalidation, and recovery."
       ],
       "accountable_role": "primary",
-      "blocker": null,
+      "blocker": "Installed agent_state.sqlite is 802,672,640 bytes, above the required 512 MiB/15 s migration bound. Installer rolled back the candidate payload and skipped restart; the previous runtime was restarted and selftest is green. Do not raise the migration limit or remove state; design a safe, spec-compliant snapshot/compaction path or classify this real environment as an external blocker.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -128,7 +128,7 @@
       "depends_on": [],
       "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
       "kind": "code",
-      "next_action": "Close V4 P0 canonical ownership and migration gaps; current §40 audit marks memory/incidents/decisions/receipts and TaskStore authority cutover incomplete.",
+      "next_action": "Investigate a reversible, offline, full-content migration path that preserves the required 512 MiB/15 s cap; then rerun update migration against the actual state.",
       "order": 1,
       "spec_refs": [
         {

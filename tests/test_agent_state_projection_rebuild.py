@@ -41,7 +41,7 @@ def test_rebuild_projection_from_canonical_git(tmp_path: Path):
     # 1. Create canonical task
     t_rec = build_project_task_record(store, {
         "task_id": "task-rebuild-1",
-        "status": "in_progress",
+        "status": "active",
         "contract": {"goal": "Test rebuild", "description": "", "acceptance_criteria": ["rebuild ok"], "non_goals": [], "constraints": [], "risk_profile": "normal"},
         "checkpoint": {"phase": "testing", "next_action": "verify", "blockers": [], "affected_paths": []},
     })
