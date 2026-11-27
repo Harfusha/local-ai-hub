@@ -11,6 +11,7 @@ on:
       - 'tests/test_desktop_smoke.py'
       - 'tests/test_desktop_http_acceptance.py'
       - 'tests/test_dashboard_operational_surfaces.py'
+      - 'tests/test_operator_settings_contract.py'
       - 'src/local_ai_hub/http_*.py'
       - 'tools/hubctl.py'
       - 'tools/service.py'
