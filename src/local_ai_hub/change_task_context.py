@@ -133,3 +133,57 @@ def attach_task_context(
         "scope": "checkpoint_path_overlap_only",
         "commit_receipt_reuse_authorized": False,
     }
+
+
+def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> None:
+    """Offer bounded indexed consumer/test hints, not fresh dependency proof."""
+    if result.get("success") is not True:
+        return
+    output: dict[str, Any] = {
+        "status": "unavailable", "freshness": "not_checked", "dependencies_verified": False,
+        "verification_reuse_authorized": False,
+    }
+    result["indexed_impact"] = output
+    index = getattr(services, "code_index", None)
+    if index is None:
+        return
+    paths = sorted({path for group in result.get("clusters", []) for path in group.get("files", [])})
+    if not paths:
+        output["status"] = "no_changes"
+        return
+    if len(paths) > 64:
+        output.update(status="path_budget_exceeded", omitted_changed_paths=len(paths) - 64)
+        return
+    try:
+        impact = index.impact(root, paths, max_symbols=48, max_dependents=24)
+    except (OSError, ValueError, RuntimeError):
+        return
+    if not isinstance(impact, dict) or impact.get("success") is not True or impact.get("root") != root:
+        return
+
+    def candidates(key: str) -> list[str]:
+        rows = impact.get(key, [])
+        if not isinstance(rows, list):
+            return []
+        found = set()
+        for row in rows[:24]:
+            path = row.get("path") if isinstance(row, dict) else None
+            if (isinstance(path, str) and 0 < len(path) <= 512 and "\0" not in path
+                    and "\\" not in path and ":" not in path and not path.startswith("/")
+                    and all(part not in {"", ".", ".."} for part in path.split("/"))
+                    and all(ord(c) >= 32 for c in path)):
+                found.add(path)
+        return sorted(found)
+
+    dependents = [p for p in candidates("likely_dependents") if p not in paths]
+    tests = candidates("suggested_tests")
+    indexed = impact.get("indexed_changed_files")
+    output.update(
+        status="advisory_index_candidates",
+        changed_path_count=len(paths),
+        indexed_changed_path_count=indexed if type(indexed) is int and 0 <= indexed <= len(paths) else None,
+        dependent_paths=dependents[:8], dependent_paths_omitted=max(0, len(dependents) - 8),
+        test_paths=tests[:8], test_paths_omitted=max(0, len(tests) - 8),
+        index_scan_truncated=impact.get("truncated") is not False,
+        complete=False,
+    )
