@@ -44,7 +44,7 @@ class TaskMutationMixin:
         if not current:
             raise KeyError(f"Task {task_id} not found")
 
-        from .execution_problems import PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY, record_problem
+        from .execution_problems import PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY, record_problem, validate_resolution_order
         from .verified_execution import EXECUTION_KEY
 
         has_problem_report = PROBLEM_REPORT_KEY in checkpoint.state_data
@@ -55,6 +55,7 @@ class TaskMutationMixin:
                 raise ValueError("execution problem reporting requires an owned nonterminal verified execution")
             incoming = dict(checkpoint.state_data)
             problem_report = incoming.pop(PROBLEM_REPORT_KEY)
+            validate_resolution_order(problem_report, current.contract.slo_profile[EXECUTION_KEY])
             checkpoint = replace(checkpoint, state_data=incoming)
 
         checkpoint = _preserve_checkpoint_memory_state(
