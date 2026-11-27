@@ -832,3 +832,53 @@ def test_memory_quarantine_requires_confirmed_authorized_scope_and_reason(tmp_pa
                 "reason": "review", "confirmed": True, **fields,
             }})
         post.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["", "unresolved", "resolved", "ignored"])
+def test_incident_list_is_root_scoped_and_bounded(tmp_path, status):
+    from urllib.parse import parse_qs, urlsplit
+
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    client.get.return_value = {"success": True, "incidents": []}
+    result = desktop.dispatch(control, {"op": "incident_list", "args": {
+        "root": str(tmp_path), "status": status, "limit": 25,
+    }})
+    assert result["incidents"] == []
+    query = parse_qs(urlsplit(client.get.call_args.args[0]).query)
+    assert query["root"] == [str(tmp_path.resolve())] and query["limit"] == ["25"]
+    assert query.get("status", []) == ([status] if status else [])
+    client.close.assert_called_once()
+
+
+def test_incident_find_does_not_send_mutation_fields(tmp_path):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post", return_value={"success": True, "incidents": []}) as post:
+        desktop.dispatch(control, {"op": "incident_find", "args": {
+            "root": str(tmp_path), "query": "prior failure", "limit": 50,
+            "cause": "unused", "fix": "unused", "status": "ignored",
+        }})
+        post.assert_called_once_with(control, "/api/agent-state/incidents", {
+            "root": str(tmp_path.resolve()), "action": "find", "query": "prior failure", "limit": 50,
+        })
+
+
+@pytest.mark.parametrize("fields", [{"confirmed": False}, {"fix": "resolved"},
+    {"cause": []}, {"fix": 123}])
+def test_incident_record_rejects_invalid_lesson_before_transport(tmp_path, fields):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(MagicMock(), {"op": "incident", "args": {
+                "root": str(tmp_path), "kind": "review", "message": "failure",
+                "confirmed": True, **fields,
+            }})
+        post.assert_not_called()
+
+
+def test_incident_record_requires_actual_incident_receipt(tmp_path):
+    with patch.object(desktop, "checked_post", return_value={"success": True, "incident": None}):
+        with pytest.raises(RuntimeError, match="not confirmed"):
+            desktop.dispatch(MagicMock(), {"op": "incident", "args": {
+                "root": str(tmp_path), "kind": "review", "message": "failure", "confirmed": True,
+            }})
