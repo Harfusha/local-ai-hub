@@ -264,6 +264,9 @@ struct Desktop {
     memory_limit: i64,
     lease_owner: String,
     task_scope: String,
+    task_non_goals: String,
+    task_constraints: String,
+    task_slo: String,
     task_risk: String,
     incident_kind: String,
     incident_message: String,
@@ -350,7 +353,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), incident_cause: String::new(), incident_fix: String::new(), incident_status: String::new(), incident_query: String::new(), incident_limit: 100, plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_non_goals: String::new(), task_constraints: String::new(), task_slo: String::new(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), incident_cause: String::new(), incident_fix: String::new(), incident_status: String::new(), incident_query: String::new(), incident_limit: 100, plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -359,7 +362,7 @@ impl Desktop {
     }
     fn current(&self) -> &'static str { PAGES[self.page].1[self.view] }
     fn submit(&mut self, ctx: &egui::Context, label: String, payload: Value) {
-        if self.busy.is_some() { return; }
+        if !self.can_edit_context() { return; }
         let probe = payload["op"] == "probe";
         let live = payload["op"] == "event_stream";
         if payload["op"] == "lifecycle" { self.last_probe = Instant::now() - Duration::from_secs(30); }
@@ -471,6 +474,9 @@ impl Desktop {
                         self.clear_response();
                         self.plan_draft = None;
                         self.revision.clear();
+                        self.settings_draft = settings::Draft::default();
+                        self.update_version.clear();
+                        self.update_revision.clear();
                         if done.live { self.last_live = Instant::now(); }
                         self.status = format!("{}: {error} — reload to obtain fresh state", done.label);
                     }
@@ -481,6 +487,9 @@ impl Desktop {
                 self.clear_response();
                 self.plan_draft = None;
                 self.revision.clear();
+                self.settings_draft = settings::Draft::default();
+                self.update_version.clear();
+                self.update_revision.clear();
                 self.status = "Operation worker disconnected; outcome unknown. Reload before retrying.".into();
             }
             _ => {}
@@ -519,6 +528,9 @@ impl Desktop {
         self.memory_status.clear();
         self.goal.clear();
         self.criteria.clear();
+        self.task_non_goals.clear();
+        self.task_constraints.clear();
+        self.task_slo.clear();
         self.reason.clear();
         self.prompt.clear();
         self.incident_kind.clear();
@@ -968,19 +980,33 @@ impl Desktop {
                 ui.collapsing("Create task contract", |ui| {
                     ui.horizontal_wrapped(|ui| {
                         egui::ComboBox::from_id_salt("task_scope").selected_text(&self.task_scope).show_ui(ui, |ui| {
-                            for scope in ["task", "session", "repository", "system"] { ui.selectable_value(&mut self.task_scope, scope.into(), scope); }
+                            for scope in ["task", "session", "repository", "branch", "worktree", "clone", "global"] { ui.selectable_value(&mut self.task_scope, scope.into(), scope); }
                         });
                         egui::ComboBox::from_id_salt("task_risk").selected_text(&self.task_risk).show_ui(ui, |ui| {
-                            for risk in ["low", "normal", "high"] { ui.selectable_value(&mut self.task_risk, risk.into(), risk); }
+                            for risk in ["low", "normal", "high", "critical"] { ui.selectable_value(&mut self.task_risk, risk.into(), risk); }
                         });
                     });
                     ui.label("Goal");
                     ui.text_edit_multiline(&mut self.goal);
                     ui.label("Acceptance criteria (one per line)");
                     ui.text_edit_multiline(&mut self.criteria);
-                    if ui.button("Create task").clicked() {
+                    ui.collapsing("Additional contract fields", |ui| {
+                        ui.label("Description");
+                        ui.text_edit_multiline(&mut self.description);
+                        ui.label("Non-goals (one per line)");
+                        ui.text_edit_multiline(&mut self.task_non_goals);
+                        ui.label("Constraints (one per line)");
+                        ui.text_edit_multiline(&mut self.task_constraints);
+                        ui.label("SLO profile (optional JSON object)");
+                        ui.text_edit_multiline(&mut self.task_slo);
+                    });
+                    ui.small("Goal scope describes the contract; repository authorization still uses the explicit selected root.");
+                    if ui.add_enabled(!self.goal.trim().is_empty(), egui::Button::new("Create task")).clicked() {
                         self.confirm("Create task", request("task_create", json!({"root": self.repo,
-                            "goal": self.goal, "criteria": self.criteria, "scope": self.task_scope, "risk": self.task_risk, "confirmed": true})));
+                            "goal": self.goal, "criteria": self.criteria, "scope": self.task_scope,
+                            "risk": self.task_risk, "description": self.description,
+                            "non_goals": self.task_non_goals, "constraints": self.task_constraints,
+                            "slo": self.task_slo, "confirmed": true})));
                     }
                 });
                 ui.label("Task ID and reason (repository required)");
@@ -992,7 +1018,7 @@ impl Desktop {
                             json!({"root": self.repo, "id": self.entity})));
                     }
                     egui::ComboBox::from_id_salt("task_target").selected_text(&self.task_target).show_ui(ui, |ui| {
-                        for state in ["active", "verifying", "blocked", "planned"] {
+                        for state in ["active", "verifying", "blocked", "planned", "waiting", "cancelled", "abandoned"] {
                             ui.selectable_value(&mut self.task_target, state.into(), state);
                         }
                     });
