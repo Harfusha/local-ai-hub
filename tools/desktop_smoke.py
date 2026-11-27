@@ -1,4 +1,4 @@
-"""Linux/X11 native desktop smoke and resource measurements.
+"""Native desktop window smoke and resource measurements (X11, Win32, macOS).
 
 Offline mode uses an empty installation. Online mode runs a real isolated Hub
 with inference, preprocessing and observability disabled; no production state.
@@ -75,6 +75,115 @@ def isolated_hub(temp: Path):
         http_server.APP = original_app
 
 
+def _windows_window(pid: int):
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = (callback_type, wintypes.LPARAM)
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    matches = []
+
+    @callback_type
+    def visit(handle, _param):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(handle):
+            title = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(handle, title, len(title))
+            if title.value == "Local AI Hub":
+                matches.append(handle)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return matches[0] if matches else None
+
+
+def _mac_window(pid: int):
+    # CoreGraphics window lists do not require screen capture or the
+    # accessibility permission; ownership and layer are sufficient evidence.
+    import Quartz
+
+    windows = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+        Quartz.kCGNullWindowID,
+    ) or []
+    for info in windows:
+        bounds = info.get("kCGWindowBounds", {})
+        if (info.get("kCGWindowOwnerPID") == pid and info.get("kCGWindowLayer") == 0
+                and bounds.get("Width", 0) >= 100 and bounds.get("Height", 0) >= 100):
+            return info["kCGWindowNumber"]
+    return None
+
+
+def wait_for_window(process, errors, started):
+    tree = ""
+    while time.monotonic() - started < 30:
+        if process.poll() is not None:
+            errors.seek(0)
+            raise RuntimeError(f"Desktop exited before first window: {process.returncode}; "
+                               + errors.read(4000).decode(errors="replace"))
+        if sys.platform == "win32":
+            candidate = _windows_window(process.pid)
+        elif sys.platform == "darwin":
+            candidate = _mac_window(process.pid)
+        elif sys.platform.startswith("linux"):
+            windows = subprocess.run(["xwininfo", "-root", "-tree"], check=True,
+                                     capture_output=True, text=True, timeout=3)
+            tree = windows.stdout
+            match = re.search(r'(0x[0-9a-fA-F]+)\\s+"Local AI Hub"', tree)
+            candidate = None
+            if match:
+                info = subprocess.run(["xwininfo", "-id", match.group(1)],
+                                      capture_output=True, text=True, timeout=3)
+                if info.returncode == 0 and "Map State: IsViewable" in info.stdout:
+                    candidate = match.group(1)
+        else:
+            raise RuntimeError("Unsupported native window verification platform")
+        if candidate is not None:
+            return candidate
+        time.sleep(0.1)
+    raise RuntimeError("No visible owned Local AI Hub window within smoke deadline: " + tree[-3000:])
+
+
+def focus_window(process, window_id):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Desktop exited before focus")
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+            user32.SetForegroundWindow(window_id)
+            if user32.GetForegroundWindow() == window_id:
+                return
+        elif sys.platform == "darwin":
+            from AppKit import NSRunningApplication, NSWorkspace, NSApplicationActivateIgnoringOtherApps
+            app = NSRunningApplication.runningApplicationWithProcessIdentifier_(process.pid)
+            if app is not None:
+                app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                front = NSWorkspace.sharedWorkspace().frontmostApplication()
+                if front is not None and front.processIdentifier() == process.pid:
+                    return
+        else:
+            try:
+                focused = subprocess.run(["xdotool", "windowfocus", "--sync", window_id],
+                                         capture_output=True, text=True, timeout=1)
+                if focused.returncode == 0:
+                    return
+            except subprocess.TimeoutExpired:
+                pass
+        time.sleep(0.1)
+    raise RuntimeError("Native window could not receive verified foreground focus; interactive desktop unavailable")
+
+
 def measure(binary: Path, temp: Path, env: dict[str, str], idle_seconds: float,
             *, online=None) -> dict:
     import psutil
@@ -84,48 +193,9 @@ def measure(binary: Path, temp: Path, env: dict[str, str], idle_seconds: float,
         process = subprocess.Popen([str(binary)], env=env, cwd=temp,
                                    stdout=subprocess.DEVNULL, stderr=errors)
         try:
-            window_id = None
-            tree = ""
-            while time.monotonic() - started < 20:
-                if process.poll() is not None:
-                    errors.seek(0)
-                    raise RuntimeError(f"Desktop exited before first window: {process.returncode}; "
-                                       + errors.read(4000).decode(errors="replace"))
-                windows = subprocess.run(["xwininfo", "-root", "-tree"], check=True,
-                                         capture_output=True, text=True, timeout=3)
-                tree = windows.stdout
-                match = re.search(r'(0x[0-9a-fA-F]+)\s+"Local AI Hub"', tree)
-                if match:
-                    candidate = match.group(1)
-                    # X11 creates the named window before it maps it. A
-                    # successful focus request requires a viewable window.
-                    info = subprocess.run(["xwininfo", "-id", candidate],
-                                          capture_output=True, text=True, timeout=3)
-                    if info.returncode == 0 and "Map State: IsViewable" in info.stdout:
-                        window_id = candidate
-                        break
-                time.sleep(0.1)
-            if window_id is None:
-                raise RuntimeError("No Local AI Hub window observed within smoke deadline; X11 tree: " + tree[-3000:])
+            window_id = wait_for_window(process, errors, started)
             startup = time.monotonic() - started
-            # Explicitly focus the window so its normal 30-second health probe
-            # is exercised under Xvfb, which has no window manager.
-            focus_deadline = time.monotonic() + 5
-            focus_error = ""
-            while time.monotonic() < focus_deadline:
-                if process.poll() is not None:
-                    raise RuntimeError("Desktop exited before focus")
-                try:
-                    focused = subprocess.run(["xdotool", "windowfocus", "--sync", window_id],
-                                             capture_output=True, text=True, timeout=1)
-                    if focused.returncode == 0:
-                        break
-                    focus_error = focused.stderr
-                except subprocess.TimeoutExpired:
-                    focus_error = "X11 focus request timed out"
-                time.sleep(0.1)
-            else:
-                raise RuntimeError("Native window could not receive focus: " + focus_error[-1000:])
+            focus_window(process, window_id)
             first_ready = None
             if online is not None:
                 _, observed_ready, _ = online
@@ -163,7 +233,11 @@ def measure(binary: Path, temp: Path, env: dict[str, str], idle_seconds: float,
             elapsed = time.monotonic() - t0
             cpu1 = monitored.cpu_times()
             report = {
-                "method": "Xvfb X11, software OpenGL, " + ("isolated real Hub online" if online else "Hub absent"),
+                "method": ("Win32 owned visible window" if sys.platform == "win32"
+                           else "macOS CoreGraphics owned visible window" if sys.platform == "darwin"
+                           else "X11 visible window") + ", " + ("isolated real Hub online" if online else "Hub absent"),
+                "foreground_focus_verified": True,
+                "window_id": str(window_id),
                 "platform": platform.platform(), "machine": platform.machine(),
                 "glibc": platform.libc_ver(), "first_window_seconds": startup,
                 "first_adapter_ready_request_seconds": first_ready,
