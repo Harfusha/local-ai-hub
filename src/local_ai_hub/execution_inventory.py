@@ -69,6 +69,8 @@ def change_resources(root: str, base_revision: str = "") -> list[str]:
     actual_root = Path(git("rev-parse", "--show-toplevel").decode("utf-8").rstrip("\r\n")).resolve()
     if actual_root != base:
         raise ValueError("change inventory requires the Git checkout root")
+    if not isinstance(base_revision, str):
+        raise ValueError("base_revision must be a string")
     if base_revision:
         if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base_revision):
             raise ValueError("base_revision must be a full lowercase Git commit ID")
