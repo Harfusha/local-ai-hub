@@ -597,11 +597,14 @@ def _instrumented_tool(services_module: Any = None):
             contract_action = arguments.get(selector, parameter.default if parameter is not None else "")
             output_error = services_module.validate_operation_output(fn.__name__, str(contract_action), clean)
             if output_error is not None:
+                request_id = clean.get("request_id") if isinstance(clean, dict) else None
                 clean = {
                     "success": False, "status_code": 500, "terminal": True, "retryable": False,
                     "error": f"MCP output contract failed: {output_error}",
                     "failure_kind": "output_contract_violation",
                 }
+                if isinstance(request_id, str):
+                    clean["request_id"] = request_id[:160]
             duration_ms = (services_module.time.monotonic() - started) * 1000
             call_success = isinstance(clean, dict) and clean.get("success") is True
             services_module._record_adoption(fn.__name__, arguments, clean, duration_ms, recommended=handoff_added, event_id=call_event_id)
