@@ -610,3 +610,45 @@ def test_session_briefing_is_scoped_read_without_confirmation(tmp_path):
                 "root": str(tmp_path), "include": ["board", "board"],
             }})
         post.assert_not_called()
+
+
+@pytest.mark.parametrize("op", ["plan_task_edit", "plan_task_move", "plan_task_delete"])
+def test_plan_task_mutation_never_upserts_missing_card(tmp_path, op):
+    plan = {"success": True, "file_revision": "rev",
+            "plan": {"id": "plan_1", "tasks": {}}}
+    with patch.object(desktop, "checked_post", return_value=plan) as post:
+        with pytest.raises(ValueError, match="not found"):
+            desktop.dispatch(desktop.HubControl(), {"op": op, "args": {
+                "root": str(tmp_path), "id": "plan_1", "task_id": "task_missing",
+                "revision": "rev", "title": "unexpected", "status": "ready", "confirmed": True,
+            }})
+        assert post.call_count == 1
+        assert post.call_args.args[1] == "/api/coord/plan_get"
+
+
+@pytest.mark.parametrize("limit", [True, 0, 1000, "100"])
+def test_plan_list_rejects_unbounded_limits(tmp_path, limit):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="limit"):
+            desktop.dispatch(MagicMock(), {"op": "plans", "args": {"root": str(tmp_path), "limit": limit}})
+        post.assert_not_called()
+
+
+def test_model_compare_requires_explicit_confirmation():
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="confirmation"):
+            desktop.dispatch(MagicMock(), {"op": "compare", "args": {"prompt": "test"}})
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("view", ["Model statistics", "Execution profiles", "Cache layers",
+    "Agent statistics", "Execution routes", "Laya capture"])
+def test_operational_statistics_use_existing_light_status_endpoint(view):
+    with patch.object(desktop, "HubClient") as factory:
+        client = factory.return_value
+        client._online.return_value = True
+        client.get.return_value = {"success": True, "observability": {}}
+        desktop.HubControl().read(view, period="window")
+        client.get.assert_called_once_with("/api/live/status?light=1&scope=window",
+                                           timeout=15.0, requires_heavy_work=False)
+        client.close.assert_called_once()
