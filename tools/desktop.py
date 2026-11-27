@@ -326,7 +326,8 @@ def transfer(control: HubControl, op: str, args: dict[str, Any]) -> dict[str, An
         length = int(response.getheader("Content-Length", "0"))
         if length <= 0 or length > cap:
             raise RuntimeError("Invalid or oversized archive length.")
-        with file.open("xb") as stream:
+        # Exclusive creation preserves no-overwrite semantics and requests owner-only permissions on POSIX.
+        with os.fdopen(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600), "wb") as stream:
             created = True
             received = 0
             while chunk := response.read(65536):
@@ -890,10 +891,18 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             payload["reason"] = text_field(args, "reason")
         if action == "transition":
             target = args.get("status")
-            if target not in {"active", "verifying", "blocked", "planned"}:
+            if target not in {"active", "verifying", "blocked", "planned", "waiting", "cancelled", "abandoned"}:
                 raise ValueError("Unsupported task transition")
             payload["status"] = target
-        return checked_post(control, "/api/agent-state/tasks", payload)
+        result = checked_post(control, "/api/agent-state/tasks", payload)
+        task = result.get("task")
+        if (result.get("success") is not True or not isinstance(task, dict)
+                or task.get("task_id") != payload["task_id"]):
+            raise RuntimeError("Task operation not confirmed for exact task")
+        expected = {"complete": "completed", "fail": "failed", "transition": payload.get("status")}.get(action)
+        if expected is not None and task.get("status") != expected:
+            raise RuntimeError("Task operation returned an unexpected status")
+        return result
     if op in {"task_create", "memory_record", "memory_delete", "plan_create",
               "global_preprocess", "feature"}:
         if args.get("confirmed") is not True:
@@ -912,16 +921,36 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                                 {"action": "update", "settings": {f"features.{feature}": args["enabled"]}})
         root = explicit_root(args.get("root"))
         if op == "task_create":
-            criteria = args.get("criteria", "")
+            from local_ai_hub.agent_identity import AgentScope
             scope, risk = args.get("scope", "task"), args.get("risk", "normal")
-            if not isinstance(criteria, str) or len(criteria) > 12000:
-                raise ValueError("Invalid acceptance criteria")
-            if scope not in {"task", "session", "repository", "system"} or risk not in {"low", "normal", "high"}:
+            if (type(scope) is not str or scope not in {item.value for item in AgentScope}
+                    or type(risk) is not str or risk not in {"low", "normal", "high", "critical"}):
                 raise ValueError("Invalid task scope or risk")
-            return checked_post(control, "/api/agent-state/tasks", {"root": root, "action": "create",
-                "contract": {"goal": text_field(args, "goal", 12000),
-                             "acceptance_criteria": [line.strip() for line in criteria.splitlines() if line.strip()],
-                             "scope": scope, "risk_profile": risk}})
+            contract: dict[str, Any] = {"goal": text_field(args, "goal", 12000), "scope": scope, "risk_profile": risk}
+            for source, field in (("criteria", "acceptance_criteria"), ("non_goals", "non_goals"),
+                                  ("constraints", "constraints")):
+                value = args.get(source, "")
+                if not isinstance(value, str) or len(value) > 12000 or "\x00" in value:
+                    raise ValueError(f"Invalid task {field}")
+                contract[field] = [line.strip() for line in value.splitlines() if line.strip()]
+            description = args.get("description", "")
+            slo = args.get("slo", "")
+            if not isinstance(description, str) or len(description) > 12000 or "\x00" in description:
+                raise ValueError("Invalid task description")
+            if not isinstance(slo, str) or len(slo) > 12000:
+                raise ValueError("Invalid task SLO profile")
+            profile = json.loads(slo) if slo.strip() else {}
+            if not isinstance(profile, dict):
+                raise ValueError("Task SLO profile must be a JSON object")
+            contract.update({"description": description, "slo_profile": profile})
+            result = checked_post(control, "/api/agent-state/tasks", {"root": root, "action": "create",
+                "contract": contract})
+            task = result.get("task")
+            if (result.get("success") is not True or not isinstance(task, dict)
+                    or not isinstance(task.get("task_id"), str) or not task["task_id"]
+                    or task.get("status") != "planned"):
+                raise RuntimeError("Task creation not confirmed")
+            return result
         if op in {"memory_record", "memory_delete"}:
             from local_ai_hub.agent_identity import MemoryKind
             payload = memory_scope_fields(args)
