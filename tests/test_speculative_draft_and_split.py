@@ -11,7 +11,6 @@ from local_ai_hub.token_accounting import finalize_tool_accounting
 
 
 def test_split_changes(tmp_path: Path) -> None:
-    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
     changed = [
         "src/models/user.py",
         "src/core/engine.py",
@@ -20,16 +19,27 @@ def test_split_changes(tmp_path: Path) -> None:
         "docs/api.md",
         "config.toml",
     ]
-    res = engine.split_changes(str(tmp_path), changed_files=changed)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    for path in changed:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("original\n", encoding="utf-8")
+        subprocess.run(["git", "add", "--", path], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
+    for path in changed:
+        (tmp_path / path).write_text("changed\n", encoding="utf-8")
+
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path.parent / (tmp_path.name + "-state"))}})
+    res = engine.split_changes(str(tmp_path))
     assert res["success"] is True
     assert res["total_files"] == 6
-    assert res["cluster_count"] >= 4
+    assert res["cluster_count"] == 6
 
     categories = {c["category"] for c in res["clusters"]}
-    assert "models_or_schemas" in categories
-    assert "core" in categories
-    assert "api_or_services" in categories
-    assert "tests" in categories
+    assert "implementation" in categories
+    assert "test" in categories
     assert "docs" in categories
 
 
@@ -66,6 +76,26 @@ def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
 
     assert result["total_files"] == 1
     assert timeouts == [0.7] * 11
+
+
+def test_split_changes_has_no_legacy_full_mode(tmp_path: Path, monkeypatch) -> None:
+    import local_ai_hub.change_plan_projection as projection
+
+    services = LocalAIServices(
+        config={"server": {"state_dir": str(tmp_path)}},
+        runtime=MagicMock(),
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=MagicMock(),
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=MagicMock(),
+    )
+    services.deterministic.split_changes.return_value = {"success": True, "clusters": []}
+    monkeypatch.setattr(projection, "project_change_plan", lambda result, **kwargs: {"projected": kwargs["mode"]})
+
+    assert services.split_changes(str(tmp_path)) == {"projected": "summary"}
+    assert services.split_changes(str(tmp_path), mode="full")["success"] is False
 
 
 def test_synthesize_rules(tmp_path: Path) -> None:

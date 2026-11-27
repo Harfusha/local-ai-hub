@@ -78,7 +78,6 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_hotspots_1', frozenset(('/api/repo/hotspots',))),
     RouteRule('post_generate_tests_for_diff_1', frozenset(('/api/repo/generate_tests_for_diff',))),
     RouteRule('post_cross_repo_contract_1', frozenset(('/api/repo/cross_repo_contract',))),
-    RouteRule('post_git_synthesize_commit_1', frozenset(('/api/git/synthesize_commit',))),
     RouteRule('post_test_matrix_1', frozenset(('/api/test_matrix',))),
     RouteRule('post_affected_tests_1', frozenset(('/api/repo/affected_tests',))),
     RouteRule('post_repo_topology_1', frozenset(('/api/repo/topology',))),

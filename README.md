@@ -6,7 +6,7 @@ Local AI Hub **8.2.1** is a local, deterministic-first tool and inference layer 
 
 The public interface is intentionally small: **7 MCP tools** (`local_ai_status`, `local_ai_task`, `local_ai_repo`, `local_ai_rag`, `local_ai_coord`, `local_ai_work`, `local_ai_artifact`). Serena is managed behind that surface by default, so agents gain language-aware symbols without paying for additional MCP schemas on every turn.
 
-Local AI Hub 8.2.1 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
+Local AI Hub 8.2.1 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and operator state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
 
 ## What it does
 
@@ -309,7 +309,7 @@ Savings sources are intentionally deduplicated: overlapping input-side transform
 
 ## Native desktop and diagnostics
 
-The desktop is a native Rust/egui application. From a trusted Hub checkout, build it with `cargo build --manifest-path desktop/Cargo.toml --release`, then run `python tools/hubctl.py desktop`. The legacy `dashboard` CLI name launches the same native application; it no longer returns a browser URL. The HTTP and MCP APIs remain available. See [desktop installation and operation](docs/DESKTOP.md) and the [parity register](docs/DESKTOP_PARITY.md) for verification and migration status.
+The desktop is a native Rust/egui application. From a trusted Hub checkout, build it with `cargo build --manifest-path desktop/Cargo.toml --release`, then run `python tools/hubctl.py desktop`. The HTTP and MCP APIs remain available. See [desktop installation and operation](docs/DESKTOP.md) and the [parity register](docs/DESKTOP_PARITY.md) for verification and migration status.
 
 ```bash
 python tools/doctor.py

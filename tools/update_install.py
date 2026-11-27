@@ -34,7 +34,7 @@ from tools.state_migrations import (  # noqa: E402
     StateMigrationError, inspect_state_migration_path, restore_state_backup, run_state_migrations,
 )
 from tools.update_transaction import (  # noqa: E402
-    PAYLOAD_FILES, _has_link_component, has_unexpected_python_link, installation_update_lock, replace_install_payload,
+    PAYLOAD_FILES, RETIRED_INSTALL_FILES, _has_link_component, has_unexpected_python_link, installation_update_lock, replace_install_payload,
     stop_existing_runtime, update_recovery_path,
 )
 
@@ -220,6 +220,7 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
 
     success, detail = replace_install_payload(
         source, install, install / "config.toml", PAYLOAD_FILES,
+        retired_files=RETIRED_INSTALL_FILES,
         before_commit=stop_before_swap, after_swap=activate, before_rollback=restore,
         after_rollback=confirm_payload_restored,
     )

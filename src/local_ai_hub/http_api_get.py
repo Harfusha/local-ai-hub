@@ -18,8 +18,8 @@ class HttpGetMixin:
         if path == "/ready":
             self._handle_health_route(path)
             return
-        if path.rstrip("/") in {"", "/dashboard", "/favicon.ico"}:
-            self._send(404, {"success": False, "error": "Web UI removed; use Local AI Hub Desktop."})
+        if path.rstrip("/") in {"", "/favicon.ico"}:
+            self._send(404, {"success": False, "error": "Route not found."})
             return
         if services_module.APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
@@ -35,7 +35,7 @@ class HttpGetMixin:
         elif not self._require_authorized():
             return
         if path == "/api/updates":
-            self._handle_dashboard_updates()
+            self._handle_desktop_updates()
             return
         mode_error = services_module._http_mode_gate_error("GET", path)
         if mode_error is not None:
@@ -98,7 +98,7 @@ class HttpGetMixin:
             if not self._bind_swarm_query(query):
                 return
         root_scoped_repo_get_paths = {
-            "/api/git/status", "/api/git/diff", "/api/git/history_search", "/api/git/synthesize_commit",
+            "/api/git/status", "/api/git/diff", "/api/git/history_search",
             "/api/hotspots", "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
             "/api/resolve_imports", "/api/security_audit", "/api/search",
             "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/project/config",
@@ -974,15 +974,6 @@ class HttpGetMixin:
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/git/synthesize_commit":
-                root = (query.get("root") or ["."])[0]
-                hint = (query.get("hint") or [""])[0]
-                task_id = (query.get("task_id") or [""])[0]
-                if services_module.APP.deterministic is not None:
-                    self._send(200, services_module.APP.services.synthesize_commit(root, hint, task_id=task_id))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
             if path == "/api/models":
                 models = services_module.APP.runtime.installed_models()
                 self._send(200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "ollama"} for m in models]}); return
@@ -1013,17 +1004,15 @@ class HttpGetMixin:
             except Exception:
                 pass
 
-    def _handle_dashboard_updates(self, *, mutate: bool = False) -> None:
-        # Existing dashboard callers remain compatible until cutover; native callers
-        # must be loopback, authenticated by normal host/origin checks, and not a browser.
+    def _handle_desktop_updates(self, *, mutate: bool = False) -> None:
         marker = self.headers.get("X-LocalAI-Client", "")
         desktop = marker == "desktop" and not self.headers.get("Origin") and not any(
             self.headers.get(name) for name in ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest")
         )
-        if not services_module._is_loopback_peer(self) or not (marker == "dashboard" or desktop):
+        if not services_module._is_loopback_peer(self) or not desktop:
             self._send(403, {"success": False, "error": "Update controls require the local desktop."})
             return
-        controller = getattr(services_module.APP, "dashboard_updates", None)
+        controller = getattr(services_module.APP, "desktop_updates", None)
         if controller is None:
             self._send(503, {"success": False, "error": "Update controls are unavailable."})
             return

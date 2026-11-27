@@ -219,6 +219,72 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertEqual((self.install / "models" / "user.gguf").read_text(encoding="utf-8"), "model\n")
         self.assertEqual((self.install / ".venv" / "marker").read_text(encoding="utf-8"), "runtime\n")
 
+    def test_one_time_retired_dashboard_report_cleanup_is_transactional(self) -> None:
+        retired = self.install / "auto-update-dashboard.json"
+        retired.write_text("{\"status\":\"complete\"}\n", encoding="utf-8")
+
+        success, detail = update_transaction.replace_install_payload(
+            self.source, self.install, self.config, (),
+            retired_files=update_transaction.RETIRED_INSTALL_FILES,
+        )
+
+        self.assertTrue(success)
+        self.assertIn("one-time dashboard cleanup", detail)
+        self.assertFalse(retired.exists())
+
+    def test_failed_activation_restores_retired_dashboard_report(self) -> None:
+        retired = self.install / "auto-update-dashboard.json"
+        original = "{\"status\":\"pending\"}\n"
+        retired.write_text(original, encoding="utf-8")
+
+        success, detail = update_transaction.replace_install_payload(
+            self.source, self.install, self.config, (),
+            retired_files=update_transaction.RETIRED_INSTALL_FILES,
+            after_swap=lambda: (False, "injected activation failure"),
+            after_rollback=lambda: None,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("rollback completed", detail)
+        self.assertEqual(retired.read_text(encoding="utf-8"), original)
+
+    def test_retired_dashboard_cleanup_rejects_unsafe_names_and_links(self) -> None:
+        unsafe, unsafe_detail = update_transaction.replace_install_payload(
+            self.source, self.install, self.config, (), retired_files=("../outside",),
+        )
+        self.assertFalse(unsafe)
+        self.assertIn("unsafe retired install filename", unsafe_detail)
+
+        alias = self.root / "outside-report.json"
+        alias.write_text("keep\n", encoding="utf-8")
+        retired = self.install / "auto-update-dashboard.json"
+        try:
+            retired.symlink_to(alias)
+        except OSError as exc:
+            self.skipTest(f"file symlinks unavailable: {exc}")
+        linked, linked_detail = update_transaction.replace_install_payload(
+            self.source, self.install, self.config, (),
+            retired_files=update_transaction.RETIRED_INSTALL_FILES,
+        )
+        self.assertFalse(linked)
+        self.assertIn("retired install target is a link", linked_detail)
+        self.assertEqual(alias.read_text(encoding="utf-8"), "keep\n")
+
+    def test_retired_dashboard_cleanup_refuses_non_file_targets(self) -> None:
+        retired = self.install / "auto-update-dashboard.json"
+        retired.mkdir()
+        sentinel = retired / "operator-data.txt"
+        sentinel.write_text("preserve\n", encoding="utf-8")
+
+        success, detail = update_transaction.replace_install_payload(
+            self.source, self.install, self.config, (),
+            retired_files=update_transaction.RETIRED_INSTALL_FILES,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("not a regular file", detail)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "preserve\n")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,7 @@ cargo build --manifest-path desktop/Cargo.toml --release
 python tools/hubctl.py desktop
 ```
 
-The previous `dashboard` CLI alias opens the same application. No web dashboard is served. A stopped Hub can be started from the desktop. Configure the existing Hub installation and Python executable in the app if automatic discovery is unsuitable.
+ A stopped Hub can be started from the desktop. Configure the existing Hub installation and Python executable in the app if automatic discovery is unsuitable.
 
 ## Portable build
 
@@ -31,4 +31,4 @@ The current PR is a draft. See [parity and evidence](DESKTOP_PARITY.md) for gaps
 
 ### Reviewed Git transactions
 
-Changes & commits also exposes local staging preview, confirmed staging apply, confirmed exact staged-tree commit and read-only recovery list/inspection. Supply explicit paths, hunk IDs if needed, observed revision and preview tree. Re-observe after staging. Sequence verification and publication remain CLI operations. No browser dashboard or arbitrary command bridge is introduced.
+Changes & commits also exposes local staging preview, confirmed staging apply, confirmed exact staged-tree commit and read-only recovery list/inspection. Supply explicit paths, hunk IDs if needed, observed revision and preview tree. Re-observe after staging. Sequence verification and publication remain CLI operations. The bridge exposes typed operations and does not run arbitrary commands.

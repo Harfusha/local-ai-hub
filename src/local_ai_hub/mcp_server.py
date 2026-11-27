@@ -429,7 +429,7 @@ _REPO_ACTIONS = (
     "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
     "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
     "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
-    "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh",
+    "verify", "preprocess", "preprocess_status", "preprocess_refresh",
     "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
     "context_compile", "verify_receipt", "verify_completion",
     "cross_project_graph", "cross_project_symbols", "cross_project_impact",

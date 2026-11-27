@@ -272,43 +272,6 @@ class ServiceCoordinationMixin:
         ws = self._plan_workspace(root, "plan_reconcile_steering", arguments)
         return reconcile_task_steering(self.task_store, root=str(ws.repo_root), **arguments)
 
-    def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
-        from .change_task_context import current_task_revision, scoped_tasks, task_verification_candidates
-        from .repository_scope import authorized_repository_root
-
-        root = authorized_repository_root(getattr(self, "config", {}), root)
-        try:
-            tasks, truncated = scoped_tasks(getattr(self, "task_store", None), root, task_id)
-        except ValueError as exc:
-            return {"success": False, "error": str(exc)}
-        # Only an explicitly selected task supplies the message's intent.
-        # Implicit tasks are not evidence of which changes belong to this commit.
-        tasks_data = [
-            {"task_id": task.task_id, "goal": task.contract.goal}
-            for task in tasks if task_id
-        ]
-        revision = current_task_revision(self, root) if tasks_data else ""
-        candidates = [
-            task_verification_candidates(self, task, revision)
-            for task in tasks if task_id
-        ]
-        result = self.deterministic.synthesize_commit(
-            root, hint, task_id=task_id, tasks=tasks_data, receipts=[],
-        )
-        if not isinstance(result, dict):
-            return result
-        if revision and current_task_revision(self, root) != revision:
-            candidates = [
-                {"task_id": task.task_id, "status": "revision_changed", "commit_verified": False}
-                for task in tasks if task_id
-            ]
-        # Do not claim the task's whole-worktree receipts verify the proposed
-        # commit or bake transient receipt state into deterministic cache keys.
-        return {
-            **result, "task_verification_candidates": candidates,
-            "tasks_truncated": truncated, "commit_verified": False,
-        }
-
     def code_inspect_symbol(self, root: str, symbol: str) -> dict[str, Any]:
         if self.code_index is None:
             return {"success": False, "error": "code index disabled"}

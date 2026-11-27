@@ -163,14 +163,14 @@ def test_bridge_never_imports_tkinter():
 
 
 @pytest.mark.parametrize("path", ["/", "/dashboard", "/dashboard/", "/favicon.ico"])
-def test_http_web_ui_route_is_retired(path):
+def test_removed_http_pages_return_not_found(path):
     from local_ai_hub.http_api_get import HttpGetMixin
     handler = MagicMock()
     handler.path = path
     handler._reject_identity_fields.return_value = True
     HttpGetMixin.do_GET(handler)
     handler._send.assert_called_once_with(
-        404, {"success": False, "error": "Web UI removed; use Local AI Hub Desktop."}
+        404, {"success": False, "error": "Route not found."}
     )
 
 
@@ -199,7 +199,7 @@ def test_binary_transfer_requires_confirmation(operation):
 
 def test_native_setting_rejects_retired_web_flags():
     control = MagicMock()
-    with pytest.raises(ValueError, match="retired"):
+    with pytest.raises(ValueError, match="unsupported"):
         desktop.dispatch(control, {"op": "setting", "args": {
             "key": "features.dashboard", "value": True, "confirmed": True}})
     control._client.assert_not_called()

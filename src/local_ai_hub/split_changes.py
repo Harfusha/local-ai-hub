@@ -15,23 +15,19 @@ from .change_dependencies import annotate_dependencies
 from .process_utils import clean_git_env, run_hidden
 
 
-def _component(path: str) -> tuple[str, str]:
+def _role(path: str) -> str:
     p = PurePosixPath(path)
     parts = p.parts
-    stem = p.stem.lower()
     is_test = any(part.lower() in {"tests", "test", "spec", "__tests__"} for part in parts[:-1]) or bool(
-        re.search(r"(^test_|_test$|[._-](?:test|spec)$)", stem)
+        re.search(r"(^test_|_test$|[._-](?:test|spec)$)", p.stem.lower())
     )
-    stem = re.sub(r"^test_|_test$|[._-](?:test|spec)$", "", stem)
-    stem = re.sub(r"(?:controller|service|repository|model|test)$", "", stem, flags=re.I)
-    key = re.sub(r"[^a-z0-9]+", "", stem)
     if is_test:
-        return key, "test"
+        return "test"
     if p.suffix.lower() in {".md", ".rst", ".txt"} or "docs" in parts[:-1]:
-        return key, "docs"
+        return "docs"
     if p.suffix.lower() in {".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock"}:
-        return key, "config"
-    return key, "implementation"
+        return "config"
+    return "implementation"
 
 
 def _parse_status(raw: bytes) -> dict[str, str]:
@@ -97,25 +93,11 @@ def _group(
     staged: dict[str, tuple[int | None, int | None]],
     unstaged: dict[str, tuple[int | None, int | None]],
 ) -> list[dict[str, Any]]:
-    # Exact normalized component names are only a heuristic. Do not merge
-    # different production paths with the same basename or infer dependencies.
-    components = {path: _component(path) for path in statuses}
-    implementations: dict[str, list[str]] = {}
-    for path, (key, role) in components.items():
-        if key and role == "implementation":
-            implementations.setdefault(key, []).append(path)
-    buckets: dict[str, list[str]] = {}
-    for path, (key, role) in sorted(components.items()):
-        status = statuses[path]
-        candidates = implementations.get(key, [])
-        blocked = status in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"} or "D" in status
-        anchor = (
-            candidates[0]
-            if role in {"test", "docs"} and len(candidates) == 1 and not blocked
-            and "D" not in statuses[candidates[0]] and statuses[candidates[0]] not in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
-            else path
-        )
-        buckets.setdefault(anchor, []).append(path)
+    # A filename match is not evidence that two changes belong in one commit.
+    # Keep each observed path independently addressable; the dependency graph
+    # adds explicit candidate ordering and uncertainty after semantic analysis.
+    components = {path: _role(path) for path in statuses}
+    buckets = {path: [path] for path in statuses}
 
     clusters = []
     for index, (anchor, files) in enumerate(sorted(buckets.items()), 1):
@@ -149,7 +131,7 @@ def _group(
             }
         name = PurePosixPath(anchor).stem
         label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name)[:60] or "component"
-        role = components[anchor][1]
+        role = components[anchor]
         kind = {"docs": "docs", "test": "test"}.get(role, "chore")
         message = f"{kind}: update {label}"
         clusters.append({
@@ -157,7 +139,7 @@ def _group(
             "name": name,
             "category": role,
             "files": files,
-            "summary": f"{len(files)} changed file(s) grouped by component name: {label}",
+            "summary": f"{len(files)} changed file(s) in an independently addressable candidate group: {label}",
             "suggested_commit_message": message,
             "verification_status": "unknown",
             "risks": sorted(risks),
@@ -165,48 +147,6 @@ def _group(
             "line_totals": totals,
         })
     return clusters
-
-
-def _explicit_path_proposal(files: list[str]) -> dict[str, Any]:
-    """Retain the legacy explicit-file classification for non-Git callers."""
-    categories: dict[str, list[str]] = {}
-    for path in sorted(set(files)):
-        norm = path.lower().replace("\\", "/")
-        if norm.startswith("docs/") or norm.endswith((".md", ".rst", ".txt")):
-            category = "docs"
-        elif norm.endswith((".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock")) or "config" in norm:
-            category = "config"
-        elif "test" in norm:
-            category = "tests"
-        elif any(key in norm for key in ("model", "schema", "entity", "dto")):
-            category = "models_or_schemas"
-        elif any(key in norm for key in ("api", "service", "route", "controller", "endpoint")):
-            category = "api_or_services"
-        elif any(key in norm for key in ("core", "engine", "util", "helper", "lib")):
-            category = "core"
-        else:
-            category = "other"
-        categories.setdefault(category, []).append(path)
-    clusters = [
-        {
-            "cluster_id": index,
-            "name": category.replace("_", " ").title(),
-            "category": category,
-            "files": paths,
-            "summary": f"{len(paths)} caller-supplied path(s); contents not inspected",
-            "suggested_commit_message": f"chore: update {category.replace('_', ' ')}",
-            "verification_status": "unknown",
-            "risks": ["inventory_not_verified", "ownership_unknown", "dependencies_not_verified"],
-        }
-        for index, (category, paths) in enumerate(sorted(categories.items()), 1)
-    ]
-    return {
-        "success": True, "total_files": sum(map(len, categories.values())),
-        "cluster_count": len(clusters), "clusters": clusters,
-        "summary": "Caller-supplied paths only; no Git inventory available",
-        "method": "explicit_path_only", "verification_status": "unknown",
-        "commit_ready": False, "limitations": ["No Git inventory, content, or verification inspected."],
-    }
 
 
 def _git_snapshot_metadata(git: Any) -> dict[str, str]:
@@ -256,17 +196,9 @@ def run_split_changes(
             raise ValueError("Git inventory unavailable")
         return cp.stdout
 
-    # The historical explicit-list API also supports synthetic paths outside Git.
-    # Never use that fallback after a worktree has been detected.
     try:
         top_raw = git("rev-parse", "--show-toplevel")
     except ValueError:
-        if (
-            base is None and isinstance(changed_files, list) and changed_files
-            and all(isinstance(p, str) and p and not any(ord(c) < 32 for c in p) for p in changed_files)
-            and not (resolved_root / ".git").exists()
-        ):
-            return {"root": str(resolved_root), **_explicit_path_proposal(changed_files)}
         return {"success": False, "error": "Git inventory unavailable", "retryable": True}
     except (OSError, subprocess_module.SubprocessError):
         return {"success": False, "error": "Git inventory unavailable", "retryable": True}
@@ -400,7 +332,7 @@ def run_split_changes(
         "cluster_count": len(clusters),
         "clusters": clusters,
         "summary": f"{len(statuses)} changed file(s), {len(clusters)} proposed component group(s)",
-        "method": "component_name_heuristic_v2",
+        "method": "git_change_observation_v1",
         "patch_coverage_complete": not observed["unavailable"],
         "git_visible_observation_complete": (
             not observed["unavailable"] and changed_files is None

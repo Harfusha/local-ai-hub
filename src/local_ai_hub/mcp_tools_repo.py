@@ -143,7 +143,6 @@ def _local_ai_repo_impl(
         "deterministic": ("task", "diff", "workspace", "path"),
         "resolve_imports": ("task", "diff", "workspace", "path"),
         "validate_patch": ("task", "diff", "workspace", "path"),
-        "synthesize_commit": ("task", "diff", "workspace", "path"),
         "cross_project_symbols": ("task", "diff", "workspace", "path"),
         "cross_project_impact": ("task", "diff", "workspace", "path"),
         "generate_dataset": ("task", "diff", "workspace", "path"),
@@ -221,10 +220,6 @@ def _local_ai_repo_impl(
         value = input_values[required_field]
         if not isinstance(value, str) or not value.strip():
             return services_module.contract_error(f"{action} requires non-empty {required_field}")
-    if action == "synthesize_commit" and task_id != "" and (
-        not isinstance(task_id, str) or not task_id.strip()
-    ):
-        return services_module.contract_error("synthesize_commit task_id must be a non-empty string when supplied")
     if action == "skeletonize" and not (isinstance(query, str) and query.strip()) and not (isinstance(path, str) and path.strip()):
         return services_module.contract_error("skeletonize requires query code or a path")
     if action == "circular_dependencies" and not isinstance(language, str):
@@ -703,11 +698,6 @@ def _local_ai_repo_impl(
         return services_module._compact(raw_status, "status")
     if action == "repo_state":
         return services_module._compact(services_module.CLIENT.post("/api/repo/state", {"root": root}, timeout=services_module._timeout("quick")), "status")
-    if action == "synthesize_commit":
-        synth_payload = {"root": root, "hint": query}
-        if task_id:
-            synth_payload["task_id"] = task_id
-        return services_module._compact(services_module.CLIENT.post("/api/git/synthesize_commit", synth_payload, timeout=services_module._timeout("quick")), "status")
     if action == "verify":
         return services_module._compact(services_module.CLIENT.post("/api/evidence/verify", {"root": root, "evidence": evidence or []}), "verify")
     if action == "pipeline":

@@ -7,7 +7,7 @@ def test_native_desktop_discloses_trace_access_and_retention_policy():
     assert "separate local retention policy" in source
 
 
-def test_retired_dashboard_route_returns_json_not_found(monkeypatch) -> None:
+def test_retired_web_routes_return_json_not_found(monkeypatch) -> None:
     import json
     import threading
     import urllib.error
@@ -16,10 +16,7 @@ def test_retired_dashboard_route_returns_json_not_found(monkeypatch) -> None:
     from local_ai_hub import http_server
     import pytest
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "monitoring": {"dashboard_enabled": True},
-        "features": {"dashboard": True},
-    }))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}))
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

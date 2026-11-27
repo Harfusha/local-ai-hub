@@ -108,6 +108,7 @@ def test_partial_hunks_preserve_unselected_lines(tmp_path):
 
 
 def test_real_partial_stage_commit_preserves_unrelated_changes_and_project_lease(tmp_path):
+    import sys
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -152,12 +153,28 @@ def test_real_partial_stage_commit_preserves_unrelated_changes_and_project_lease
     staged = stage_selection(config, engine, lease, **kwargs, expected_tree=preview["prospective_tree_oid"], apply=True)
     assert staged["success"], staged
     after = engine.split_changes(root_str, None)
-    result = execute_staged_commit(config, engine, lease, root=root_str, paths=["a.txt"],
-                                   expected_revision=after["observed_change_set_id"],
-                                   expected_tree=preview["prospective_tree_oid"], message="chore: selected hunk",
-                                   approved=True, allow_mixed_staged=True)
+    from local_ai_hub.change_commit_journal import CommitJournal
+    from local_ai_hub.change_tree_verification import verify_sequence
+
+    sequence = [{"paths": ["a.txt"], "message": "chore: selected hunk"}]
+    journal = CommitJournal(tmp_path / "state" / "commit-journal")
+    common = dict(root=root_str, paths=["a.txt"], expected_revision=after["observed_change_set_id"],
+                  expected_tree=preview["prospective_tree_oid"], sequence=sequence, journal=journal,
+                  allow_mixed_staged=True)
+    sequence_preview = execute_staged_commit(config, engine, lease, **common,
+                                             approved=False, preview_only=True)
+    assert sequence_preview["success"], sequence_preview
+    manifest = {"environment_id": "c" * 64, "commands": [[
+        sys.executable, "-c",
+        "from pathlib import Path; assert Path('a.txt').read_text() == 'ONE\\ntwo\\nthree\\nfour\\nfive\\n'; assert Path('b.txt').read_text() == 'old\\n'",
+    ]]}
+    verified = verify_sequence(root_str, sequence_preview, manifest, journal)
+    assert verified["success"], verified
+    result = execute_staged_commit(config, engine, lease, **common, approved=True,
+                                   preview_digest=sequence_preview["preview_digest"],
+                                   verification_manifest=manifest)
     assert result["success"], result
-    assert _git(root, "show", "HEAD:a.txt") == "ONE\ntwo\nthree\nfour\nfive"
+    assert _git(root, "show", "HEAD:a.txt").replace("\r\n", "\n") == "ONE\ntwo\nthree\nfour\nfive"
     assert "FIVE" in (root / "a.txt").read_text(encoding="utf-8")
     assert _git(root, "show", "HEAD:b.txt") == "old"
     assert _git(root, "diff", "--name-only") == "a.txt\nb.txt"

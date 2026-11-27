@@ -220,7 +220,7 @@ _SAVINGS_SOURCE_ALLOWLIST = frozenset({
 })
 _DECISION_DETAIL_LIMIT = 24
 _REPORT_GROUP_LIMIT = 100
-_DASHBOARD_CACHE_LIMIT = 16
+_REPORT_CACHE_LIMIT = 16
 _SUMMARY_CACHE_LIMIT = 16
 _MAX_METADATA_LENGTH = 160
 _MAX_TELEMETRY_REPORT_BYTES = 256 * 1024 - 64  # reserve space for HTTP envelope
@@ -1054,9 +1054,9 @@ class TelemetryStore(TelemetryAggregateMixin, TelemetryQueryMixin, TelemetryEven
         self._live_lock = threading.Lock()
         self._live_seq = 0
         self._live_events: deque[dict[str, Any]] = deque(maxlen=max(100, int(live_buffer_size)))
-        self._dashboard_lock = threading.Lock()
-        self._dashboard_cache: dict[tuple[int, str], dict[str, Any]] = {}
-        self._dashboard_cache_at: dict[tuple[int, str], float] = {}
+        self._report_lock = threading.Lock()
+        self._report_cache: dict[tuple[int, str], dict[str, Any]] = {}
+        self._report_cache_at: dict[tuple[int, str], float] = {}
         self._summary_cache_lock = threading.Lock()
         self._summary_cache: dict[Any, dict[str, Any]] = {}
         self._thread: threading.Thread | None = None
@@ -1401,9 +1401,9 @@ class TelemetryStore(TelemetryAggregateMixin, TelemetryQueryMixin, TelemetryEven
             with self._live_lock:
                 self._live_events.clear()
                 self._live_seq = 0
-            with self._dashboard_lock:
-                self._dashboard_cache.clear()
-                self._dashboard_cache_at.clear()
+            with self._report_lock:
+                self._report_cache.clear()
+                self._report_cache_at.clear()
             with self._summary_cache_lock:
                 self._summary_cache.clear()
             self.process_started_at = time.time()

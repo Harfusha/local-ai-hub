@@ -91,7 +91,7 @@ class HTTPPostRoutesMixin:
         if not self._require_authorized():
             return
         if path == "/api/updates":
-            self._handle_dashboard_updates(mutate=True)
+            self._handle_desktop_updates(mutate=True)
             return
         early_mode_rejection = None
         if path != "/api/context/pack":
@@ -244,7 +244,7 @@ class HTTPPostRoutesMixin:
             "/api/repo/state", "/api/repo/hotspots",
             "/api/hotspots", "/api/repo/generate_tests_for_diff",
             "/api/generate_tests_for_diff", "/api/repo/affected_tests",
-            "/api/repo/topology", "/api/git/synthesize_commit", "/api/test_matrix",
+            "/api/repo/topology", "/api/test_matrix",
             "/api/security_audit", "/api/code-intelligence/query",
             "/api/code-intelligence/reset", "/api/repo/dead_code",
             "/api/symbol_callgraph",
@@ -505,15 +505,6 @@ class HTTPPostRoutesMixin:
                 f_root = str(payload.get("frontend_root", payload.get("client_root", ".")))
                 if services_module.APP.deterministic is not None:
                     self._send(200, services_module.APP.services.cross_repo_contract(b_root, f_root))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
-            if 'post_git_synthesize_commit_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                hint = str(payload.get("hint", payload.get("message", "")))
-                task_id = str(payload.get("task_id", ""))
-                if services_module.APP.deterministic is not None:
-                    self._send(200, services_module.APP.services.synthesize_commit(root, hint, task_id=task_id))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
@@ -787,10 +778,10 @@ class HTTPPostRoutesMixin:
                 from .repo_knowledge_management import manage_repository_knowledge
                 def knowledge_operator_write() -> bool:
                     # Local-owner trust is established by normal Host/Origin and
-                    # loopback checks above; the dashboard marker is not identity.
+                    # loopback checks above; the desktop marker is not identity.
                     return (
                         getattr(self, "_authorization_actor", "") == "local"
-                        and self.headers.get("X-LocalAI-Client", "") == "dashboard"
+                        and self.headers.get("X-LocalAI-Client", "") == "desktop"
                         and self.headers.get("Sec-Fetch-Site", "").lower() == "same-origin"
                         and bool(self.headers.get("Origin", "").strip())
                     )
@@ -1069,15 +1060,12 @@ class HTTPPostRoutesMixin:
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths", payload.get("changed_files"))
-                if any(key in payload for key in ("mode", "limit", "offset", "base", "head", "task_id", "expected_revision")):
-                    result = services_module.APP.services.split_changes(
-                        root, paths, mode=payload.get("mode", "summary"),
-                        limit=payload.get("limit", 8), offset=payload.get("offset", 0),
-                        base=payload.get("base"), head=payload.get("head", "HEAD"), task_id=payload.get("task_id", ""),
-                        expected_revision=payload.get("expected_revision"),
-                    )
-                else:
-                    result = services_module.APP.services.split_changes(root, paths)
+                result = services_module.APP.services.split_changes(
+                    root, paths, mode=payload.get("mode", "summary"),
+                    limit=payload.get("limit", 8), offset=payload.get("offset", 0),
+                    base=payload.get("base"), head=payload.get("head", "HEAD"), task_id=payload.get("task_id", ""),
+                    expected_revision=payload.get("expected_revision"),
+                )
                 self._send(200, result); return
             if 'post_repo_synthesize_rules_1' in post_route_ids:
                 root = str(payload.get("root", "."))

@@ -272,11 +272,11 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
     from local_ai_hub.state_paths import configured_state_dir
 
     action = args.get("action")
-    if action not in {"stage-preview", "stage-apply", "commit-staged", "commit-list", "commit-inspect",
+    if action not in {"stage-preview", "stage-apply", "commit-list", "commit-inspect",
                       "annotate", "sequence-preview", "sequence-apply", "sequence-suggest",
                       "sequence-status", "sequence-verify-policy", "verification-policy"}:
         raise ValueError("Unsupported local Git operation")
-    if action in {"stage-apply", "commit-staged", "annotate", "sequence-apply", "sequence-verify-policy"} and args.get("confirmed") is not True:
+    if action in {"stage-apply", "annotate", "sequence-apply", "sequence-verify-policy"} and args.get("confirmed") is not True:
         raise ValueError("Explicit confirmation required")
     config = load_config(control.config, probe_hardware=False)
     root = authorized_repository_root(config, explicit_root(args.get("root")))
@@ -339,7 +339,7 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
         journal = CommitJournal(state)
         result = execute_staged_commit(
             config, engine, leases, root=root, paths=paths,
-            expected_revision=revision, expected_tree=tree, message="",
+            expected_revision=revision, expected_tree=tree,
             approved=action == "sequence-apply", journal=journal,
             allow_mixed_staged=args.get("allow_mixed_staged") is True,
             sequence=sequence, preview_only=action != "sequence-apply",
@@ -359,11 +359,7 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
                 raise ValueError("Desktop verification requires configured git_commit project policy")
             return verify_sequence(root, result, manifest, journal)
         return result
-    message = text_field(args, "message", 4096)
-    return execute_staged_commit(config, engine, leases, root=root, paths=paths,
-                                 expected_revision=revision, expected_tree=tree,
-                                 message=message, approved=True, journal=CommitJournal(state),
-                                 allow_mixed_staged=args.get("allow_mixed_staged") is True)
+    raise ValueError("Use previewed commit sequence publication")
 
 
 def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
@@ -538,10 +534,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             raise ValueError("Explicit confirmation required")
         key = text_field(args, "key", 100)
         value = args.get("value")
-        from local_ai_hub.dashboard_contracts import dashboard_settings_patch
-        if key in {"monitoring.dashboard_enabled", "features.dashboard"}:
-            raise ValueError("Web UI has been retired")
-        dashboard_settings_patch({key: value})
+        from local_ai_hub.operator_settings import operator_settings_patch
+        operator_settings_patch({key: value})
         return checked_post(control, "/api/config/update", {"action": "update", "settings": {key: value}})
     if op == "trace_detail":
         trace_id = text_field(args, "id", 200)

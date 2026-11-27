@@ -837,7 +837,7 @@ class ServiceRepositoryMixin:
         """Cache expensive deterministic analyses by repository fingerprint.
 
         These operations are pure derived views of repository state. Sharing the same
-        cache with search/context prevents dashboard, MCP and local-model callers from
+        cache with search/context prevents HTTP, MCP and local-model callers from
         independently repeating AST/security/test/dependency scans.
         """
         def wrapped_compute() -> dict[str, Any]:
@@ -879,14 +879,14 @@ class ServiceRepositoryMixin:
 
     def split_changes(
         self, root: str, changed_files: list[str] | None = None, *,
-        mode: str = "full", limit: int = 8, offset: int = 0,
+        mode: str = "summary", limit: int = 8, offset: int = 0,
         base: str | None = None, head: str = "HEAD", task_id: str = "",
         expected_revision: str | None = None,
     ) -> dict[str, Any]:
         from .change_commit_preflight import commit_preflight, revision_error
         from .change_plan_projection import project_change_plan
 
-        if mode not in {"full", "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta"}:
+        if mode not in {"summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta"}:
             return {"success": False, "error": "invalid change plan mode"}
         if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return {"success": False, "error": "invalid change plan page"}
@@ -905,7 +905,7 @@ class ServiceRepositoryMixin:
         tasks: list[Any] = []
         truncated = False
         revision_before = ""
-        if base is None and (mode != "full" or task_id):
+        if base is None:
             try:
                 tasks, truncated = scoped_tasks(getattr(self, "task_store", None), root, task_id)
             except ValueError as exc:
@@ -920,9 +920,9 @@ class ServiceRepositoryMixin:
             error = revision_error(result, expected_revision)
             if error:
                 return {"success": False, "error": error, "commit_ready": False}
-        if base is None and (mode != "full" or task_id):
+        if base is None:
             attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
-        if base is None and mode not in {"artifact", "full"} and result.get("git_visible_observation_complete") is True:
+        if base is None and mode != "artifact" and result.get("git_visible_observation_complete") is True:
             from .change_ledger import ChangeLedger, attach_watcher_candidates
             from .state_paths import configured_state_dir
             import sqlite3
@@ -945,8 +945,6 @@ class ServiceRepositoryMixin:
         cache = getattr(self.deterministic, "_change_summary_cache", None)
         if mode == "delta":
             return change_delta(result, cache, expected_revision, limit=limit, offset=offset)
-        if mode == "full":
-            return result
         if mode == "artifact":
             from .change_plan_artifact import publish_change_plan
 

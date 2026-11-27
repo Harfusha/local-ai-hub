@@ -134,13 +134,13 @@ def test_telemetry_report_caps_high_cardinality_groups(tmp_path):
         store.close()
 
 
-def test_dashboard_report_cache_bounds_untrusted_windows(tmp_path):
+def test_telemetry_report_cache_bounds_untrusted_windows(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         for days in range(1, 80):
-            store.dashboard_report(days=days, ttl_seconds=3600)
-        assert len(store._dashboard_cache) <= 16
-        assert all(1 <= key[0] <= 3650 for key in store._dashboard_cache)
+            store.telemetry_report(days=days, ttl_seconds=3600)
+        assert len(store._report_cache) <= 16
+        assert all(1 <= key[0] <= 3650 for key in store._report_cache)
     finally:
         store.close()
 
@@ -1176,7 +1176,7 @@ def test_model_pull_has_total_deadline_and_closes_slow_response(monkeypatch):
 
 
 def test_telemetry_error_resolution_deadline_rolls_back(monkeypatch, tmp_path):
-    import local_ai_hub.telemetry as telemetry_module
+    import local_ai_hub.telemetry_writer as telemetry_module
 
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:

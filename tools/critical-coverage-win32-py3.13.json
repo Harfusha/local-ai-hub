@@ -28,7 +28,7 @@
       "covered_branches": 17,
       "num_branches": 24
     },
-    "src/local_ai_hub/dashboard_contracts.py": {
+    "src/local_ai_hub/operator_settings.py": {
       "covered_branches": 5,
       "num_branches": 10
     },

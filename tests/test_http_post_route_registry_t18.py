@@ -97,7 +97,7 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "http_post_route_inventory_t18.j
 _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
-_RETIRED_ROUTE_IDS = {"post_control_1", "post_command_1", "post_command_preflight_1", "post_command_speculative_lint_1", "post_command_daemon_1", "post_command_lint_fix_1", "post_command_http_probe_1", "post_command_mock_server_1", "post_command_diff_hunk_stage_1", "post_command_flaky_detect_1", "post_command_webhook_replay_1", "post_code_find_declaration_1"}
+_RETIRED_ROUTE_IDS = {"post_control_1", "post_command_1", "post_command_preflight_1", "post_command_speculative_lint_1", "post_command_daemon_1", "post_command_lint_fix_1", "post_command_http_probe_1", "post_command_mock_server_1", "post_command_diff_hunk_stage_1", "post_command_flaky_detect_1", "post_command_webhook_replay_1", "post_code_find_declaration_1", "post_git_synthesize_commit_1"}
 # Frozen, reviewed public-contract deltas from the immutable historical preimage.
 _CURRENT_ROUTE_PATHS = {
  'post_browser_capture_abandon_1': ['/api/browser/capture/stage', '/api/browser/capture/commit', '/api/browser/capture/abandon', '/api/browser/capture/purge'],

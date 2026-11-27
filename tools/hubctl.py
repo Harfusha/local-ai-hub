@@ -247,7 +247,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge", "changes"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge", "changes"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
@@ -269,11 +269,9 @@ def main() -> int:
     parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
     parser.add_argument("--verification-file", type=Path, default=None, help="Explicit exact-tree verification manifest JSON")
     parser.add_argument("--rerun-checks", action="store_true", help="Force fresh exact-tree checks instead of reusing current receipts")
-    parser.add_argument("--allow-unverified", action="store_true", help="Explicitly acknowledge unverified commit sequence")
     parser.add_argument("--hunk-id", action="append", default=[], help="Exact unstaged hunk ID for partial staging (repeatable)")
     parser.add_argument("--allow-mixed-staged", action="store_true", help="Explicitly commit the reviewed staged tree while leaving other hunks unstaged")
     parser.add_argument("--expected-tree", default="", help="Exact reviewed staged Git tree ID")
-    parser.add_argument("--commit-message", default="", help="Explicit message for a reviewed staged commit")
     parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
@@ -305,7 +303,7 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply", "sequence-suggest", "verification-policy", "annotate"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply", "sequence-suggest", "verification-policy", "annotate"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "verification-policy" and (args.apply or args.base or args.changed_path or args.record_file or args.verification_file):
             parser.error("verification-policy is a read-only local manifest template")
@@ -314,20 +312,19 @@ def main() -> int:
         if args.sub_arg == "annotate":
             if not args.apply or args.dry_run or args.base or not args.expected_revision or not args.record_file:
                 parser.error("annotate requires --apply, --expected-revision and --record-file")
-        elif args.sub_arg == "commit-staged":
-            if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
-                parser.error("commit-staged requires --apply, --expected-revision, --expected-tree, --commit-message and exact --changed-path values")
         elif args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
             if args.base or not all((args.expected_revision, args.expected_tree, args.record_file, args.changed_path)):
                 parser.error("sequence requires --record-file, --expected-revision, --expected-tree and exact --changed-path values")
             if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status"} and args.apply:
                 parser.error("sequence preview/verification cannot apply")
+            if args.sub_arg == "sequence-preview" and args.verification_file:
+                parser.error("sequence-preview does not accept verification commands")
             if args.sub_arg in {"sequence-verify", "sequence-status"} and not args.verification_file:
                 parser.error("sequence verification/status requires --verification-file")
             if args.sub_arg == "sequence-status" and not args.preview_digest:
                 parser.error("sequence-status requires --preview-digest")
-            if args.sub_arg == "sequence-apply" and bool(args.verification_file) == bool(args.allow_unverified):
-                parser.error("sequence-apply requires either --verification-file or explicit --allow-unverified")
+            if args.sub_arg == "sequence-apply" and not args.verification_file:
+                parser.error("sequence-apply requires --verification-file with exact-tree checks")
             if args.sub_arg == "sequence-apply" and (not args.apply or args.dry_run or not args.preview_digest):
                 parser.error("sequence-apply requires --apply and --preview-digest")
         elif args.sub_arg in {"stage-preview", "stage-apply"}:
@@ -338,11 +335,11 @@ def main() -> int:
             if args.sub_arg == "stage-preview" and args.apply:
                 parser.error("stage-preview cannot apply")
         elif args.apply:
-            parser.error("only commit-staged or stage-apply accepts --apply")
+            parser.error("only stage-apply or sequence-apply accepts --apply")
         if args.hunk_id and args.sub_arg not in {"stage-preview", "stage-apply"}:
             parser.error("--hunk-id requires stage-preview or stage-apply")
-        if args.allow_mixed_staged and args.sub_arg not in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
-            parser.error("--allow-mixed-staged requires commit-staged")
+        if args.allow_mixed_staged and args.sub_arg not in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
+            parser.error("--allow-mixed-staged requires a commit sequence operation")
         if args.sub_arg == "commit-inspect" and not args.operation_id:
             parser.error("commit-inspect requires --operation-id")
         requested_mode = None
@@ -472,7 +469,7 @@ def main() -> int:
                       else journal.inspect(scoped_root, args.operation_id))
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True else 1
-        if args.sub_arg in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
+        if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
             from local_ai_hub.change_commit_journal import CommitJournal
             from local_ai_hub.change_commit_execution import execute_staged_commit
             from local_ai_hub.deterministic import DeterministicEngine
@@ -501,7 +498,7 @@ def main() -> int:
                 config, DeterministicEngine(config), ScopeLeaseStore(configured_state_dir(config)),
                 root=str(args.root.resolve()), paths=args.changed_path,
                 expected_revision=args.expected_revision, expected_tree=args.expected_tree,
-                message=args.commit_message, approved=args.apply,
+                approved=args.apply,
                 journal=journal, allow_mixed_staged=args.allow_mixed_staged,
                 sequence=sequence, preview_only=args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status"},
                 preview_digest=args.preview_digest, verification_manifest=verification_manifest,
@@ -1103,8 +1100,7 @@ def main() -> int:
         return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
-    if args.action in {"desktop", "dashboard"}:
-        # Compatibility alias opens the native application, never an HTTP UI.
+    if args.action == "desktop":
         name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
         candidates = (ROOT / "desktop" / "target" / "release" / name, ROOT / "bin" / name)
         binary = next((path for path in candidates if path.is_file()), None)

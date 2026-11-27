@@ -34,7 +34,7 @@ def test_dashboard_summary_uses_bounded_safe_diagnostics_from_sqlite(tmp_path):
             connection.close()
 
         summary = store.realtime_summary(scope="window")
-        report = store.dashboard_report(30, ttl_seconds=1, scope="window")
+        report = store.telemetry_report(30, ttl_seconds=1, scope="window")
     finally:
         store.close()
 

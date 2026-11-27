@@ -578,7 +578,7 @@ flush_interval_seconds = 0.5
 queue_size = 10000
 snapshot_interval_seconds = 60
 # Avoid self-observation noise from cheap health/status/report polling.
-exclude_http_paths = ["/health", "/dashboard", "/favicon.ico", "/api/status", "/api/live", "/api/live/status", "/api/metrics", "/api/telemetry/report", "/api/audit/tail"]
+exclude_http_paths = ["/health", "/favicon.ico", "/api/status", "/api/live", "/api/live/status", "/api/metrics", "/api/telemetry/report", "/api/audit/tail"]
 
 [logging]
 # Operational rotating logs. Do not log prompts/source/model output.
@@ -634,7 +634,6 @@ code_intelligence = true # Serena / Serena backends
 preprocessing = true # background idle project warmup
 subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
-dashboard = true # legacy compatibility flag; browser UI retired
 work_orchestrator = true # whole-task DAG execution and verified handoff (local_ai_work)
 bounded_local_work = true # allow bounded work submission on high/max profile
 enriched_search = true # source-enriched repository search
@@ -1073,7 +1072,6 @@ respect_disabled_marker = true
 stop_managed_ollama_on_stop = true
 
 [monitoring]
-dashboard_enabled = true # legacy compatibility flag; browser UI retired
 live_event_buffer = 2500
 live_max_batch = 200
 

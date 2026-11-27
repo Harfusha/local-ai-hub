@@ -229,7 +229,7 @@ def test_realtime_summary_preserves_pricing_and_writer_health(tmp_path, monkeypa
         "net_cloud_token_delta_est": -42,
         "writer": {"dropped": 9, "writer_errors": 1},
     }
-    monkeypatch.setattr(store, "dashboard_report", lambda *args, **kwargs: {"summary": summary})
+    monkeypatch.setattr(store, "telemetry_report", lambda *args, **kwargs: {"summary": summary})
     try:
         projected = store.realtime_summary()
         for key, value in summary.items():
@@ -239,17 +239,17 @@ def test_realtime_summary_preserves_pricing_and_writer_health(tmp_path, monkeypa
         store.close()
 
 
-def test_dashboard_report_marks_cached_metrics_unavailable_after_read_failure(tmp_path, monkeypatch):
+def test_telemetry_report_marks_cached_metrics_unavailable_after_read_failure(tmp_path, monkeypatch):
     store = TelemetryStore(tmp_path, enabled=True)
     try:
-        cached = store.dashboard_report(scope="process")
-        store._dashboard_cache_at[(30, "process")] = 0
+        cached = store.telemetry_report(scope="process")
+        store._report_cache_at[(30, "process")] = 0
 
         def fail_report(*args, **kwargs):
             raise sqlite3.OperationalError("database is locked")
 
         monkeypatch.setattr(store, "report", fail_report)
-        result = store.dashboard_report(scope="process")
+        result = store.telemetry_report(scope="process")
         assert result["summary"]["data_available"] is False
         assert result["summary"]["stale"] is True
         assert cached["summary"]["data_available"] is True

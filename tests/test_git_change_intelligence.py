@@ -30,7 +30,7 @@ def _repo(root: Path) -> None:
     _git(root, "commit", "-m", "initial")
 
 
-def test_component_groups_and_index_preservation(tmp_path):
+def test_same_name_test_is_not_assumed_to_share_a_change_group(tmp_path):
     _repo(tmp_path)
     (tmp_path / "payment.py").write_text("staged\n", encoding="utf-8")
     _git(tmp_path, "add", "payment.py")
@@ -42,9 +42,11 @@ def test_component_groups_and_index_preservation(tmp_path):
     result = _plan(tmp_path)
     assert result["success"]
     assert result["total_files"] == 4
-    assert result["cluster_count"] == 3
+    assert result["cluster_count"] == 4
     payment = next(g for g in result["clusters"] if "payment.py" in g["files"])
-    assert payment["files"] == ["payment.py", "tests/test_payment.py"]
+    assert payment["files"] == ["payment.py"]
+    test = next(g for g in result["clusters"] if "tests/test_payment.py" in g["files"])
+    assert test["files"] == ["tests/test_payment.py"]
     assert "mixed_staged_unstaged" in payment["risks"]
     assert payment["changes"][0]["staged_lines"] == [1, 1]
     assert payment["changes"][0]["unstaged_lines"] == [1, 1]
@@ -60,6 +62,24 @@ def test_clean_invalid_and_scoped(tmp_path):
     (tmp_path / "cache.py").write_text("changed\n", encoding="utf-8")
     assert _plan(tmp_path, ["cache.py"])["total_files"] == 1
     assert not _plan(tmp_path, ["missing.py"])["success"]
+
+
+def test_non_git_explicit_paths_fail_closed(tmp_path):
+    result = _plan(tmp_path, ["src/main.py", "tests/test_main.py"])
+
+    assert result["success"] is False
+    assert result["error"] == "Git inventory unavailable"
+    assert "clusters" not in result
+
+
+def test_retired_commit_synthesis_contract_is_not_exposed():
+    from local_ai_hub.operation_contracts import operation_actions
+    from local_ai_hub.http_route_registry import POST_ROUTE_REGISTRY
+    from local_ai_hub.services import LocalAIServices
+
+    assert "synthesize_commit" not in operation_actions("local_ai_repo")
+    assert all("/api/git/synthesize_commit" not in route.paths for route in POST_ROUTE_REGISTRY)
+    assert not hasattr(LocalAIServices, "synthesize_commit")
 
 
 def test_ambiguous_test_stays_separate(tmp_path):
@@ -248,7 +268,11 @@ def test_untracked_identity_and_structural_summary(tmp_path):
     path = tmp_path / "new.py"
     path.write_text("def new_feature():\n    return 1\n", encoding="utf-8")
     first = _plan(tmp_path)
-    assert first["git_visible_observation_complete"]
+    assert first["git_visible_observation_complete"], {
+        "git_snapshot_metadata": first.get("git_snapshot_metadata"),
+        "unavailable_patch_scopes": first.get("unavailable_patch_scopes"),
+        "inventory_scope": first.get("inventory_scope"),
+    }
     atom = first["clusters"][0]["changes"][0]["atoms"][0]
     assert atom["scope"] == "untracked"
     assert atom["semantic"]["change_counts"] == {"added": 1}

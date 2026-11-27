@@ -28,7 +28,6 @@ def _config(*, agent_os: bool = True, work_orchestrator: bool = False, speculati
             "rag": True,
             "commands": True,
             "code_intelligence": True,
-            "dashboard": True,
         },
         "server": {"auto_start_ollama": False},
         "ollama": {"enabled": True},

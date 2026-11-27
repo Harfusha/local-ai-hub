@@ -27,18 +27,15 @@ _MAX_INDEX = 16 * 1024 * 1024
 def execute_staged_commit(
     config: dict[str, Any], engine: Any, lease_store: Any, *,
     root: str, paths: list[str], expected_revision: str, expected_tree: str,
-    message: str, approved: bool, journal: Any | None = None, allow_mixed_staged: bool = False,
+    approved: bool, journal: Any | None = None, allow_mixed_staged: bool = False,
     sequence: list[dict[str, Any]] | None = None, preview_only: bool = False, preview_digest: str = "",
     verification_manifest: Any | None = None,
 ) -> dict[str, Any]:
     """Commit a reviewed stage-zero tree only, under a root lease and index lock."""
-    if (approved is not True and not (preview_only is True and sequence is not None)) or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
+    if sequence is None:
+        return {"success": False, "error": "A previewed commit sequence is required, including for a single commit"}
+    if (approved is not True and preview_only is not True) or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
         return {"success": False, "error": "Explicit approval and exact tree ID required"}
-    if sequence is None and (
-        not isinstance(message, str) or not message.strip() or len(message) > 4096
-        or any(ord(c) < 32 and c not in "\n\t" for c in message)
-    ):
-        return {"success": False, "error": "Invalid commit message"}
     operation_id = uuid.uuid4().hex
     owner = "git-commit-" + operation_id
     lease_id = ""
@@ -132,33 +129,31 @@ def execute_staged_commit(
         from .change_tree_verification import commit_policy, require_sequence_receipts
 
         policy = commit_policy(root)
-        if policy["required"] and not preview_only and (sequence is None or verification_manifest is None):
-            raise ValueError("Project git_commit policy requires a verified commit sequence (one step is allowed)")
-        sequence_plan = None
         verification_receipts: list[str] = []
-        if sequence is not None:
-            from .change_commit_sequence import plan_sequence
+        from .change_commit_sequence import plan_sequence
 
-            sequence_plan = plan_sequence(
-                git("ls-tree", "-r", "-z", parent), git("ls-files", "--stage", "-z"),
-                parent, expected_tree, sequence, plan["clusters"], expected_revision,
-            )
-            sequence_plan["project_commit_policy"] = policy
-            if policy["required"]:
-                import hashlib
+        sequence_plan = plan_sequence(
+            git("ls-tree", "-r", "-z", parent), git("ls-files", "--stage", "-z"),
+            parent, expected_tree, sequence, plan["clusters"], expected_revision,
+        )
+        sequence_plan["project_commit_policy"] = policy
+        if policy["required"]:
+            import hashlib
 
-                sequence_plan["preview_digest"] = hashlib.sha256(
-                    (sequence_plan["preview_digest"] + policy["config_digest"] + policy["resolved_commands_digest"]).encode("ascii")
-                ).hexdigest()
-            if preview_only is True:
-                outcome = {"success": True, "applied": False, **sequence_plan}
-                return outcome
-            if preview_digest != sequence_plan["preview_digest"]:
-                raise ValueError("Sequence differs from approved preview")
-            if verification_manifest is not None:
-                if journal is None:
-                    raise ValueError("Verification receipt journal unavailable")
-                verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
+            sequence_plan["preview_digest"] = hashlib.sha256(
+                (sequence_plan["preview_digest"] + policy["config_digest"] + policy["resolved_commands_digest"]).encode("ascii")
+            ).hexdigest()
+        if preview_only is True:
+            outcome = {"success": True, "applied": False, **sequence_plan}
+            return outcome
+        if verification_manifest is None:
+            raise ValueError("Publishing requires an exact-tree verification manifest")
+        if preview_digest != sequence_plan["preview_digest"]:
+            raise ValueError("Sequence differs from approved preview")
+        if not preview_only:
+            if journal is None:
+                raise ValueError("Verification receipt journal unavailable")
+            verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
         candidates: list[str] = []
         with tempfile.TemporaryDirectory(prefix="hub-commit-", dir=git_dir) as temp:
             temporary_index = Path(temp) / "index"
@@ -172,36 +167,32 @@ def execute_staged_commit(
                 raise ValueError("Exact tree diff does not match the reviewed path selection")
             # Candidate object creation does not publish a commit or alter the
             # index. An unsuccessful CAS may leave a normal unreachable object.
-            if sequence_plan is None:
-                candidate = oid("commit-tree", actual_tree, "-p", parent, "-m", message)
-                candidates.append(candidate)
-            else:
-                from .change_commit_sequence import _entries
+            from .change_commit_sequence import _entries
 
-                target = _entries(git("ls-files", "--stage", "-z"), staged=True)
-                sequence_index = Path(temp) / "sequence-index"
-                extra = {"GIT_INDEX_FILE": str(sequence_index)}
-                git("read-tree", parent, extra=extra)
-                current_parent = parent
-                for step in sequence_plan["steps"]:
-                    for path in step["paths"]:
-                        if os.fsencode(path) not in target:
-                            git("--literal-pathspecs", "update-index", "--force-remove", "--", path, extra=extra)
-                    for path in step["paths"]:
-                        entry = target.get(os.fsencode(path))
-                        if entry is not None:
-                            mode, blob = (value.decode("ascii") for value in entry)
-                            git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}", extra=extra)
-                    step_tree = oid("write-tree", extra=extra)
-                    if step_tree != step["tree_oid"]:
-                        raise ValueError("Intermediate tree differs from approved plan")
-                    step_paths = git("diff-tree", "--no-commit-id", "--name-only", "-z", "-r",
-                                     "--no-renames", current_parent, step_tree, "--")
-                    if not step_paths.endswith(b"\0") or set(step_paths.split(b"\0")[:-1]) != {os.fsencode(p) for p in step["paths"]}:
-                        raise ValueError("Intermediate tree diff differs from approved scope")
-                    candidate = oid("commit-tree", step_tree, "-p", current_parent, "-m", step["message"])
-                    candidates.append(candidate)
-                    current_parent = candidate
+            target = _entries(git("ls-files", "--stage", "-z"), staged=True)
+            sequence_index = Path(temp) / "sequence-index"
+            extra = {"GIT_INDEX_FILE": str(sequence_index)}
+            git("read-tree", parent, extra=extra)
+            current_parent = parent
+            for step in sequence_plan["steps"]:
+                for path in step["paths"]:
+                    if os.fsencode(path) not in target:
+                        git("--literal-pathspecs", "update-index", "--force-remove", "--", path, extra=extra)
+                for path in step["paths"]:
+                    entry = target.get(os.fsencode(path))
+                    if entry is not None:
+                        mode, blob = (value.decode("ascii") for value in entry)
+                        git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}", extra=extra)
+                step_tree = oid("write-tree", extra=extra)
+                if step_tree != step["tree_oid"]:
+                    raise ValueError("Intermediate tree differs from approved plan")
+                step_paths = git("diff-tree", "--no-commit-id", "--name-only", "-z", "-r",
+                                 "--no-renames", current_parent, step_tree, "--")
+                if not step_paths.endswith(b"\0") or set(step_paths.split(b"\0")[:-1]) != {os.fsencode(p) for p in step["paths"]}:
+                    raise ValueError("Intermediate tree diff differs from approved scope")
+                candidate = oid("commit-tree", step_tree, "-p", current_parent, "-m", step["message"])
+                candidates.append(candidate)
+                current_parent = candidate
         if _is_redirecting_link(index) or index.stat().st_size != len(original):
             raise ValueError("Index changed while locked")
         with index.open("rb") as stream:
@@ -219,12 +210,11 @@ def execute_staged_commit(
         if journal is not None:
             journal.prepare(operation_id=operation_id, root=root, branch=branch, parent=parent,
                             tree=actual_tree, candidate=candidate)
-        guard = journal.publication_guard() if sequence_plan is not None and verification_manifest is not None and journal is not None else nullcontext()
+        guard = journal.publication_guard() if journal is not None else nullcontext()
         with guard:
             if commit_policy(root) != policy:
                 raise ValueError("Project commit policy changed during transaction")
-            if sequence_plan is not None and verification_manifest is not None:
-                verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
+            verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
             update_attempted = True
             git("update-ref", "--no-deref", "-m", "Local AI Hub: approved staged commit", branch, candidate, parent)
         outcome = {

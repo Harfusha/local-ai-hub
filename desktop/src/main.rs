@@ -167,7 +167,6 @@ struct Desktop {
     change_hunks: String,
     change_revision: String,
     change_tree: String,
-    change_message: String,
     change_mixed: bool,
     change_operation: String,
     change_annotation: String,
@@ -214,7 +213,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), change_paths: String::new(), change_hunks: String::new(), change_revision: String::new(), change_tree: String::new(), change_message: String::new(), change_mixed: false, change_operation: String::new(), change_annotation: String::new(), change_sequence: String::new(), change_verification: String::new(), change_preview_digest: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), change_paths: String::new(), change_hunks: String::new(), change_revision: String::new(), change_tree: String::new(), change_mixed: false, change_operation: String::new(), change_annotation: String::new(), change_sequence: String::new(), change_verification: String::new(), change_preview_digest: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -724,8 +723,6 @@ impl Desktop {
                     ui.text_edit_singleline(&mut self.change_revision);
                     ui.label("Approved tree ID");
                     ui.text_edit_singleline(&mut self.change_tree);
-                    ui.label("Commit message");
-                    ui.text_edit_multiline(&mut self.change_message);
                     ui.checkbox(&mut self.change_mixed, "Explicitly leave remaining hunks unstaged");
                     let paths: Vec<&str> = self.change_paths.lines().filter(|p| !p.is_empty()).collect();
                     let hunks: Vec<&str> = self.change_hunks.lines().filter(|p| !p.is_empty()).collect();
@@ -734,11 +731,10 @@ impl Desktop {
                     let payload = |action: &str, confirmed: bool| request("change_transaction", json!({
                         "action": action, "root": self.repo, "paths": paths, "hunk_ids": hunks,
                         "expected_revision": self.change_revision, "expected_tree": self.change_tree,
-                        "message": self.change_message, "allow_mixed_staged": self.change_mixed, "confirmed": confirmed
+                        "allow_mixed_staged": self.change_mixed, "confirmed": confirmed
                     }));
                     let preview = payload("stage-preview", false);
                     let stage = payload("stage-apply", true);
-                    let commit = payload("commit-staged", true);
                     ui.horizontal_wrapped(|ui| {
                         if ui.add_enabled(ready, egui::Button::new("Preview staging")).clicked() {
                             self.submit(ctx, "Stage preview".into(), preview);
@@ -746,11 +742,8 @@ impl Desktop {
                         if ui.add_enabled(ready && tree_ready, egui::Button::new("Apply reviewed staging")).clicked() {
                             self.confirm("Apply reviewed staging", stage);
                         }
-                        if ui.add_enabled(ready && tree_ready && !self.change_message.trim().is_empty(), egui::Button::new("Commit staged tree")).clicked() {
-                            self.confirm("Commit staged tree (no push)", commit);
-                        }
                     });
-                    ui.small("After staging, refresh the plan and use the new observed revision and staged tree ID before committing. For multiple staged commits, use the sequence panel below.");
+                    ui.small("After staging, refresh the plan and use the new observed revision and staged tree ID. Publish only through the verified sequence panel below.");
                 });
                 ui.collapsing("Review and assign observed atoms", |ui| {
                     ui.small("Local declarations only; not authenticated ownership or verification. Use the observed revision above.");

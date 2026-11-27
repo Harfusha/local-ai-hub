@@ -218,8 +218,6 @@ def _categorized_operational_triggers(fs: FeatureSet) -> list[str]:
     git_items: list[str] = []
     if "git_status" in repo_actions or "git_diff" in repo_actions:
         git_items.append('- **Git Status & Diffs**: Inspect working tree state without shell git -> `local_ai_repo(action="git_status"|"git_diff", root=ABS_ROOT)`')
-    if "synthesize_commit" in repo_actions:
-        git_items.append('- **Synthesize Commit**: Draft standardized commit message from verified diff -> `local_ai_repo(action="synthesize_commit", root=ABS_ROOT)`')
 
     if git_items:
         lines.extend(["### 4. Git Inspection & Commits (`local_ai_repo`)", *git_items, ""])
@@ -1029,7 +1027,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + ". Use only live MCP action enums; runtime authorization and quality gates apply."
         )
     prioritization_bullets.append(
-        "> - **Git operations**: The live MCP schema determines available Hub actions. `git_status`/`git_diff` inspect; `synthesize_commit` drafts only. None commits or pushes. Hub prioritization adds no Git approval/receipt gate; follow only explicit project gates naming exposed actions, and stop only the gated mutation if unavailable. Dashboard diagnostics change detail only."
+        "> - **Git operations**: Use the live `local_ai_repo` schema for Git inspection. Commit publication uses the reviewed sequence workflow and project verification policy; it never stages implicitly or pushes."
     )
     prioritization_bullets.append(
         "> - **Unsupported Hub operations**: If the live schema has no action, use the authorized native tool directly without calling Hub. Fallback rules apply only after an advertised Hub action fails terminally and non-retryably."

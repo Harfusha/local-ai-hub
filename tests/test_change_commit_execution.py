@@ -39,12 +39,30 @@ def _fixture(root: Path):
     return engine, leases, parent, tree
 
 
+def _verified_publish_inputs(root, engine, leases, parent, tree, paths, *, sequence=None, journal=None,
+                             allow_mixed_staged=False):
+    import sys
+    from local_ai_hub.change_commit_journal import CommitJournal
+    from local_ai_hub.change_tree_verification import verify_sequence
+
+    journal = journal or CommitJournal(root / ".git" / "hub-state")
+    sequence = sequence or [{"paths": paths, "message": "chore: reviewed"}]
+    common = dict(root=str(root.resolve()), paths=paths, expected_revision="a" * 64,
+                  expected_tree=tree, sequence=sequence, journal=journal,
+                  allow_mixed_staged=allow_mixed_staged)
+    preview = execute_staged_commit({}, engine, leases, **common, approved=False, preview_only=True)
+    assert preview["success"], preview
+    manifest = {"environment_id": "c" * 64, "commands": [[sys.executable, "-c", "assert True"]]}
+    verification = verify_sequence(str(root.resolve()), preview, manifest, journal)
+    assert verification["success"], verification
+    return common | {"preview_digest": preview["preview_digest"], "verification_manifest": manifest}
+
+
 def test_commit_staged_only_and_preserve_unrelated_worktree(tmp_path):
     engine, leases, parent, tree = _fixture(tmp_path)
     before = (tmp_path / ".git" / "index").read_bytes()
-    result = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()), paths=["a"],
-                                   expected_revision="a" * 64, expected_tree=tree,
-                                   message="chore: reviewed", approved=True)
+    kwargs = _verified_publish_inputs(tmp_path, engine, leases, parent, tree, ["a"])
+    result = execute_staged_commit({}, engine, leases, **kwargs, approved=True)
     assert result["success"], result
     assert _git(tmp_path, "rev-parse", "HEAD^") == parent
     assert _git(tmp_path, "rev-parse", "HEAD^{tree}") == tree
@@ -54,12 +72,35 @@ def test_commit_staged_only_and_preserve_unrelated_worktree(tmp_path):
     assert not (tmp_path / ".git" / "index.lock").exists()
 
 
+def test_publication_requires_a_previewed_commit_sequence(tmp_path):
+    engine, leases, parent, tree = _fixture(tmp_path)
+
+    result = execute_staged_commit(
+        {}, engine, leases, root=str(tmp_path.resolve()), paths=["a"],
+        expected_revision="a" * 64, expected_tree=tree,
+        approved=True,
+    )
+
+    assert result["success"] is False
+    assert "sequence" in result["error"].lower()
+
+    kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64,
+                  expected_tree=tree, sequence=[{"paths": ["a"], "message": "chore: reviewed"}])
+    preview = execute_staged_commit({}, engine, leases, **kwargs, approved=False, preview_only=True)
+    assert preview["success"], preview
+    refused = execute_staged_commit({}, engine, leases, **kwargs, approved=True,
+                                    preview_digest=preview["preview_digest"])
+    assert refused["success"] is False
+    assert "verification manifest" in refused["error"].lower()
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
+
+
 def test_commit_refuses_hook_and_existing_index_lock(tmp_path):
     engine, leases, parent, tree = _fixture(tmp_path)
     hook = tmp_path / ".git" / "hooks" / "pre-commit"
     hook.write_text("exit 1")
     kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64,
-                  expected_tree=tree, message="chore: reviewed", approved=True)
+                  expected_tree=tree, sequence=[{"paths": ["a"], "message": "chore: reviewed"}], approved=True)
     assert not execute_staged_commit({}, engine, leases, **kwargs)["success"]
     hook.unlink()
     lock = tmp_path / ".git" / "index.lock"
@@ -76,9 +117,9 @@ def test_independent_tree_diff_rejects_misreported_selection(tmp_path):
     plan["clusters"] = [{"group_key": "b", "files": ["b"], "changes": [{"path": "b", "status": "M "}]}]
     result = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()), paths=["b"],
                                    expected_revision="a" * 64, expected_tree=tree,
-                                   message="chore: reviewed", approved=True)
+                                   sequence=[{"paths": ["b"], "message": "chore: reviewed"}], approved=True)
     assert not result["success"]
-    assert "tree diff" in result["error"]
+    assert "partition exact staged paths" in result["error"]
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
 
 
@@ -89,9 +130,8 @@ def test_persistent_commit_journal_and_scope(tmp_path):
     repo.mkdir()
     engine, leases, parent, tree = _fixture(repo)
     journal = CommitJournal(tmp_path / "state")
-    result = execute_staged_commit({}, engine, leases, root=str(repo.resolve()), paths=["a"],
-                                   expected_revision="a" * 64, expected_tree=tree,
-                                   message="chore: reviewed", approved=True, journal=journal)
+    kwargs = _verified_publish_inputs(repo, engine, leases, parent, tree, ["a"], journal=journal)
+    result = execute_staged_commit({}, engine, leases, **kwargs, approved=True)
     assert result["success"], result
     reopened = CommitJournal(tmp_path / "state")
     observed = reopened.inspect(str(repo.resolve()), result["operation_id"])
@@ -107,7 +147,8 @@ def test_journal_failure_before_cas_is_non_mutating(tmp_path):
     journal.prepare.side_effect = OSError("storage unavailable")
     result = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()), paths=["a"],
                                    expected_revision="a" * 64, expected_tree=tree,
-                                   message="chore: reviewed", approved=True, journal=journal)
+                                   sequence=[{"paths": ["a"], "message": "chore: reviewed"}],
+                                   approved=True, journal=journal)
     assert not result["success"]
     assert not result["outcome_unknown"]
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
@@ -118,9 +159,11 @@ def test_explicit_mixed_scope_commit_preserves_unstaged_hunks(tmp_path):
     (tmp_path / "a").write_text("additional unstaged content")
     engine.split_changes.return_value["clusters"][0]["changes"][0]["status"] = "MM"
     kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64,
-                  expected_tree=tree, message="chore: reviewed", approved=True)
+                  expected_tree=tree, sequence=[{"paths": ["a"], "message": "chore: reviewed"}], approved=True)
     assert not execute_staged_commit({}, engine, leases, **kwargs)["success"]
-    result = execute_staged_commit({}, engine, leases, **kwargs, allow_mixed_staged=True)
+    publish = _verified_publish_inputs(tmp_path, engine, leases, parent, tree, ["a"],
+                                       allow_mixed_staged=True)
+    result = execute_staged_commit({}, engine, leases, **publish, approved=True)
     assert result["success"], result
     assert _git(tmp_path, "show", "HEAD:a") == "new"
     assert (tmp_path / "a").read_text() == "additional unstaged content"
@@ -135,12 +178,22 @@ def test_sequence_preview_and_publish_two_commits_atomically(tmp_path):
     plan["clusters"][1]["changes"][0]["status"] = "M "
     sequence = [{"paths": ["a"], "message": "chore: a"}, {"paths": ["b"], "message": "chore: b"}]
     kwargs = dict(root=str(tmp_path.resolve()), paths=["a", "b"], expected_revision="a" * 64,
-                  expected_tree=tree, message="", sequence=sequence)
+                  expected_tree=tree, sequence=sequence)
     preview = execute_staged_commit({}, engine, leases, **kwargs, approved=False, preview_only=True)
     assert preview["success"], preview
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
     assert not execute_staged_commit({}, engine, leases, **kwargs, approved=True, preview_digest="wrong")["success"]
-    result = execute_staged_commit({}, engine, leases, **kwargs, approved=True, preview_digest=preview["preview_digest"])
+    import sys
+    from local_ai_hub.change_commit_journal import CommitJournal
+    from local_ai_hub.change_tree_verification import verify_sequence
+
+    journal = CommitJournal(tmp_path / ".git" / "hub-state")
+    manifest = {"environment_id": "c" * 64, "commands": [[sys.executable, "-c", "assert True"]]}
+    verified = verify_sequence(str(tmp_path.resolve()), preview, manifest, journal)
+    assert verified["success"], verified
+    result = execute_staged_commit({}, engine, leases, **kwargs, journal=journal,
+                                   verification_manifest=manifest, approved=True,
+                                   preview_digest=preview["preview_digest"])
     assert result["success"], result
     assert len(result["commit_oids"]) == 2
     assert _git(tmp_path, "rev-parse", "HEAD^^") == parent
@@ -165,7 +218,7 @@ def test_exact_tree_receipts_bind_sequence_and_environment(tmp_path):
     sequence = [{"paths": ["a"], "message": "chore: a"}, {"paths": ["b"], "message": "chore: b"}]
     journal = CommitJournal(tmp_path / "state")
     kwargs = dict(root=str(repo.resolve()), paths=["a", "b"], expected_revision="a" * 64,
-                  expected_tree=tree, message="", sequence=sequence, journal=journal)
+                  expected_tree=tree, sequence=sequence, journal=journal)
     preview = execute_staged_commit({}, engine, leases, **kwargs, approved=False, preview_only=True)
     assert preview["success"], preview
     manifest = {"environment_id": "c" * 64, "commands": [[sys.executable, "-c",
@@ -260,9 +313,9 @@ def test_shared_project_commit_policy_requires_exact_manifest_and_receipts(tmp_p
     with pytest.raises(ValueError, match="exactly match"):
         commit_policy(root, {**manifest, "commands": [[executable, "-V"]]}, require_manifest=True)
     kwargs = dict(root=root, paths=["a"], expected_revision="a" * 64, expected_tree=tree,
-                  message="fix: reviewed", approved=True)
+                  approved=True)
     refused = execute_staged_commit({}, engine, leases, **kwargs)
-    assert not refused["success"] and "git_commit policy" in refused["error"]
+    assert not refused["success"] and "sequence" in refused["error"].lower()
     sequence = [{"paths": ["a"], "message": "fix: reviewed"}]
     preview = execute_staged_commit({}, engine, leases, **kwargs, sequence=sequence, preview_only=True)
     assert preview["success"], preview
@@ -312,7 +365,7 @@ def test_sequence_suggestion_is_editable_and_requires_exact_preview(tmp_path):
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
     preview = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()),
                                     paths=proposal["selected_paths"], expected_revision=proposal["observed_change_set_id"],
-                                    expected_tree=tree, message="", approved=False,
+                                    expected_tree=tree, approved=False,
                                     sequence=proposal["sequence"], preview_only=True)
     assert preview["success"], preview
     assert preview["preview_digest"]

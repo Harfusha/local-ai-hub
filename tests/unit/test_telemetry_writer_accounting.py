@@ -150,13 +150,13 @@ def test_dashboard_and_realtime_cache_hits_refresh_writer_status(tmp_path: Path)
         "scope": "window",
     }
     key = (30, "window")
-    store._dashboard_cache[key] = {"summary": summary}
-    store._dashboard_cache_at[key] = time.monotonic()
+    store._report_cache[key] = {"summary": summary}
+    store._report_cache_at[key] = time.monotonic()
     for index in range(100):
         store._queue.put_nowait(("test", {"index": index}))
     assert store._enqueue("test", {"overflow": True}) is False
 
-    dashboard = store.dashboard_report(30, scope="window")
+    dashboard = store.telemetry_report(30, scope="window")
     live = store.realtime_summary(scope="window")
 
     assert dashboard["summary"]["summary_cache_stale"] is True

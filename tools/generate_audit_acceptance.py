@@ -110,7 +110,7 @@ AUDIT_ITEMS: list[dict[str, Any]] = [
         "status": "SOURCE_VERIFIED",
         "verification_command": "python -m mypy --python-version 3.11; python -m mypy --python-version 3.13",
         "evidence_receipt": "Success: no issues found in 14 source files under strict typing",
-        "files": ["src/local_ai_hub/agent_identity.py", "src/local_ai_hub/dashboard_contracts.py", "docs/TYPE_SAFETY_ROLLOUT.md", ".github/workflows/ci.yml"],
+        "files": ["src/local_ai_hub/agent_identity.py", "src/local_ai_hub/operator_settings.py", "docs/TYPE_SAFETY_ROLLOUT.md", ".github/workflows/ci.yml"],
     },
     {
         "id": "HUB-077",

@@ -10,7 +10,7 @@ import sys
 
 CRITICAL = (
     "agent_policy", "async_jobs", "file_locks", "http_transport",
-    "context_delivery", "command_batches", "dashboard_contracts", "shutdown",
+    "context_delivery", "command_batches", "operator_settings", "shutdown",
     "owned_model", "model_lifecycle", "semantic_quality",
     "agent_identity", "agent_memory", "commands", "http_server",
 )

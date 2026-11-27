@@ -29,7 +29,6 @@ _RETIRED_INPUTS = [
     ("generate_tests", {"query": "Widget", "task": "retired"}),
     ("validate_patch", {"query": "patch text", "task": "retired"}),
     ("generate_mocks", {"query": "Widget", "task": "retired"}),
-    ("synthesize_commit", {"query": "hint", "task": "task-legacy"}),
     ("cross_project_symbols", {"query": "Widget", "task": "retired"}),
     ("cross_project_impact", {"query": "Widget", "task": "retired"}),
     ("generate_dataset", {"query": "Widget", "path": "retired.py"}),
@@ -95,7 +94,6 @@ def test_registered_repo_handler_rejects_retired_fields_before_dispatch(
     ("solve", {"root": ".", "task": "implement"}, ["query", "diff"]),
     ("delegate", {"root": ".", "task": "implement"}, ["query", "diff"]),
     ("investigate", {"root": ".", "query": "find"}, ["task", "diff"]),
-    ("synthesize_commit", {"root": ".", "query": "hint", "task_id": "task-123"}, ["task"]),
     ("api_spec", {"root": "."}, ["task"]),
     ("generate_tests_for_diff", {"root": ".", "diff": "patch"}, ["query", "task"]),
     ("cross_repo_contract", {"root": ".", "path": "C:/frontend"}, ["query", "workspace", "task"]),
@@ -115,7 +113,6 @@ def test_repo_action_schema_accepts_only_canonical_fields(action, canonical, for
     ("investigate", {"query": "find"}, {"task": "find"}),
     ("context", {"query": "find"}, {"task": "find"}),
     ("solve", {"task": "implement"}, {"query": "implement"}),
-    ("synthesize_commit", {"query": "hint"}, {"task": "task-legacy"}),
     ("generate_tests_for_diff", {"diff": "patch"}, {"query": "patch"}),
     ("migration_drift", {"path": "db.sqlite"}, {"query": "db.sqlite"}),
     ("circular_dependencies", {"language": "python"}, {"query": "python"}),
@@ -146,8 +143,6 @@ def test_direct_repo_impl_rejects_alias_even_with_canonical_value(
     ("investigate", {"query": "find call"}, "/api/repo/investigate", "query", "find call"),
     ("diagnose", {"query": "traceback"}, "/api/repo/diagnose", "text", "traceback"),
     ("solve", {"task": "implement fix"}, "/api/solve/repo", "task", "implement fix"),
-    ("synthesize_commit", {"query": "message hint"}, "/api/git/synthesize_commit", "hint", "message hint"),
-    ("synthesize_commit", {"query": "message hint", "task_id": "task-123"}, "/api/git/synthesize_commit", "task_id", "task-123"),
     ("generate_tests_for_diff", {"diff": "diff body"}, "/api/repo/generate_tests_for_diff", "diff", "diff body"),
     ("migration_drift", {"path": "db.sqlite"}, "/api/repo/migration_drift", "db_path", "db.sqlite"),
     ("circular_dependencies", {"language": "python"}, "/api/repo/circular_dependencies", "language", "python"),
@@ -172,5 +167,3 @@ def test_direct_repo_impl_dispatches_canonical_value(
     assert len(calls) == 1
     assert calls[0][0] == url
     assert calls[0][1][payload_key] == expected
-    if action == "synthesize_commit" and "task_id" not in fields:
-        assert "task_id" not in calls[0][1]

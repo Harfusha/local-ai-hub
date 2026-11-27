@@ -14,7 +14,6 @@ BOOLEAN_SETTINGS = (
     "preprocessing.enabled",
     "code_intelligence.enabled",
     "code_intelligence.serena_enabled",
-    "monitoring.dashboard_enabled",
     "features.status",
     "features.repo",
     "features.tasks",
@@ -26,7 +25,6 @@ BOOLEAN_SETTINGS = (
     "features.preprocessing",
     "features.subagents",
     "features.agent_os",
-    "features.dashboard",
     "features.work_orchestrator",
 )
 HARDWARE_PROFILES = ("auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max")
@@ -35,12 +33,12 @@ NON_BOOLEAN_JSON_VALUES = (0, 1, 1.0, None, "true", [], {})
 NON_PROFILE_JSON_VALUES = (True, False, 0, 1, 1.0, None, [], {}, "unsupported")
 
 
-def test_type_matrix_covers_the_canonical_dashboard_setting_catalog():
-    from local_ai_hub import dashboard_contracts
+def test_type_matrix_covers_the_canonical_operator_setting_catalog():
+    from local_ai_hub import operator_settings
 
-    assert set(BOOLEAN_SETTINGS) == dashboard_contracts._BOOLEAN_SETTINGS
-    assert set(HARDWARE_PROFILES) == dashboard_contracts._PROFILES
-    assert set(TELEMETRY_MODES) == dashboard_contracts._TELEMETRY_MODES
+    assert set(BOOLEAN_SETTINGS) == operator_settings._BOOLEAN_SETTINGS
+    assert set(HARDWARE_PROFILES) == operator_settings._PROFILES
+    assert set(TELEMETRY_MODES) == operator_settings._TELEMETRY_MODES
 
 
 def _dispatch_settings_update(monkeypatch, tmp_path: Path, setting: str, value, *, write_error=None):
@@ -105,7 +103,7 @@ def test_setting_persistence_error_reports_safe_stage_without_raw_details(monkey
 
 @pytest.mark.parametrize("setting", BOOLEAN_SETTINGS)
 @pytest.mark.parametrize("value", NON_BOOLEAN_JSON_VALUES)
-def test_dashboard_boolean_settings_reject_non_boolean_json_without_publication(
+def test_operator_boolean_settings_reject_non_boolean_json_without_publication(
     monkeypatch, tmp_path, setting, value
 ):
     responses, app, original_config, writes = _dispatch_settings_update(
@@ -120,7 +118,7 @@ def test_dashboard_boolean_settings_reject_non_boolean_json_without_publication(
 
 @pytest.mark.parametrize("setting", BOOLEAN_SETTINGS)
 @pytest.mark.parametrize("value", (False, True))
-def test_dashboard_boolean_settings_preserve_boolean_values(
+def test_operator_boolean_settings_preserve_boolean_values(
     monkeypatch, tmp_path, setting, value
 ):
     responses, app, original_config, writes = _dispatch_settings_update(
@@ -182,7 +180,7 @@ def test_hardware_profile_preserves_supported_enum_strings(
 
 
 @pytest.mark.parametrize("value", TELEMETRY_MODES)
-def test_dashboard_telemetry_modes_preserve_canonical_values(
+def test_operator_telemetry_modes_preserve_canonical_values(
     monkeypatch, tmp_path, value
 ):
     responses, app, original_config, writes = _dispatch_settings_update(
@@ -196,3 +194,14 @@ def test_dashboard_telemetry_modes_preserve_canonical_values(
     assert app.config == original_config
     assert app.config == original_config
     assert not (tmp_path / "config.runtime.toml").exists()
+
+
+@pytest.mark.parametrize("setting", ["features.dashboard", "monitoring.dashboard_enabled"])
+def test_retired_dashboard_settings_are_rejected(monkeypatch, tmp_path, setting):
+    responses, app, original_config, writes = _dispatch_settings_update(
+        monkeypatch, tmp_path, setting, True
+    )
+
+    assert responses[0][0] == 400
+    assert writes == []
+    assert app.config == original_config
