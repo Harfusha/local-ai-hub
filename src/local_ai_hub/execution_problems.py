@@ -46,8 +46,10 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
     }
 
 
-def validate_resolution_order(report: Any, config: Mapping[str, Any]) -> None:
-    """Reject confirmation-before-primary dependencies, including transitive ones."""
+def validate_resolution_order(
+    report: Any, config: Mapping[str, Any], existing: Any = None,
+) -> None:
+    """Reject cycles across declared dependencies and problem confirmation edges."""
     if type(report) is not dict or "resolution_criterion" not in report:
         return
     primary = report.get("criterion")
@@ -55,6 +57,13 @@ def validate_resolution_order(report: Any, config: Mapping[str, Any]) -> None:
     if type(primary) is not str or type(resolution) is not str:
         raise ValueError("invalid resolution criterion")
     units = config.get("units", {})
+    dependencies: dict[str, set[str]] = {
+        name: set(metadata.get("depends_on", [])) for name, metadata in units.items()
+    }
+    for record in _validated_records(existing if existing is not None else {}).values():
+        prior = record["report"]
+        if prior.get("resolution_criterion"):
+            dependencies.setdefault(prior["resolution_criterion"], set()).add(prior["criterion"])
     pending = [primary]
     visited: set[str] = set()
     while pending:
@@ -63,7 +72,7 @@ def validate_resolution_order(report: Any, config: Mapping[str, Any]) -> None:
             raise ValueError("resolution criterion cannot be a prerequisite of the primary criterion")
         if current not in visited:
             visited.add(current)
-            pending.extend(units.get(current, {}).get("depends_on", []))
+            pending.extend(dependencies.get(current, ()))
 
 
 def record_problem(
