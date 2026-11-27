@@ -208,6 +208,64 @@ def test_snapshot_retains_recovery_backup_if_rollback_fails(tmp_path: Path, monk
             path.unlink(missing_ok=True)
 
 
+def test_new_destination_directories_are_locked_before_copyback(tmp_path: Path, monkeypatch):
+    from contextlib import contextmanager
+
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "nested").mkdir()
+    (stage / "nested" / "new.txt").write_text("new", encoding="utf-8")
+    locked = []
+
+    @contextmanager
+    def fake_tree_lock(root, *, root_handle=None):
+        def lock_directory(path):
+            locked.append(Path(path))
+
+        yield lock_directory
+
+    monkeypatch.setattr(workspace, "_lock_workspace_tree", fake_tree_lock)
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ("nested/new.txt",)
+    assert locked == [project / "nested"]
+
+
+def test_conflict_removes_new_directories_after_workspace_locks_release(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "z-conflict.txt").write_text("base", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "z-conflict.txt").write_text("agent", encoding="utf-8")
+    (stage / "nested").mkdir()
+    (stage / "nested" / "new.txt").write_text("new", encoding="utf-8")
+
+    ensure_parent_chain = workspace._ensure_parent_chain
+
+    def inject_source_conflict(root, destination):
+        created = ensure_parent_chain(root, destination)
+        if destination == project / "nested" / "new.txt":
+            (project / "z-conflict.txt").write_text("user", encoding="utf-8")
+        return created
+
+    monkeypatch.setattr(workspace, "_ensure_parent_chain", inject_source_conflict)
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.conflicts == ("z-conflict.txt",)
+    assert not (project / "nested").exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows directory-share semantics only")
 def test_workspace_tree_lock_prevents_nested_directory_replacement(tmp_path: Path):
     import local_ai_hub.opencode_workspace as workspace
@@ -218,11 +276,19 @@ def test_workspace_tree_lock_prevents_nested_directory_replacement(tmp_path: Pat
     nested.mkdir()
     replacement = project / "replacement"
 
-    with workspace._lock_workspace_tree(project):
+    with workspace._lock_workspace_tree(project) as lock_directory:
         with pytest.raises(OSError):
             nested.rename(replacement)
+        created = project / "created"
+        created.mkdir()
+        lock_directory(created)
+        with pytest.raises(OSError):
+            created.rename(replacement)
+        with pytest.raises(OSError):
+            created.rmdir()
 
     assert nested.is_dir()
+    assert created.is_dir()
     assert not replacement.exists()
 
 

@@ -91,7 +91,7 @@ def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
     """Hold each Windows ancestor/directory without delete sharing while walking."""
     root = Path(os.path.abspath(os.fspath(root)))
     if os.name != "nt":
-        yield
+        yield lambda _path: None
         return
     if not root.drive or root.anchor.startswith("\\\\"):
         raise UnsafeWorkspacePathError("Windows workspace must be on a local drive")
@@ -101,8 +101,13 @@ def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
     import win32file
 
     handles = []
+    locked_paths: set[str] = set()
 
     def open_directory(path: Path, expected: os.stat_result | None = None, *, lock: bool = True) -> None:
+        path = Path(os.path.abspath(os.fspath(path)))
+        key = os.path.normcase(os.fspath(path))
+        if key in locked_paths:
+            return
         info = path.lstat() if expected is None else expected
         if _is_reparse(path, info) or not stat.S_ISDIR(info.st_mode):
             raise UnsafeWorkspacePathError(f"workspace directory is a reparse point or changed type: {path}")
@@ -122,6 +127,7 @@ def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
             if file_index != int(info.st_ino):
                 raise UnsafeWorkspacePathError(f"workspace directory changed while opening: {path}")
             handles.append(handle)
+            locked_paths.add(key)
         except Exception:
             win32api.CloseHandle(handle)
             raise
@@ -138,6 +144,7 @@ def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
                 if (int(native[0]) & _REPARSE_POINT or not int(native[0]) & 0x10
                         or file_index != int(info.st_ino)):
                     raise UnsafeWorkspacePathError("managed stage handle does not identify the workspace root")
+                locked_paths.add(os.path.normcase(os.fspath(Path(os.path.abspath(os.fspath(current))))))
             else:
                 open_directory(current, lock=current == root)
 
@@ -159,7 +166,7 @@ def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
                 if stat.S_ISDIR(info.st_mode):
                     open_directory(path, info)
                     stack.append(path)
-        yield
+        yield open_directory
     finally:
         for handle in reversed(handles):
             try:
@@ -385,6 +392,8 @@ def _apply_workspace_changes_unlocked(
     *,
     max_files: int = _DEFAULT_MAX_FILES,
     max_bytes: int = _DEFAULT_MAX_BYTES,
+    lock_source_directory=None,
+    created_directories: list[Path] | None = None,
 ) -> WorkspaceTransferResult:
     """Apply staged changes only when every corresponding source file is unchanged.
 
@@ -453,15 +462,18 @@ def _apply_workspace_changes_unlocked(
             raise UnsafeWorkspacePathError(f"staged file changed during transfer: {relative}")
 
     prepared: list[_PreparedChange] = []
-    created_directories: list[Path] = []
+    created_directories = created_directories if created_directories is not None else []
     committed: list[_PreparedChange] = []
     preserve_recovery: set[Path] = set()
-    succeeded = False
     try:
         for relative in changed:
             destination = _relative_confined(source, relative)
             staged_path = _relative_confined(stage, relative)
-            created_directories.extend(_ensure_parent_chain(source, destination))
+            new_directories = _ensure_parent_chain(source, destination)
+            created_directories.extend(new_directories)
+            if lock_source_directory is not None:
+                for directory in new_directories:
+                    lock_source_directory(directory)
             expected = snapshot.baseline.get(relative)
             try:
                 info = destination.lstat()
@@ -530,7 +542,6 @@ def _apply_workspace_changes_unlocked(
                 ) from exc
             raise WorkspaceTransferError("workspace transfer failed; committed files were rolled back") from exc
 
-        succeeded = True
         return WorkspaceTransferResult(tuple(sorted(changed, key=str.casefold)), ())
     finally:
         for change in prepared:
@@ -540,12 +551,6 @@ def _apply_workspace_changes_unlocked(
                         temporary.unlink(missing_ok=True)
                     except OSError:
                         pass
-        if not succeeded:
-            for directory in reversed(created_directories):
-                try:
-                    directory.rmdir()
-                except OSError:
-                    pass
 
 
 def apply_workspace_changes(
@@ -557,8 +562,26 @@ def apply_workspace_changes(
 ) -> WorkspaceTransferResult:
     source = _root(snapshot.source_root)
     stage = _root(snapshot.staging_root)
-    with _lock_workspace_tree(source):
-        with _lock_workspace_tree(stage, root_handle=staging_handle):
-            return _apply_workspace_changes_unlocked(
-                snapshot, max_files=max_files, max_bytes=max_bytes
-            )
+    created_directories: list[Path] = []
+    try:
+        with _lock_workspace_tree(source) as lock_source_directory:
+            with _lock_workspace_tree(stage, root_handle=staging_handle):
+                result = _apply_workspace_changes_unlocked(
+                    snapshot, max_files=max_files, max_bytes=max_bytes,
+                    lock_source_directory=lock_source_directory,
+                    created_directories=created_directories,
+                )
+    except Exception:
+        for directory in reversed(created_directories):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        raise
+    if result.conflicts:
+        for directory in reversed(created_directories):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    return result
