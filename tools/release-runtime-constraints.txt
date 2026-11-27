@@ -1,6 +1,7 @@
 # Release baseline captured from the installed Windows Python 3.13 runtime, 2026-10-20.
 # Security refresh 2026-10-23: certifi 2026.10.19 removes the affected emSign roots.
 # Core dependency baseline refresh 2026-11-24: pin the HF client added to runtime requirements.
+# Core dependency baseline refresh 2026-11-27: pin Pillow added to runtime requirements.
 # Constraints do not install platform-specific packages on other platforms.
 # release_inventory rejects any resolved dependency absent from this baseline.
 annotated-types==0.8.0
@@ -21,6 +22,7 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 mcp==1.30.0
 packaging==26.3
+pillow==12.3.0
 pycparser==3.0
 pycryptodomex==3.24.2
 pydantic==2.13.4
