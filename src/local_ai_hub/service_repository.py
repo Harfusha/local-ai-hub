@@ -886,7 +886,7 @@ class ServiceRepositoryMixin:
         from .change_commit_preflight import commit_preflight, revision_error
         from .change_plan_projection import project_change_plan
 
-        if mode not in {"full", "summary", "details", "semantic", "preflight", "pr", "release", "artifact"}:
+        if mode not in {"full", "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta"}:
             return {"success": False, "error": "invalid change plan mode"}
         if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return {"success": False, "error": "invalid change plan page"}
@@ -894,6 +894,8 @@ class ServiceRepositoryMixin:
         from .change_task_context import attach_task_context, current_task_revision, scoped_tasks
 
         root = authorized_repository_root(getattr(self, "config", {}), root)
+        if mode == "delta" and (base is not None or changed_files is not None):
+            return {"success": False, "error": "Delta requires the complete worktree scope"}
         if mode == "preflight":
             if base is not None:
                 return {"success": False, "error": "Preflight requires a working tree"}
@@ -914,22 +916,30 @@ class ServiceRepositoryMixin:
             return {"success": False, "error": "task_id is only supported for worktree changes"}
         result = (self.deterministic.split_changes(root, changed_files, base=base, head=head)
                   if base is not None else self.deterministic.split_changes(root, changed_files))
-        if result.get("success") is True:
+        if result.get("success") is True and mode != "delta":
             error = revision_error(result, expected_revision)
             if error:
                 return {"success": False, "error": error, "commit_ready": False}
         if base is None and (mode != "full" or task_id):
             attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
+        from .change_plan_delta import change_delta, remember_baseline
+
+        cache = getattr(self.deterministic, "_change_summary_cache", None)
+        if mode == "delta":
+            return change_delta(result, cache, expected_revision, limit=limit, offset=offset)
         if mode == "full":
             return result
         if mode == "artifact":
             from .change_plan_artifact import publish_change_plan
 
             return publish_change_plan(result, getattr(self, "artifacts", None))
-        return project_change_plan(
+        projected = project_change_plan(
             result, mode=mode, limit=limit, offset=offset,
             delegate=self.delegate if mode == "semantic" else None, root=root,
         )
+        if mode == "summary" and projected.get("success") is True:
+            projected["baseline_stored"] = remember_baseline(result, cache)
+        return projected
 
     def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:
         return self.deterministic.synthesize_rules(root, limit)

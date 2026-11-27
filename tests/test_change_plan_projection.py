@@ -80,3 +80,34 @@ def test_change_plan_artifact_omits_task_candidates():
     assert "task_candidates" not in payload["clusters"][0]
     assert payload["commit_ready"] is False
     assert output["commit_ready"] is False
+
+
+def test_delta_projects_changed_content_and_counts_removed_groups():
+    from local_ai_hub.change_plan_delta import change_delta, remember_baseline
+
+    class Cache:
+        data = {}
+        def set(self, key, value):
+            self.data[key] = value
+        def get(self, key):
+            return self.data.get(key)
+
+    def group(key, atom):
+        return {"group_key": key * 64, "observed_atom_ids": [atom * 64],
+                "files": [key + ".py"], "summary": "change", "cluster_id": 1}
+    base = {"success": True, "root": "/repo", "comparison": None,
+            "inventory_scope": "git_visible_changes", "git_visible_observation_complete": True,
+            "observed_change_set_id": "1" * 64,
+            "clusters": [group("a", "a"), group("b", "b"), group("c", "c")]}
+    cache = Cache()
+    assert remember_baseline(base, cache)
+    now = {**base, "observed_change_set_id": "2" * 64,
+           "clusters": [group("a", "a"), group("b", "d")]}
+    result = change_delta(now, cache, "1" * 64, limit=4, offset=0)
+    assert result["success"]
+    assert result["unchanged_content_group_count"] == 1
+    assert result["changed_group_count"] == 1
+    assert result["removed_group_count"] == 1
+    assert [g["group_key"] for g in result["clusters"]] == ["b" * 64]
+    assert not result["commit_ready"]
+    assert not change_delta({**now, "root": "/other"}, cache, "1" * 64, limit=4, offset=0)["success"]

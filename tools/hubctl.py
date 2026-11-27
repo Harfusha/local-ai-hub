@@ -300,7 +300,7 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "commit-staged"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "commit-staged":
             if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
