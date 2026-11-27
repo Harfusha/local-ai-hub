@@ -223,7 +223,19 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
         if not enabled and ((key in _DETAIL_FIELDS and not aggregate_metric and key != "routing")
                             or (str(key).startswith("_") and key not in _DOCUMENT_FIELDS)
                             or (key == "diagnostics" and isinstance(item, dict))):
-            if key == "selection_complete" and item is False:
+            if key == "request_id" and value.get("success") is False and isinstance(item, str):
+                # Correlation is needed to diagnose a failed request even in compact mode.
+                if not (0 < len(item) <= 160 and all(32 <= ord(char) < 127 for char in item)):
+                    continue
+            elif key == "response_budget" and isinstance(item, dict) and (
+                item.get("rejected") is True or value.get("task_context_artifact_id")
+                or isinstance(value.get("task_context"), dict)
+            ):
+                # Budget rejection and context recovery are protocol contracts,
+                # not optional telemetry. Keep the bounded public fields only.
+                item = {name: item[name] for name in ("requested_tokens", "returned_tokens", "minimum_tokens",
+                                                       "required_tokens", "rejected", "truncated") if name in item}
+            elif key == "selection_complete" and item is False:
                 pass
             elif key == "stop_reason" and bool(item):
                 pass
