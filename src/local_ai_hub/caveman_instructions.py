@@ -95,6 +95,22 @@ _SKIP_DIRS = {
 }
 
 
+def _eligible_instruction_path(path: Path, root: Path) -> bool:
+    if not path.is_relative_to(root) or path == root:
+        return False
+    lower = path.name.casefold()
+    parts = [part.casefold() for part in path.relative_to(root).parts[:-1]]
+    if (lower.endswith(".original.md") or _has_reparse_ancestor(path)
+            or any(part in _SKIP_DIRS or part.endswith(".original") for part in parts)
+            or any(part.casefold() in {"plugins", "cache", "caches"} for part in root.parts)):
+        return False
+    in_rules = any(part in {"skills", "rules", "instructions", "prompts", "mcp-prompts"} for part in parts)
+    return (lower in _INSTRUCTION_NAMES
+            or (in_rules and (lower in {"readme.md", "mcp.md", "instructions.md"}
+                              or lower.endswith((".mdc", ".md", ".txt"))))
+            or ("agents" in parts and lower.endswith(".md")))
+
+
 def discover_instruction_files(roots: list[Path]) -> list[Path]:
     """Find agent instructions under explicit roots; skip managed/vendor trees."""
     found: set[Path] = set()
@@ -115,13 +131,7 @@ def discover_instruction_files(roots: list[Path]) -> list[Path]:
             )
             for name in filenames:
                 path = base / name
-                lower = name.casefold()
-                if lower.endswith(".original.md") or _has_reparse_ancestor(path):
-                    continue
-                parts = [part.casefold() for part in path.relative_to(root).parts[:-1]]
-                in_rules = any(part in {"skills", "rules", "instructions", "prompts", "mcp-prompts"} for part in parts)
-                in_agent_specs = "agents" in parts
-                if lower in _INSTRUCTION_NAMES or (in_rules and (lower in {"readme.md", "mcp.md", "instructions.md"} or lower.endswith((".mdc", ".md", ".txt")))) or (in_agent_specs and lower.endswith(".md")):
+                if _eligible_instruction_path(path, root):
                     found.add(path.resolve(strict=True))
     return sorted(found, key=lambda p: str(p).casefold())
 
@@ -368,7 +378,8 @@ def reviewed_instruction_manifest(
     if any(_has_reparse_ancestor(path) for path in (source, backup, candidate)):
         raise ValueError("Manifest files cannot traverse links")
     source, backup, candidate = (path.resolve(strict=True) for path in (source, backup, candidate))
-    if (not source.is_relative_to(root) or source not in discover_instruction_files([root])
+    if (not _eligible_instruction_path(source, root)
+            or re.search(r"secret|credential|password|token|private|\\.env", source.name, re.I)
             or source == backup or source == candidate
             or backup != manifest_path.parent / f"original{source.suffix.lower()}"
             or candidate != manifest_path.parent / f"candidate{source.suffix.lower()}"):
