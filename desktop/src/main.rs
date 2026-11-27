@@ -190,8 +190,41 @@ impl PlanDraft {
         for key in ["title", "description"] {
             original.insert(key.into(), json!(source.get(key)?.as_str()?));
         }
-        if !task_id.is_empty() {
-            for key in ["next_action", "accountable_role", "blocker"] {
+        // Role is optional at both levels. Blank is a placeholder for an
+        // omitted role, not a request to delete an existing role.
+        if let Some(value) = source.get("accountable_role").and_then(Value::as_str) {
+            original.insert("accountable_role".into(), json!(value));
+        } else if source.get("accountable_role").is_none() {
+            original.insert("accountable_role".into(), json!(""));
+        }
+        if task_id.is_empty() {
+            if let Some(value) = source.get("lifecycle").and_then(Value::as_str) {
+                original.insert("lifecycle".into(), json!(value));
+            }
+            if let Some(value) = source.get("default_target_ref").and_then(Value::as_str) {
+                original.insert("default_target_ref".into(), json!(value));
+            } else if source.get("default_target_ref").is_some_and(Value::is_null) {
+                original.insert("default_target_ref".into(), json!(""));
+            }
+        } else {
+            for key in ["kind", "work_phase"] {
+                if let Some(value) = source.get(key).and_then(Value::as_str) {
+                    original.insert(key.into(), json!(value));
+                } else if key == "work_phase" && source.get(key).is_none() {
+                    original.insert(key.into(), json!(""));
+                }
+            }
+            if let Some(order) = source.get("order").and_then(Value::as_u64) {
+                original.insert("order".into(), json!(order.to_string()));
+            } else if source.get("order").is_none() {
+                original.insert("order".into(), json!(""));
+            }
+            if let Some(deps) = source.get("depends_on").filter(|v| v.is_array()) {
+                if let Ok(serialized) = serde_json::to_string_pretty(deps) {
+                    original.insert("depends_on_json".into(), json!(serialized));
+                }
+            }
+            for key in ["next_action", "blocker"] {
                 if let Some(value) = source.get(key).and_then(Value::as_str) {
                     original.insert(key.into(), json!(value));
                 } else if source.get(key).is_none_or(Value::is_null) {
@@ -223,6 +256,9 @@ impl PlanDraft {
             ("criteria", "Acceptance criteria (one per line)", true),
             ("next_action", "Next action", true), ("accountable_role", "Accountable role", false),
             ("blocker", "Blocker", true),
+            ("default_target_ref", "Default target ref (refs/heads/…; blank = none)", false),
+            ("order", "Task order (0–1000000000)", false),
+            ("depends_on_json", "Dependencies (JSON array of plan_id / task_id objects)", true),
         ] {
             if let Some(Value::String(text)) = self.edited.get_mut(key) {
                 ui.label(label);
@@ -232,6 +268,25 @@ impl PlanDraft {
                 ui.small("Criteria unavailable for lossless line editing; preserved unchanged.");
             }
         }
+        for (key, label, choices) in [
+            ("lifecycle", "Plan lifecycle", &["draft", "active", "paused", "cancelled"][..]),
+            ("kind", "Task kind", &["code", "documentation", "analysis", "operation"][..]),
+            ("work_phase", "Work phase", &["discovery", "implementation", "verification", "integration"][..]),
+        ] {
+            if let Some(Value::String(value)) = self.edited.get_mut(key) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(label);
+                    egui::ComboBox::from_id_salt(("draft_choice", key))
+                        .selected_text(if value.is_empty() { "Not specified" } else { value.as_str() })
+                        .show_ui(ui, |ui| {
+                            for choice in choices {
+                                ui.selectable_value(value, (*choice).to_owned(), *choice);
+                            }
+                        });
+                });
+            }
+        }
+        ui.small("Only changed fields are sent. Completion and source delivery still require the canonical verification workflow.");
     }
 }
 struct Pending { label: String, payload: Value }
