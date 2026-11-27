@@ -796,6 +796,7 @@ class HTTPPostRoutesMixin:
                     )
                 result = manage_repository_knowledge(
                     services_module.APP.config, payload, authorize_operator_write=knowledge_operator_write,
+                    task_store=getattr(services_module.APP, "agent_tasks", None),
                 )
                 self._send(int(result.pop("status_code", 200)), result)
                 return
