@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .change_commit_preflight import commit_preflight
+from .change_git_coordination import git_coordination_id
 from .process_utils import clean_git_env, run_hidden
 from .repository_scope import authorized_repository_root, _is_redirecting_link
 
@@ -99,8 +100,9 @@ def execute_staged_commit(
             raise ValueError("Expected exact worktree root")
         if Path(os.fsdecode(git("rev-parse", "--absolute-git-dir").rstrip(b"\r\n"))).resolve() != git_dir:
             raise ValueError("Unexpected Git metadata location")
+        coordination_id = git_coordination_id(config, root)
         claimed = lease_store.claim(owner=owner, root=root, paths=["."], ttl_seconds=600,
-                                    purpose="explicit staged commit")
+                                    purpose="explicit staged commit", coordination_id=coordination_id)
         if claimed.get("success") is not True or not claimed.get("lease_id"):
             raise ValueError("Repository write lease unavailable")
         lease_id = claimed["lease_id"]
@@ -198,6 +200,8 @@ def execute_staged_commit(
         require_supported_state(git_dir)
         if git("symbolic-ref", "--quiet", "HEAD").strip().decode("utf-8") != branch:
             raise ValueError("Branch changed during transaction")
+        if git_coordination_id(config, root) != coordination_id:
+            raise ValueError("Project coordination identity changed")
         renewed = lease_store.renew(owner=owner, lease_id=lease_id, ttl_seconds=600)
         if renewed.get("success") is not True:
             raise ValueError("Repository lease expired")

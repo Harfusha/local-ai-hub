@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .change_commit_preflight import commit_preflight
+from .change_git_coordination import git_coordination_id
 from .process_utils import clean_git_env, run_hidden
 from .repository_scope import authorized_repository_root, _is_redirecting_link
 
@@ -107,7 +108,9 @@ def stage_selection(
             raise ValueError("Unexpected Git metadata location")
         if any(c in str(objects) for c in (os.pathsep, "\n", "\r", '"')):
             raise ValueError("Unsupported object database path")
-        claimed = leases.claim(owner=owner, root=root, paths=["."], ttl_seconds=600, purpose="explicit staging")
+        coordination_id = git_coordination_id(config, root)
+        claimed = leases.claim(owner=owner, root=root, paths=["."], ttl_seconds=600, purpose="explicit staging",
+                               coordination_id=coordination_id)
         if claimed.get("success") is not True or not claimed.get("lease_id"):
             raise ValueError("Repository write lease unavailable")
         lease_id = claimed["lease_id"]
@@ -176,6 +179,8 @@ def stage_selection(
         if apply:
             if tree != expected_tree:
                 raise ValueError("Prepared tree differs from explicitly approved preview")
+            if git_coordination_id(config, root) != coordination_id:
+                raise ValueError("Project coordination identity changed")
             if leases.renew(owner=owner, lease_id=lease_id, ttl_seconds=600).get("success") is not True:
                 raise ValueError("Repository lease expired")
             check_lock()

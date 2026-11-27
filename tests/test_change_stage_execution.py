@@ -105,3 +105,59 @@ def test_partial_hunks_preserve_unselected_lines(tmp_path):
     actual, mode = select_hunks(before, patch, root, "a", atom, [first])
     assert actual == b"ONE\ntwo\nthree\nfour\nfive\n"
     assert mode == "100644"
+
+
+def test_real_partial_stage_commit_preserves_unrelated_changes_and_project_lease(tmp_path):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from local_ai_hub.change_commit_execution import execute_staged_commit
+    from local_ai_hub.change_git_coordination import git_coordination_id
+    from local_ai_hub.leases import ScopeLeaseStore
+    from local_ai_hub.split_changes import run_split_changes
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init")
+    _git(root, "config", "user.name", "Fixture")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    _git(root, "config", "commit.gpgsign", "false")
+    (root / "a.txt").write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    (root / "b.txt").write_text("old\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "base")
+    (root / "a.txt").write_text("ONE\ntwo\nthree\nfour\nFIVE\n", encoding="utf-8")
+    (root / "b.txt").write_text("unrelated\n", encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    lease = ScopeLeaseStore(tmp_path / "state")
+    root_str = str(root.resolve())
+    context = SimpleNamespace(_root=lambda value: value, git_status_timeout=10)
+    class Engine:
+        def split_changes(self, requested_root, paths):
+            return run_split_changes(context, requested_root, paths, path_type=Path,
+                                     subprocess_module=subprocess, hidden_run_kwargs_fn=lambda: {})
+    engine = Engine()
+    plan = engine.split_changes(root_str, None)
+    assert plan["git_visible_observation_complete"], plan
+    group = next(g for g in plan["clusters"] if g["files"] == ["a.txt"])
+    atom = group["changes"][0]["atoms"][0]
+    kwargs = dict(root=root_str, paths=["a.txt"], expected_revision=plan["observed_change_set_id"],
+                  hunk_ids=[atom["hunks"][0]["hunk_id"]])
+    held = lease.claim(owner="other-agent", root=root_str, paths=["a.txt"], coordination_id=git_coordination_id(config, root_str))
+    assert held["success"], held
+    assert not stage_selection(config, engine, lease, **kwargs)["success"]
+    assert lease.release(owner="other-agent", lease_id=held["lease_id"])["success"]
+    preview = stage_selection(config, engine, lease, **kwargs)
+    assert preview["success"], preview
+    staged = stage_selection(config, engine, lease, **kwargs, expected_tree=preview["prospective_tree_oid"], apply=True)
+    assert staged["success"], staged
+    after = engine.split_changes(root_str, None)
+    result = execute_staged_commit(config, engine, lease, root=root_str, paths=["a.txt"],
+                                   expected_revision=after["observed_change_set_id"],
+                                   expected_tree=preview["prospective_tree_oid"], message="chore: selected hunk",
+                                   approved=True, allow_mixed_staged=True)
+    assert result["success"], result
+    assert _git(root, "show", "HEAD:a.txt") == "ONE\ntwo\nthree\nfour\nfive"
+    assert "FIVE" in (root / "a.txt").read_text(encoding="utf-8")
+    assert _git(root, "show", "HEAD:b.txt") == "old"
+    assert _git(root, "diff", "--name-only") == "a.txt\nb.txt"

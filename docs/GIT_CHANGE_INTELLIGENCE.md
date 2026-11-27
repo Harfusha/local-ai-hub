@@ -117,3 +117,5 @@ Complete worktree summary/delta observations retain bounded atom identities and 
 ## Context transport benchmark
 
 `python tools/benchmark_git_change_context.py --files 12 --lines 120` creates a disposable synthetic Git fixture and reports estimated request+response tokens for two raw diff reads versus full summary, incremental delta and one targeted raw follow-up. It uses Hub's existing byte-based estimator, reports the signed net difference (including negative results), and never sends data to an external model. This is a transport-size benchmark, not evidence of equivalent review coverage or billed cloud-token savings. CI runs a small fixture and retains its JSON output in the job log.
+
+Local stage and commit transactions now derive the same project coordination namespace as Agent OS before claiming the root lease; changed or unavailable project identity prevents publication. The focused suite includes an actual Git/index/lease integration test for partial staging and unrelated worktree changes.
