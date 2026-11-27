@@ -400,6 +400,63 @@ fn request(op: &str, args: Value) -> Value {
     json!({"op": op, "args": args})
 }
 
+struct TaskCreateInput<'a> {
+    root: &'a str,
+    goal: &'a str,
+    criteria: &'a str,
+    scope: &'a str,
+    risk_profile: &'a str,
+    description: &'a str,
+    non_goals: &'a str,
+    constraints: &'a str,
+    session_id: &'a str,
+    slo_json: &'a str,
+}
+
+fn task_create_payload(input: TaskCreateInput<'_>) -> Result<Value, String> {
+    let slo_profile = if input.slo_json.trim().is_empty() {
+        json!({})
+    } else {
+        let value: Value = serde_json::from_str(input.slo_json)
+            .map_err(|error| format!("SLO profile must be a JSON object: {error}"))?;
+        if !value.is_object() {
+            return Err("SLO profile must be a JSON object".into());
+        }
+        value
+    };
+    let lines = |value: &str| {
+        value
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let mut context = serde_json::Map::new();
+    if !input.session_id.trim().is_empty() {
+        context.insert("session_id".into(), json!(input.session_id.trim()));
+    }
+
+    Ok(request(
+        "task_create",
+        json!({
+            "root": input.root,
+            "contract": {
+                "goal": input.goal,
+                "acceptance_criteria": lines(input.criteria),
+                "scope": input.scope,
+                "risk_profile": input.risk_profile,
+                "description": input.description,
+                "non_goals": lines(input.non_goals),
+                "constraints": lines(input.constraints),
+                "slo_profile": slo_profile
+            },
+            "context": context,
+            "confirmed": true
+        }),
+    ))
+}
+
 // The confirmation shows the exact target and reviewed mutation fields.
 // Never dump an arbitrary request (e.g. image bytes, archive passwords).
 fn confirmation_items(payload: &Value) -> Vec<(String, String)> {
@@ -701,6 +758,7 @@ struct Desktop {
     last_log: Instant,
     goal: String,
     criteria: String,
+    task_form_error: Option<String>,
     memory_key: String,
     memory_value: String,
     memory_scope: String,
@@ -822,6 +880,7 @@ impl Desktop {
             last_log: Instant::now(),
             goal: String::new(),
             criteria: String::new(),
+            task_form_error: None,
             memory_key: String::new(),
             memory_value: String::new(),
             memory_scope: "repository".into(),
@@ -2168,12 +2227,28 @@ impl Desktop {
                         ui.text_edit_multiline(&mut self.task_slo);
                     });
                     ui.small("Goal scope describes the contract; repository authorization still uses the explicit selected root.");
+                    if let Some(error) = &self.task_form_error {
+                        ui.colored_label(egui::Color32::RED, error);
+                    }
                     if ui.add_enabled(!self.goal.trim().is_empty(), egui::Button::new("Create task")).clicked() {
-                        self.confirm("Create task", request("task_create", json!({"root": self.repo,
-                            "goal": self.goal, "criteria": self.criteria, "scope": self.task_scope,
-                            "risk": self.task_risk, "description": self.description,
-                            "non_goals": self.task_non_goals, "constraints": self.task_constraints,
-                            "slo": self.task_slo, "session_id": self.task_session, "confirmed": true})));
+                        match task_create_payload(TaskCreateInput {
+                            root: &self.repo,
+                            goal: &self.goal,
+                            criteria: &self.criteria,
+                            scope: &self.task_scope,
+                            risk_profile: &self.task_risk,
+                            description: &self.description,
+                            non_goals: &self.task_non_goals,
+                            constraints: &self.task_constraints,
+                            session_id: &self.task_session,
+                            slo_json: &self.task_slo,
+                        }) {
+                            Ok(payload) => {
+                                self.task_form_error = None;
+                                self.confirm("Create task", payload);
+                            }
+                            Err(error) => self.task_form_error = Some(error),
+                        }
                     }
                 });
                 ui.label("Task ID and reason (repository required)");
@@ -3554,6 +3629,64 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_creation_sends_canonical_nested_contract() {
+        let payload = task_create_payload(TaskCreateInput {
+            root: "/repo",
+            goal: "  Build a native app  ",
+            criteria: "first criterion\n\n second criterion  \n",
+            scope: "repository",
+            risk_profile: "high",
+            description: "  Scoped description  ",
+            non_goals: "one\ntwo",
+            constraints: "constraint",
+            session_id: "session-1",
+            slo_json: "{\"max_runtime_seconds\":30}",
+        })
+        .unwrap();
+
+        assert_eq!(payload["op"], "task_create");
+        assert_eq!(payload["args"]["root"], "/repo");
+        assert_eq!(
+            payload["args"]["contract"],
+            json!({
+                "goal":"  Build a native app  ",
+                "acceptance_criteria":["first criterion", "second criterion"],
+                "scope":"repository",
+                "risk_profile":"high",
+                "description":"  Scoped description  ",
+                "non_goals":["one", "two"],
+                "constraints":["constraint"],
+                "slo_profile":{"max_runtime_seconds":30}
+            })
+        );
+        assert_eq!(
+            payload["args"]["context"],
+            json!({"session_id":"session-1"})
+        );
+        assert_eq!(payload["args"]["confirmed"], true);
+        assert!(payload["args"].get("criteria").is_none());
+    }
+
+    #[test]
+    fn task_creation_rejects_non_object_slo_json() {
+        for invalid in ["not json", "[]", "42", "null"] {
+            assert!(task_create_payload(TaskCreateInput {
+                root: "/repo",
+                goal: "goal",
+                criteria: "criterion",
+                scope: "task",
+                risk_profile: "normal",
+                description: "",
+                non_goals: "",
+                constraints: "",
+                session_id: "",
+                slo_json: invalid,
+            })
+            .is_err());
+        }
+    }
+
     #[test]
     fn scoped_views_are_named_operations() {
         assert_eq!(
