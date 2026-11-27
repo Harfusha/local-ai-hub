@@ -155,7 +155,7 @@ def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> Non
         output.update(status="path_budget_exceeded", omitted_changed_paths=len(paths) - 64)
         return
     try:
-        impact = index.impact(root, paths, max_symbols=48, max_dependents=24)
+        impact = index.impact(root, paths, max_symbols=48, max_dependents=24, verify_freshness=True)
     except (OSError, ValueError, RuntimeError):
         return
     if not isinstance(impact, dict) or impact.get("success") is not True or impact.get("root") != root:
@@ -178,8 +178,23 @@ def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> Non
     dependents = [p for p in candidates("likely_dependents") if p not in paths]
     tests = candidates("suggested_tests")
     indexed = impact.get("indexed_changed_files")
+    freshness = impact.get("freshness")
+    freshness = freshness if isinstance(freshness, dict) else {}
+    known_status = {"verified_current_candidates", "stale_candidates", "verification_incomplete",
+                    "verification_failed", "index_changed_during_verification", "no_candidates", "not_checked"}
+    status = freshness.get("status")
+    visible_paths = set(paths) | set(dependents[:8]) | set(tests[:8])
+    def visible_status_paths(key: str) -> list[str]:
+        values = freshness.get(key, [])
+        return sorted({path for path in values if isinstance(path, str) and path in visible_paths})[:8] if isinstance(values, list) else []
+
     output.update(
         status="advisory_index_candidates",
+        freshness=status if isinstance(status, str) and status in known_status else "not_checked",
+        stale_candidate_paths=visible_status_paths("stale_paths"),
+        unknown_candidate_paths=visible_status_paths("unknown_paths"),
+        freshness_scope="bounded_content_hash_candidates_only",
+        freshness_paths_omitted=freshness.get("omitted_path_count") if type(freshness.get("omitted_path_count")) is int else None,
         changed_path_count=len(paths),
         indexed_changed_path_count=indexed if type(indexed) is int and 0 <= indexed <= len(paths) else None,
         dependent_paths=dependents[:8], dependent_paths_omitted=max(0, len(dependents) - 8),

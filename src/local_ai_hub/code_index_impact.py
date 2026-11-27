@@ -18,7 +18,8 @@ CodeIndex = None
 
 
 class CodeIndexImpactMixin:
-    def impact(self, root: str, changed_paths: list[str], max_symbols: int = 48, max_dependents: int = 30) -> dict[str, Any]:
+    def impact(self, root: str, changed_paths: list[str], max_symbols: int = 48, max_dependents: int = 30, *,
+               verify_freshness: bool = False) -> dict[str, Any]:
         """Resolve changed symbols, dependents and likely tests from SQLite only."""
         resolved_root = canonical_root(root)
         changed = list(dict.fromkeys(self._norm_rel(p) for p in changed_paths if self._norm_rel(p)))
@@ -53,7 +54,8 @@ class CodeIndexImpactMixin:
         })
         cached = self._impact_result_l1.get(cache_key)
         if isinstance(cached, dict):
-            return copy.deepcopy(cached)
+            result = copy.deepcopy(cached)
+            return self._verify_impact_candidates(result, changed, cache_generation) if verify_freshness else result
 
         try:
             with self._lock, closing(self._connect()) as con:
@@ -124,7 +126,7 @@ class CodeIndexImpactMixin:
                             f"SELECT 1 FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders}) LIMIT 1 OFFSET ?",
                             (resolved_root, *name_params, dependent_scan_limit),
                         ).fetchone()
-                        dependent_source_truncated = has_more_edges is not None
+                        dependent_source_truncated = dependent_source_truncated or has_more_edges is not None
                     for r in edge_rows[:dependent_scan_limit]:
                         path = self._norm_rel(str(r["path"]))
                         if path in changed:
@@ -335,7 +337,10 @@ class CodeIndexImpactMixin:
             path = str(item["path"])
             if self._is_test_path(path):
                 test_scores.append((max(1, int(item["mentions"])), path))
-        sorted_test_scores = sorted(set(test_scores), key=lambda x: (-x[0], x[1]))
+        best_test_scores: dict[str, int] = {}
+        for score, path in test_scores:
+            best_test_scores[path] = max(score, best_test_scores.get(path, 0))
+        sorted_test_scores = sorted(((score, path) for path, score in best_test_scores.items()), key=lambda x: (-x[0], x[1]))
         suggested_tests_truncated = indexed_tests_truncated or len(sorted_test_scores) > 20
         suggested_tests = [{"path": path, "score": score} for score, path in sorted_test_scores[:20]]
         sorted_dependents = sorted(dependent_scores.values(), key=lambda x: (-int(x["mentions"]), str(x["path"])))
@@ -384,5 +389,28 @@ class CodeIndexImpactMixin:
             "indexed_candidate_graph_complete": not truncated,
         }
         self._impact_result_l1.set(cache_key, result)
+        return self._verify_impact_candidates(copy.deepcopy(result), changed, cache_generation) if verify_freshness else result
+
+    def _verify_impact_candidates(self, result: dict[str, Any], changed: list[str], generation: int) -> dict[str, Any]:
+        """Check bounded returned candidates against current content, never the entire graph."""
+        candidate_paths = list(dict.fromkeys(
+            path for key in ("likely_dependents", "suggested_tests")
+            for item in result.get(key, [])[:8]
+            if isinstance(item, dict) and isinstance(path := item.get("path"), str) and path
+        ))
+        all_paths = list(dict.fromkeys([*changed, *candidate_paths]))
+        # Reserve space for both changed source files and returned consumers/tests.
+        selected = list(dict.fromkeys([*changed[:48], *candidate_paths]))[:64]
+        freshness = self._candidate_freshness(result["root"], selected, content_hash=True)
+        freshness["scope"] = "changed_and_returned_impact_candidates"
+        freshness["requested_path_count"] = len(all_paths)
+        freshness["omitted_path_count"] = len(set(all_paths) - set(selected))
+        freshness["index_generation_stable"] = self._cache_generation() == generation
+        if not freshness["index_generation_stable"]:
+            freshness["status"] = "index_changed_during_verification"
+        elif freshness["omitted_path_count"] and freshness.get("status") == "verified_current_candidates":
+            freshness["status"] = "verification_incomplete"
+        freshness["complete"] = False
+        result["freshness"] = freshness
         return result
 

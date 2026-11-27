@@ -49,7 +49,38 @@ def test_index_impact_hints_remain_bounded_and_non_authoritative():
     assert hints["freshness"] == "not_checked"
     assert not hints["complete"] and not hints["dependencies_verified"]
     assert not hints["verification_reuse_authorized"]
-    index.impact.assert_called_once_with("/repo", ["source.py"], max_symbols=48, max_dependents=24)
+    index.impact.assert_called_once_with("/repo", ["source.py"], max_symbols=48, max_dependents=24, verify_freshness=True)
+    index.impact.return_value["freshness"] = {"status": "stale_candidates", "stale_paths": ["consumer.py", "../outside.py"],
+                                              "unknown_paths": ["source.py"], "omitted_path_count": 0}
+    attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
+    assert plan["indexed_impact"]["freshness"] == "stale_candidates"
+    assert plan["indexed_impact"]["stale_candidate_paths"] == ["consumer.py"]
+    assert plan["indexed_impact"]["unknown_candidate_paths"] == ["source.py"]
     index.impact.return_value["root"] = "/other"
     attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
     assert plan["indexed_impact"]["status"] == "unavailable"
+
+
+def test_index_impact_freshness_checks_content_and_generation_without_claiming_closure():
+    from unittest.mock import MagicMock
+
+    from local_ai_hub.code_index_impact import CodeIndexImpactMixin
+
+    index = MagicMock()
+    index._candidate_freshness.return_value = {"status": "verified_current_candidates"}
+    index._cache_generation.return_value = 9
+    result = {"root": "/repo", "likely_dependents": [{"path": "consumer.py"}],
+              "suggested_tests": [{"path": "tests/test_source.py"}]}
+    observed = CodeIndexImpactMixin._verify_impact_candidates(index, result, ["source.py"], 9)
+    assert observed["freshness"]["status"] == "verified_current_candidates"
+    assert observed["freshness"]["complete"] is False
+    index._candidate_freshness.assert_called_once_with("/repo", ["source.py", "consumer.py", "tests/test_source.py"], content_hash=True)
+    index._candidate_freshness.return_value = {"status": "verified_current_candidates"}
+    index._cache_generation.return_value = 10
+    assert CodeIndexImpactMixin._verify_impact_candidates(index, result, ["source.py"], 9)["freshness"]["status"] == "index_changed_during_verification"
+    index._candidate_freshness.return_value = {"status": "verified_current_candidates"}
+    index._cache_generation.return_value = 9
+    changed = [f"src/{i}.py" for i in range(64)]
+    freshness = CodeIndexImpactMixin._verify_impact_candidates(index, result, changed, 9)["freshness"]
+    assert freshness["status"] == "verification_incomplete"
+    assert freshness["omitted_path_count"] == 16
