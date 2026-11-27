@@ -30,7 +30,7 @@ def expand_declared_inventory(
         return tuple(criteria), raw
     inventory = raw["inventory"]
     if (type(inventory) is not dict or not {"resources", "checks"}.issubset(inventory)
-            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision"}):
+            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision", "include_mapped_tests", "policy_sha256"}):
         raise ValueError("inventory must contain resources and checks")
     scope = inventory.get("scope", "declared")
     if scope not in ("declared", "repository", "changes"):
@@ -39,6 +39,15 @@ def expand_declared_inventory(
     if "base_revision" in inventory and (scope != "changes" or type(base_revision) is not str
             or len(base_revision) not in (40, 64) or any(c not in "0123456789abcdef" for c in base_revision)):
         raise ValueError("base_revision requires a full Git commit ID in changes scope")
+    mapped = inventory.get("include_mapped_tests", False)
+    policy_digest = inventory.get("policy_sha256", "")
+    if type(mapped) is not bool or ("include_mapped_tests" in inventory and scope != "changes"):
+        raise ValueError("invalid mapped test scope")
+    if mapped and (type(policy_digest) is not str or len(policy_digest) != 64
+                   or any(c not in "0123456789abcdef" for c in policy_digest)):
+        raise ValueError("mapped tests require a server-compiled project policy digest")
+    if not mapped and "policy_sha256" in inventory:
+        raise ValueError("unexpected mapped test policy digest")
     resources = inventory["resources"]
     checks = inventory["checks"]
     if type(resources) is not list or not 1 <= len(resources) <= MAX_OBLIGATIONS:
@@ -129,6 +138,7 @@ def expand_declared_inventory(
             "resources": list(resources), "checks": normalized_checks,
             **({"scope": scope} if scope != "declared" else {}),
             **({"base_revision": base_revision} if base_revision else {}),
+            **({"include_mapped_tests": True, "policy_sha256": policy_digest} if mapped else {}),
             **({"partition": dict(partition)} if partition is not None else {}),
         },
     }

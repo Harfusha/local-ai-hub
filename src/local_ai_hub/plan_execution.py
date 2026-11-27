@@ -13,7 +13,7 @@ MAX_PLAN_TASKS = 64
 
 def partition_coverage(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Never combine different manifests or check matrices into one coverage claim."""
-    groups: dict[tuple[str, str, int, int, str, str], list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str, int, int, str, str, str], list[int]] = defaultdict(list)
     for config in configs:
         inventory = config.get("inventory", {})
         partition = inventory.get("partition")
@@ -24,10 +24,11 @@ def partition_coverage(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             json.dumps(inventory["checks"], sort_keys=True, separators=(",", ":")),
             partition["size"],
             partition["total"], inventory.get("scope", "repository"), inventory.get("base_revision", ""),
+            inventory.get("policy_sha256", ""),
         )
         groups[key].append(partition["index"])
     result = []
-    for (digest, _checks, size, total, _scope, _base), indices in sorted(groups.items()):
+    for (digest, _checks, size, total, _scope, _base, _policy), indices in sorted(groups.items()):
         seen = set(indices)
         missing = sorted(set(range(total)) - seen)
         duplicate_count = len(indices) - len(seen)

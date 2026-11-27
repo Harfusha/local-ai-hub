@@ -91,10 +91,47 @@ def change_resources(root: str, base_revision: str = "") -> list[str]:
     return sorted(resources)
 
 
-def _resources(inventory: Mapping[str, Any], root: str) -> list[str]:
-    if inventory.get("scope") == "changes":
-        return change_resources(root, inventory.get("base_revision", ""))
-    return repository_resources(root)
+def _resources(inventory: dict[str, Any], root: str) -> list[str]:
+    if inventory.get("scope") != "changes":
+        if "include_mapped_tests" in inventory or "policy_sha256" in inventory:
+            raise ValueError("mapped tests require Git changes scope")
+        return repository_resources(root)
+    resources = change_resources(root, inventory.get("base_revision", ""))
+    mapped = inventory.get("include_mapped_tests", False)
+    if type(mapped) is not bool or ("policy_sha256" in inventory and not mapped):
+        raise ValueError("invalid mapped test inventory policy")
+    if not mapped:
+        return resources
+
+    from .project_config import path_is_allowed, path_matches_pattern, resolve_project_config
+
+    policy = resolve_project_config(root)
+    if policy.error_codes:
+        raise ValueError("project impact policy is unavailable")
+    if "policy_sha256" in inventory and inventory["policy_sha256"] != policy.config_digest:
+        raise ValueError("project impact policy changed")
+    inventory["policy_sha256"] = policy.config_digest
+    patterns = sorted({
+        target for source, targets in policy.settings.affected_tests_mapping.items()
+        if any(path_matches_pattern(path, source) for path in resources)
+        for target in targets
+    })
+    if not patterns:
+        return resources
+    allowed = [
+        path for path in repository_resources(root)
+        if path_is_allowed(root, path, policy.settings, phase="test")
+    ]
+    impacted: set[str] = set()
+    for pattern in patterns:
+        matched = {path for path in allowed if path_matches_pattern(path, pattern)}
+        if not matched:
+            raise ValueError("configured affected test pattern has no allowed inventory match")
+        impacted.update(matched)
+    result = sorted(set(resources) | impacted)
+    if len(result) > MAX_REPOSITORY_RESOURCES:
+        raise ValueError("Git impact inventory exceeds resource limit")
+    return result
 
 
 def select_partition(resources: list[str], raw: Any) -> tuple[list[str], dict[str, Any]]:
@@ -154,7 +191,7 @@ def check_repository_scope(config: Any, root: str) -> dict[str, Any]:
         return {}
     expected = set(config["inventory"]["resources"])
     try:
-        resources = _resources(config["inventory"], root)
+        resources = _resources(dict(config["inventory"]), root)
         partition = config["inventory"].get("partition")
         if partition is not None:
             try:

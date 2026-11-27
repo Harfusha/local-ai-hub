@@ -106,3 +106,33 @@ def test_change_inventory_includes_deleted_staged_and_untracked(tmp_path: Path):
     assert check_repository_scope(config, str(tmp_path))["added_preview"] == ["extra.py"]
     with pytest.raises(ValueError, match="full lowercase"):
         change_resources(str(tmp_path), "HEAD")
+
+
+def test_change_inventory_includes_project_mapped_tests_and_binds_policy(tmp_path: Path):
+    import subprocess
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "Fixture")
+    (tmp_path / "src.py").write_text("pass", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_src.py").write_text("pass", encoding="utf-8")
+    policy = tmp_path / ".local-ai.toml"
+    policy.write_text('[affected_tests_mapping]\n"src.py" = ["tests/test_src.py"]\n', encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "fixture")
+    (tmp_path / "src.py").write_text("x = 1", encoding="utf-8")
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"].update(scope="changes", include_mapped_tests=True)
+    created = GoalContract.from_dict(compile_repository_contract(contract, str(tmp_path)))
+    config = created.slo_profile["verified_execution"]
+    assert config["inventory"]["resources"] == ["src.py", "tests/test_src.py"]
+    assert len(config["inventory"]["policy_sha256"]) == 64
+    assert check_repository_scope(config, str(tmp_path))["complete"]
+    policy.write_text('[affected_tests_mapping]\n"src.py" = ["tests/missing.py"]\n', encoding="utf-8")
+    assert not check_repository_scope(config, str(tmp_path))["complete"]
+    with pytest.raises(ValueError, match="no allowed inventory match"):
+        compile_repository_contract(contract, str(tmp_path))

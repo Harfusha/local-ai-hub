@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "description": "Copy a check matrix into a GoalContract inventory and supply resources or a server scope. These are examples, not a new runtime policy store.",
+  "profiles": {
+    "audit": [
+      {
+        "name": "inspect correctness",
+        "dimension": "correctness",
+        "priority": 80
+      },
+      {
+        "name": "inspect consistency",
+        "dimension": "consistency",
+        "depends_on": [
+          "inspect correctness"
+        ]
+      },
+      {
+        "name": "verify findings",
+        "dimension": "evidence",
+        "depends_on": [
+          "inspect correctness",
+          "inspect consistency"
+        ]
+      }
+    ],
+    "implementation": [
+      {
+        "name": "define expected behavior",
+        "dimension": "requirements",
+        "priority": 90
+      },
+      {
+        "name": "implement behavior",
+        "dimension": "implementation",
+        "depends_on": [
+          "define expected behavior"
+        ]
+      },
+      {
+        "name": "integration test",
+        "dimension": "integration",
+        "depends_on": [
+          "implement behavior"
+        ]
+      },
+      {
+        "name": "review documentation",
+        "dimension": "documentation",
+        "depends_on": [
+          "implement behavior"
+        ]
+      }
+    ],
+    "migration": [
+      {
+        "name": "inspect old contract",
+        "dimension": "requirements",
+        "priority": 90
+      },
+      {
+        "name": "verify migration",
+        "dimension": "migration",
+        "depends_on": [
+          "inspect old contract"
+        ]
+      },
+      {
+        "name": "regression test",
+        "dimension": "verification",
+        "depends_on": [
+          "verify migration"
+        ]
+      }
+    ],
+    "research": [
+      {
+        "name": "inspect primary source",
+        "dimension": "evidence",
+        "priority": 90
+      },
+      {
+        "name": "verify claims",
+        "dimension": "accuracy",
+        "depends_on": [
+          "inspect primary source"
+        ]
+      },
+      {
+        "name": "reconcile contradictions",
+        "dimension": "consistency",
+        "depends_on": [
+          "verify claims"
+        ]
+      }
+    ],
+    "optimization": [
+      {
+        "name": "baseline benchmark",
+        "dimension": "measurement",
+        "priority": 90
+      },
+      {
+        "name": "review optimization",
+        "dimension": "implementation",
+        "depends_on": [
+          "baseline benchmark"
+        ]
+      },
+      {
+        "name": "compare benchmark",
+        "dimension": "measurement",
+        "depends_on": [
+          "review optimization"
+        ]
+      },
+      {
+        "name": "regression test",
+        "dimension": "verification",
+        "depends_on": [
+          "review optimization"
+        ]
+      }
+    ]
+  }
+}

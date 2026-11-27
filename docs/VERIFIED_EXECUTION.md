@@ -142,6 +142,18 @@ path inventory, not semantic dependency analysis; add affected consumers
 as explicit criteria. Ignored untracked paths and changes inside submodules
 are not expanded; submodule entries are obligations at their own path.
 
+### Git-managed impact policy
+
+For changes scope, set `include_mapped_tests: true`. Hub resolves the existing
+`.local-ai.toml` / worktree project settings and expands matching
+`affected_tests_mapping` target patterns against its confined repository
+inventory. All matched allowed test paths become resources in the same check
+matrix. A missing target or invalid config is an error, not a skipped check.
+The effective project configuration digest is bound to the contract and
+checked again before completion, including partition aggregation. This uses
+explicit project-maintained dependency knowledge; it does not claim exhaustive
+semantic consumer discovery or automatic execution of each test.
+
 ## Durable problem reports
 
 Report a discovered issue with the existing `task_checkpoint` operation by
