@@ -8,7 +8,7 @@ mod settings;
 use eframe::egui;
 use serde_json::{json, Value};
 use std::{
-    io::Write,
+    io::{self, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
     sync::mpsc,
@@ -34,6 +34,27 @@ const MAINTENANCE: &[&str] = &[
     "Purge detailed traces", "Reset all statistics",
 ];
 const MAX_ROWS: usize = 12_000;
+const MAX_ADAPTER_RESPONSE: usize = 8_100_000;
+
+// Drain all output so an oversized response cannot deadlock the child on
+// a full pipe. Retain only a bounded prefix and never parse partial JSON.
+fn read_bounded(mut reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
+    let mut data = Vec::new();
+    let mut overflow = false;
+    let mut chunk = [0_u8; 16_384];
+    loop {
+        let size = match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(size) => size,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        let retained = size.min(limit.saturating_sub(data.len()));
+        data.extend_from_slice(&chunk[..retained]);
+        overflow |= retained < size;
+    }
+    Ok((data, overflow))
+}
 
 #[derive(Clone)]
 struct Install {
@@ -59,7 +80,7 @@ impl Install {
         }
         let mut command = Command::new(&self.python);
         command.arg(&adapter).arg("--bridge").current_dir(root)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         if let Some(config) = &self.config {
             command.arg("--config").arg(config);
         }
@@ -71,6 +92,12 @@ impl Install {
         let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
         if bytes.len() > 65_536 { return Err("Request too large".into()); }
         let mut child = command.spawn().map_err(|e| format!("Cannot launch Hub adapter: {e}"))?;
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Missing adapter stdout".into());
+        };
+        let reader = thread::spawn(move || read_bounded(stdout, MAX_ADAPTER_RESPONSE));
         let written = child.stdin.take().ok_or_else(|| "Missing adapter stdin".to_string())
             .and_then(|mut pipe| pipe.write_all(&bytes).map_err(|e| e.to_string()));
         if let Err(error) = written {
@@ -78,10 +105,12 @@ impl Install {
             let _ = child.wait();
             return Err(error);
         }
-        let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        if !output.status.success() { return Err(format!("Adapter exited: {}", output.status)); }
-        if output.stdout.len() > 8_100_000 { return Err("Adapter response exceeds limit".into()); }
-        let envelope: Value = serde_json::from_slice(&output.stdout)
+        let status = child.wait().map_err(|e| e.to_string())?;
+        let (stdout, overflow) = reader.join().map_err(|_| "Adapter output reader failed".to_string())?
+            .map_err(|e| format!("Cannot read adapter response: {e}"))?;
+        if !status.success() { return Err(format!("Adapter exited: {status}")); }
+        if overflow { return Err("Adapter response exceeds limit".into()); }
+        let envelope: Value = serde_json::from_slice(&stdout)
             .map_err(|_| "Invalid adapter response; check Python installation and Hub dependencies.".to_string())?;
         if envelope["ok"].as_bool() != Some(true) {
             return Err(envelope["error"].as_str().unwrap_or("Unknown adapter failure").to_owned());
@@ -1996,5 +2025,28 @@ mod tests {
         flatten(&json!({"tasks":[{"id":"x"}]}), "", 0, &mut rows);
         assert_eq!(rows[0].path, "tasks[0].id");
         assert_eq!(rows[0].value, "x");
+    }
+}
+
+
+#[cfg(test)]
+mod bounded_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_output_is_drained_with_bounded_retention() {
+        let bytes = vec![b'x'; 100_000];
+        let mut cursor = io::Cursor::new(&bytes);
+        let (retained, overflow) = read_bounded(&mut cursor, 1024).unwrap();
+        assert_eq!(retained.len(), 1024);
+        assert!(overflow);
+        assert_eq!(cursor.position(), bytes.len() as u64);
+    }
+
+    #[test]
+    fn exact_limit_and_empty_response_are_not_overflow() {
+        assert_eq!(read_bounded(&b"abc"[..], 3).unwrap(), (b"abc".to_vec(), false));
+        assert_eq!(read_bounded(&b""[..], 0).unwrap(), (Vec::new(), false));
+        assert_eq!(read_bounded(&b"x"[..], 0).unwrap(), (Vec::new(), true));
     }
 }
