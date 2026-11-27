@@ -59,6 +59,7 @@ VIEWS = {
     "File leases": "/api/leases",
     "Hardware": "/api/hardware/system",
     "Model inventory": "/api/models",
+    "Ollama management": "/api/models/manage",
     "Endpoint analytics": "/api/telemetry/endpoint-stats",
     "Benchmark": "/api/benchmark/summary",
     "Telemetry report": "/api/telemetry/report",
@@ -1114,6 +1115,36 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         return checked_post(control, "/api/config/update", {"action": "reset"})
+    if op == "model_manage":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        action = args.get("action")
+        if action not in ("pull", "delete"):
+            raise ValueError("Unsupported model operation")
+        import re
+        name = text_field(args, "model", 256)
+        # Accept registry/model identifiers, never local paths or URLs.
+        if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}", name)
+                or ".." in name or "//" in name or name.endswith(("/", ":"))):
+            raise ValueError("Invalid Ollama model identifier")
+        # Use the canonical installation and admin authorization, not a
+        # direct call to an arbitrary model server. Disabled Ollama is not
+        # enabled as an incidental side effect of desktop management.
+        config = control.read("Settings")
+        if config.get("config", {}).get("ollama", {}).get("enabled") is not True:
+            raise RuntimeError("Ollama is disabled in the active Hub configuration")
+        if action == "delete":
+            inventory = control.read("Ollama management")
+            rows = inventory.get("models")
+            matches = [row for row in rows if isinstance(row, dict) and row.get("name") == name] if isinstance(rows, list) else []
+            if len(matches) != 1 or inventory.get("running_status_available") is not True or matches[0].get("running") is not False:
+                raise RuntimeError("Delete requires an exact installed model with verified non-resident status")
+        result = checked_post(control, "/api/models/manage", {"action": action, "model": name},
+                              timeout=630.0 if action == "pull" else 30.0)
+        field = "pulled" if action == "pull" else "deleted"
+        if result.get("success") is not True or result.get(field) != name:
+            raise RuntimeError("Model receipt incomplete; reload inventory before retrying")
+        return result
     if op == "compare":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required before running two inference requests")
