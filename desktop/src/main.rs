@@ -222,6 +222,26 @@ fn flatten(value: &Value, path: &str, depth: usize, rows: &mut Vec<Row>) {
     }
 }
 fn request(op: &str, args: Value) -> Value { json!({"op": op, "args": args}) }
+
+// The confirmation shows the exact target and reviewed mutation fields.
+// Never dump an arbitrary request (e.g. image bytes, archive passwords).
+fn confirmation_items(payload: &Value) -> Vec<(String, String)> {
+    let args = &payload["args"];
+    [
+        "root", "id", "task_id", "execution_id", "action", "file", "revision", "version",
+        "key", "status", "scope", "kind", "name", "model", "mode", "stream", "session_id",
+        "record_id", "owner", "clone_id", "worktree_id", "branch", "global", "purge", "capacity",
+        "title", "description", "criteria", "next_action", "accountable_role", "blocker",
+        "lifecycle", "default_target_ref", "work_phase", "order", "depends_on_json",
+        "goal", "risk", "reason", "non_goals", "constraints", "slo",
+        "resolution", "message", "root_cause", "fix", "feature", "enabled",
+    ].iter().filter_map(|key| {
+        let value = args.get(*key)?;
+        if value.is_null() { return None; }
+        let text = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+        Some(((*key).to_owned(), text))
+    }).collect()
+}
 fn view_request(view: &str, root: &str, id: &str) -> Value {
     let op = match view {
         "Plans" => "plans", "Plan board" => "plan_board", "Semaphores" => "semaphores",
@@ -1347,8 +1367,8 @@ impl Desktop {
             6 => {
                 if self.current() == "Ollama management" {
                     ui.small("Ollama only. Pull downloads a model through the configured backend; it can take several minutes. Delete is restricted to a confirmed non-resident installed model.");
-                    ui.label("Exact model name (including tag)");
-                    ui.text_edit_singleline(&mut self.entity);
+                    let label = ui.label("Exact model name (including tag)");
+                    ui.text_edit_singleline(&mut self.entity).labelled_by(label.id);
                     let ready = !self.entity.trim().is_empty();
                     let deletable = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Ollama management")
                         .is_some_and(|data| data["running_status_available"] == true &&
@@ -1533,6 +1553,20 @@ impl Desktop {
     // be exercised with an egui context in the cross-platform test matrix.
     fn render(&mut self, ctx: &egui::Context) {
         self.receive();
+        // Keyboard navigation never confirms a mutation implicitly.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if self.pending.take().is_some() {
+                self.status = "Operation cancelled before dispatch.".into();
+            } else if self.installation_open {
+                self.installation_open = false;
+            } else {
+                self.detail = None;
+                self.record_detail = None;
+            }
+        }
+        if self.can_edit_context() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
+            self.refresh(ctx);
+        }
         // Only wake for health checks while focused, never continuously repaint an idle window.
         let focused = ctx.input(|i| i.focused);
         if self.auto_live && self.current() == "Agent event stream" && focused && self.busy.is_none()
@@ -1595,8 +1629,10 @@ impl Desktop {
                         ctx.request_repaint();
                     }
                 }
-                ui.label("Repository root");
-                if ui.add_enabled(self.can_edit_context(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.reset_scope(); }
+                let label = ui.label("Repository root");
+                let response = ui.add_enabled(self.can_edit_context(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).labelled_by(label.id);
+                if self.can_edit_context() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L)) { response.request_focus(); }
+                if response.changed() { self.reset_scope(); }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -1636,7 +1672,7 @@ impl Desktop {
                         });
                         if self.metrics_period != previous { self.clear_response(); self.refresh(ctx); }
                     }
-                    if ui.button("Load / refresh").clicked() { self.refresh(ctx); }
+                    if ui.button("Load / refresh").on_hover_text("F5 — refresh current view").clicked() { self.refresh(ctx); }
                 });
                 // Long forms (plans, operator catalog, traces) must not push
                 // their action buttons and the response table outside the window.
@@ -1646,8 +1682,10 @@ impl Desktop {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("Search response");
-                if ui.text_edit_singleline(&mut self.filter).changed() { self.refilter(); }
+                let label = ui.label("Search response");
+                let response = ui.text_edit_singleline(&mut self.filter).labelled_by(label.id);
+                if self.can_edit_context() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) { response.request_focus(); }
+                if response.changed() { self.refilter(); }
                 ui.label(format!("{} fields", self.visible.len()));
                 ui.checkbox(&mut self.raw_view, "Raw fields");
             });
@@ -1963,29 +2001,26 @@ impl Desktop {
         }
         if self.pending.is_some() {
             let mut decision = None;
-            egui::Window::new("Confirm operation").collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Window::new("Confirm operation").collapsible(false).resizable(true).default_width(550.0).show(ctx, |ui| {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
-                let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name", "mode", "stream", "session_id", "record_id", "owner", "clone_id", "worktree_id", "branch"] {
-                    if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
-                }
-                for key in ["global", "purge", "confirmed", "capacity"] {
-                    if args[key].is_boolean() || args[key].is_number() {
-                        ui.label(format!("{key}: {}", args[key]));
+                let payload = &self.pending.as_ref().unwrap().payload;
+                let args = &payload["args"];
+                let max_height = (ctx.input(|i| i.screen_rect().height()) * 0.5).max(120.0);
+                egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+                    for (key, value) in confirmation_items(payload) {
+                        ui.label(format!("{key}: {value}"));
                     }
-                }
-                for key in ["title", "description", "criteria", "next_action", "accountable_role", "blocker"] {
-                    if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
-                }
-                if let Some(changes) = args["settings"].as_object() {
-                    for (key, value) in changes { ui.label(format!("{key}: {value}")); }
-                }
-                if let Some(fields) = args["fields"].as_object() {
-                    ui.collapsing("Reviewed operator parameters", |ui| {
-                        for (key, value) in fields { ui.label(format!("{key}: {value}")); }
-                    });
-                }
+                    if let Some(changes) = args["settings"].as_object() {
+                        for (key, value) in changes { ui.label(format!("{key}: {value}")); }
+                    }
+                    if let Some(fields) = args["fields"].as_object() {
+                        ui.collapsing("Reviewed operator parameters", |ui| {
+                            for (key, value) in fields { ui.label(format!("{key}: {value}")); }
+                        });
+                    }
+                });
+                ui.small("Escape cancels without applying changes.");
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { decision = Some(false); }
                     if ui.button("Confirm").clicked() { decision = Some(true); }
@@ -2001,12 +2036,12 @@ impl Desktop {
             let mut open = true;
             let mut apply = false;
             egui::Window::new("Hub installation").open(&mut open).show(ctx, |ui| {
-                ui.label("Trusted Hub checkout (contains tools/hubctl.py)");
-                ui.text_edit_singleline(&mut self.root_input);
-                ui.label("Python interpreter used by that Hub installation");
-                ui.text_edit_singleline(&mut self.python_input);
-                ui.label("Config path (optional)");
-                ui.text_edit_singleline(&mut self.config_input);
+                let root_label = ui.label("Trusted Hub checkout (contains tools/hubctl.py)");
+                ui.text_edit_singleline(&mut self.root_input).labelled_by(root_label.id);
+                let python_label = ui.label("Python interpreter used by that Hub installation");
+                ui.text_edit_singleline(&mut self.python_input).labelled_by(python_label.id);
+                let config_label = ui.label("Config path (optional)");
+                ui.text_edit_singleline(&mut self.config_input).labelled_by(config_label.id);
                 ui.label("Only select installations and interpreters you trust. No credentials are saved by this GUI.");
                 if ui.button("Apply for this session").clicked() { apply = true; }
             });
@@ -2084,6 +2119,19 @@ mod tests {
         app.installation_open = true;
         assert!(!app.can_edit_context());
     }
+    #[test]
+    fn confirmation_includes_exact_mutation_identity_and_excludes_binary_or_secrets() {
+        let payload = request("model_manage", json!({"model":"fixture:7b", "action":"delete",
+            "execution_id":"task_a","revision":"rev_1","depends_on_json":"[]",
+            "archive_password":"secret","image":"large-bytes"}));
+        let items: std::collections::BTreeMap<_,_> = confirmation_items(&payload).into_iter().collect();
+        assert_eq!(items.get("model").map(String::as_str), Some("fixture:7b"));
+        assert_eq!(items.get("execution_id").map(String::as_str), Some("task_a"));
+        assert_eq!(items.get("revision").map(String::as_str), Some("rev_1"));
+        assert_eq!(items.get("depends_on_json").map(String::as_str), Some("[]"));
+        assert!(!items.contains_key("archive_password") && !items.contains_key("image"));
+    }
+
     #[test]
     fn all_native_views_render_offline_without_spawning_adapter() {
         let mut app = Desktop::new();
