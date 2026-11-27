@@ -539,6 +539,33 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
             if finalized > requested:
                 outer_metadata["returned_tokens"] = 0
 
+    # At the minimum supported budget, diagnostic-off compaction can discard
+    # the recovery instruction while retaining the generic rejection message.
+    # Fit this protocol decision before generic clipping, using the actual wire.
+    if (action in {"context", "context_compile"} and isinstance(value, dict)
+            and value.get("success") is False
+            and value.get("error") == "max_response_tokens too small"):
+        decision = {
+            "success": False, "error": "max_response_tokens too small",
+            "next_action": "request_larger_response_budget",
+        }
+        detail = services_module.agent_diagnostics_enabled(services_module.CFG, arguments)
+        if detail:
+            decision["response_budget"] = {
+                "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
+            }
+        content = [services_module.mcp_types.TextContent(type="text", text="Increase max_response_tokens.")]
+        wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+                "structuredContent": decision, "isError": False}
+        for _ in range(16):
+            returned = services_module.json_tokens(wire)
+            if detail:
+                decision["response_budget"]["returned_tokens"] = returned
+            if services_module.json_tokens(wire) == returned:
+                break
+        if services_module.json_tokens(wire) <= requested:
+            return content, decision
+
     if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
         pack = value.get("adaptive_context_pack")
         evidence = pack.get("evidence") if isinstance(pack, dict) else None
