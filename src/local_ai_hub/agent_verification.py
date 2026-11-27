@@ -1986,6 +1986,14 @@ class VerificationStore:
                 if not scope_check["complete"]:
                     execution["ready_for_completion_attempt"] = False
                     is_complete = False
+            if task_state.contract.slo_profile[EXECUTION_KEY].get("knowledge_guard"):
+                from .execution_knowledge_guard import knowledge_consistency
+
+                knowledge = knowledge_consistency(trusted_repository_root, trusted_current_revision)
+                execution["knowledge_check"] = knowledge
+                if knowledge["complete"] is not True:
+                    execution["ready_for_completion_attempt"] = False
+                    is_complete = False
             if problems["blocking_open"]:
                 execution["ready_for_completion_attempt"] = False
             is_complete = is_complete and not task_state.checkpoint.blockers and not problems["blocking_open"]
