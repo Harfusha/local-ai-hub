@@ -25,7 +25,7 @@ _MAX_INDEX = 16 * 1024 * 1024
 def execute_staged_commit(
     config: dict[str, Any], engine: Any, lease_store: Any, *,
     root: str, paths: list[str], expected_revision: str, expected_tree: str,
-    message: str, approved: bool, journal: Any | None = None,
+    message: str, approved: bool, journal: Any | None = None, allow_mixed_staged: bool = False,
 ) -> dict[str, Any]:
     """Commit a reviewed stage-zero tree only, under a root lease and index lock."""
     if approved is not True or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
@@ -111,7 +111,7 @@ def execute_staged_commit(
             raise ValueError("Attached local branch required")
         parent = oid("rev-parse", "--verify", "HEAD^{commit}")
         plan = engine.split_changes(root, None)
-        preflight = commit_preflight(plan, paths, expected_revision)
+        preflight = commit_preflight(plan, paths, expected_revision, allow_mixed="commit" if allow_mixed_staged is True else "")
         if (
             preflight.get("success") is not True or preflight.get("index_scope_matches_selection") is not True
             or preflight.get("prospective_index_tree_oid") != expected_tree

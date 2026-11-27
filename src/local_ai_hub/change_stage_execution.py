@@ -21,9 +21,13 @@ _MAX_INDEX = 16 * 1024 * 1024
 def stage_selection(
     config: dict[str, Any], engine: Any, leases: Any, *, root: str, paths: list[str],
     expected_revision: str, expected_tree: str = "", apply: bool = False,
+    hunk_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     if type(apply) is not bool or (apply and not _OID.fullmatch(expected_tree)):
         return {"success": False, "error": "Apply requires the exact preview tree ID"}
+    if hunk_ids is not None and (not isinstance(hunk_ids, list) or len(paths) != 1
+            or not hunk_ids or len(hunk_ids) > 64 or any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in hunk_ids)):
+        return {"success": False, "error": "Partial staging requires one path and exact hunk IDs"}
     owner = "git-stage-" + uuid.uuid4().hex
     lease_id = ""
     lock_fd: int | None = None
@@ -116,7 +120,8 @@ def stage_selection(
         branch = git("symbolic-ref", "--quiet", "HEAD")
         parent = oid("rev-parse", "--verify", "HEAD^{commit}")
         plan = engine.split_changes(root, None)
-        preflight = commit_preflight(plan, paths, expected_revision, allow_untracked=True)
+        preflight = commit_preflight(plan, paths, expected_revision, allow_untracked=hunk_ids is None,
+                                    allow_mixed="stage" if hunk_ids is not None else "")
         if (preflight.get("success") is not True or preflight.get("staging_preview_available") is not True
                 or not preflight.get("unstaged_selection") or plan.get("git_snapshot_metadata", {}).get("head") != parent):
             raise ValueError("Selection is stale, blocked, or has no unstaged paths")
@@ -132,7 +137,29 @@ def stage_selection(
                 temporary_objects.mkdir()
                 extra.update(GIT_OBJECT_DIRECTORY=str(temporary_objects),
                              GIT_ALTERNATE_OBJECT_DIRECTORIES=str(objects))
-            git("--literal-pathspecs", "add", "-A", "--", *preflight["unstaged_selection"], extra=extra)
+            if hunk_ids is None:
+                git("--literal-pathspecs", "add", "-A", "--", *preflight["unstaged_selection"], extra=extra)
+            else:
+                from .change_hunk_selection import patch_blob_pair, select_hunks
+
+                path = paths[0]
+                changes = [c for group in plan["clusters"] for c in group["changes"] if c["path"] == path]
+                atoms = [a for c in changes for a in c.get("atoms", []) if a.get("scope") == "unstaged"]
+                if len(atoms) != 1 or atoms[0].get("content_kind") != "text" or atoms[0].get("hunks_truncated"):
+                    raise ValueError("Complete tracked text patch required")
+                patch = git("diff", "--patch", "--binary", "--full-index", "--no-renames", "--no-ext-diff",
+                            "--no-textconv", "--no-color", "--unified=0", "--no-indent-heuristic",
+                            "--diff-algorithm=myers", "--submodule=short", "--ignore-submodules=none",
+                            "--", ":(literal)" + path)
+                if len(patch) > 512 * 1024:
+                    raise ValueError("Patch exceeds budget")
+                old, _, _ = patch_blob_pair(patch)
+                before = git("cat-file", "blob", old)
+                content, mode = select_hunks(before, patch, root, path, atoms[0]["atom_id"], hunk_ids)
+                blob_file = temp_dir / "selected-blob"
+                blob_file.write_bytes(content)
+                blob_oid = oid("hash-object", "-w", "--no-filters", str(blob_file), extra=extra)
+                git("update-index", "--cacheinfo", f"{mode},{blob_oid},{path}", extra=extra)
             tree = oid("write-tree", extra=extra)
             actual = git("diff-tree", "--no-commit-id", "--name-only", "-z", "-r",
                          "--no-renames", parent, tree, "--", extra=extra)
@@ -165,7 +192,7 @@ def stage_selection(
             os.replace(lock_path, index)
             replaced = True
         outcome = {"success": True, "applied": replaced, "prospective_tree_oid": tree, "parent_oid": parent,
-                   "observed_change_set_id": expected_revision, "selected_paths": sorted(paths),
+                   "observed_change_set_id": expected_revision, "selected_paths": sorted(paths), "selected_hunk_ids": hunk_ids or [],
                    "verification_status": "unknown", "commit_ready": False,
                    "requires_post_stage_reinspection": True}
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

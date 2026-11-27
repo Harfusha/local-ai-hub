@@ -267,6 +267,8 @@ def main() -> int:
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory or knowledge search query")
     parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
+    parser.add_argument("--hunk-id", action="append", default=[], help="Exact unstaged hunk ID for partial staging (repeatable)")
+    parser.add_argument("--allow-mixed-staged", action="store_true", help="Explicitly commit the reviewed staged tree while leaving other hunks unstaged")
     parser.add_argument("--expected-tree", default="", help="Exact reviewed staged Git tree ID")
     parser.add_argument("--commit-message", default="", help="Explicit message for a reviewed staged commit")
     parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
@@ -314,6 +316,10 @@ def main() -> int:
                 parser.error("stage-preview cannot apply")
         elif args.apply:
             parser.error("only commit-staged or stage-apply accepts --apply")
+        if args.hunk_id and args.sub_arg not in {"stage-preview", "stage-apply"}:
+            parser.error("--hunk-id requires stage-preview or stage-apply")
+        if args.allow_mixed_staged and args.sub_arg != "commit-staged":
+            parser.error("--allow-mixed-staged requires commit-staged")
         if args.sub_arg == "commit-inspect" and not args.operation_id:
             parser.error("commit-inspect requires --operation-id")
         requested_mode = None
@@ -385,7 +391,7 @@ def main() -> int:
                 config, DeterministicEngine(config), ScopeLeaseStore(configured_state_dir(config)),
                 root=str(args.root.resolve()), paths=args.changed_path,
                 expected_revision=args.expected_revision, expected_tree=args.expected_tree,
-                apply=args.sub_arg == "stage-apply",
+                apply=args.sub_arg == "stage-apply", hunk_ids=args.hunk_id or None,
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
@@ -413,7 +419,7 @@ def main() -> int:
                 root=str(args.root.resolve()), paths=args.changed_path,
                 expected_revision=args.expected_revision, expected_tree=args.expected_tree,
                 message=args.commit_message, approved=args.apply,
-                journal=CommitJournal(configured_state_dir(config)),
+                journal=CommitJournal(configured_state_dir(config)), allow_mixed_staged=args.allow_mixed_staged,
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1

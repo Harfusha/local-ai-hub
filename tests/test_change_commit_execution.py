@@ -111,3 +111,16 @@ def test_journal_failure_before_cas_is_non_mutating(tmp_path):
     assert not result["success"]
     assert not result["outcome_unknown"]
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
+
+
+def test_explicit_mixed_scope_commit_preserves_unstaged_hunks(tmp_path):
+    engine, leases, parent, tree = _fixture(tmp_path)
+    (tmp_path / "a").write_text("additional unstaged content")
+    engine.split_changes.return_value["clusters"][0]["changes"][0]["status"] = "MM"
+    kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64,
+                  expected_tree=tree, message="chore: reviewed", approved=True)
+    assert not execute_staged_commit({}, engine, leases, **kwargs)["success"]
+    result = execute_staged_commit({}, engine, leases, **kwargs, allow_mixed_staged=True)
+    assert result["success"], result
+    assert _git(tmp_path, "show", "HEAD:a") == "new"
+    assert (tmp_path / "a").read_text() == "additional unstaged content"

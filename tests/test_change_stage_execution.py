@@ -66,3 +66,23 @@ def test_stage_refuses_filters_and_external_lock(tmp_path):
     lock.write_text("foreign")
     assert not stage_selection({}, engine, leases, **kwargs)["success"]
     assert lock.read_text() == "foreign"
+
+
+def test_partial_hunks_preserve_unselected_lines(tmp_path):
+    import hashlib
+    from local_ai_hub.change_atoms import _hunks, identity
+    from local_ai_hub.change_hunk_selection import select_hunks
+
+    root = str(tmp_path.resolve())
+    before = b"one\ntwo\nthree\nfour\nfive\n"
+    after = b"ONE\ntwo\nthree\nfour\nFIVE\n"
+    def oid(data):
+        return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+    patch = (f"diff --git a/a b/a\nindex {oid(before)}..{oid(after)} 100644\n--- a/a\n+++ b/a\n".encode()
+             + b"@@ -1 +1 @@\n-one\n+ONE\n@@ -5 +5 @@\n-five\n+FIVE\n")
+    atom = identity("patch-v1", root, "a", "unstaged", hashlib.sha256(patch).hexdigest())
+    ranges, _, _ = _hunks(patch, atom)
+    first = identity("hunk-v1", root, "a", "unstaged", ranges[0][4])
+    actual, mode = select_hunks(before, patch, root, "a", atom, [first])
+    assert actual == b"ONE\ntwo\nthree\nfour\nfive\n"
+    assert mode == "100644"
