@@ -275,11 +275,17 @@ def execution_projection(
     blockers: Sequence[str] = (),
     receipt_observed_at: Mapping[str, float] | None = None,
     include_verified_criteria: bool = False,
+    confirmation_dependencies: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Compute coverage from the canonical evaluator, never from claimed progress."""
     normalized = normalize_execution(criteria, config)
     units = normalized["units"]
     declared = set(criteria)
+    for criterion, dependencies in (confirmation_dependencies or {}).items():
+        if criterion not in declared or set(dependencies) - declared or criterion in dependencies:
+            raise ValueError("invalid persisted problem confirmation dependencies")
+        metadata = units.get(criterion, {})
+        units[criterion] = {**metadata, "depends_on": list(dict.fromkeys((*metadata.get("depends_on", []), *dependencies)))}
     inventory = normalized.get("inventory")
     resource_checks = {
         f"{check['name']}: {resource}": (resource, check["name"])
