@@ -435,6 +435,7 @@ class ProjectPreprocessor(PreprocessCardsMixin, PreprocessCardStoreMixin, Prepro
         self._watch_extensions_cache: dict[str, tuple[tuple[Any, ...], set[str]]] = {}
         self._dirty_paths: dict[str, set[str]] = {}
         self._watch_revisions: dict[str, int] = {}
+        self._recent_watch_events: dict[tuple[str, str], tuple[float, str]] = {}
         # CPU hashing/lexical work reuses one bounded pool instead of creating and
         # destroying worker threads on every preprocessing micro-step.
         self._cpu_pool = ThreadPoolExecutor(
