@@ -77,6 +77,10 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         for index, root in enumerate(roots):
             subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10,
                            capture_output=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Desktop Test",
+                            "-c", "user.email=desktop@example.invalid", "-c", "commit.gpgsign=false",
+                            "commit", "--allow-empty", "-m", "Fixture baseline"],
+                           check=True, timeout=10, capture_output=True)
             created = call("plan_create", root=str(root), id="plan_desktop",
                            title=f"Plan {index}", description=f"scope-{index}", confirmed=True)
             assert created["ok"], created
