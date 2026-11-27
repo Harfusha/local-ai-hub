@@ -111,3 +111,37 @@ def test_delta_projects_changed_content_and_counts_removed_groups():
     assert [g["group_key"] for g in result["clusters"]] == ["b" * 64]
     assert not result["commit_ready"]
     assert not change_delta({**now, "root": "/other"}, cache, "1" * 64, limit=4, offset=0)["success"]
+
+
+def test_delta_reprojects_transitive_consumers_when_prerequisite_changes():
+    from local_ai_hub.change_plan_delta import change_delta, remember_baseline
+
+    class Cache:
+        def __init__(self):
+            self.data = {}
+        def set(self, key, value):
+            self.data[key] = value
+        def get(self, key):
+            return self.data.get(key)
+
+    def group(key, atom, dependencies=()):
+        return {"group_key": key * 64, "observed_atom_ids": [atom * 64],
+                "files": [key + ".py"], "cluster_id": 1,
+                "dependency_group_candidates": [dep * 64 for dep in dependencies]}
+    base = {"success": True, "root": "/repo", "comparison": None,
+            "inventory_scope": "git_visible_changes", "git_visible_observation_complete": True,
+            "observed_change_set_id": "1" * 64,
+            "clusters": [group("a", "a"), group("b", "b", ("a",)),
+                         group("c", "c", ("b",)), group("d", "d")]}
+    cache = Cache()
+    assert remember_baseline(base, cache)
+    current = {**base, "observed_change_set_id": "2" * 64,
+               "clusters": [group("a", "e"), *base["clusters"][1:]]}
+    result = change_delta(current, cache, "1" * 64, limit=8, offset=0)
+    assert result["success"]
+    assert result["changed_group_count"] == 3
+    assert result["content_changed_group_count"] == 1
+    assert result["dependency_context_only_changed_group_count"] == 2
+    assert result["unchanged_content_group_count"] == 3
+    assert [group["group_key"] for group in result["clusters"]] == [key * 64 for key in "abc"]
+    assert result["verification_status"] == "unknown"
