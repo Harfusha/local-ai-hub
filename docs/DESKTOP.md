@@ -24,3 +24,7 @@ Select a repository for scoped operations. Refresh views explicitly; focus-only 
 ## Release status
 
 The current PR is a draft. See [parity and evidence](DESKTOP_PARITY.md) for gaps and verification requirements. Passing builds do not establish complete behavioral parity.
+
+## Verified execution
+
+Tasks → Work Center shows the canonical verification preview for a scoped Agent OS task. Tasks → Plan execution retrieves the bounded plan-level execution validation. Both are read-only; completion remains gated by Agent OS. See [Verified execution](VERIFIED_EXECUTION.md).

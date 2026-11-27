@@ -172,6 +172,16 @@ the current verification preview is ready, 2 means incomplete, and 1 means
 the request failed or is not a structured execution. The CLI is not a
 replacement for task_complete, which still revalidates completion.
 
+## Native desktop Work Center
+
+In the desktop application choose Tasks → Work Center, select the explicit
+repository and enter an Agent OS task ID. Load / refresh queries the same
+verification endpoint as the CLI. The view shows verified coverage,
+dimensions, stale and dependent obligations, scope, next action and problem
+reports. Tasks → Plan execution requests the existing read-only plan
+validation projection. Neither view changes task state or treats a ready
+preview as a completed task. The retired web dashboard is not required.
+
 ## Agent behavior
 
 Define measurable criteria for the intended scope. Use repository inventory

@@ -3,6 +3,7 @@
 mod records;
 mod trace;
 mod summary;
+mod execution;
 
 use eframe::egui;
 use serde_json::{json, Value};
@@ -18,7 +19,7 @@ use std::{
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
     ("Requests", &["Requests", "Active requests", "Async jobs", "Work orders", "Trace index", "Endpoint analytics"]),
-    ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review"]),
+    ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review", "Work Center", "Plan execution"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
@@ -121,6 +122,7 @@ fn request(op: &str, args: Value) -> Value { json!({"op": op, "args": args}) }
 fn view_request(view: &str, root: &str, id: &str) -> Value {
     let op = match view {
         "Plans" => "plans", "Plan board" => "plan_board", "Semaphores" => "semaphores",
+        "Work Center" => "execution_status", "Plan execution" => "execution_plan",
         "Worktrees" => "worktrees", "Project config" => "project_config", _ => "read",
     };
     request(op, json!({"view": view, "root": root, "id": id}))
@@ -351,6 +353,12 @@ impl Desktop {
                 }
             }
             2 => {
+                if matches!(self.current(), "Work Center" | "Plan execution") {
+                    ui.label(if self.current() == "Work Center" { "Agent OS task ID" } else { "Repository plan ID" });
+                    if ui.text_edit_singleline(&mut self.entity).changed() { self.clear_response(); }
+                    ui.small("Read-only verification preview. Load / refresh rechecks current evidence and scope.");
+                    return;
+                }
                 if self.current() == "Vision review" {
                     ui.small("Raster images are not semantically indexed. Review is opt-in and sends the selected PNG/JPEG to the configured vision route.");
                     ui.label("Image file (PNG or JPEG, maximum 8 MiB)");
@@ -783,6 +791,10 @@ impl eframe::App for Desktop {
             }
             if !self.raw_view && self.snapshot_view == self.current() {
                 if let Some(snapshot) = &self.snapshot {
+                    if self.current() == "Work Center" {
+                        egui::ScrollArea::vertical().id_salt("execution_status").show(ui, |ui| execution::render(ui, snapshot));
+                        return;
+                    }
                     summary::render(ui, self.current(), snapshot);
                     if self.current() == "Plan board" {
                         if let Some(columns) = records::board_columns(snapshot) {
@@ -961,6 +973,8 @@ mod tests {
     use super::*;
     #[test]
     fn scoped_views_are_named_operations() {
+        assert_eq!(view_request("Work Center", "/repo", "task_1")["op"], "execution_status");
+        assert_eq!(view_request("Plan execution", "/repo", "plan_1")["op"], "execution_plan");
         assert_eq!(view_request("Plan board", "/repo", "plan_1"),
             json!({"op":"plan_board","args":{"view":"Plan board","root":"/repo","id":"plan_1"}}));
     }

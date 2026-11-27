@@ -234,3 +234,41 @@ def test_native_update_install_requires_confirmation():
     with pytest.raises(ValueError, match="confirmation"):
         desktop.dispatch(control, {"op": "update_install", "args": {"version": "1.0.0"}})
     control._client.assert_not_called()
+
+
+def test_work_center_uses_existing_verification_route(tmp_path):
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    client.post.return_value = {"success": True, "completion": {
+        "complete": False, "execution": {"coverage": {"total": 4, "verified": 1}},
+    }}
+    result = desktop.dispatch(control, {"op": "execution_status", "args": {
+        "root": str(tmp_path), "id": "task-1",
+    }})
+    assert result["completion"]["complete"] is False
+    client.post.assert_called_once_with("/api/agent-state/verification", {
+        "action": "completion", "root": str(tmp_path.resolve()), "task_id": "task-1",
+    }, timeout=30.0)
+    client.close.assert_called_once()
+
+
+def test_work_center_plan_uses_read_only_plan_validation(tmp_path):
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    client.post.return_value = {"success": True, "execution": {"complete": False}}
+    desktop.dispatch(control, {"op": "execution_plan", "args": {
+        "root": str(tmp_path), "id": "plan-1",
+    }})
+    client.post.assert_called_once_with("/api/coord/plan_validate", {
+        "root": str(tmp_path.resolve()), "plan_id": "plan-1", "include": ["execution"],
+    }, timeout=30.0)
+
+
+def test_work_center_rejects_missing_root_or_task_id(tmp_path):
+    control = MagicMock()
+    for args in ({"id": "task-1"}, {"root": str(tmp_path)}):
+        with pytest.raises(ValueError):
+            desktop.dispatch(control, {"op": "execution_status", "args": args})
+    control._client.assert_not_called()

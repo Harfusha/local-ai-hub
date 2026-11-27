@@ -268,6 +268,22 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         raise ValueError("args must be an object")
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "execution_status":
+        root = explicit_root(args.get("root"))
+        task_id = text_field(args, "id", 200)
+        result = checked_post(control, "/api/agent-state/verification", {
+            "action": "completion", "root": root, "task_id": task_id,
+        }, timeout=30.0)
+        completion = result.get("completion")
+        if (result.get("success") is not True or not isinstance(completion, dict)
+                or not isinstance(completion.get("execution"), dict) or not completion["execution"]):
+            raise RuntimeError("Task has no available verified execution status.")
+        return result
+    if op == "execution_plan":
+        return checked_post(control, "/api/coord/plan_validate", {
+            "root": explicit_root(args.get("root")), "plan_id": text_field(args, "id", 200),
+            "include": ["execution"],
+        }, timeout=30.0)
     if op == "task_page":
         root = explicit_root(args.get("root"))
         offset = args.get("offset", 0)
