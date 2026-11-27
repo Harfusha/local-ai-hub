@@ -148,6 +148,20 @@ pub fn render_plan(ui: &mut egui::Ui, snapshot: &Value) {
             }
         }
     }
+    let actionable = &plan["actionability"];
+    if let Some(next) = actionable["next_plan_task"].as_object() {
+        if let Some(task_id) = next.get("plan_task_id").and_then(Value::as_str) {
+            ui.label(format!("Next actionable plan task: {task_id}"));
+        }
+    }
+    if let Some(waiting) = count(actionable, "waiting_count") {
+        ui.small(format!("{waiting} tasks waiting for dependencies or reconciliation"));
+        if let Some(rows) = actionable["waiting_preview"].as_array() {
+            for row in rows.iter().take(12) {
+                ui.small(format!("{} — {}", label(row, "plan_task_id"), label(row, "reason")));
+            }
+        }
+    }
     if let Some(tasks) = plan["tasks"].as_array() {
         for task in tasks.iter().take(64) {
             ui.separator();
