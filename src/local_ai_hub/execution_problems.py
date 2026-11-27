@@ -46,6 +46,19 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
     }
 
 
+def problem_confirmation_dependencies(raw: Any) -> dict[str, list[str]]:
+    """Derive ordering edges from the immutable server-managed problem registry."""
+    result: dict[str, list[str]] = {}
+    for record in _validated_records(raw).values():
+        report = record["report"]
+        resolution = report.get("resolution_criterion")
+        if resolution:
+            predecessors = result.setdefault(resolution, [])
+            if report["criterion"] not in predecessors:
+                predecessors.append(report["criterion"])
+    return {criterion: sorted(dependencies) for criterion, dependencies in sorted(result.items())}
+
+
 def validate_resolution_order(
     report: Any, config: Mapping[str, Any], existing: Any = None,
 ) -> None:
@@ -60,10 +73,8 @@ def validate_resolution_order(
     dependencies: dict[str, set[str]] = {
         name: set(metadata.get("depends_on", [])) for name, metadata in units.items()
     }
-    for record in _validated_records(existing if existing is not None else {}).values():
-        prior = record["report"]
-        if prior.get("resolution_criterion"):
-            dependencies.setdefault(prior["resolution_criterion"], set()).add(prior["criterion"])
+    for name, predecessors in problem_confirmation_dependencies(existing if existing is not None else {}).items():
+        dependencies.setdefault(name, set()).update(predecessors)
     pending = [primary]
     visited: set[str] = set()
     while pending:
