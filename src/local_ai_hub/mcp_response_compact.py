@@ -56,7 +56,7 @@ def _compact(
     raw_value = value
     # Reject malformed envelopes before compaction can discard correlation data.
     tool, action = options.get("tool"), options.get("action")
-    if isinstance(tool, str) and isinstance(action, str):
+    if tool == "local_ai_repo" and action == "code_index" and isinstance(raw_value, dict):
         error = services_module.validate_operation_output(tool, action, raw_value)
         if error is not None:
             failure = {"success": False, "status_code": 500, "terminal": True, "retryable": False,
