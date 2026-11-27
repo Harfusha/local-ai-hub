@@ -603,7 +603,7 @@ def _verified_execution_stop(root: Path, payload: dict[str, Any]) -> dict[str, A
         scope = execution.get("scope_check")
         if scope and (not isinstance(scope, dict) or scope.get("complete") is not True):
             return {}
-        if execution.get("progress", {}).get("status") == "no_recent_verified_evidence":
+        if execution.get("progress", {}).get("status") in {"no_recent_verified_evidence", "repeated_failed_verification"}:
             return {}
         if execution.get("ready_for_completion_attempt") is True and completion.get("complete") is True:
             reason = ("Local AI Hub has current verification evidence for the active session task. "
