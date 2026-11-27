@@ -375,3 +375,42 @@ def test_remaining_import_to_deleted_provider_is_reported():
     assert graph["unresolved_removed_import_count"] == 1
     assert "import_candidate_points_to_removed_path" in groups[1]["risks"]
     assert not graph["dependencies_verified"]
+
+
+def test_paired_benchmark_keeps_quality_regression_visible():
+    from tools.benchmark_git_change_evaluation import evaluate
+
+    def run(input_tokens, findings, *, completed=True):
+        return {"input_tokens": input_tokens, "output_tokens": 100,
+                "cached_input_tokens": 0, "calls": 2, "completed": completed,
+                "usage_source": "provider_reported", "finding_ids": findings}
+
+    case = {"case_id": "review-1", "task_digest": "a" * 64, "revision": "b" * 40,
+            "provider_model": "provider/model", "expected_finding_ids": ["bug-a", "bug-b"],
+            "raw": run(1000, ["bug-a", "bug-b"]),
+            "compact": run(500, ["bug-a", "false-positive"], completed=False)}
+    result = evaluate({"schema": 1, "cases": [case]})
+    assert result["input_token_difference"] == 500
+    assert result["aggregate"]["raw"]["recall"] == 1
+    assert result["aggregate"]["compact"]["recall"] == 0.5
+    assert result["aggregate"]["compact"]["precision"] == 0.5
+    assert not result["compact_no_additional_missed_findings_per_case"]
+    assert not result["all_pairs_completed"]
+
+
+def test_paired_benchmark_refuses_estimated_or_inconsistent_usage():
+    import pytest
+    from tools.benchmark_git_change_evaluation import evaluate
+
+    run = {"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 101,
+           "calls": 1, "completed": True, "usage_source": "provider_reported",
+           "finding_ids": []}
+    case = {"case_id": "review-1", "task_digest": "a" * 64, "revision": "b" * 40,
+            "provider_model": "provider/model", "expected_finding_ids": [],
+            "raw": run, "compact": run}
+    with pytest.raises(ValueError, match="inconsistent cached"):
+        evaluate({"schema": 1, "cases": [case]})
+    run["cached_input_tokens"] = 0
+    run["usage_source"] = "estimated"
+    with pytest.raises(ValueError, match="Provider-reported"):
+        evaluate({"schema": 1, "cases": [case]})
