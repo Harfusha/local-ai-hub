@@ -56,3 +56,43 @@ def test_duplicate_verified_partitions_do_not_complete_manifest():
                                 verified=[True] * 4)[0]
     assert result["verified_partitions"] == 3
     assert not result["verified_complete"]
+
+
+def test_plan_preview_aggregates_only_available_obligation_coverage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub import agent_tasks, verification_rules
+    from local_ai_hub.repo_plan import agent_bridge
+    from local_ai_hub.plan_execution import plan_execution_preview
+
+    root = str(tmp_path)
+    spec = {"acceptance_criteria": ["inspect"], "work_status": "done"}
+    snapshot = {"plan": {"tasks": {"a": spec, "b": spec}}, "file_revision": "plan-rev",
+                "rel_path": "plan.json"}
+    workspace = SimpleNamespace(repo_root=tmp_path, get_plan=lambda _: snapshot)
+    task = SimpleNamespace(
+        contract=SimpleNamespace(acceptance_criteria=("inspect",), slo_profile={"verified_execution": {}}),
+        context=SimpleNamespace(session_id="session"), checkpoint=SimpleNamespace(state_data={}),
+        status=SimpleNamespace(value="completed"),
+    )
+    binding = SimpleNamespace(plan_task_id="a", task_id="task-a", bound_at=1,
+                              plan_rel_path="plan.json", session_id="session", contract_revision=1)
+    monkeypatch.setattr(agent_tasks, "_task_scope_root", lambda _: root)
+    monkeypatch.setattr(agent_bridge, "TaskBindingManager",
+                        lambda _: SimpleNamespace(bindings_for_plan=lambda _: [binding]))
+    monkeypatch.setattr(verification_rules, "evaluate_project_completion",
+                        lambda *args, **kwargs: SimpleNamespace(complete=True, execution={
+                            "coverage": {"total": 1, "verified": 1},
+                            "dimensions": {"general": {"total": 1, "verified": 1}},
+                        }))
+    store = SimpleNamespace(get=lambda key: task if key == "task-a" else None)
+    verifier = SimpleNamespace(state_store=SimpleNamespace(db_path=tmp_path / "state.sqlite"))
+    tracker = SimpleNamespace(fingerprint=lambda *args, **kwargs: {"fingerprint": "repo-rev"})
+    result = plan_execution_preview(workspace, "plan", store, verifier, tracker)
+    assert not result["complete"]
+    assert result["counts"] == {"verified": 1, "unbound": 1}
+    aggregate = result["obligation_coverage"]
+    assert aggregate["partial"]
+    assert aggregate["tasks_with_coverage"] == 1
+    assert aggregate["counts"]["verified"] == aggregate["counts"]["total"] == 1
+    assert aggregate["dimensions"] == {"general": {"total": 1, "verified": 1}}
