@@ -111,27 +111,40 @@ def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
     if "policy_sha256" in inventory and inventory["policy_sha256"] != policy.config_digest:
         raise ValueError("project impact policy changed")
     inventory["policy_sha256"] = policy.config_digest
-    patterns = sorted({
-        target for source, targets in policy.settings.affected_tests_mapping.items()
-        if any(path_matches_pattern(path, source) for path in resources)
-        for target in targets
-    })
-    if not patterns:
-        return resources
-    allowed = [
-        path for path in repository_resources(root)
-        if path_is_allowed(root, path, policy.settings, phase="test")
-    ]
-    impacted: set[str] = set()
-    for pattern in patterns:
-        matched = {path for path in allowed if path_matches_pattern(path, pattern)}
-        if not matched:
-            raise ValueError("configured affected test pattern has no allowed inventory match")
-        impacted.update(matched)
-    result = sorted(set(resources) | impacted)
-    if len(result) > MAX_REPOSITORY_RESOURCES:
-        raise ValueError("Git impact inventory exceeds resource limit")
-    return result
+    # Resolve transitive, project-declared impact edges to a fixed point.
+    # Process each source rule only once; cycles terminate and every newly
+    # impacted path can activate another rule.
+    rules = policy.settings.affected_tests_mapping
+    pending = set(rules)
+    impacted = set(resources)
+    allowed: list[str] | None = None
+    deadline = time.monotonic() + 5.0
+    while pending:
+        if time.monotonic() >= deadline:
+            raise ValueError("project impact expansion exceeded deadline")
+        active = sorted(source for source in pending
+                        if any(path_matches_pattern(path, source) for path in impacted))
+        if not active:
+            break
+        if allowed is None:
+            allowed = [
+                path for path in repository_resources(root)
+                if path_is_allowed(root, path, policy.settings, phase="test")
+            ]
+        pending.difference_update(active)
+        for source in active:
+            for pattern in rules[source]:
+                if time.monotonic() >= deadline:
+                    raise ValueError("project impact expansion exceeded deadline")
+                matched = {path for path in allowed if path_matches_pattern(path, pattern)}
+                if not matched:
+                    raise ValueError("configured affected test pattern has no allowed inventory match")
+                impacted.update(matched)
+                if len(impacted) > MAX_REPOSITORY_RESOURCES:
+                    raise ValueError("Git impact inventory exceeds resource limit")
+    if time.monotonic() >= deadline:
+        raise ValueError("project impact expansion exceeded deadline")
+    return sorted(impacted)
 
 
 def _resources(inventory: dict[str, Any], root: str) -> list[str]:
