@@ -21,6 +21,7 @@ include src/local_ai_hub/repo_plan/repo-plan.v1.schema.json
 recursive-include src/local_ai_hub/grammars *.gbnf
 prune src/local_ai_hub/ui_static
 recursive-include desktop *.rs Cargo.toml Cargo.lock
+prune desktop/target
 recursive-include src/local_ai_hub/data *.json
 include src/local_ai_hub/automation_browser.js
 include src/local_ai_hub/defaults.toml

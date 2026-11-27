@@ -5,6 +5,8 @@ on:
     paths:
       - 'desktop/**'
       - 'tools/desktop.py'
+      - 'tools/desktop_operator.py'
+      - 'tools/desktop_smoke.py'
       - 'tests/test_desktop_control.py'
       - 'tests/test_dashboard_operational_surfaces.py'
       - 'src/local_ai_hub/http_*.py'
@@ -17,6 +19,7 @@ on:
       - 'MANIFEST.in'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -30,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -51,7 +54,7 @@ jobs:
         run: |
           binary=target/release/local-ai-hub-desktop
           if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
-          python ../tools/package_desktop.py "$binary" native-desktop.zip
+          python ../tools/package_desktop.py "$binary" "local-ai-hub-desktop-${RUNNER_OS}-${RUNNER_ARCH}.zip" --revision "$GITHUB_SHA"
       - name: Linux native window and idle measurement (isolated Xvfb)
         if: runner.os == 'Linux'
         run: |
@@ -66,7 +69,7 @@ jobs:
             desktop/target/release/local-ai-hub-desktop
             desktop/target/release/local-ai-hub-desktop.exe
             desktop/Cargo.lock
-            desktop/native-desktop.zip
+            desktop/local-ai-hub-desktop-*.zip
             desktop/desktop-smoke.json
           if-no-files-found: error
   bridge:

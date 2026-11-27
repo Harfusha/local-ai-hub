@@ -4615,6 +4615,7 @@ def main() -> int:
     parser.add_argument("--skip-tools", action="store_true", default=None, help="Do not install Serena")
     parser.add_argument("--skip-agent-config", action="store_true", default=None)
     parser.add_argument("--skip-service", action="store_true", default=None)
+    parser.add_argument("--skip-desktop", action="store_true", help="Keep installation headless; do not fetch native desktop asset")
     parser.add_argument("--skip-ollama-install", action="store_true")
     parser.add_argument("--skip-token-economy", action="store_true", default=None, help="Do not install token economy packages or probe external CLI tools")
     parser.add_argument("--skip-companion-skills", action="store_true", default=None, help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
@@ -5536,7 +5537,15 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    log("Desktop: python tools/hubctl.py desktop (build/install native binary first)")
+    if not getattr(args, "skip_desktop", False) and args.expected_revision:
+        try:
+            from tools.install_desktop import install_release
+            version = tomllib.loads((install_dir / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+            binary = install_release(install_dir, version, args.expected_revision)
+            log(f"Verified native desktop installed: {binary}")
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            log(f"Native desktop not installed (Hub remains usable headlessly): {exc}")
+    log("Desktop: python tools/hubctl.py desktop (build/install native binary first if absent)")
     return 0
 
 

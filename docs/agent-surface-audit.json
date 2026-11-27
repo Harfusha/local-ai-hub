@@ -95,23 +95,6 @@
     "command": "Public tool/HTTP removed by coordinated command owner; internal run/discover/simulate remain because orchestrator uses them."
   },
   "operations": {
-    "GET /": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error"
-        ],
-        "response_producers": [
-          "self._handle_dashboard_route"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/adoption": {
       "decision": "retain",
       "role": "dashboard_aggregate",
@@ -1198,38 +1181,6 @@
         ],
         "response_producers": [
           "APP.services.test_matrix"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /dashboard": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error"
-        ],
-        "response_producers": [
-          "self._handle_dashboard_route"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /favicon.ico": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "self._handle_favicon_route"
         ],
         "action_literals": []
       }

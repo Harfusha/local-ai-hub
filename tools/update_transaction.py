@@ -151,7 +151,7 @@ def replace_install_payload(
     config_source: Path,
     file_names: tuple[str, ...],
     *,
-    ignored: tuple[str, ...] = ("__pycache__", "*.pyc", ".pytest_cache"),
+    ignored: tuple[str, ...] = ("__pycache__", "*.pyc", ".pytest_cache", "target"),
     before_commit: Callable[[], tuple[bool, str]] | None = None,
     after_swap: Callable[[], tuple[bool, str]] | None = None,
     before_rollback: Callable[[], tuple[bool, str]] | None = None,
@@ -171,7 +171,12 @@ def replace_install_payload(
     if _has_link_component(config_source):
         return False, f"config source path contains a link or junction: {config_source}"
     entries: list[tuple[Path, Path, bool]] = []
-    for name in ("src", "skills", "tools", "plugins"):
+    directories = ("src", "skills", "tools", "plugins")
+    # Older release fixtures may not have a desktop tree. A current checkout
+    # ships the locked native source, never the local Rust target build cache.
+    if (source_root / "desktop").is_dir():
+        directories += ("desktop",)
+    for name in directories:
         source, target = source_root / name, install_dir / name
         if source.resolve() != target.resolve():
             entries.append((source, target, True))

@@ -106,11 +106,19 @@ jobs:
           )
           PY
 
+      - name: Retrieve verified native desktop artifacts from this workflow run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: native-release
+      - name: Validate desktop package provenance before release
+        run: python tools/verify_desktop_release.py native-release dist --revision "$GITHUB_SHA" --version "${{ steps.release_version.outputs.version }}"
+
       - name: Create SHA-256 manifest
         shell: bash
         run: |
           cd dist
-          sha256sum *.whl *.tar.gz *.json runtime-requirements.txt > SHA256SUMS.txt
+          sha256sum *.whl *.tar.gz *.json *.zip runtime-requirements.txt > SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

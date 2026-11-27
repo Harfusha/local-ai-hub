@@ -927,7 +927,9 @@ def main() -> int:
     if args.action in {"desktop", "dashboard"}:
         # Compatibility alias opens the native application, never an HTTP UI.
         name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
-        candidates = (ROOT / "desktop" / "target" / "release" / name, ROOT / "bin" / name)
+        import tomllib
+        version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+        candidates = (ROOT / "bin" / "desktop" / version / name, ROOT / "desktop" / "target" / "release" / name, ROOT / "bin" / name)
         binary = next((path for path in candidates if path.is_file()), None)
         if binary is None:
             print("Desktop binary missing. Build: cargo build --manifest-path desktop/Cargo.toml --release", file=sys.stderr)
