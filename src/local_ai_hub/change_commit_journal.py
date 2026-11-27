@@ -40,6 +40,11 @@ class CommitJournal:
                 environment_id TEXT NOT NULL, attempt TEXT NOT NULL, observed REAL NOT NULL,
                 PRIMARY KEY(root,tree,command_id,environment_id)
             )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS git_tree_check_failures_v1 (
+                root TEXT NOT NULL, tree TEXT NOT NULL, command_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL, attempt TEXT NOT NULL, reason TEXT NOT NULL,
+                observed REAL NOT NULL, PRIMARY KEY(root,tree,command_id,environment_id)
+            )""")
             db.commit()
 
     def begin_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str) -> str:
@@ -49,7 +54,47 @@ class CommitJournal:
                        (root, tree, command_id, environment_id, attempt, time.time()))
             db.execute("DELETE FROM git_tree_checks_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
                        (root, tree, command_id, environment_id))
+            db.execute("DELETE FROM git_tree_check_failures_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                       (root, tree, command_id, environment_id))
+            db.execute("DELETE FROM git_tree_check_attempt_v1 WHERE observed < ?", (time.time() - 86400,))
+            db.execute("DELETE FROM git_tree_check_failures_v1 WHERE observed < ?", (time.time() - 86400,))
         return attempt
+
+    def record_tree_check_failure(self, *, root: str, tree: str, command_id: str, environment_id: str,
+                                  attempt: str, reason: str) -> bool:
+        """Persist only a bounded failure code for the current fenced attempt."""
+        if reason not in {"command_failed", "incomplete_output", "verification_interrupted"}:
+            raise ValueError("Invalid tree check failure reason")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT attempt FROM git_tree_check_attempt_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                                 (root, tree, command_id, environment_id)).fetchone()
+            if current is None or current["attempt"] != attempt:
+                return False
+            db.execute("INSERT OR REPLACE INTO git_tree_check_failures_v1 VALUES (?,?,?,?,?,?,?)",
+                       (root, tree, command_id, environment_id, attempt, reason, time.time()))
+        return True
+
+    def tree_check_observation(self, *, root: str, tree: str, command_id: str, environment_id: str) -> dict[str, Any]:
+        scope = dict(root=root, tree=tree, command_id=command_id, environment_id=environment_id)
+        receipt = self.current_tree_checks(**scope)
+        if receipt:
+            return {"status": "current", "receipt_id": receipt}
+        now = time.time()
+        with closing(self._connect()) as db:
+            attempt = db.execute("SELECT attempt, observed FROM git_tree_check_attempt_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                                 (root, tree, command_id, environment_id)).fetchone()
+            failure = db.execute("SELECT attempt, reason, observed FROM git_tree_check_failures_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                                 (root, tree, command_id, environment_id)).fetchone()
+            expired = db.execute("SELECT 1 FROM git_tree_checks_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=? AND expires<=? LIMIT 1",
+                                 (root, tree, command_id, environment_id, now)).fetchone()
+        if attempt is not None and failure is not None and attempt["attempt"] == failure["attempt"] and 0 <= now - failure["observed"] < 86400:
+            return {"status": "failed", "receipt_id": None, "failure_reason": failure["reason"]}
+        if expired is not None:
+            return {"status": "expired", "receipt_id": None}
+        if attempt is not None and 0 <= now - attempt["observed"] < 86400:
+            return {"status": "in_progress_or_interrupted", "receipt_id": None}
+        return {"status": "missing", "receipt_id": None}
 
     def record_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str,
                            checks: list[dict[str, Any]], ttl: int, attempt: str) -> str:
@@ -72,6 +117,8 @@ class CommitJournal:
                 raise ValueError("Verification attempt superseded")
             db.execute("INSERT INTO git_tree_checks_v1 VALUES (?,?,?,?,?,?,?,?,?)",
                        (receipt, root, tree, command_id, environment_id, serialized, digest, now, now + ttl))
+            db.execute("DELETE FROM git_tree_check_failures_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                       (root, tree, command_id, environment_id))
             db.execute("DELETE FROM git_tree_checks_v1 WHERE expires < ?", (now - 86400,))
             db.execute("DELETE FROM git_tree_check_attempt_v1 WHERE observed < ?", (now - 86400,))
         return receipt

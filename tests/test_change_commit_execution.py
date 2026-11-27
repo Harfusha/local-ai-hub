@@ -316,3 +316,25 @@ def test_sequence_suggestion_is_editable_and_requires_exact_preview(tmp_path):
     blocked = suggest_sequence(plan)
     assert not blocked["success"]
     assert "unselected_dependency_candidates" in blocked["blockers"]
+
+
+def test_tree_check_failures_are_fenced_and_never_authorize_publication(tmp_path):
+    from local_ai_hub.change_commit_journal import CommitJournal
+
+    journal = CommitJournal(tmp_path)
+    scope = dict(root=str(tmp_path.resolve()), tree="a" * 40, command_id="b" * 64, environment_id="c" * 64)
+    assert journal.tree_check_observation(**scope)["status"] == "missing"
+    old = journal.begin_tree_checks(**scope)
+    assert journal.tree_check_observation(**scope)["status"] == "in_progress_or_interrupted"
+    attempt = journal.begin_tree_checks(**scope)
+    assert not journal.record_tree_check_failure(**scope, attempt=old, reason="command_failed")
+    assert journal.record_tree_check_failure(**scope, attempt=attempt, reason="command_failed")
+    observed = CommitJournal(tmp_path).tree_check_observation(**scope)
+    assert observed == {"status": "failed", "receipt_id": None, "failure_reason": "command_failed"}
+    assert journal.current_tree_checks(**scope) is None
+    fresh = journal.begin_tree_checks(**scope)
+    assert not journal.record_tree_check_failure(**scope, attempt=attempt, reason="verification_interrupted")
+    assert journal.tree_check_observation(**scope)["status"] == "in_progress_or_interrupted"
+    receipt = journal.record_tree_checks(**scope, checks=[{"exit_code": 0, "output_complete": True}],
+                                         ttl=60, attempt=fresh)
+    assert journal.tree_check_observation(**scope) == {"status": "current", "receipt_id": receipt}

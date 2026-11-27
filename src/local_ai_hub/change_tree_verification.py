@@ -163,6 +163,7 @@ def _materialize(root: str, entries: dict[bytes, tuple[bytes, bytes]], directory
 def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: Any, *, rerun: bool = False) -> dict[str, Any]:
     if preview.get("success") is not True:
         return preview
+    active_attempt: dict[str, str] | None = None
     try:
         policy = commit_policy(root, manifest, require_manifest=True)
         if preview.get("project_commit_policy", policy) != policy:
@@ -193,6 +194,8 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                 continue
             attempt = journal.begin_tree_checks(root=root, tree=tree, command_id=command_id,
                                                 environment_id=environment_id)
+            active_attempt = dict(root=root, tree=tree, command_id=command_id,
+                                  environment_id=environment_id, attempt=attempt)
             checks = []
             for argv in commands:
                 # Start each command from a fresh tree; one check cannot modify
@@ -224,6 +227,8 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                                    "stdout_sha256": hashlib.sha256(cp.stdout or b"").hexdigest(),
                                    "stderr_sha256": hashlib.sha256(cp.stderr or b"").hexdigest()})
                     if cp.returncode or not complete:
+                        journal.record_tree_check_failure(**active_attempt, reason="command_failed" if cp.returncode else "incomplete_output")
+                        active_attempt = None
                         return {"success": False, "error": "Verification command failed or output was incomplete",
                                 "tree_oid": tree, "checks": checks, "verified_steps": results}
             if commit_policy(root, manifest, require_manifest=True) != policy:
@@ -232,6 +237,7 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                 raise ValueError("Observed verification environment changed")
             receipt = journal.record_tree_checks(root=root, tree=tree, command_id=command_id,
                                                  environment_id=environment_id, checks=checks, ttl=_TTL, attempt=attempt)
+            active_attempt = None
             results.append({"tree_oid": tree, "receipt_id": receipt, "checks": checks, "reused": False})
         current = require_sequence_receipts(root, preview, manifest, journal)
         if current != [step["receipt_id"] for step in results]:
@@ -243,6 +249,11 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                 "verification_status": "configured_commands_passed", "commit_ready": False,
                 "limitations": "Not a sandbox, not proof of complete test coverage or external dependency immutability."}
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        if active_attempt is not None:
+            try:
+                journal.record_tree_check_failure(**active_attempt, reason="verification_interrupted")
+            except Exception:
+                pass  # Do not hide the original failed verification.
         return {"success": False, "error": str(exc), "commit_ready": False}
 
 
@@ -272,15 +283,17 @@ def sequence_receipt_status(root: str, preview: dict[str, Any], manifest: Any, j
         command_id, environment_id, _, _ = verification_identity(manifest)
         statuses = []
         for step in preview["steps"]:
-            receipt = journal.current_tree_checks(root=root, tree=step["tree_oid"],
-                                                  command_id=command_id, environment_id=environment_id)
-            statuses.append({"tree_oid": step["tree_oid"], "status": "current" if receipt else "missing_or_expired",
-                             "receipt_id": receipt})
+            observation = journal.tree_check_observation(root=root, tree=step["tree_oid"],
+                                                          command_id=command_id, environment_id=environment_id)
+            statuses.append({"tree_oid": step["tree_oid"], **observation})
         if commit_policy(root, manifest, require_manifest=True) != policy or verification_identity(manifest)[:2] != (command_id, environment_id):
             raise ValueError("Policy or environment changed during inspection")
         missing = sum(step["status"] != "current" for step in statuses)
         return {"success": True, "preview_digest": preview["preview_digest"], "steps": statuses,
-                "current_step_count": len(statuses) - missing, "missing_or_expired_step_count": missing,
+                "current_step_count": len(statuses) - missing,
+                "missing_or_expired_step_count": sum(step["status"] in {"missing", "expired"} for step in statuses),
+                "failed_step_count": sum(step["status"] == "failed" for step in statuses),
+                "in_progress_or_interrupted_step_count": sum(step["status"] == "in_progress_or_interrupted" for step in statuses),
                 "all_receipts_current": missing == 0, "commands_digest": command_id,
                 "observed_environment_digest": environment_id, "project_commit_policy": policy,
                 "commit_ready": False, "commands_executed": False,
