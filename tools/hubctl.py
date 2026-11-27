@@ -304,7 +304,7 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "commit-staged":
             if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
@@ -408,18 +408,19 @@ def main() -> int:
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
-        if args.sub_arg == "commit-inspect":
+        if args.sub_arg in {"commit-inspect", "commit-list"}:
             from local_ai_hub.change_commit_journal import CommitJournal
             from local_ai_hub.repository_scope import authorized_repository_root
             from local_ai_hub.state_paths import configured_state_dir
 
             config = load_config(_config_arg(args.config))
-            result = CommitJournal(configured_state_dir(config)).inspect(
-                authorized_repository_root(config, str(args.root.resolve())), args.operation_id,
-            )
+            journal = CommitJournal(configured_state_dir(config))
+            scoped_root = authorized_repository_root(config, str(args.root.resolve()))
+            result = (journal.list_recent(scoped_root, limit=min(100, args.limit)) if args.sub_arg == "commit-list"
+                      else journal.inspect(scoped_root, args.operation_id))
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True else 1
-        if args.sub_arg in {"commit-staged", "sequence-preview", "sequence-apply"}:
+        if args.sub_arg in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-apply"}:
             from local_ai_hub.change_commit_journal import CommitJournal
             from local_ai_hub.change_commit_execution import execute_staged_commit
             from local_ai_hub.deterministic import DeterministicEngine

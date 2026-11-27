@@ -181,3 +181,30 @@ def test_exact_tree_receipts_bind_sequence_and_environment(tmp_path):
                                    preview_digest=preview["preview_digest"], verification_manifest=manifest)
     assert applied["success"], applied
     assert len(applied["tree_check_receipt_ids"]) == 2
+
+
+def test_new_verification_attempt_revokes_old_success(tmp_path):
+    import pytest
+    from local_ai_hub.change_commit_journal import CommitJournal
+
+    journal = CommitJournal(tmp_path / "state")
+    scope = dict(root=str(tmp_path), tree="1" * 40, command_id="2" * 64, environment_id="3" * 64)
+    checks = [{"exit_code": 0, "output_complete": True}]
+    attempt = journal.begin_tree_checks(**scope)
+    receipt = journal.record_tree_checks(**scope, checks=checks, ttl=60, attempt=attempt)
+    assert journal.current_tree_checks(**scope) == receipt
+    newer = journal.begin_tree_checks(**scope)
+    assert journal.current_tree_checks(**scope) is None
+    with pytest.raises(ValueError, match="superseded"):
+        journal.record_tree_checks(**scope, checks=checks, ttl=60, attempt=attempt)
+    assert journal.record_tree_checks(**scope, checks=checks, ttl=60, attempt=newer)
+
+
+def test_commit_list_is_root_scoped(tmp_path):
+    from local_ai_hub.change_commit_journal import CommitJournal
+
+    journal = CommitJournal(tmp_path / "state")
+    journal.prepare(operation_id="1" * 32, root=str(tmp_path), branch="refs/heads/main",
+                    parent="2" * 40, tree="3" * 40, candidate="4" * 40)
+    assert len(journal.list_recent(str(tmp_path))["operations"]) == 1
+    assert not journal.list_recent(str(tmp_path / "other"))["operations"]

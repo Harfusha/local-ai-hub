@@ -13,6 +13,7 @@ import re
 import subprocess
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +58,9 @@ def verification_identity(manifest: Any) -> tuple[str, str, list[list[str]], dic
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 h.update(block)
         executable_digests.append(h.hexdigest())
-        canonical.append([str(exe), *argv[1:]])
+        # Preserve invocation through a virtual environment or symlink; the
+        # executable identity hashes the resolved target separately.
+        canonical.append([argv[0], *argv[1:]])
     env = {k: v for k, v in os.environ.items() if k.upper() in {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "LANG", "LC_ALL"}}
     if "PATH" in env:
         env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep) if Path(p).is_absolute())
@@ -81,7 +84,8 @@ def _materialize(root: str, entries: dict[bytes, tuple[bytes, bytes]], directory
     if len(entries) > _MAX_ENTRIES:
         raise ValueError("Tree exceeds verification entry budget")
     total = 0
-    normalized: set[str] = set()
+    normalized: dict[str, str] = {}
+    reserved = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
     for raw_path, (mode, raw_oid) in sorted(entries.items()):
         if time.monotonic() >= deadline:
             raise ValueError("Verification time budget exceeded")
@@ -90,12 +94,15 @@ def _materialize(root: str, entries: dict[bytes, tuple[bytes, bytes]], directory
         path = os.fsdecode(raw_path)
         parts = path.split("/")
         if any(not p or p in {".", ".."} or p.casefold() == ".git" or "\\" in p or ":" in p
-               or p.endswith((" ", ".")) or any(ord(c) < 32 for c in p) for p in parts):
+               or p.endswith((" ", ".")) or p.split(".", 1)[0].casefold() in reserved
+               or any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF or c in '<>|?*"' for c in p) for p in parts):
             raise ValueError("Unsupported materialization path")
-        key = path.casefold()
-        if key in normalized:
-            raise ValueError("Case-colliding paths require external verification")
-        normalized.add(key)
+        for depth in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:depth])
+            key = unicodedata.normalize("NFC", prefix).casefold()
+            if key in normalized and normalized[key] != prefix:
+                raise ValueError("Case or Unicode-colliding paths require external verification")
+            normalized[key] = prefix
         target = directory.joinpath(*parts)
         if not target.resolve().is_relative_to(directory.resolve()):
             raise ValueError("Materialization path escaped")
@@ -136,6 +143,8 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
             tree = index_tree_oid(parent_raw_to_index(entries), parent)
             if tree != step["tree_oid"]:
                 raise ValueError("Intermediate tree changed after preview")
+            attempt = journal.begin_tree_checks(root=root, tree=tree, command_id=command_id,
+                                                environment_id=environment_id)
             checks = []
             for argv in commands:
                 # Start each command from a fresh tree; one check cannot modify
@@ -172,7 +181,7 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
             if verification_identity(manifest)[:2] != (command_id, environment_id):
                 raise ValueError("Observed verification environment changed")
             receipt = journal.record_tree_checks(root=root, tree=tree, command_id=command_id,
-                                                 environment_id=environment_id, checks=checks, ttl=_TTL)
+                                                 environment_id=environment_id, checks=checks, ttl=_TTL, attempt=attempt)
             results.append({"tree_oid": tree, "receipt_id": receipt, "checks": checks})
         return {"success": True, "verified_steps": results, "preview_digest": preview["preview_digest"],
                 "commands_digest": command_id, "observed_environment_digest": environment_id,

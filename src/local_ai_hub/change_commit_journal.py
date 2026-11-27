@@ -35,10 +35,24 @@ class CommitJournal:
                 checks TEXT NOT NULL, digest TEXT NOT NULL, observed REAL NOT NULL, expires REAL NOT NULL
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS git_tree_checks_lookup ON git_tree_checks_v1(root,tree,command_id,environment_id,expires)")
+            db.execute("""CREATE TABLE IF NOT EXISTS git_tree_check_attempt_v1 (
+                root TEXT NOT NULL, tree TEXT NOT NULL, command_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL, attempt TEXT NOT NULL, observed REAL NOT NULL,
+                PRIMARY KEY(root,tree,command_id,environment_id)
+            )""")
             db.commit()
 
+    def begin_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str) -> str:
+        attempt = uuid.uuid4().hex
+        with closing(self._connect()) as db, db:
+            db.execute("INSERT OR REPLACE INTO git_tree_check_attempt_v1 VALUES (?,?,?,?,?,?)",
+                       (root, tree, command_id, environment_id, attempt, time.time()))
+            db.execute("DELETE FROM git_tree_checks_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                       (root, tree, command_id, environment_id))
+        return attempt
+
     def record_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str,
-                           checks: list[dict[str, Any]], ttl: int) -> str:
+                           checks: list[dict[str, Any]], ttl: int, attempt: str) -> str:
         if (not _OID.fullmatch(tree) or not re.fullmatch(r"[0-9a-f]{64}", command_id)
                 or not re.fullmatch(r"[0-9a-f]{64}", environment_id) or not 1 <= ttl <= 3600
                 or not 1 <= len(checks) <= 4 or any(c.get("exit_code") != 0 or c.get("output_complete") is not True for c in checks)):
@@ -49,9 +63,17 @@ class CommitJournal:
         digest = hashlib.sha256(json.dumps([receipt, root, tree, command_id, environment_id, serialized, now, now + ttl],
                                            ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
         with closing(self._connect()) as db, db:
+            # Fence against concurrent verification attempts and refuse a stale
+            # success when a newer attempt has started.
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT attempt FROM git_tree_check_attempt_v1 WHERE root=? AND tree=? AND command_id=? AND environment_id=?",
+                                 (root, tree, command_id, environment_id)).fetchone()
+            if current is None or current["attempt"] != attempt:
+                raise ValueError("Verification attempt superseded")
             db.execute("INSERT INTO git_tree_checks_v1 VALUES (?,?,?,?,?,?,?,?,?)",
                        (receipt, root, tree, command_id, environment_id, serialized, digest, now, now + ttl))
             db.execute("DELETE FROM git_tree_checks_v1 WHERE expires < ?", (now - 86400,))
+            db.execute("DELETE FROM git_tree_check_attempt_v1 WHERE observed < ?", (now - 86400,))
         return receipt
 
     def current_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str) -> str | None:
@@ -97,6 +119,15 @@ class CommitJournal:
                                  (time.time(), operation_id))
             if updated.rowcount != 1:
                 raise ValueError("Commit journal transition rejected")
+
+    def list_recent(self, root: str, *, limit: int = 20) -> dict[str, Any]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            return {"success": False, "error": "Limit must be 1–100"}
+        with closing(self._connect()) as db:
+            rows = db.execute("SELECT * FROM git_commit_intents_v1 WHERE root=? ORDER BY created DESC LIMIT ?",
+                              (root, limit + 1)).fetchall()
+        return {"success": True, "operations": [dict(row) for row in rows[:limit]],
+                "has_more": len(rows) > limit, "retry_authorized": False}
 
     def inspect(self, root: str, operation_id: str) -> dict[str, Any]:
         if not isinstance(operation_id, str) or not _ID.fullmatch(operation_id):
