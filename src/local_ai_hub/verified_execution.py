@@ -391,16 +391,44 @@ def contract_evidence_types(contract: Any) -> dict[str, str]:
     }
 
 
+def consecutive_failed_verifications(
+    receipts: Sequence[Any], *, criterion: str, now: float,
+    repository_revision: str, mutation_generation: int, valid_owners: set[str],
+    window_seconds: int = 900,
+) -> int:
+    """Advisory count from bounded newest-first persisted receipt history."""
+    seen: set[str] = set()
+    for receipt in receipts[:128]:
+        if (receipt.criterion != criterion
+                or receipt.repository_revision != repository_revision
+                or receipt.mutation_generation != mutation_generation
+                or (valid_owners and receipt.owner not in valid_owners)):
+            continue
+        if not now - window_seconds <= receipt.observed_at <= now:
+            continue
+        if receipt.passed:
+            break
+        seen.add(receipt.receipt_id)
+    return len(seen)
+
+
 def evidence_progress(
     *, created_at: float, now: float, active: bool, complete: bool,
     observed_receipt_times: Sequence[float], threshold_seconds: int = 900,
+    repeated_failure_count: int = 0,
 ) -> dict[str, Any]:
     """Advisory evidence age, not an estimate of effort or proof of stagnation."""
     last_observation = max([created_at, *(t for t in observed_receipt_times if 0 < t <= now)])
     elapsed = max(0, int(now - last_observation))
+    status = "recent_or_not_active"
+    if active and not complete:
+        if repeated_failure_count >= 3:
+            status = "repeated_failed_verification"
+        elif elapsed >= threshold_seconds:
+            status = "no_recent_verified_evidence"
     return {
-        "status": "no_recent_verified_evidence" if active and not complete and elapsed >= threshold_seconds
-        else "recent_or_not_active",
+        "status": status,
+        **({"consecutive_failed_verifications": repeated_failure_count} if repeated_failure_count else {}),
         "seconds_since_verified_observation_or_creation": elapsed,
         "threshold_seconds": threshold_seconds,
         "advisory": True,
@@ -452,6 +480,8 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
         parts.append("Evidence preview ready; run the authoritative completion gate.")
     else:
         parts.append("Completion not ready; inspect remaining obligations and blockers.")
+    if progress.get("status") == "repeated_failed_verification":
+        parts.append("Repeated failed verification of the next obligation; diagnose the failure before retrying.")
     if progress.get("status") == "no_recent_verified_evidence":
         parts.append("No recent verified evidence; check for blocked or repetitive work.")
     return "\n".join(parts)
