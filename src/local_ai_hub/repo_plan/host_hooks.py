@@ -17,8 +17,6 @@ import os
 import re
 import shlex
 import sys
-import urllib.error
-import urllib.request
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,13 +36,6 @@ HOSTS = {"codex": (".codex/hooks.json", "UserPromptSubmit", "PreToolUse"),
 HOOK_ONLY_HOSTS = {"opencode"}
 SUPERPOWERS_VERSION = "7.0.1"
 MAX_JSON_BYTES = 131072
-REPO_SOURCE_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hh", ".hpp", ".java",
-    ".hcl", ".html", ".js", ".jsx", ".json", ".jsonc", ".kt", ".mjs",
-    ".cjs", ".php", ".py", ".pyi", ".rb", ".rs", ".sh", ".sql",
-    ".swift", ".ts", ".tsx", ".toml", ".vue", ".ps1", ".yaml", ".yml",
-    ".xml", ".css", ".scss", ".proto", ".tf", ".cmake",
-}
 
 
 def bounded_text(value: Any, name: str, limit: int, *, allow_empty: bool = False) -> str:
@@ -503,137 +494,50 @@ def _trigger_repo_warmup(root: Path) -> None:
         pass
 
 
-def _is_hub_online() -> bool:
-    """Use Hub-first navigation only while the local HTTP API is responsive."""
-    try:
-        request = urllib.request.Request(
-            "http://127.0.0.1:11435/health",
-            headers={"Accept": "application/json", "User-Agent": "HostHook"},
-        )
-        with urllib.request.urlopen(request, timeout=0.15) as response:
-            return 200 <= response.status < 300
-    except (OSError, urllib.error.URLError, TimeoutError, ValueError):
-        return False
-
-
-def _fetch_hub_task_summary(root_path: str | Path | None) -> str:
-    """Fetch concise active task context from Hub HTTP API if online."""
-    if not _is_hub_online():
+def _active_plan_summary(root: Path) -> str:
+    plans_dir = root / ".local-ai-hub" / "plans"
+    if not plans_dir.is_dir():
         return ""
     try:
-        data = json.dumps({"root": str(root_path or ""), "status": "active"}).encode("utf-8")
-        req = urllib.request.Request(
-            "http://127.0.0.1:11435/api/coord/task_list",
-            data=data,
-            headers={"Content-Type": "application/json", "User-Agent": "HostHook"},
-        )
-        with urllib.request.urlopen(req, timeout=0.15) as resp:
-            coord_data = json.loads(resp.read().decode("utf-8"))
-            tasks = coord_data.get("tasks") or coord_data.get("items") or []
-            if tasks and isinstance(tasks, list):
-                first_task = tasks[0]
-                tid = first_task.get("task_id") or first_task.get("id") or "active"
-                t_status = first_task.get("status") or "active"
-                next_act = first_task.get("checkpoint", {}).get("next_action") or ""
-                parts = [f"Active task: {tid} ({t_status})."]
-                if next_act:
-                    parts.append(f"Next: {next_act[:80]}.")
-                return " ".join(parts)
+        active_plans: list[dict[str, Any]] = []
+        for plan_file in sorted(plans_dir.glob("*.plan.json")):
+            if plan_file.is_symlink() or getattr(plan_file, "is_junction", lambda: False)():
+                continue
+            if plan_file.stat().st_size > MAX_JSON_BYTES:
+                continue
+            try:
+                data = json.loads(plan_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("lifecycle") == "active":
+                plan_id = str(data.get("id") or plan_file.stem)
+                desc = str(data.get("description") or "").strip()
+                tasks = data.get("tasks") if isinstance(data.get("tasks"), dict) else {}
+                active_tasks: list[str] = []
+                for tid, tinfo in tasks.items():
+                    if isinstance(tinfo, dict) and tinfo.get("work_status") in ("in_progress", "active"):
+                        t_desc = str(tinfo.get("description") or tid).strip()[:80]
+                        active_tasks.append(f"{tid} ({t_desc})")
+                active_plans.append({
+                    "id": plan_id,
+                    "desc": desc[:150],
+                    "active_tasks": active_tasks[:3],
+                })
+        if not active_plans:
+            return ""
+        lines: list[str] = []
+        for p in active_plans[:2]:
+            lines.append(f"- Plan '{p['id']}': {p['desc']}")
+            if p["active_tasks"]:
+                lines.append(f"  Active tasks: {', '.join(p['active_tasks'])}")
+        return "\n".join(lines)
     except Exception:
-        pass
-    return ""
-
-
-def _is_repository_source_path(path: Path) -> bool:
-    return path.suffix.lower() in REPO_SOURCE_SUFFIXES
-
-
-def _hub_navigation_denial(action: str) -> dict[str, str]:
-    if action == "read":
-        reason = (
-            "Local AI Hub is online. Locate source with local_ai_repo(action='search' or 'code_index'), "
-            "then fetch an exact bounded file slice with local_ai_artifact(action='source')."
-        )
-    else:
-        reason = (
-            "Local AI Hub is online. Route repository searches through "
-            "local_ai_repo(action='search' or 'code_index') for indexed, bounded evidence."
-        )
-    return {"decision": "deny", "reason": reason}
+        return ""
 
 
 def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     name = (tool_name or "").lower().strip()
     cmd = str(args.get("command") or args.get("CommandLine") or "").strip()
-
-    hub_online = _is_hub_online()
-
-    # 0. Token Economy: Check verbose / unconstrained git commands
-    if cmd:
-        clean_cmd = " ".join(cmd.split())
-        if re.match(r"^git\s+status(?:\s+\.)?\s*$", clean_cmd, re.IGNORECASE):
-            return {
-                "decision": "deny",
-                "reason": f"Verbose '{cmd}' is blocked by Token Economy. Use 'git status -s' instead.",
-            }
-        if re.match(r"^git\s+log\b", clean_cmd, re.IGNORECASE) and not re.search(
-            r"(?:-n\s*\d+|--max-count\b|-\d+\b|--oneline\b|Select-Object\s+-First|\|\s*head)",
-            clean_cmd,
-            re.IGNORECASE,
-        ):
-            return {
-                "decision": "deny",
-                "reason": f"Unconstrained '{cmd}' is blocked by Token Economy. Use 'git log --oneline -n 10' instead.",
-            }
-        if re.match(r"^git\s+diff\s*$", clean_cmd, re.IGNORECASE):
-            return {
-                "decision": "deny",
-                "reason": "Unconstrained repository 'git diff' is blocked by Token Economy. Use 'git diff --stat' or specify file paths.",
-            }
-        if re.match(r"^git\s+branch\s*$", clean_cmd, re.IGNORECASE):
-            return {
-                "decision": "deny",
-                "reason": "Verbose 'git branch' is blocked by Token Economy. Use 'git branch -v' instead.",
-            }
-        if re.match(r"^git\s+branch\s+(?:-a|--all)\s*$", clean_cmd, re.IGNORECASE):
-            return {
-                "decision": "deny",
-                "reason": "Verbose 'git branch -a' is blocked by Token Economy. Use 'git branch -a --column' instead.",
-            }
-        if re.match(r"^git\s+show\s*$", clean_cmd, re.IGNORECASE):
-            return {
-                "decision": "deny",
-                "reason": "Verbose 'git show' is blocked by Token Economy. Use 'git show --stat -n 1' instead.",
-            }
-        if re.search(r"\bpython\s+(?:-m\s+)?compileall\b", clean_cmd, re.IGNORECASE) and not re.search(r"\s-q\b", clean_cmd):
-            return {
-                "decision": "deny",
-                "reason": f"Verbose compileall '{cmd}' is blocked by Token Economy. Append '-q' (e.g. '{cmd} -q').",
-            }
-
-    # Keep repository discovery on indexed Hub evidence while its API is ready.
-    # Offline behavior remains available so the hook cannot strand the agent.
-    if hub_online and cmd and re.search(
-        r"\b(?:rg|ripgrep|grep|findstr|find|fd|fdfind|Select-String|sls|git\s+(?:grep|ls-files))\b",
-        cmd,
-        re.IGNORECASE,
-    ):
-        if not re.search(r"\s(?:--help|--version|-[hV])(?:\s|$)", cmd, re.IGNORECASE):
-            return _hub_navigation_denial("search")
-    if hub_online and cmd and re.search(
-        r"\b(?:Get-ChildItem|gci)\b.*(?:-Recurse|-r)\b|\bdir\b.*(?:\/s|-Recurse)\b",
-        cmd,
-        re.IGNORECASE,
-    ):
-        return _hub_navigation_denial("search")
-
-    # Avoid shell aliases for direct source reads while preserving ordinary
-    # documentation/config reads and the offline native fallback.
-    if hub_online and cmd and re.search(r"\b(?:Get-Content|gc|cat|type)\b", cmd, re.IGNORECASE):
-        path_matches = re.findall(r"(?:['\"]([^'\"]+)['\"]|(?<!\w)([^\s|;&]+))", cmd)
-        candidates = [Path(a or b) for a, b in path_matches if (a or b)]
-        if any(_is_repository_source_path(path) for path in candidates):
-            return _hub_navigation_denial("read")
 
     # 1. Bare pytest check across 17,500+ tests
     if cmd and re.search(r"\b(?:python\s+(?:-m\s+)?pytest|pytest)\b", cmd, re.IGNORECASE):
@@ -675,8 +579,6 @@ def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any
     path_str = str(args.get("path") or args.get("file_path") or args.get("Path") or "")
     if name in ("view_file", "read_file", "read") and path_str:
         p = Path(path_str)
-        if hub_online and _is_repository_source_path(p):
-            return _hub_navigation_denial("read")
         if p.is_file() and p.name.lower() not in {"agents.md", "pyproject.toml", ".gitignore"}:
             start = args.get("start_line") or args.get("line_start")
             end = args.get("end_line") or args.get("line_end")
@@ -816,10 +718,25 @@ def _normalize_copilot_event(payload: Any) -> Any:
 
 
 def _normalize_opencode_event(payload: Any) -> Any:
-    """Accept only bounded permission and post-edit fields forwarded by the OpenCode plugin."""
-    if not isinstance(payload, dict) or payload.get("hook_event_name") not in ("PostToolUse", "PermissionRequest"):
+    """Accept bounded permission, pre-tool, post-edit, session start and user prompt submit fields forwarded by OpenCode."""
+    if not isinstance(payload, dict) or payload.get("hook_event_name") not in (
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest"
+    ):
         raise ValueError("unsupported OpenCode hook event")
-    if payload.get("hook_event_name") == "PermissionRequest":
+    event = payload.get("hook_event_name")
+    session_id = payload.get("session_id", "")
+    cwd = payload.get("cwd")
+    if event == "SessionStart":
+        return {"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd}
+    if event == "UserPromptSubmit":
+        prompt_val = payload.get("prompt") or payload.get("text") or ""
+        return {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "cwd": cwd,
+            "prompt": str(prompt_val)[:4096],
+        }
+    if event == "PermissionRequest":
         if payload.get("tool_name") != "Bash":
             raise ValueError("unsupported OpenCode permission action")
         tool_input = payload.get("tool_input")
@@ -828,10 +745,20 @@ def _normalize_opencode_event(payload: Any) -> Any:
             raise ValueError("invalid OpenCode shell permission command")
         return {
             "hook_event_name": "PermissionRequest",
-            "session_id": payload.get("session_id", ""),
-            "cwd": payload.get("cwd"),
+            "session_id": session_id,
+            "cwd": cwd,
             "tool_name": "Bash",
             "tool_input": {"command": command},
+        }
+    if event == "PreToolUse":
+        tool_name = str(payload.get("tool_name") or "").strip()
+        tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+        return {
+            "hook_event_name": "PreToolUse",
+            "session_id": session_id,
+            "cwd": cwd,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
         }
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input")
@@ -843,8 +770,8 @@ def _normalize_opencode_event(payload: Any) -> Any:
         raise ValueError("invalid OpenCode edited file path")
     return {
         "hook_event_name": "PostToolUse",
-        "session_id": payload.get("session_id", ""),
-        "cwd": payload.get("cwd"),
+        "session_id": session_id,
+        "cwd": cwd,
         "tool_name": tool_name,
         "tool_input": {"file_path": path_value},
     }
@@ -907,7 +834,7 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
     cwd = bounded_text(payload.get("cwd"), "cwd", 4096)
     if checked_root(cwd) != root:
         raise ValueError("event repository root mismatch")
-    valid_events = ({"PostToolUse", "PermissionRequest"} if host == "opencode" else
+    valid_events = ({"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest"} if host == "opencode" else
                     {"PostToolUse"} if host in HOOK_ONLY_HOSTS else
                     {"SessionStart", HOSTS[host][1], HOSTS[host][2], "PreToolUse", "PostToolUse"})
     if host in {"codex", "claude"}:
@@ -916,48 +843,24 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
     if event not in valid_events:
         raise ValueError("unsupported hook event")
 
-    if host in {"codex", "claude"} and event == "SessionStart":
-        _trigger_repo_warmup(Path(cwd))
-        task_info = _fetch_hub_task_summary(cwd)
-        guidance = (
-            "When Local AI Hub MCP is available, use it for indexed repository evidence and typed Laya advice "
-            "on bounded routing, context, or retrieval decisions. Treat Laya output as advisory; host "
-            "permissions and deterministic validation remain authoritative."
-        )
-        if task_info:
-            guidance = f"{task_info} {guidance}"
-        return {"hookSpecificOutput": {
-            "hookEventName": event,
-            "additionalContext": guidance[:512],
-        }}
-
     if host in {"codex", "claude"} and event == "UserPromptSubmit":
-        guidance = (
-            "When Local AI Hub MCP is available, use it for indexed repository evidence and typed Laya advice "
-            "on bounded routing, context, or retrieval decisions. Treat Laya output as advisory; host "
-            "permissions and deterministic validation remain authoritative."
-        )
-        task_info = _fetch_hub_task_summary(cwd)
-        if task_info:
-            guidance = f"{task_info} {guidance}"
         return {"hookSpecificOutput": {
             "hookEventName": event,
-            "additionalContext": guidance[:512],
+            "additionalContext": (
+                "When Local AI Hub MCP is available, use it for indexed repository evidence and typed Laya advice "
+                "on bounded routing, context, or retrieval decisions. Treat Laya output as advisory; host "
+                "permissions and deterministic validation remain authoritative."
+            ),
         }}
 
     if host in {"codex", "claude"} and event == "SubagentStart":
-        subagent_guidance = (
-            "When Local AI Hub MCP is available, use indexed repository evidence and typed Laya advice "
-            "for bounded routing, context, and retrieval decisions. Coordinate work via Local AI Hub MCP, "
-            "respect active task lease boundaries, and treat Laya output as advisory; "
-            "host permissions and deterministic validation remain authoritative."
-        )
-        task_info = _fetch_hub_task_summary(cwd)
-        if task_info:
-            subagent_guidance = f"{task_info} {subagent_guidance}"
         return {"hookSpecificOutput": {
             "hookEventName": event,
-            "additionalContext": subagent_guidance[:512],
+            "additionalContext": (
+                "When Local AI Hub MCP is available, use indexed repository evidence and typed Laya advice "
+                "for bounded routing, context, and retrieval decisions. Treat Laya output as advisory; "
+                "host permissions and deterministic validation remain authoritative."
+            ),
         }}
 
     if host in {"codex", "claude"} and event == "PermissionRequest":
@@ -982,6 +885,40 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
         if decision.get("decision") == "deny":
             return {"decision": "deny", "reason": str(decision.get("reason") or "Blocked by Local AI Hub policy.")}
         # OpenCode retains its configured allow/ask flow for all other commands.
+        return {}
+
+    if host == "opencode" and event in ("SessionStart", "UserPromptSubmit"):
+        _trigger_repo_warmup(root)
+        plan_summary = _active_plan_summary(root)
+        parts = [
+            "Local AI Hub Proactive Context: Local AI Hub is active and monitoring repository integrity.",
+        ]
+        if plan_summary:
+            parts.append(f"Active project plan:\n{plan_summary}")
+        parts.append(
+            "Guidance: Prioritize Local AI Hub MCP tools (local_ai_repo, local_ai_artifact, local_ai_coord) "
+            "over broad unconstrained directory searches. Mint authentic receipts via "
+            "local_ai_coord(action='verify_completion') before completing goals."
+        )
+        return {"additionalContext": "\n\n".join(parts)}
+
+    if host == "opencode" and event == "PreToolUse":
+        tool_name = str(payload.get("tool_name") or "")
+        tool_args = payload.get("tool_input") or {}
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+        decision = _check_codex_tool_use(tool_name, tool_args)
+        if decision.get("decision") == "deny":
+            return {"decision": "deny", "reason": str(decision.get("reason") or "Blocked by Local AI Hub policy.")}
+        name_l = tool_name.lower().strip()
+        if name_l in ("edit", "write", "apply_patch", "edit_file", "write_file", "replace"):
+            path_val = next((tool_args[k] for k in ("file_path", "filePath", "path", "target")
+                             if isinstance(tool_args.get(k), str)), None)
+            if path_val:
+                try:
+                    confined_path(root, Path(path_val))
+                except ValueError as exc:
+                    return {"decision": "deny", "reason": f"Target edit path outside repository root: {exc}"}
         return {}
 
     if host == "gemini_cli" and event == "BeforeAgent":
@@ -1062,7 +999,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", help="explicit repository root; otherwise use the hook event cwd")
     parser.add_argument("--host", choices=(*HOSTS, *HOOK_ONLY_HOSTS), required=True)
     parser.add_argument(
-        "--event", choices=("afterFileEdit", "beforeShellExecution", "preToolUse", "postToolUse", "PreToolUse", "PostToolUse", "PermissionRequest"),
+        "--event", choices=("afterFileEdit", "beforeShellExecution", "preToolUse", "postToolUse", "PreToolUse", "PostToolUse", "PermissionRequest", "SessionStart", "UserPromptSubmit"),
     )
     args = parser.parse_args(argv)
     try:
