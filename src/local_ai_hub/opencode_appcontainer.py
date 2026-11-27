@@ -40,6 +40,13 @@ _BRIDGE_ENVIRONMENT_KEYS = frozenset({
 _PROFILE_NAME = re.compile(r"LAH-OC-[A-F0-9]{32}\Z")
 
 
+def file_info_identity(info: Sequence[Any]) -> tuple[int, int, int]:
+    """Return volume serial and file-index fields from Win32 file information."""
+    if len(info) < 10:
+        raise ValueError("Win32 file information tuple is incomplete")
+    return int(info[4]), int(info[8]), int(info[9])
+
+
 class AppContainerCleanupError(RuntimeError):
     """A native process or profile resource could not be safely released."""
 
@@ -480,9 +487,7 @@ class ManagedAppContainerProcessSession:
         )
         try:
             observed = win32file.GetFileInformationByHandle(path_handle)
-            if int(observed[0]) & 0x400 or (observed[9], observed[7], observed[8]) != (
-                expected[9], expected[7], expected[8]
-            ):
+            if int(observed[0]) & 0x400 or file_info_identity(observed) != file_info_identity(expected):
                 raise RuntimeError("staged workspace path changed after ACL setup")
         finally:
             import win32api

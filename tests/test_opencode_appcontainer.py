@@ -6,7 +6,10 @@ import sys
 
 import pytest
 
-from local_ai_hub.opencode_appcontainer import build_environment_block
+from local_ai_hub.opencode_appcontainer import (
+    build_environment_block,
+    file_info_identity,
+)
 
 
 def test_explicit_environment_block_is_sorted_and_double_terminated():
@@ -47,3 +50,11 @@ def test_appcontainer_primitives_fail_closed_off_windows():
 
     with pytest.raises(OSError, match="Windows-only"):
         AppContainerProfile.create()
+
+
+def test_file_info_identity_uses_volume_and_file_index_fields():
+    first = [0, None, None, None, 11, 0, 8, 2, 3, 4]
+    replacement = [0, None, None, None, 11, 0, 8, 2, 3, 5]
+
+    assert file_info_identity(first) == (11, 3, 4)
+    assert file_info_identity(replacement) == (11, 3, 5)

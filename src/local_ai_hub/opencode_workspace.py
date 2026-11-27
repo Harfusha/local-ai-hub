@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import stat
+import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -19,6 +20,14 @@ from typing import Mapping
 
 class UnsafeWorkspacePathError(RuntimeError):
     """A snapshot contains a symlink, reparse point, or unsupported file type."""
+
+
+class WorkspaceTransferError(RuntimeError):
+    """A copyback failed; exposes paths whose rollback could not be confirmed."""
+
+    def __init__(self, message: str, *, recovery_paths: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.recovery_paths = recovery_paths
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,15 @@ class WorkspaceSnapshot:
 class WorkspaceTransferResult:
     applied: tuple[str, ...]
     conflicts: tuple[str, ...]
+
+
+@dataclass
+class _PreparedChange:
+    relative: str
+    destination: Path
+    content_temp: Path | None
+    backup: Path | None
+    expected: FileFingerprint | None
 
 
 _REPARSE_POINT = 0x400
@@ -66,6 +84,88 @@ def _root(path: str | os.PathLike[str]) -> Path:
 def _identity(path: Path) -> tuple[int, int]:
     info = path.stat()
     return int(info.st_dev), int(info.st_ino)
+
+
+@contextmanager
+def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
+    """Hold each Windows ancestor/directory without delete sharing while walking."""
+    root = Path(os.path.abspath(os.fspath(root)))
+    if os.name != "nt":
+        yield
+        return
+    if not root.drive or root.anchor.startswith("\\\\"):
+        raise UnsafeWorkspacePathError("Windows workspace must be on a local drive")
+
+    import win32api
+    import win32con
+    import win32file
+
+    handles = []
+
+    def open_directory(path: Path, expected: os.stat_result | None = None, *, lock: bool = True) -> None:
+        info = path.lstat() if expected is None else expected
+        if _is_reparse(path, info) or not stat.S_ISDIR(info.st_mode):
+            raise UnsafeWorkspacePathError(f"workspace directory is a reparse point or changed type: {path}")
+        handle = win32file.CreateFile(
+            str(path), 0x80 | (0x00010000 if lock else 0),  # FILE_READ_ATTRIBUTES | DELETE
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+            None, win32con.OPEN_EXISTING,
+            0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            None,
+        )
+        try:
+            native = win32file.GetFileInformationByHandle(handle)
+            attributes = int(native[0])
+            file_index = (int(native[8]) << 32) | int(native[9])
+            if attributes & _REPARSE_POINT or not attributes & 0x10:
+                raise UnsafeWorkspacePathError(f"workspace directory opened as a reparse point: {path}")
+            if file_index != int(info.st_ino):
+                raise UnsafeWorkspacePathError(f"workspace directory changed while opening: {path}")
+            handles.append(handle)
+        except Exception:
+            win32api.CloseHandle(handle)
+            raise
+
+    try:
+        current = Path(root.anchor)
+        open_directory(current, lock=False)
+        for part in root.parts[1:]:
+            current = current / part
+            if current == root and root_handle is not None:
+                info = current.lstat()
+                native = win32file.GetFileInformationByHandle(root_handle)
+                file_index = (int(native[8]) << 32) | int(native[9])
+                if (int(native[0]) & _REPARSE_POINT or not int(native[0]) & 0x10
+                        or file_index != int(info.st_ino)):
+                    raise UnsafeWorkspacePathError("managed stage handle does not identify the workspace root")
+            else:
+                open_directory(current, lock=current == root)
+
+        stack = [root]
+        while stack:
+            directory = stack.pop()
+            try:
+                entries = list(os.scandir(directory))
+            except OSError as exc:
+                raise UnsafeWorkspacePathError(f"cannot safely enumerate workspace path: {directory}") from exc
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    info = path.lstat()
+                except OSError as exc:
+                    raise UnsafeWorkspacePathError(f"cannot inspect workspace entry: {path}") from exc
+                if _is_reparse(path, info):
+                    raise UnsafeWorkspacePathError(f"workspace contains a symbolic link or reparse point: {path}")
+                if stat.S_ISDIR(info.st_mode):
+                    open_directory(path, info)
+                    stack.append(path)
+        yield
+    finally:
+        for handle in reversed(handles):
+            try:
+                win32api.CloseHandle(handle)
+            except Exception:
+                pass
 
 
 def _scan(root: Path, *, max_files: int, max_bytes: int) -> tuple[dict[str, Path], dict[str, Path]]:
@@ -103,14 +203,63 @@ def _scan(root: Path, *, max_files: int, max_bytes: int) -> tuple[dict[str, Path
     return files, directories
 
 
-def _fingerprint(path: Path) -> FileFingerprint:
+def _read_workspace_file(path: Path, output_path: Path | None = None) -> FileFingerprint:
     before = path.lstat()
     if _is_reparse(path, before) or not stat.S_ISREG(before.st_mode):
         raise UnsafeWorkspacePathError(f"workspace file changed type during inspection: {path}")
+    output = output_path.open("wb") if output_path is not None else None
+    if os.name == "nt":
+        import win32api
+        import win32con
+        import win32file
+
+        try:
+            handle = win32file.CreateFile(
+                str(path), win32con.GENERIC_READ | 0x00010000,  # GENERIC_READ | DELETE
+                win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+                None, win32con.OPEN_EXISTING, 0x00200000 | 0x08000000, None,
+            )
+        except Exception as exc:
+            if output is not None:
+                output.close()
+            raise UnsafeWorkspacePathError(f"cannot open workspace file without following reparse points: {path}") from exc
+        try:
+            opened = win32file.GetFileInformationByHandle(handle)
+            attributes = int(opened[0])
+            file_index = (int(opened[8]) << 32) | int(opened[9])
+            size_on_handle = (int(opened[5]) << 32) | int(opened[6])
+            if attributes & (_REPARSE_POINT | 0x10 | 0x40) or file_index != int(before.st_ino):
+                raise UnsafeWorkspacePathError(f"workspace file changed or resolved to a reparse point: {path}")
+            if size_on_handle != int(before.st_size):
+                raise UnsafeWorkspacePathError(f"workspace file changed while being opened: {path}")
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                _, chunk = win32file.ReadFile(handle, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+                if output is not None:
+                    output.write(chunk)
+            after = win32file.GetFileInformationByHandle(handle)
+            stable_fields = (1, 3, 4, 5, 6, 8, 9)
+            if tuple(opened[index] for index in stable_fields) != tuple(after[index] for index in stable_fields):
+                raise UnsafeWorkspacePathError(f"workspace file changed while being read: {path}")
+            if size != size_on_handle:
+                raise UnsafeWorkspacePathError(f"workspace file length changed while being read: {path}")
+            return FileFingerprint(size, digest.hexdigest())
+        finally:
+            win32api.CloseHandle(handle)
+            if output is not None:
+                output.close()
+
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
+        if output is not None:
+            output.close()
         raise UnsafeWorkspacePathError(f"cannot open workspace file safely: {path}") from exc
     digest = hashlib.sha256()
     size = 0
@@ -122,14 +271,22 @@ def _fingerprint(path: Path) -> FileFingerprint:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
                 size += len(chunk)
+                if output is not None:
+                    output.write(chunk)
     finally:
         os.close(descriptor)
+        if output is not None:
+            output.close()
     after = path.lstat()
     if _is_reparse(path, after) or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
         before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
     ):
         raise UnsafeWorkspacePathError(f"workspace file changed while being read: {path}")
     return FileFingerprint(size, digest.hexdigest())
+
+
+def _fingerprint(path: Path) -> FileFingerprint:
+    return _read_workspace_file(path)
 
 
 def _relative_confined(root: Path, relative: str) -> Path:
@@ -142,7 +299,7 @@ def _relative_confined(root: Path, relative: str) -> Path:
     return path
 
 
-def create_workspace_snapshot(
+def _create_workspace_snapshot_unlocked(
     project_root: str | os.PathLike[str],
     staging_root: str | os.PathLike[str],
     *,
@@ -171,10 +328,8 @@ def create_workspace_snapshot(
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".lah-snapshot-{uuid.uuid4().hex}.tmp")
         try:
-            shutil.copyfile(path, temporary, follow_symlinks=False)
-            if _fingerprint(path) != baseline[relative]:
-                raise UnsafeWorkspacePathError(f"workspace file changed during snapshot: {relative}")
-            if _fingerprint(temporary) != baseline[relative]:
+            copied = _read_workspace_file(path, temporary)
+            if copied != baseline[relative]:
                 raise UnsafeWorkspacePathError(f"snapshot copy verification failed: {relative}")
             os.replace(temporary, target)
         finally:
@@ -185,27 +340,47 @@ def create_workspace_snapshot(
     return WorkspaceSnapshot(source, stage, _identity(source), _identity(stage), MappingProxyType(baseline))
 
 
+def create_workspace_snapshot(
+    project_root: str | os.PathLike[str],
+    staging_root: str | os.PathLike[str],
+    *,
+    max_files: int = _DEFAULT_MAX_FILES,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
+    staging_handle: int | None = None,
+) -> WorkspaceSnapshot:
+    source = _root(project_root)
+    stage = _root(staging_root)
+    with _lock_workspace_tree(source):
+        with _lock_workspace_tree(stage, root_handle=staging_handle):
+            return _create_workspace_snapshot_unlocked(
+                source, stage, max_files=max_files, max_bytes=max_bytes
+            )
+
+
 def _validate_tree(root: Path, *, max_files: int, max_bytes: int) -> tuple[dict[str, Path], dict[str, Path]]:
     if _root(root) != root:
         raise UnsafeWorkspacePathError("workspace root identity changed")
     return _scan(root, max_files=max_files, max_bytes=max_bytes)
 
 
-def _ensure_parent_chain(root: Path, destination: Path) -> None:
+def _ensure_parent_chain(root: Path, destination: Path) -> tuple[Path, ...]:
     relative_parent = destination.parent.relative_to(root)
     current = root
+    created: list[Path] = []
     for part in relative_parent.parts:
         current = current / part
         try:
             info = current.lstat()
         except FileNotFoundError:
             current.mkdir()
+            created.append(current)
             info = current.lstat()
         if _is_reparse(current, info) or not stat.S_ISDIR(info.st_mode):
             raise UnsafeWorkspacePathError(f"destination parent is not a real directory: {current}")
+    return tuple(created)
 
 
-def apply_workspace_changes(
+def _apply_workspace_changes_unlocked(
     snapshot: WorkspaceSnapshot,
     *,
     max_files: int = _DEFAULT_MAX_FILES,
@@ -277,33 +452,113 @@ def apply_workspace_changes(
         if relative in staged_files and _fingerprint(staged_path) != staged_hashes[relative]:
             raise UnsafeWorkspacePathError(f"staged file changed during transfer: {relative}")
 
-    applied: list[str] = []
-    for relative in changed:
-        destination = _relative_confined(source, relative)
-        staged_path = _relative_confined(stage, relative)
-        _ensure_parent_chain(source, destination)
-        if relative in staged_files:
-            temporary = destination.with_name(f".lah-transfer-{uuid.uuid4().hex}.tmp")
-            try:
-                shutil.copyfile(staged_path, temporary, follow_symlinks=False)
-                if _fingerprint(staged_path) != staged_hashes[relative]:
-                    raise UnsafeWorkspacePathError(f"staged file changed during transfer: {relative}")
-                os.replace(temporary, destination)
-            finally:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        else:
+    prepared: list[_PreparedChange] = []
+    created_directories: list[Path] = []
+    committed: list[_PreparedChange] = []
+    preserve_recovery: set[Path] = set()
+    succeeded = False
+    try:
+        for relative in changed:
+            destination = _relative_confined(source, relative)
+            staged_path = _relative_confined(stage, relative)
+            created_directories.extend(_ensure_parent_chain(source, destination))
+            expected = snapshot.baseline.get(relative)
             try:
                 info = destination.lstat()
             except FileNotFoundError:
                 info = None
-            if info is not None:
-                if _is_reparse(destination, info) or not stat.S_ISREG(info.st_mode):
-                    raise UnsafeWorkspacePathError(f"delete target changed type during transfer: {relative}")
-                if _fingerprint(destination) != snapshot.baseline[relative]:
-                    return WorkspaceTransferResult((), (relative,))
-                destination.unlink()
-        applied.append(relative)
-    return WorkspaceTransferResult(tuple(sorted(applied, key=str.casefold)), ())
+            if info is not None and (_is_reparse(destination, info) or not stat.S_ISREG(info.st_mode)):
+                return WorkspaceTransferResult((), (relative,))
+            current = _fingerprint(destination) if info is not None else None
+            if current != expected:
+                return WorkspaceTransferResult((), (relative,))
+
+            content_temp = None
+            if relative in staged_files:
+                descriptor, temp_name = tempfile.mkstemp(prefix=".lah-transfer-", suffix=".tmp", dir=destination.parent)
+                os.close(descriptor)
+                content_temp = Path(temp_name)
+                if _read_workspace_file(staged_path, content_temp) != staged_hashes[relative]:
+                    raise UnsafeWorkspacePathError(f"staged file changed during transfer: {relative}")
+
+            backup = None
+            if current is not None:
+                descriptor, backup_name = tempfile.mkstemp(prefix=".lah-backup-", suffix=".tmp", dir=destination.parent)
+                os.close(descriptor)
+                backup = Path(backup_name)
+                if _read_workspace_file(destination, backup) != current:
+                    raise UnsafeWorkspacePathError(f"source file changed while preparing transfer: {relative}")
+            prepared.append(_PreparedChange(relative, destination, content_temp, backup, expected))
+
+        # Recheck the full write set after preparing temporary files and before
+        # committing the first destination mutation.
+        for change in prepared:
+            try:
+                info = change.destination.lstat()
+            except FileNotFoundError:
+                info = None
+            if info is not None and (_is_reparse(change.destination, info) or not stat.S_ISREG(info.st_mode)):
+                return WorkspaceTransferResult((), (change.relative,))
+            current = _fingerprint(change.destination) if info is not None else None
+            if current != change.expected:
+                return WorkspaceTransferResult((), (change.relative,))
+
+        try:
+            for change in prepared:
+                if change.content_temp is not None:
+                    os.replace(change.content_temp, change.destination)
+                    change.content_temp = None
+                else:
+                    change.destination.unlink()
+                committed.append(change)
+        except Exception as exc:
+            recovery_paths: list[str] = []
+            for change in reversed(committed):
+                try:
+                    if change.backup is not None:
+                        os.replace(change.backup, change.destination)
+                        change.backup = None
+                    else:
+                        change.destination.unlink(missing_ok=True)
+                except Exception:
+                    recovery_paths.append(str(change.backup or change.destination))
+            if recovery_paths:
+                preserve_recovery.update(Path(path) for path in recovery_paths)
+                raise WorkspaceTransferError(
+                    "workspace transfer failed and rollback could not be confirmed",
+                    recovery_paths=tuple(recovery_paths),
+                ) from exc
+            raise WorkspaceTransferError("workspace transfer failed; committed files were rolled back") from exc
+
+        succeeded = True
+        return WorkspaceTransferResult(tuple(sorted(changed, key=str.casefold)), ())
+    finally:
+        for change in prepared:
+            for temporary in (change.content_temp, change.backup):
+                if temporary is not None and temporary not in preserve_recovery:
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        if not succeeded:
+            for directory in reversed(created_directories):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+
+
+def apply_workspace_changes(
+    snapshot: WorkspaceSnapshot,
+    *,
+    max_files: int = _DEFAULT_MAX_FILES,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
+    staging_handle: int | None = None,
+) -> WorkspaceTransferResult:
+    source = _root(snapshot.source_root)
+    stage = _root(snapshot.staging_root)
+    with _lock_workspace_tree(source):
+        with _lock_workspace_tree(stage, root_handle=staging_handle):
+            return _apply_workspace_changes_unlocked(
+                snapshot, max_files=max_files, max_bytes=max_bytes
+            )

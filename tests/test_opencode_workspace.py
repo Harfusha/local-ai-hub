@@ -7,6 +7,7 @@ import pytest
 
 from local_ai_hub.opencode_workspace import (
     UnsafeWorkspacePathError,
+    WorkspaceTransferError,
     apply_workspace_changes,
     create_workspace_snapshot,
 )
@@ -136,6 +137,93 @@ def test_snapshot_never_copies_git_metadata_back(tmp_path: Path):
     assert result.applied == ()
     assert result.conflicts == ()
     assert (project / ".git" / "config").read_text(encoding="utf-8") == "base"
+
+
+def test_snapshot_rolls_back_prior_file_when_a_later_replace_fails(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "a.txt").write_text("base-a", encoding="utf-8")
+    (project / "b.txt").write_text("base-b", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "a.txt").write_text("agent-a", encoding="utf-8")
+    (stage / "b.txt").write_text("agent-b", encoding="utf-8")
+
+    replace = workspace.os.replace
+    calls = 0
+
+    def fail_second_replace(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second-file failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(workspace.os, "replace", fail_second_replace)
+    with pytest.raises(WorkspaceTransferError, match="rolled back"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "a.txt").read_text(encoding="utf-8") == "base-a"
+    assert (project / "b.txt").read_text(encoding="utf-8") == "base-b"
+    assert sorted(path.name for path in project.iterdir()) == ["a.txt", "b.txt"]
+
+
+def test_snapshot_retains_recovery_backup_if_rollback_fails(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "a.txt").write_text("base-a", encoding="utf-8")
+    (project / "b.txt").write_text("base-b", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "a.txt").write_text("agent-a", encoding="utf-8")
+    (stage / "b.txt").write_text("agent-b", encoding="utf-8")
+
+    replace = workspace.os.replace
+    calls = 0
+
+    def fail_commit_and_rollback(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls in {2, 3}:
+            raise OSError("injected commit/rollback failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(workspace.os, "replace", fail_commit_and_rollback)
+    with pytest.raises(WorkspaceTransferError, match="rollback could not be confirmed") as error:
+        apply_workspace_changes(snapshot)
+
+    recovery = [Path(path) for path in error.value.recovery_paths]
+    try:
+        assert recovery
+        assert all(path.exists() for path in recovery)
+        assert any(path.read_text(encoding="utf-8") == "base-a" for path in recovery)
+    finally:
+        for path in recovery:
+            path.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-share semantics only")
+def test_workspace_tree_lock_prevents_nested_directory_replacement(tmp_path: Path):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    nested = project / "nested"
+    project.mkdir()
+    nested.mkdir()
+    replacement = project / "replacement"
+
+    with workspace._lock_workspace_tree(project):
+        with pytest.raises(OSError):
+            nested.rename(replacement)
+
+    assert nested.is_dir()
+    assert not replacement.exists()
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")
