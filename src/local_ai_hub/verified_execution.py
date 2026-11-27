@@ -476,6 +476,10 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
         f"open blocking problems={problems.get('blocking_open', 0)}",
         f"checkpoint blockers={execution.get('checkpoint_blocker_count', 0)}",
     ]
+    if problems.get("deferred_open", 0) or problems.get("rejection_pending_evidence", 0):
+        parts.append(f"Deferred open reports={problems.get('deferred_open', 0)}; "
+                     f"rejections awaiting evidence={problems.get('rejection_pending_evidence', 0)}. "
+                     "Dispositions never waive mandatory verification.")
     if isinstance(inventory, Mapping) and inventory.get("excluded_count", 0):
         parts.append(f"Explicit scope exclusions: {inventory['excluded_count']}; inspect task contract for rationale. "
                      "Coverage does not include excluded resources.")
