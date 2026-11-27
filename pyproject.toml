@@ -59,8 +59,6 @@ local_ai_hub = [
   "defaults.toml",
   "automation_browser.js",
   "grammars/*.gbnf",
-  "ui_static/*",
-  "ui_static/dist/*",
   "data/*.json",
 ]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
@@ -117,7 +115,7 @@ source = ["local_ai_hub"]
 show_missing = true
 
 [tool.mypy]
-python_version = "8.2.0"
+python_version = "3.11"
 mypy_path = "src"
 strict = true
 warn_unused_configs = true
@@ -134,7 +132,6 @@ files = [
   "src/local_ai_hub/python_shell_injection.py",
   "src/local_ai_hub/search_fusion.py",
   "src/local_ai_hub/repository_scope.py",
-  "src/local_ai_hub/dashboard_contracts.py",
   "src/local_ai_hub/operation_contracts.py",
   "src/local_ai_hub/http_scoped_tasks.py",
   "src/local_ai_hub/telemetry_contracts.py",
@@ -149,7 +146,7 @@ files = [
 ]
 
 [tool.ruff]
-target-version = "8.2.0"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]

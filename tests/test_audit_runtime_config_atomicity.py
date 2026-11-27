@@ -96,7 +96,7 @@ def test_runtime_override_replace_failure_preserves_both_files_and_cleans_temp(t
     monkeypatch.setattr(config_module.os, "replace", fail_target_replace)
 
     with pytest.raises(OSError, match="injected atomic publication failure"):
-        config_module.save_runtime_overrides(config_path, {"features": {"dashboard": False}})
+        config_module.save_runtime_overrides(config_path, {"features": {"rag": False}})
 
     assert config_path.read_bytes() == primary_bytes
     assert target.read_bytes() == original_override

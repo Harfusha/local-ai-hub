@@ -4,6 +4,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 import tools
 import tools.hubctl as hubctl
 
@@ -63,14 +65,12 @@ def test_hubctl_watch_dispatch_calls_monitor_and_returns_status(monkeypatch):
     assert Path(calls[0][1]) == hubctl.ROOT / "tools" / "monitor.py"
 
 
-def test_hubctl_dashboard_dispatch_prints_client_url(monkeypatch, capsys):
-    class Client:
-        base_url = "http://127.0.0.1:11436"
+def test_hubctl_rejects_legacy_dashboard_command(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as error:
+        _invoke(monkeypatch, "dashboard")
 
-    monkeypatch.setattr(hubctl, "client", lambda: Client())
-
-    assert _invoke(monkeypatch, "dashboard") == 0
-    assert capsys.readouterr().out.strip() == "http://127.0.0.1:11436/dashboard"
+    assert error.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_hubctl_service_status_dispatch_reads_status_file(monkeypatch, tmp_path, capsys):

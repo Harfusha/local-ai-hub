@@ -1,6 +1,8 @@
 """Tests for speculative decoding engine and verification logic."""
 
-import torch
+import pytest
+
+torch = pytest.importorskip("torch", exc_type=ModuleNotFoundError)
 
 from src.local_ai_hub.speculative_decoding import speculative_step
 

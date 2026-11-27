@@ -1,6 +1,8 @@
 """Tests for DPO loss computation and sequence log-probabilities."""
 
-import torch
+import pytest
+
+torch = pytest.importorskip("torch", exc_type=ModuleNotFoundError)
 
 from tools.model_training.train_dpo import compute_sequence_logps, dpo_loss
 

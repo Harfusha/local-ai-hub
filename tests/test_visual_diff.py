@@ -1,6 +1,8 @@
 """Tests for Visual Diff and UI Regression Verifier."""
 
-from PIL import Image
+import pytest
+
+Image = pytest.importorskip("PIL.Image", exc_type=ModuleNotFoundError)
 
 from src.local_ai_hub.visual_diff_verifier import (
     compute_dhash,

@@ -409,6 +409,7 @@ class PreprocessRegistryMixin:
 
     def notify_path_changed(
         self, changed_path: str, *, fast_path: bool = False, root_hint: str | None = None,
+        watcher_event: str = "",
     ) -> bool:
         """Coalesce watcher events and queue only the owning registered project."""
         from . import preprocess as services_module
@@ -449,6 +450,14 @@ class PreprocessRegistryMixin:
                 paths = self._dirty_paths.setdefault(root, set())
                 first = not paths
                 paths.add(rel)
+                if watcher_event in {"created", "modified", "deleted", "moved"}:
+                    events = getattr(self, "_recent_watch_events", None)
+                    if events is not None:
+                        key = (root, rel)
+                        events.pop(key, None)
+                        events[key] = (services_module.time.time(), watcher_event)
+                        while len(events) > 2048:
+                            events.pop(next(iter(events)))
             if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
                 self.ingest_cache.invalidate(rel, root=root)
                 self._watch_revisions[root] = self._watch_revisions.get(root, 0) + 1
@@ -485,6 +494,17 @@ class PreprocessRegistryMixin:
         if matched_any:
             self._cpu_wakeup.set()
         return matched_any
+
+    def recent_change_events(self, root: str, paths: list[str]) -> dict[str, dict[str, Any]]:
+        """Return bounded, ephemeral watcher observations; never infer authorship."""
+        from . import preprocess as services_module
+        resolved = self._root(root)
+        cutoff = services_module.time.time() - 3600
+        with self._dirty_lock:
+            events = getattr(self, "_recent_watch_events", {})
+            return {path: {"observed_at": entry[0], "event": entry[1]}
+                    for path in paths[:256] if (entry := events.get((resolved, path))) is not None
+                    and entry[0] >= cutoff}
 
     def cache_fingerprint(self, root: str) -> dict[str, Any] | None:
         """Return a zero-process watcher revision for any initialized project.

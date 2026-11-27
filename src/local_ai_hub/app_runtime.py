@@ -13,7 +13,7 @@ from .app import (
     CommandBroker as CommandBroker,
     ContextCompiler as ContextCompiler,
     DEFAULT_IDLE_UNLOAD_SECONDS as DEFAULT_IDLE_UNLOAD_SECONDS,
-    DashboardUpdates as DashboardUpdates,
+    DesktopUpdates as DesktopUpdates,
     DebugTraceStore as DebugTraceStore,
     DeterministicEngine as DeterministicEngine,
     EmbeddingModel as EmbeddingModel,
@@ -79,7 +79,7 @@ LocalAIApp = None
 class AppRuntimeMixin:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
-        self.dashboard_updates = DashboardUpdates(self.config.get("_config_path"))
+        self.desktop_updates = DesktopUpdates(self.config.get("_config_path"))
         state_dir = Path(self.config["server"]["state_dir"])
         ensure_state_version(state_dir)
         require_canonical_agent_state_database(state_dir)
@@ -393,7 +393,7 @@ class AppRuntimeMixin:
             from .hardware import detect_hardware
             threading.Thread(target=detect_hardware, name="local-ai-hardware-warmup", daemon=True).start()
             def _status_ticker() -> None:
-                # Avoid making periodic refreshes compete with MCP/dashboard
+                # Avoid making periodic refreshes compete with MCP/desktop
                 # callers when a status collection runs longer than its cache TTL.
                 while not self._shutdown.wait(30.0):
                     try:
@@ -805,7 +805,6 @@ class AppRuntimeMixin:
                 "preprocessing": fs.preprocessing,
                 "subagents": fs.subagents,
                 "agent_os": fs.agent_os,
-                "dashboard": fs.dashboard,
                 "work_orchestrator": fs.work_orchestrator,
                 "vision": fs.vision,
             },

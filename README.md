@@ -6,7 +6,7 @@ Local AI Hub **8.2.1** is a local, deterministic-first tool and inference layer 
 
 The public interface is intentionally small: **7 MCP tools** (`local_ai_status`, `local_ai_task`, `local_ai_repo`, `local_ai_rag`, `local_ai_coord`, `local_ai_work`, `local_ai_artifact`). Serena is managed behind that surface by default, so agents gain language-aware symbols without paying for additional MCP schemas on every turn.
 
-Local AI Hub 8.2.1 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
+Local AI Hub 8.2.1 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and operator state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
 
 ## What it does
 
@@ -21,7 +21,7 @@ Local AI Hub 8.2.1 uses one current runtime contract across packaging, HTTP, MCP
 - exact evidence IDs and artifact-backed large responses;
 - model-affinity scheduling, bounded fallbacks and optional local backends (Ollama is disabled by default);
 - automatic hardware profile selection across Windows, macOS and Linux, including NVIDIA, AMD, Intel and Apple graphics detection;
-- metadata-only telemetry, realtime monitoring and a self-contained dashboard;
+- metadata-only telemetry, realtime monitoring and a native desktop control surface;
 - **Agent Operating System**: durable execution state, scoped key-value memory, exact token-bounded context compilation, verification receipts, and negative knowledge incident avoidance;
 - **Token Economy Suite**: CLI tools (`tokcount`, `trim-run`, `repo-map`), AST structural search, ANSI-stripped output truncation, and automated context budgeting. See [docs/TOKEN_ECONOMY.md](docs/TOKEN_ECONOMY.md).
 
@@ -177,7 +177,7 @@ Run `python tools/hubctl.py generate` (or `python tools/setup.py --generate-only
 
 Profiles: `cpu`, `integrated`, `low`, `balanced`, `medium`, `high`, `max`.
 
-The **Preprocessing** activity mode gives registered projects priority over ordinary Hub requests. Select it in the dashboard or run `python tools/hubctl.py mode preprocessing` while the Hub is online; return to Active with `python tools/hubctl.py mode active`. It resumes registered projects and incrementally rechecks completed inventories while retaining existing caches. By default it also enriches eligible unparsed-file stubs with the configured preprocessing model, keeping the original card until a schema-valid replacement is available; set `[preprocessing.exclusive] enrich_stub_cards = false` to retain the ordinary speed shortcut. Project exclusions, phase skips, file-size limits and diagnostic opt-in still apply. The selected profile supplies `[preprocessing.exclusive]` limits for `max_projects`, `cpu_workers`, and `model_parallel`; set those keys in `config.toml` to override them. CPU workers are capped by logical CPUs. Pending jobs are cancelled, tracked inference must drain before entry, and the mode remains selected until changed. `GET /api/mode` reports `preprocessing_ready`; if false, resolve the reported failure and select Preprocessing again. Resource limits are targets, not measured guarantees of throughput or factual quality.
+The **Preprocessing** activity mode gives registered projects priority over ordinary Hub requests. Select it in the desktop or run `python tools/hubctl.py mode preprocessing` while the Hub is online; return to Active with `python tools/hubctl.py mode active`. It resumes registered projects and incrementally rechecks completed inventories while retaining existing caches. By default it also enriches eligible unparsed-file stubs with the configured preprocessing model, keeping the original card until a schema-valid replacement is available; set `[preprocessing.exclusive] enrich_stub_cards = false` to retain the ordinary speed shortcut. Project exclusions, phase skips, file-size limits and diagnostic opt-in still apply. The selected profile supplies `[preprocessing.exclusive]` limits for `max_projects`, `cpu_workers`, and `model_parallel`; set those keys in `config.toml` to override them. CPU workers are capped by logical CPUs. Pending jobs are cancelled, tracked inference must drain before entry, and the mode remains selected until changed. `GET /api/mode` reports `preprocessing_ready`; if false, resolve the reported failure and select Preprocessing again. Resource limits are targets, not measured guarantees of throughput or factual quality.
 
 Preprocessing resource limits are doubled in both activity modes. Values are `projects / CPU workers / background model parallelism`; `background_gpu` remains disabled for `cpu` and `integrated`.
 
@@ -307,11 +307,9 @@ USD savings use separate configurable rates: saved cloud input tokens are priced
 
 Savings sources are intentionally deduplicated: overlapping input-side transformations (for example raw source → deterministic outline → packed context) compete for the strongest measured counterfactual source baseline rather than being summed. The packed/projected tool response is then charged exactly once as actual agent-read cost. Response compaction is reported separately and is used as the headline baseline only when no stronger upstream source baseline exists, preventing raw → packed → projected double counting. Cache/single-flight reuse is tracked as `local_compute_tokens_avoided_est` and is not added to cloud-context savings. Telemetry stores only bounded numeric/category metadata; tool arguments, source, prompts and tool output are never persisted by the accounting path.
 
-## Dashboard and diagnostics
+## Native desktop and diagnostics
 
-Dashboard: `http://127.0.0.1:11435/dashboard`
-
-It shows hub/Ollama state, Agent OS tasks/memory records, selected hardware profile, CPU/RAM/graphics, scheduler/model activity, preprocessing progress including Serena, code-intelligence backend status, cache/token-saving counters and metadata-only activity/error telemetry.
+The desktop is a native Rust/egui application. From a trusted Hub checkout, build it with `cargo build --manifest-path desktop/Cargo.toml --release`, then run `python tools/hubctl.py desktop`. The HTTP and MCP APIs remain available. See [desktop installation and operation](docs/DESKTOP.md) and the [parity register](docs/DESKTOP_PARITY.md) for verification and migration status.
 
 ```bash
 python tools/doctor.py
@@ -345,7 +343,7 @@ See `SECURITY.md` for reporting and deployment guidance.
 - `docs/CONFIGURATION.md` — configuration/hardware/code-intelligence settings
 - `docs/MCP_AND_AGENTS.md` — tool-first agent routing
 - `docs/HTTP_API.md` — HTTP contracts
-- `docs/DASHBOARD.md` — operator UI
+- `docs/DESKTOP_PARITY.md` — desktop operator UI and migration register
 - `docs/OPERATIONS.md` — service operations and recovery
 - `docs/SECURITY_MODEL.md` — trust boundaries
 - `docs/TESTING.md` — test/release gate

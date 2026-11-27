@@ -6,6 +6,21 @@ from uuid import uuid4
 from .http_server_proxy import services_module
 
 
+def split_change_paths_from_payload(payload: Any) -> list[str] | None:
+    if not isinstance(payload, dict):
+        raise ValueError("split_changes request must be an object")
+    retired_fields = sorted({"paths", "changed_files"}.intersection(payload))
+    if retired_fields:
+        raise ValueError(f"Unsupported split_changes field(s): {', '.join(retired_fields)}; use changed_paths")
+    changed_paths = payload.get("changed_paths")
+    if changed_paths is not None and (
+        not isinstance(changed_paths, list)
+        or any(not isinstance(path, str) or not path.strip() for path in changed_paths)
+    ):
+        raise ValueError("changed_paths must be a list of non-empty strings")
+    return changed_paths
+
+
 class HTTPPostRoutesMixin:
     def _handle_post_opencode_gateway(self, payload: Any) -> None:
         """Run OpenAI chat requests only through Hub policy and scheduler."""
@@ -45,12 +60,6 @@ class HTTPPostRoutesMixin:
         except Exception:
             self._send(503, {"success": False, "error": "local model inventory unavailable", "terminal": True, "retryable": False})
             return
-        options = request.setdefault("options", {})
-        if "num_ctx" not in options:
-            if request["model"].startswith("qwen3.5:") or request["model"].startswith("gemma4:"):
-                options["num_ctx"] = 131072
-            elif request["model"].startswith("qwen2.5-coder:"):
-                options["num_ctx"] = 32768
         try:
             result = app.services.proxy_request(
                 "/api/chat", request, source="proxy:opencode",
@@ -109,7 +118,7 @@ class HTTPPostRoutesMixin:
         if not self._require_authorized():
             return
         if path == "/api/updates":
-            self._handle_dashboard_updates(mutate=True)
+            self._handle_desktop_updates(mutate=True)
             return
         early_mode_rejection = None
         if path != "/api/context/pack":
@@ -262,7 +271,7 @@ class HTTPPostRoutesMixin:
             "/api/repo/state", "/api/repo/hotspots",
             "/api/hotspots", "/api/repo/generate_tests_for_diff",
             "/api/generate_tests_for_diff", "/api/repo/affected_tests",
-            "/api/repo/topology", "/api/git/synthesize_commit", "/api/test_matrix",
+            "/api/repo/topology", "/api/test_matrix",
             "/api/security_audit", "/api/code-intelligence/query",
             "/api/code-intelligence/reset", "/api/repo/dead_code",
             "/api/symbol_callgraph",
@@ -523,15 +532,6 @@ class HTTPPostRoutesMixin:
                 f_root = str(payload.get("frontend_root", payload.get("client_root", ".")))
                 if services_module.APP.deterministic is not None:
                     self._send(200, services_module.APP.services.cross_repo_contract(b_root, f_root))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
-            if 'post_git_synthesize_commit_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                hint = str(payload.get("hint", payload.get("message", "")))
-                task_id = str(payload.get("task_id", ""))
-                if services_module.APP.deterministic is not None:
-                    self._send(200, services_module.APP.services.synthesize_commit(root, hint, task_id=task_id))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
@@ -805,10 +805,10 @@ class HTTPPostRoutesMixin:
                 from .repo_knowledge_management import manage_repository_knowledge
                 def knowledge_operator_write() -> bool:
                     # Local-owner trust is established by normal Host/Origin and
-                    # loopback checks above; the dashboard marker is not identity.
+                    # loopback checks above; the desktop marker is not identity.
                     return (
                         getattr(self, "_authorization_actor", "") == "local"
-                        and self.headers.get("X-LocalAI-Client", "") == "dashboard"
+                        and self.headers.get("X-LocalAI-Client", "") == "desktop"
                         and self.headers.get("Sec-Fetch-Site", "").lower() == "same-origin"
                         and bool(self.headers.get("Origin", "").strip())
                     )
@@ -1086,8 +1086,19 @@ class HTTPPostRoutesMixin:
                 self._handle_task_automation(payload); return
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
-                paths = payload.get("paths", payload.get("changed_files"))
-                self._send(200, services_module.APP.services.split_changes(root, paths)); return
+                try:
+                    paths = split_change_paths_from_payload(payload)
+                except ValueError as exc:
+                    self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                    return
+                result = services_module.APP.services.split_changes(
+                    root, paths, mode=payload.get("mode", "summary"),
+                    limit=payload.get("limit", 8), offset=payload.get("offset", 0),
+                    base=payload.get("base"), head=payload.get("head", "HEAD"), task_id=payload.get("task_id", ""),
+                    expected_revision=payload.get("expected_revision"),
+                    continuation_revision=payload.get("continuation_revision"),
+                )
+                self._send(200, result); return
             if 'post_repo_synthesize_rules_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 10))

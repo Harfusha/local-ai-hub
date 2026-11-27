@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import test from "node:test"
-import { appendHubContextGuidance, appendPostEditContext, appendProactivePlanContext, opencodeEditedPath, opencodePermissionCommand, opencodePreToolTarget, selectHubTools, usesNativeMcp } from "./index.js"
+import { appendHubContextGuidance, appendPostEditContext, appendProactivePlanContext, openManagedMcpPipe, opencodeEditedPath, opencodePermissionCommand, opencodePreToolTarget, selectHubTools, usesManagedMcpPipe, usesNativeMcp } from "./index.js"
 
 const coreTools = ["local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_coord", "local_ai_artifact", "local_ai_rag"]
 const tool = name => ({ name, description: name, inputSchema: { type: "object" } })
@@ -17,6 +18,124 @@ test("OpenCode extension leaves Hub tool transport to the native MCP client when
   assert.equal(usesNativeMcp({ nativeMcp: true }), true)
   assert.equal(usesNativeMcp({ nativeMcp: false }), false)
   assert.equal(usesNativeMcp({}), false)
+})
+
+test("managed MCP pipe retries pre-connect pipe races, then completes one authenticated request", async () => {
+  const secret = "ab".repeat(32)
+  const server = {
+    transport: "managed_pipe",
+    environment: {
+      LOCAL_AI_PIPE_NAME: String.raw`\\.\pipe\lah-opencode-${"a".repeat(32)}`,
+      LOCAL_AI_PIPE_SECRET: secret,
+    },
+  }
+  assert.equal(usesManagedMcpPipe(server), true)
+  let connections = 0
+  let requestWrites = 0
+  class PipeSocket extends EventEmitter {
+    destroyed = false
+    write(data, callback) {
+      if (data.length === 1 && data[0] === 6) {
+        callback?.()
+        return true
+      }
+      requestWrites += 1
+      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-03-26" } }))
+      const response = Buffer.from(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n`)
+      const payload = Buffer.concat([response, body])
+      const frame = Buffer.alloc(payload.length + 4)
+      frame.writeUInt32BE(payload.length, 0)
+      payload.copy(frame, 4)
+      queueMicrotask(() => this.emit("data", Buffer.concat([frame, Buffer.alloc(4)])))
+      return true
+    }
+    end() { queueMicrotask(() => this.emit("close")) }
+    destroy() { this.destroyed = true; queueMicrotask(() => this.emit("close")) }
+  }
+  const pipe = openManagedMcpPipe(server, {
+    connectPipe: () => {
+      connections += 1
+      const socket = new PipeSocket()
+      if (connections === 1) queueMicrotask(() => socket.emit("error", Object.assign(new Error("pipe instance not ready"), { code: "ENOENT" })))
+      else queueMicrotask(() => socket.emit("connect"))
+      return socket
+    },
+  })
+  assert.deepEqual(await pipe.request("initialize", { protocolVersion: "2025-03-26" }), { protocolVersion: "2025-03-26" })
+  assert.equal(connections, 2)
+  assert.equal(requestWrites, 1)
+  pipe.stop()
+})
+
+test("managed MCP pipe never retries after request bytes may have been sent", async () => {
+  const server = {
+    transport: "managed_pipe",
+    environment: {
+      LOCAL_AI_PIPE_NAME: String.raw`\\.\pipe\lah-opencode-${"b".repeat(32)}`,
+      LOCAL_AI_PIPE_SECRET: "cd".repeat(32),
+    },
+  }
+  let connections = 0
+  class PipeSocket extends EventEmitter {
+    destroyed = false
+    write(data) {
+      if (!(data.length === 1 && data[0] === 6)) {
+        queueMicrotask(() => this.emit("error", new Error("connection lost after send")))
+      }
+      return true
+    }
+    destroy() { this.destroyed = true; queueMicrotask(() => this.emit("close")) }
+  }
+  const pipe = openManagedMcpPipe(server, {
+    connectPipe: () => {
+      connections += 1
+      const socket = new PipeSocket()
+      queueMicrotask(() => socket.emit("connect"))
+      return socket
+    },
+  })
+  await assert.rejects(pipe.request("initialize", {}), /after request send; outcome may be unknown/)
+  assert.equal(connections, 1)
+})
+
+test("managed MCP pipe stop aborts pending acknowledgement and cleans up", async () => {
+  const server = {
+    transport: "managed_pipe",
+    environment: {
+      LOCAL_AI_PIPE_NAME: String.raw`\\.\pipe\lah-opencode-${"c".repeat(32)}`,
+      LOCAL_AI_PIPE_SECRET: "ef".repeat(32),
+    },
+  }
+  let socket
+  class PipeSocket extends EventEmitter {
+    destroyed = false
+    write(data, callback) {
+      if (data.length === 1 && data[0] === 6) {
+        queueMicrotask(() => this.emit("ack-pending"))
+        return true
+      }
+      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }))
+      const response = Buffer.from(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n`)
+      const payload = Buffer.concat([response, body])
+      const frame = Buffer.alloc(payload.length + 4)
+      frame.writeUInt32BE(payload.length, 0)
+      payload.copy(frame, 4)
+      queueMicrotask(() => this.emit("data", Buffer.concat([frame, Buffer.alloc(4)])))
+      return true
+    }
+    destroy() { this.destroyed = true; queueMicrotask(() => this.emit("close")) }
+  }
+  const pipe = openManagedMcpPipe(server, {
+    connectPipe: () => {
+      socket = new PipeSocket()
+      queueMicrotask(() => socket.emit("connect"))
+      return socket
+    },
+  })
+  const pending = pipe.request("initialize", {})
+  await new Promise(resolve => socket.once("ack-pending", resolve))
+  pipe.stop()
+  await assert.rejects(pending, /managed MCP pipe stopped/)
 })
 
 test("OpenCode static hook accepts only bounded absolute edit paths", () => {

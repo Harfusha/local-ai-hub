@@ -31,3 +31,49 @@ def test_tools_list_wire_exposes_action_scoped_repo_steps() -> None:
     assert validate_operation_arguments("local_ai_repo", "search", {
         "action": "search", "root": "C:/repo", "query": "x", "steps": [],
     }) == "steps is not valid for action='search'"
+
+def test_context_compile_minimum_wire_budget_keeps_recovery_instruction() -> None:
+    import json
+
+    from local_ai_hub.token_accounting import json_tokens
+
+    content, structured = mcp_server._mcp_budget_payload(
+        "local_ai_coord",
+        {"action": "context_compile", "max_response_tokens": 128, "response_profile": "minimal",
+         "extra_fields": ["response_budget"]},
+        {"success": False, "error": "max_response_tokens too small",
+         "next_action": "request_larger_response_budget",
+         "response_budget": {"requested_tokens": 128, "returned_tokens": 0, "rejected": True}},
+    )
+    value = structured if structured is not None else json.loads(content[0].text)
+    assert value["success"] is False
+    assert value["next_action"] == "request_larger_response_budget"
+    assert value["response_budget"]["rejected"] is True
+    wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content], "isError": False}
+    wire["structuredContent"] = value
+    assert value["response_budget"]["returned_tokens"] == json_tokens(wire)
+    assert json_tokens(wire) <= 128
+
+def test_context_compile_lost_artifact_pointer_returns_exact_recovery(monkeypatch) -> None:
+    import json
+
+    from local_ai_hub.token_accounting import json_tokens
+
+    pointer = "artifact-" + "a" * 64
+    rejected = {"success": False, "error": "max_response_tokens too small"}
+    monkeypatch.setattr(mcp_server, "_build_mcp_budget_payload",
+                        lambda *args: ([t.TextContent(type="text", text=json.dumps(rejected))], rejected))
+    content, structured = mcp_server._mcp_budget_payload(
+        "local_ai_coord",
+        {"action": "context_compile", "max_response_tokens": 1024, "response_profile": "compact",
+         "extra_fields": ["response_budget"]},
+        {"success": False, "task_context_artifact_id": pointer, "next_action": "read_task_context_artifact"},
+    )
+    value = structured if structured is not None else json.loads(content[0].text)
+    assert value["success"] is False and value["complete"] is False
+    assert value["task_context_artifact_id"] == pointer
+    assert value["next_action"] == "read_task_context_artifact"
+    wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content], "isError": False}
+    wire["structuredContent"] = value
+    assert value["response_budget"]["returned_tokens"] == json_tokens(wire)
+    assert json_tokens(wire) <= 1024

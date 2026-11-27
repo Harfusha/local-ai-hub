@@ -2631,6 +2631,8 @@ class AffinityScheduler:
         }
 
     def status(self) -> dict[str, Any]:
+        # Status is an observational snapshot, not an admission decision.
+        # Avoid repeated external store reads while holding the queue lock.
         external_gpu_reserved = self._external_gpu_reserved()
         external_gpu_blocked = self._external_gpu_blocks_scheduler()
         capacity_sharing_active = self._capacity_sharing_active()

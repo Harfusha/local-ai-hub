@@ -340,6 +340,8 @@ def _agent_output(
     value: Any,
     tool: str,
     arguments: dict[str, Any],
+    *,
+    retain_internal_metadata: bool = False,
 ) -> Any:
     """Keep internal observations out of ordinary agent responses.
 
@@ -349,6 +351,23 @@ def _agent_output(
     services_module = _get_services_module()
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
+    # Full telemetry capture stays internal. It must not turn every ordinary
+    # agent response into a diagnostics response; agent_diagnostics_enabled
+    # also requires the explicit debug profile or output-diagnostics setting.
+    internal_fields = (
+        {key: value[key] for key in ("response_budget", "token_efficiency", "request_id", "reused") if key in value}
+        if retain_internal_metadata and isinstance(value, dict) else {}
+    )
+    recovery_fields = (
+        {key: value[key] for key in ("next_action", "task_context_artifact_id") if isinstance(value.get(key), str)}
+        if tool == "local_ai_coord" and arguments.get("action") == "context_compile"
+        and isinstance(value, dict) and value.get("success") is False else {}
+    )
+    truncated = (
+        isinstance(value, dict)
+        and isinstance(value.get("response_budget"), dict)
+        and value["response_budget"].get("truncated") is True
+    )
     projector = (services_module.project_status_response if tool == "local_ai_status"
                  else services_module.project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"
@@ -373,7 +392,24 @@ def _agent_output(
     if profile == "minimal" and tool != "local_ai_status" and isinstance(result, dict) and result.get("success") is True:
         result = _project_minimal_agent_response(result, tool=tool, action=str(arguments.get("action", "")))
 
-    return services_module._reconcile_existing_budget(result) or result
+    if isinstance(result, dict):
+        if retain_internal_metadata:
+            result.update(internal_fields)
+        result.update(recovery_fields)
+        if truncated:
+            result["truncated"] = True
+    result = services_module._reconcile_existing_budget(result) or result
+    if retain_internal_metadata:
+        return result
+    # Reconciliation updates accounting after the first projection. Project
+    # once more so that private envelope fields stay off the wire by default.
+    projected = projector(result, enabled=detail_enabled, extra_fields=extra)
+    # Error correlation is part of the public failure contract, not telemetry.
+    if isinstance(value, dict) and isinstance(projected, dict) and projected.get("success") is False:
+        if isinstance(value.get("request_id"), str):
+            projected["request_id"] = value["request_id"][:160]
+        projected.update(recovery_fields)
+    return projected
 
 def _instrumented_tool(services_module: Any = None):
     if services_module is None:
@@ -557,7 +593,7 @@ def _instrumented_tool(services_module: Any = None):
                         clean = candidate
                         handoff_added = True
             clean = services_module._agent_output(
-                clean, fn.__name__, arguments,
+                clean, fn.__name__, arguments, retain_internal_metadata=True,
             )
             if (
                 isinstance(clean, dict)
@@ -573,11 +609,14 @@ def _instrumented_tool(services_module: Any = None):
             contract_action = arguments.get(selector, parameter.default if parameter is not None else "")
             output_error = services_module.validate_operation_output(fn.__name__, str(contract_action), clean)
             if output_error is not None:
+                request_id = clean.get("request_id") if isinstance(clean, dict) else None
                 clean = {
                     "success": False, "status_code": 500, "terminal": True, "retryable": False,
                     "error": f"MCP output contract failed: {output_error}",
                     "failure_kind": "output_contract_violation",
                 }
+                if isinstance(request_id, str):
+                    clean["request_id"] = request_id[:160]
             duration_ms = (services_module.time.monotonic() - started) * 1000
             call_success = isinstance(clean, dict) and clean.get("success") is True
             services_module._record_adoption(fn.__name__, arguments, clean, duration_ms, recommended=handoff_added, event_id=call_event_id)

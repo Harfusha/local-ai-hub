@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .artifacts import ArtifactStore
 from .config import load_config
-from .dashboard_updates import DashboardUpdates
+from .desktop_updates import DesktopUpdates
 from .embeddings import EmbeddingModel
 from .ollama import OllamaRuntime
 from .tiered_ollama import TieredOllamaRuntime
@@ -215,7 +215,7 @@ _STATUS_METADATA_KEYS = frozenset(
     for name in ("telemetry.summary", "preprocessing.status")
 ) | frozenset({
     # These read-only counters are diagnostic and can be reused across the
-    # short dashboard refresh window when their probe outlives its deadline.
+    # short operator refresh window when their probe outlives its deadline.
     "debug_traces",
     "runtime_stats.generation_cache",
     "runtime_stats.repo_cache",
@@ -263,7 +263,7 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
                         diagnostic.update(dependency_cached=True, dependency_age_ms=int(age * 1000))
                     return {"entry": cached, "fallback": fallback}
                 # Refresh inside the validity window. A report slower than the
-                # per-probe deadline must not make every dashboard poll fail.
+                # per-probe deadline must not make every operator poll fail.
                 refresh_entry, refresh_age = cached, age
             else:
                 del completed_cache[key]
@@ -607,7 +607,7 @@ __all__ = [
     'CompletionGateError',
     'ContextCompiler',
     'DEFAULT_IDLE_UNLOAD_SECONDS',
-    'DashboardUpdates',
+    'DesktopUpdates',
     'DebugTraceStore',
     'DeterministicEngine',
     'EmbeddingModel',

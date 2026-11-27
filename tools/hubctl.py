@@ -247,7 +247,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge", "changes"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
@@ -267,7 +267,18 @@ def main() -> int:
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory or knowledge search query")
     parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
+    parser.add_argument("--verification-file", type=Path, default=None, help="Explicit exact-tree verification manifest JSON")
+    parser.add_argument("--rerun-checks", action="store_true", help="Force fresh exact-tree checks instead of reusing current receipts")
+    parser.add_argument("--hunk-id", action="append", default=[], help="Exact unstaged hunk ID for partial staging (repeatable)")
+    parser.add_argument("--allow-mixed-staged", action="store_true", help="Explicitly commit the reviewed staged tree while leaving other hunks unstaged")
+    parser.add_argument("--expected-tree", default="", help="Exact reviewed staged Git tree ID")
     parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
+    parser.add_argument("--change-limit", type=int, choices=range(1, 9), default=8,
+                        help="Change-plan page size for changes summary/details/delta")
+    parser.add_argument("--change-offset", type=int, default=0,
+                        help="Change-plan page offset; continuation requires the prior page revision")
+    parser.add_argument("--continuation-revision", default=None,
+                        help="Opaque current snapshot cursor returned by a prior changes delta page")
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
@@ -289,6 +300,10 @@ def main() -> int:
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
+    if args.action != "changes" and (
+        args.change_limit != 8 or args.change_offset != 0 or args.continuation_revision is not None
+    ):
+        parser.error("change pagination options require the changes action")
     if args.action == "mode":
         if args.sub_arg is not None and args.sub_arg not in ACTIVITY_MODES:
             parser.error(f"MODE must be one of: {', '.join(ACTIVITY_MODES)}")
@@ -296,6 +311,54 @@ def main() -> int:
     elif args.action in {"pause", "resume"}:
         if args.sub_arg is not None:
             parser.error(f"Action '{args.action}' takes no arguments")
+        requested_mode = None
+    elif args.action == "changes":
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply", "sequence-suggest", "verification-policy", "annotate"} or args.root is None:
+            parser.error("changes requires --root and a supported subcommand")
+        if args.sub_arg == "verification-policy" and (args.apply or args.base or args.changed_path or args.record_file or args.verification_file):
+            parser.error("verification-policy is a read-only local manifest template")
+        if args.continuation_revision is not None and args.sub_arg != "delta":
+            parser.error("--continuation-revision requires changes delta")
+        if args.change_offset < 0 or args.change_offset > 100000:
+            parser.error("--change-offset must be between 0 and 100000")
+        paged_modes = {None, "summary", "details", "semantic", "pr", "release", "delta"}
+        if args.sub_arg not in paged_modes and (args.change_limit != 8 or args.change_offset != 0):
+            parser.error("change pagination options require a paged changes view")
+        if args.sub_arg == "sequence-suggest" and (args.apply or args.base or args.changed_path or args.record_file):
+            parser.error("sequence-suggest is read-only and observes the complete staged scope")
+        if args.sub_arg == "annotate":
+            if not args.apply or args.dry_run or args.base or not args.expected_revision or not args.record_file:
+                parser.error("annotate requires --apply, --expected-revision and --record-file")
+        elif args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
+            if args.base or not all((args.expected_revision, args.expected_tree, args.record_file, args.changed_path)):
+                parser.error("sequence requires --record-file, --expected-revision, --expected-tree and exact --changed-path values")
+            if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status"} and args.apply:
+                parser.error("sequence preview/verification cannot apply")
+            if args.sub_arg == "sequence-preview" and args.verification_file:
+                parser.error("sequence-preview does not accept verification commands")
+            if args.sub_arg in {"sequence-verify", "sequence-status"} and not args.verification_file:
+                parser.error("sequence verification/status requires --verification-file")
+            if args.sub_arg == "sequence-status" and not args.preview_digest:
+                parser.error("sequence-status requires --preview-digest")
+            if args.sub_arg == "sequence-apply" and not args.verification_file:
+                parser.error("sequence-apply requires --verification-file with exact-tree checks")
+            if args.sub_arg == "sequence-apply" and (not args.apply or args.dry_run or not args.preview_digest):
+                parser.error("sequence-apply requires --apply and --preview-digest")
+        elif args.sub_arg in {"stage-preview", "stage-apply"}:
+            if args.base or not args.expected_revision or not args.changed_path:
+                parser.error("staging requires exact --expected-revision and --changed-path values")
+            if args.sub_arg == "stage-apply" and (not args.apply or args.dry_run or not args.expected_tree):
+                parser.error("stage-apply requires --apply and --expected-tree from preview")
+            if args.sub_arg == "stage-preview" and args.apply:
+                parser.error("stage-preview cannot apply")
+        elif args.apply:
+            parser.error("only stage-apply or sequence-apply accepts --apply")
+        if args.hunk_id and args.sub_arg not in {"stage-preview", "stage-apply"}:
+            parser.error("--hunk-id requires stage-preview or stage-apply")
+        if args.allow_mixed_staged and args.sub_arg not in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
+            parser.error("--allow-mixed-staged requires a commit sequence operation")
+        if args.sub_arg == "commit-inspect" and not args.operation_id:
+            parser.error("commit-inspect requires --operation-id")
         requested_mode = None
     elif args.action == "knowledge":
         if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
@@ -352,6 +415,140 @@ def main() -> int:
         parser.error(f"Unrecognized argument '{args.sub_arg}' for action '{args.action}'")
     else:
         requested_mode = None
+
+    if args.rerun_checks and (args.action != "changes" or args.sub_arg != "sequence-verify"):
+        parser.error("--rerun-checks requires changes sequence-verify")
+    if args.action == "changes":
+        if args.sub_arg == "verification-policy":
+            from local_ai_hub.change_tree_verification import verification_manifest_template
+            from local_ai_hub.repository_scope import authorized_repository_root
+
+            config = load_config(_config_arg(args.config))
+            root = authorized_repository_root(config, str(args.root.resolve()))
+            result = verification_manifest_template(root)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
+        if args.sub_arg == "sequence-suggest":
+            from local_ai_hub.change_commit_sequence import suggest_sequence
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.repository_scope import authorized_repository_root
+
+            config = load_config(_config_arg(args.config))
+            root = authorized_repository_root(config, str(args.root.resolve()))
+            result = suggest_sequence(DeterministicEngine(config).split_changes(root, None), args.expected_revision)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
+        if args.sub_arg == "annotate":
+            from local_ai_hub.change_ledger import ChangeLedger
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.repository_scope import authorized_repository_root
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            root = authorized_repository_root(config, str(args.root.resolve()))
+            with args.record_file.open("rb") as stream:
+                raw = stream.read(100001)
+            if len(raw) > 100000:
+                parser.error("Annotation file exceeds 100000 bytes")
+            try:
+                result = ChangeLedger(configured_state_dir(config)).annotate(
+                    DeterministicEngine(config).split_changes(root, None),
+                    expected_revision=args.expected_revision, record=json.loads(raw),
+                )
+            except (OSError, ValueError) as exc:
+                result = {"success": False, "error": str(exc)}
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
+        if args.sub_arg in {"stage-preview", "stage-apply"}:
+            from local_ai_hub.change_stage_execution import stage_selection
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.leases import ScopeLeaseStore
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            result = stage_selection(
+                config, DeterministicEngine(config), ScopeLeaseStore(configured_state_dir(config)),
+                root=str(args.root.resolve()), paths=args.changed_path,
+                expected_revision=args.expected_revision, expected_tree=args.expected_tree,
+                apply=args.sub_arg == "stage-apply", hunk_ids=args.hunk_id or None,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
+        if args.sub_arg in {"commit-inspect", "commit-list"}:
+            from local_ai_hub.change_commit_journal import CommitJournal
+            from local_ai_hub.repository_scope import authorized_repository_root
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            journal = CommitJournal(configured_state_dir(config))
+            scoped_root = authorized_repository_root(config, str(args.root.resolve()))
+            result = (journal.list_recent(scoped_root, limit=min(100, args.limit)) if args.sub_arg == "commit-list"
+                      else journal.inspect(scoped_root, args.operation_id))
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
+        if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
+            from local_ai_hub.change_commit_journal import CommitJournal
+            from local_ai_hub.change_commit_execution import execute_staged_commit
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.leases import ScopeLeaseStore
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            sequence = None
+            if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
+                with args.record_file.open("rb") as stream:
+                    raw = stream.read(100001)
+                if len(raw) > 100000:
+                    parser.error("Sequence file exceeds 100000 bytes")
+                sequence = json.loads(raw)
+            verification_manifest = None
+            if args.verification_file is not None:
+                with args.verification_file.open("rb") as stream:
+                    verify_raw = stream.read(100001)
+                if len(verify_raw) > 100000:
+                    parser.error("Verification file exceeds 100000 bytes")
+                verification_manifest = json.loads(verify_raw)
+                if not isinstance(verification_manifest, dict):
+                    parser.error("Verification file must contain an object")
+            journal = CommitJournal(configured_state_dir(config))
+            result = execute_staged_commit(
+                config, DeterministicEngine(config), ScopeLeaseStore(configured_state_dir(config)),
+                root=str(args.root.resolve()), paths=args.changed_path,
+                expected_revision=args.expected_revision, expected_tree=args.expected_tree,
+                approved=args.apply,
+                journal=journal, allow_mixed_staged=args.allow_mixed_staged,
+                sequence=sequence, preview_only=args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status"},
+                preview_digest=args.preview_digest, verification_manifest=verification_manifest,
+            )
+            if args.sub_arg == "sequence-status" and result.get("success") is True and not result.get("cleanup_unconfirmed"):
+                from local_ai_hub.change_tree_verification import sequence_receipt_status
+
+                if result.get("preview_digest") != args.preview_digest:
+                    result = {"success": False, "error": "Sequence differs from reviewed preview", "commit_ready": False}
+                else:
+                    result = sequence_receipt_status(str(args.root.resolve()), result, verification_manifest, journal)
+            if args.sub_arg == "sequence-verify" and result.get("success") is True and not result.get("cleanup_unconfirmed"):
+                from local_ai_hub.change_tree_verification import verify_sequence
+
+                result = verify_sequence(str(args.root.resolve()), result, verification_manifest, journal,
+                                         rerun=args.rerun_checks)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
+        payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary",
+                   "limit": args.change_limit, "offset": args.change_offset}
+        if args.expected_revision is not None:
+            payload["expected_revision"] = args.expected_revision
+        if args.continuation_revision is not None:
+            payload["continuation_revision"] = args.continuation_revision
+        if args.changed_path:
+            payload["changed_paths"] = args.changed_path
+        if args.base:
+            payload.update(base=args.base, head=args.head)
+        result = HubClient(config_path=_config_arg(args.config)).post(
+            "/api/repo/split_changes", payload, timeout=1800.0 if args.sub_arg == "semantic" else 180.0,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("success") is True else 1
 
     if args.action == "knowledge":
         from local_ai_hub.repo_knowledge import (
@@ -923,8 +1120,25 @@ def main() -> int:
         return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
-    if args.action == "dashboard":
-        c = client(); print(c.base_url + "/dashboard"); return 0
+    if args.action == "desktop":
+        name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
+        candidates = (ROOT / "desktop" / "target" / "release" / name, ROOT / "bin" / name)
+        binary = next((path for path in candidates if path.is_file()), None)
+        if binary is None:
+            print("Desktop binary missing. Build: cargo build --manifest-path desktop/Cargo.toml --release", file=sys.stderr)
+            return 1
+        env = os.environ.copy()
+        env["LOCAL_AI_HUB_ROOT"] = str(ROOT)
+        env["LOCAL_AI_DESKTOP_PYTHON"] = sys.executable
+        config = _config_arg(args.config)
+        if config:
+            env["LOCAL_AI_CONFIG"] = str(Path(config).expanduser().resolve())
+        try:
+            subprocess.Popen([str(binary)], cwd=ROOT, env=env, **hidden_run_kwargs())
+        except OSError as exc:
+            print(f"Desktop launch failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.action == "service-status":
         path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0

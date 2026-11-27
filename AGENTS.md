@@ -8,6 +8,15 @@ Follow [`docs/WORKTREE_INTEGRATION.md`](docs/WORKTREE_INTEGRATION.md). It supers
 
 Load the always-loaded `local-ai-orchestrator` skill for the complete Hub ownership, scope, MCP contract, lifecycle, memory, budget, GPU, and receipt rules. The skill contains the detailed architecture and Agent Operating System rules formerly listed here. Follow `docs/WORKTREE_INTEGRATION.md`; the repository-specific validation, contributor, and model rules below remain in force.
 
+## Local AI Hub tool contract
+
+- Use `local_ai_repo` for indexed repository evidence and exact source lookup; use `local_ai_artifact` for bounded slices and stored evidence.
+- Use `local_ai_coord` for plan/task state, leases, checkpoints and completion receipts. Keep the active project plan authoritative.
+- Use `local_ai_work` only for explicitly requested bounded delegation. The primary agent owns audits, implementation and integration.
+- Run bounded validation with the host's native command tool. Do not treat plan or semantic review as a test receipt.
+- For Git changes, inspect the current snapshot, preview exact staging, then use the ordered sequence preview, exact-tree verification receipts and matching digest before publication. No implicit staging, single-commit bypass or push.
+- Foreground local model targets: `qwen2.5-coder:3b` for quick work, `qwen2.5-coder:7b` for ordinary/involved work, and `qwen3.5:9b` for hardest reasoning. Installed availability must be checked before inference; model pulls remain opt-in.
+
 For any multi-step or non-trivial task, the active Hub plan is the mandatory first entrypoint before touching files or running discovery:
 - Call `local_ai_coord(action="plan_list", root=ABS_ROOT)` or `local_ai_coord(action="plan_board_view", plan_id=..., root=ABS_ROOT)` on the first turn to inspect what is completed, in progress, or blocked.
 - Maintain bidirectional references in `spec_refs` pointing to Superpowers specifications (`docs/superpowers/specs/...`) and implementation plans (`docs/superpowers/plans/...`).

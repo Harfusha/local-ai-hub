@@ -101,17 +101,16 @@ def test_mode_get_and_admin_post_are_tokenless_for_loopback(monkeypatch) -> None
     assert admin_post._authorized() is True
 
 
-def test_dashboard_shell_stays_online_in_maintenance_without_token(monkeypatch) -> None:
-    app = SimpleNamespace(config={"monitoring": {"dashboard_enabled": True}, "features": {"dashboard": True}})
+def test_retired_web_path_does_not_serve_a_shell(monkeypatch) -> None:
+    app = SimpleNamespace(config={})
     monkeypatch.setattr(http_server, "APP", app)
     handler = _handler("/dashboard")
-    handler._require_authorized = lambda: pytest.fail("dashboard shell must not require API token")
-    handler._send_html = lambda status, html: handler.responses.append((status, html))
+    handler._require_authorized = lambda: True
+    handler._send_html = lambda *_args: pytest.fail("retired web path must not serve HTML")
 
     handler.do_GET()
 
-    assert handler.responses[0][0] == 200
-    assert "activityModeBadge" in handler.responses[0][1]
+    assert handler.responses == [(404, {"error": "not found"})]
 
 
 def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp_path) -> None:
@@ -121,7 +120,7 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
         def list_tasks(self, **_kwargs):
             return http_server.TaskPage()
 
-        def count(self, status=None):
+        def count(self, status=None, **_kwargs):
             return 0
 
     _install_mode_api(monkeypatch, "gaming")
@@ -141,7 +140,10 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp
 
     assert handler.responses == [(200, {
         "success": True, "tasks": [], "total_count": 0, "active_count": 0,
-        "offset": 0, "limit": 20, "next_offset": 0, "has_more": False,
+        "global_total_count": 0, "global_active_count": 0,
+        "count_scope": "repository", "root": str(tmp_path),
+        "offset": 0, "limit": 20, "next_offset": 0,
+        "has_more": False, "query_truncated": False,
     })]
 
 
@@ -793,12 +795,6 @@ def test_in_process_cuda_release_timeout_keeps_runtime_unload_incomplete(monkeyp
     assert stored["state"] == "partial"
     assert stored["in_process_cuda_release_failed"] == {"embeddings": "release_failed"}
     assert "in_process_cuda:embeddings" in stored["remaining"]
-
-
-def test_activity_mode_ui_distinguishes_pending_unload() -> None:
-    html = http_server.DASHBOARD_HTML
-    assert "VRAM unload in progress." in html
-    assert "VRAM unload incomplete." in html
 
 
 def test_admin_mode_post_defers_unload_if_inference_active(monkeypatch) -> None:

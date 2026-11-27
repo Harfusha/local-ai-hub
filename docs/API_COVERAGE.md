@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id task_ff7542021ce7`.
-<!-- coverage-task-id: task_ff7542021ce7 -->
+Reproduce with `python tools/surface_inventory.py --check --task-id gci-commit-orchestration-2026-11-27`.
+<!-- coverage-task-id: gci-commit-orchestration-2026-11-27 -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -46,7 +46,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | HTTP GET | /api/git/diff | confirmed | src/local_ai_hub/http_api_get.py | op-17c7e91d83eb |
 | HTTP GET | /api/git/history_search | confirmed | src/local_ai_hub/http_api_get.py | op-7a1ad536c026 |
 | HTTP GET | /api/git/status | confirmed | src/local_ai_hub/http_api_get.py | op-24f2d752c5cc |
-| HTTP GET | /api/git/synthesize_commit | confirmed | src/local_ai_hub/http_api_get.py | op-dd694a634a57 |
 | HTTP GET | /api/hardware/gpu | confirmed | src/local_ai_hub/http_api_get.py | op-de165174a0b1 |
 | HTTP GET | /api/hardware/system | confirmed | src/local_ai_hub/http_api_get.py | op-78ed3cf2876b |
 | HTTP GET | /api/leases | confirmed | src/local_ai_hub/http_api_get.py | op-0d024b687389 |
@@ -80,7 +79,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | HTTP GET | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_api_get.py | op-d7ed59a7d1a4 |
 | HTTP GET | /api/test_matrix | confirmed | src/local_ai_hub/http_api_get.py | op-7e21dfa39869 |
 | HTTP GET | /api/updates | confirmed | src/local_ai_hub/http_api_get.py | op-8550411fe905 |
-| HTTP GET | /dashboard | confirmed | src/local_ai_hub/http_api_get.py | op-f5f8517aa982 |
 | HTTP GET | /favicon.ico | confirmed | src/local_ai_hub/http_api_get.py | op-85e915b2262e |
 | HTTP GET | /health | confirmed | src/local_ai_hub/http_api_get.py | op-fdaca5a0d036 |
 | HTTP GET | /ready | confirmed | src/local_ai_hub/http_api_get.py | op-a5f57d02a8dd |
@@ -186,7 +184,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | HTTP POST | /api/git/diff | confirmed | src/local_ai_hub/http_route_registry.py | op-3631e7d6a1f4 |
 | HTTP POST | /api/git/history_search | confirmed | src/local_ai_hub/http_route_registry.py | op-f94556281c61 |
 | HTTP POST | /api/git/status | confirmed | src/local_ai_hub/http_route_registry.py | op-32774709009e |
-| HTTP POST | /api/git/synthesize_commit | confirmed | src/local_ai_hub/http_route_registry.py | op-99533a46fb0e |
 | HTTP POST | /api/gpu-reservation | confirmed | src/local_ai_hub/http_route_registry.py | op-ccefa6cfe07a |
 | HTTP POST | /api/laya/decision | confirmed | src/local_ai_hub/http_route_registry.py | op-97c1f90bf95a |
 | HTTP POST | /api/leases/claim_batch | confirmed | src/local_ai_hub/http_route_registry.py | op-cf5ba5179dc2 |
@@ -451,7 +448,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | MCP action local_ai_repo | source | confirmed | src/local_ai_hub/generator.py | op-6e23a8795056 |
 | MCP action local_ai_repo | split_changes | confirmed | src/local_ai_hub/generator.py | op-929bf5e6106e |
 | MCP action local_ai_repo | structural_search | confirmed | src/local_ai_hub/generator.py | op-f98d38248780 |
-| MCP action local_ai_repo | synthesize_commit | confirmed | src/local_ai_hub/generator.py | op-24b5da3a8c9d |
 | MCP action local_ai_repo | synthesize_rules | confirmed | src/local_ai_hub/generator.py | op-adf35c87317d |
 | MCP action local_ai_repo | test_matrix | confirmed | src/local_ai_hub/generator.py | op-57f5c5d88d5a |
 | MCP action local_ai_repo | topology | confirmed | src/local_ai_hub/generator.py | op-fda3cc91631a |
@@ -667,13 +663,15 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | HubClient target | POST /api/agent-state/tasks | confirmed | src/local_ai_hub/client.py | op-c7342144ec03 |
 | CLI operation | agent-state | confirmed | tools/hubctl.py | op-7e8d2221e554 |
 | CLI operation | caveman-compress | confirmed | tools/hubctl.py | op-0cf2adc425ec |
+| CLI operation | changes | confirmed | tools/hubctl.py | op-a0fea7dd2b24 |
 | CLI operation | clean | confirmed | tools/hubctl.py | op-02e6bf344b35 |
 | CLI operation | cleanup | confirmed | tools/hubctl.py | op-78d6f8c8a97e |
 | CLI operation | client | confirmed | tools/hubctl.py | op-da36ff18484a |
 | CLI operation | compress-instructions | confirmed | tools/hubctl.py | op-6b0bff11e28a |
-| CLI operation | dashboard | confirmed | tools/hubctl.py | op-a7abef5e4884 |
+| CLI operation | desktop | confirmed | tools/hubctl.py | op-d26711f6577b |
 | CLI operation | doctor | confirmed | tools/hubctl.py | op-b33c959eab65 |
 | CLI operation | generate | confirmed | tools/hubctl.py | op-53d2882e6404 |
+| CLI operation | knowledge | confirmed | tools/hubctl.py | op-32c5a41228d0 |
 | CLI operation | logs | confirmed | tools/hubctl.py | op-7a6e42f71891 |
 | CLI operation | memory | confirmed | tools/hubctl.py | op-ee8a4e3836f2 |
 | CLI operation | mode | confirmed | tools/hubctl.py | op-9dc37e51eae5 |

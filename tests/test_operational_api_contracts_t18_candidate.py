@@ -134,13 +134,13 @@ def test_telemetry_report_caps_high_cardinality_groups(tmp_path):
         store.close()
 
 
-def test_dashboard_report_cache_bounds_untrusted_windows(tmp_path):
+def test_telemetry_report_cache_bounds_untrusted_windows(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         for days in range(1, 80):
-            store.dashboard_report(days=days, ttl_seconds=3600)
-        assert len(store._dashboard_cache) <= 16
-        assert all(1 <= key[0] <= 3650 for key in store._dashboard_cache)
+            store.telemetry_report(days=days, ttl_seconds=3600)
+        assert len(store._report_cache) <= 16
+        assert all(1 <= key[0] <= 3650 for key in store._report_cache)
     finally:
         store.close()
 

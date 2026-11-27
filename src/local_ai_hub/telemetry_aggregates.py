@@ -8,7 +8,7 @@ import time
 from typing import Any, Iterable
 
 from .telemetry import (
-    _DASHBOARD_CACHE_LIMIT,
+    _REPORT_CACHE_LIMIT,
     _DECISION_DETAIL_LIMIT,
     _MAX_QUERY_WINDOW_DAYS,
     _REPORT_GROUP_LIMIT,
@@ -24,21 +24,21 @@ from . import telemetry as services_module
 
 
 class TelemetryAggregateMixin:
-    def dashboard_report(self, days: int = 30, ttl_seconds: float = 5.0, *, scope: str = "window") -> dict[str, Any]:
-        """Cached persistent report used by the realtime dashboard.
+    def telemetry_report(self, days: int = 30, ttl_seconds: float = 5.0, *, scope: str = "window") -> dict[str, Any]:
+        """Cached persistent report used by the desktop operator view.
 
-        Most dashboard polls are RAM-only; at most one thread refreshes the SQLite
+        Most operator polls are RAM-only; at most one thread refreshes the SQLite
         aggregate every few seconds. This keeps counters stable across hub restarts.
         """
         bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
         _, scope = self._scope_cutoff(bounded_days, scope)
         key = (bounded_days, scope)
         now = time.monotonic()
-        with self._dashboard_lock:
-            cached = self._dashboard_cache.get(key)
-            cached_at = self._dashboard_cache_at.get(key, 0.0)
+        with self._report_lock:
+            cached = self._report_cache.get(key)
+            cached_at = self._report_cache_at.get(key, 0.0)
             if cached and now - cached_at < max(1.0, float(ttl_seconds)):
-                return self._refresh_dashboard_report_writer(cached)
+                return self._refresh_telemetry_report_writer(cached)
             try:
                 report = self.report(bounded_days, recent_errors=12, scope=scope, _flush=False)
                 report["recent_http"] = self.recent_http(50, _flush=False)
@@ -50,13 +50,13 @@ class TelemetryAggregateMixin:
                     "stale": bool(cached), "degraded": True,
                 }
                 if cached:
-                    report = self._refresh_dashboard_report_writer(report)
-            self._dashboard_cache[key] = report
-            self._dashboard_cache_at[key] = now
-            while len(self._dashboard_cache) > _DASHBOARD_CACHE_LIMIT:
-                oldest_key = min(self._dashboard_cache_at, key=self._dashboard_cache_at.get)
-                self._dashboard_cache.pop(oldest_key, None)
-                self._dashboard_cache_at.pop(oldest_key, None)
+                    report = self._refresh_telemetry_report_writer(report)
+            self._report_cache[key] = report
+            self._report_cache_at[key] = now
+            while len(self._report_cache) > _REPORT_CACHE_LIMIT:
+                oldest_key = min(self._report_cache_at, key=self._report_cache_at.get)
+                self._report_cache.pop(oldest_key, None)
+                self._report_cache_at.pop(oldest_key, None)
             return dict(report)
 
     def realtime_summary(self, *, scope: str = "process", light: bool = False) -> dict[str, Any]:
@@ -100,7 +100,7 @@ class TelemetryAggregateMixin:
         active_requests.sort(key=lambda item: int(item.get("age_ms", 0)), reverse=True)
         active_requests = active_requests[:24]
 
-        report = self.dashboard_report(30, scope=scope) if self.enabled else {"summary": {}}
+        report = self.telemetry_report(30, scope=scope) if self.enabled else {"summary": {}}
         history = report.get("summary", {}) if isinstance(report, dict) else {}
         return {
             "enabled": self.enabled,
@@ -497,7 +497,7 @@ class TelemetryAggregateMixin:
                 (cutoff,),
             ).fetchone()
             # Persistent tool-adoption metric.  This deliberately counts agent -> hub
-            # application calls, not dashboard/health/control polling, so it survives
+            # application calls, not health/control polling, so it survives
             # hub restarts and reflects whether agents are actually using the local
             # tool layer rather than the ephemeral in-process ToolAwareLocalAgent count.
             tool_http = con.execute(

@@ -55,7 +55,6 @@ class FeatureSet:
         work = _tbl("work_orchestrator")
         hardware = _tbl("hardware")
         speculative = _tbl("speculative_lint")
-        mon = _tbl("monitoring")
         detected_hardware = _tbl("_hardware")
 
         # Primary tool toggles
@@ -100,11 +99,10 @@ class FeatureSet:
         # Code-intelligence backends
         self.code_intelligence: bool = self.repo and bool(feat.get("code_intelligence", True)) and bool(ci.get("enabled", True))
         self.serena: bool = self.code_intelligence and bool(ci.get("serena_enabled", True))
-        # Preprocessing & Subagents & Agent OS & Dashboard & Laya
+        # Preprocessing, subagents, Agent OS and Laya
         self.preprocessing: bool = self.repo and bool(feat.get("preprocessing", True)) and bool(prep.get("enabled", True))
         self.subagents: bool = self.tasks and bool(feat.get("subagents", True)) and bool(sub.get("enabled", True))
         self.agent_os: bool = self.coord and bool(feat.get("agent_os", True))
-        self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(mon.get("dashboard_enabled", True))
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
         laya_cfg = _tbl("laya")
         self.laya: bool = bool(laya_cfg.get("enabled", True))
@@ -324,7 +322,7 @@ class FeatureSet:
             lines.append("- `local_ai_repo`: every non-trivial repo task; indexed lookup first, adaptive context for evidence gaps, targeted checks after changes.")
         if repo and self.search_summaries:
             lines.append("- Search summaries: use `summarize_results=true` only if the connected MCP schema exposes it.")
-        if repo & {"patch", "revert", "batch_replace", "ast_refactor", "generate_tests", "generate_tests_for_diff", "generate_mocks", "generate_types", "type_stubs", "synthesize_rules", "synthesize_commit", "split_changes", "resolve_imports", "delegate"}:
+        if repo & {"patch", "revert", "batch_replace", "ast_refactor", "generate_tests", "generate_tests_for_diff", "generate_mocks", "generate_types", "type_stubs", "synthesize_rules", "split_changes", "resolve_imports", "delegate"}:
             lines.append("- `local_ai_repo` generation/mutation: explicit scoped requests only; preserve approval/review gates.")
         if repo & {"preprocess", "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister"}:
             lines.append("- `local_ai_repo` preprocessing: register unindexed roots once; maintenance actions only on request, never retries.")

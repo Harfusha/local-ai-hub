@@ -89,7 +89,6 @@ def classify_hubctl_command(
         "status",
         "service-status",
         "agent-state",
-        "dashboard",
         "watch",
         "memory",
         "doctor",

@@ -448,7 +448,9 @@ class HttpPostHelpersMixin:
         ):
             data = {**data, "error_code": "response_budget_too_small"}
         request_headers = getattr(self, "headers", None)
-        response_request_id = request_headers.get("X-LocalAI-Request-ID", "") if hasattr(request_headers, "get") else ""
+        response_request_id = getattr(self, "_trace_request_id", "")
+        if not response_request_id and hasattr(request_headers, "get"):
+            response_request_id = request_headers.get("X-LocalAI-Request-ID", "")
         if (
             isinstance(data, dict)
             and "request_id" not in data
@@ -513,6 +515,12 @@ class HttpPostHelpersMixin:
                 wire_data = services_module.project_wait_event_response(wire_data, enabled=detail_enabled)
             else:
                 wire_data = services_module.project_agent_response(wire_data, enabled=detail_enabled)
+        if isinstance(data, dict) and isinstance(wire_data, dict) and isinstance(data.get("request_id"), str):
+            # HTTP correlation is part of the transport contract even when
+            # detailed diagnostics are disabled for agent-facing payloads.
+            wire_data = {**wire_data, "request_id": data["request_id"]}
+            if "returned_tokens" in (wire_data.get("response_budget") or {}):
+                wire_data = services_module._reconcile_existing_budget(wire_data) or wire_data
         body = raw_body if isinstance(raw_body, bytes) else services_module._json_bytes(wire_data)
         if (
             response_path in {"/api/search", "/api/repo/code-index"}

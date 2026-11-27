@@ -492,6 +492,18 @@ class CommandTransactionExecuteMixin:
                                 self._remove_transaction_journal(journal_path, journal_payload)
                                 and directory_fsync_supported
                             )
+                            # Observational provenance must not change an already
+                            # committed import into a retryable mutation failure.
+                            try:
+                                from .change_ledger import ChangeLedger
+
+                                receipt_count = ChangeLedger(self._transaction_state_dir.parent).record_broker_postimages(
+                                    str(source), task_id=task_id, attempt_id=work_attempt_fence.attempt_id,
+                                    transaction_id=transaction_id, files=imported_files,
+                                )
+                                result["broker_postimage_receipts"] = receipt_count
+                            except Exception:
+                                result["broker_postimage_receipts_unavailable"] = True
                     except (RuntimeError, ValueError) as exc:
                         if commit_started:
                             raise

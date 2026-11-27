@@ -95,23 +95,6 @@
     "command": "Public tool/HTTP removed by coordinated command owner; internal run/discover/simulate remain because orchestrator uses them."
   },
   "operations": {
-    "GET /": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error"
-        ],
-        "response_producers": [
-          "self._handle_dashboard_route"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/adoption": {
       "decision": "retain",
       "role": "dashboard_aggregate",
@@ -649,24 +632,6 @@
         "action_literals": []
       }
     },
-    "GET /api/git/synthesize_commit": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "APP.services.synthesize_commit"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/hardware/gpu": {
       "decision": "diagnostic",
       "role": "operator_diagnostic",
@@ -792,7 +757,7 @@
           "controller.install",
           "controller.status",
           "local:result",
-          "self._handle_dashboard_updates"
+          "self._handle_desktop_updates"
         ],
         "action_literals": []
       }
@@ -813,7 +778,7 @@
           "controller.install",
           "controller.status",
           "local:result",
-          "self._handle_dashboard_updates"
+          "self._handle_desktop_updates"
         ],
         "action_literals": []
       }
@@ -1198,38 +1163,6 @@
         ],
         "response_producers": [
           "APP.services.test_matrix"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /dashboard": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error"
-        ],
-        "response_producers": [
-          "self._handle_dashboard_route"
-        ],
-        "action_literals": []
-      }
-    },
-    "GET /favicon.ico": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "self._handle_favicon_route"
         ],
         "action_literals": []
       }
@@ -4986,28 +4919,6 @@
         ]
       }
     },
-    "MCP local_ai_repo.synthesize_commit": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Explicit repository work result or guarded change workflow; retain generated code, findings and verification outcomes rather than treating them as Hub telemetry.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
     "MCP local_ai_repo.synthesize_rules": {
       "decision": "retain",
       "role": "agent",
@@ -7606,24 +7517,6 @@
         "action_literals": []
       }
     },
-    "POST /api/git/synthesize_commit": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_git_synthesize_commit_1",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "APP.services.synthesize_commit"
-        ],
-        "action_literals": []
-      }
-    },
     "POST /api/gpu-reservation": {
       "decision": "protocol_boundary",
       "role": "agent",
@@ -8860,13 +8753,19 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Accept only canonical changed_paths selection; reject retired paths and changed_files aliases. Preserve bounded factual change summaries, exact identities, pagination, explicit gaps, and terminal contract errors. Advisory model output is not authorization or verification.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_split_changes_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
-          "APP.services.split_changes"
+          "APP.services.split_changes",
+          "local:result"
         ],
         "action_literals": []
       }

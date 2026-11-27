@@ -29,21 +29,6 @@ def test_hubctl_clean_dispatches_cleanup_and_json_output(monkeypatch, capsys, tm
     }
 
 
-def test_hubctl_dashboard_prints_configured_url(monkeypatch, capsys):
-    class Client:
-        base_url = "http://127.0.0.1:11436"
-
-    calls = []
-    monkeypatch.setattr(hubctl, "client", lambda: calls.append("client") or Client())
-    monkeypatch.setattr(sys, "argv", ["hubctl.py", "dashboard"])
-
-    result = hubctl.main()
-
-    assert result == 0
-    assert calls == ["client"]
-    assert capsys.readouterr().out == "http://127.0.0.1:11436/dashboard\n"
-
-
 def test_hubctl_generate_dispatches_writers_and_optional_agent_install(
     monkeypatch, capsys, tmp_path
 ):

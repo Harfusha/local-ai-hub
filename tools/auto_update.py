@@ -208,7 +208,7 @@ def checkout_release(release: Release, destination: Path) -> None:
 
 
 def apply_update(
-    release: Release, current: str, root: Path, *, dashboard_report: Path | None = None,
+    release: Release, current: str, root: Path, *, report_path: Path | None = None,
     attempt: _UpdateAttempt | None = None,
 ) -> dict:
     with _guard_attempt(root) if attempt is None else nullcontext(attempt) as owned:
@@ -228,8 +228,8 @@ def apply_update(
             "target_version": release.version, "revision": release.revision,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
-        if dashboard_report is not None:
-            write_install_report(dashboard_report, {**details, "status": "installing"})
+        if report_path is not None:
+            write_install_report(report_path, {**details, "status": "installing"})
         command = [
             sys.executable, "-I", "-B", str(entry), str(root), str(wheel), release.wheel_digest,
             release.revision, release.version, current, str(report),
@@ -275,21 +275,17 @@ def _run(args: argparse.Namespace, lifetime: ExitStack) -> dict:
     report_path: Path | None = None
     result: dict = {"checked_at": datetime.now(timezone.utc).isoformat()}
     try:
-        if args.apply or args.dashboard:
+        if args.apply:
             managed_target(ROOT)
-        if args.dashboard and not args.apply:
-            stage = _attempt_path(ROOT)
-            if stage.exists() or _is_link(stage):
-                raise _PendingUpdateAttempt(stage)
         if args.apply:
             if sys.prefix != sys.base_prefix:
                 raise ValueError("run with system Python outside the managed virtual environment")
-            destination = ROOT / ("auto-update-dashboard.json" if args.dashboard else "auto-update-report.json")
+            destination = ROOT / "auto-update-report.json"
             if _has_link_component(destination):
                 raise ValueError("update report path contains a link")
             attempt = lifetime.enter_context(_guard_attempt(ROOT))
             report_path = destination
-        if args.apply or args.dashboard:
+        if args.apply:
             recovery = update_recovery_path(ROOT)
             if recovery.exists() or _is_link(recovery):
                 raise ValueError(f"previous update requires recovery before another install: {recovery}")
@@ -308,7 +304,7 @@ def _run(args: argparse.Namespace, lifetime: ExitStack) -> dict:
             result.update(target_version=update.version, revision=update.revision, status="update_available")
             if args.apply:
                 result.update(apply_update(
-                    update, current, ROOT, dashboard_report=report_path if args.dashboard else None, attempt=attempt,
+                    update, current, ROOT, report_path=report_path, attempt=attempt,
                 ))
                 result["status"] = "installed" if result["success"] else "failed"
             else:
@@ -335,13 +331,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Print the release check as JSON")
     parser.add_argument("--expect-version")
     parser.add_argument("--expect-revision")
-    parser.add_argument("--dashboard", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     pins = (args.expect_version, args.expect_revision)
     if any(pins) and (not args.apply or not all(pins)):
         parser.error("Both release pins require --apply")
-    if args.dashboard and args.apply and not all(pins):
-        parser.error("Dashboard installs require a reviewed version and commit")
     result: dict = {}
     try:
         with ExitStack() as lifetime:

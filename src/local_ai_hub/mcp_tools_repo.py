@@ -64,6 +64,7 @@ def _local_ai_repo_impl(
     match_offset: int = 0,
     file_offset: int | None = None,
     expected_revision: str | None = None,
+    continuation_revision: str | None = None,
     search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -143,7 +144,6 @@ def _local_ai_repo_impl(
         "deterministic": ("task", "diff", "workspace", "path"),
         "resolve_imports": ("task", "diff", "workspace", "path"),
         "validate_patch": ("task", "diff", "workspace", "path"),
-        "synthesize_commit": ("task", "diff", "workspace", "path"),
         "cross_project_symbols": ("task", "diff", "workspace", "path"),
         "cross_project_impact": ("task", "diff", "workspace", "path"),
         "generate_dataset": ("task", "diff", "workspace", "path"),
@@ -221,10 +221,6 @@ def _local_ai_repo_impl(
         value = input_values[required_field]
         if not isinstance(value, str) or not value.strip():
             return services_module.contract_error(f"{action} requires non-empty {required_field}")
-    if action == "synthesize_commit" and task_id != "" and (
-        not isinstance(task_id, str) or not task_id.strip()
-    ):
-        return services_module.contract_error("synthesize_commit task_id must be a non-empty string when supplied")
     if action == "skeletonize" and not (isinstance(query, str) and query.strip()) and not (isinstance(path, str) and path.strip()):
         return services_module.contract_error("skeletonize requires query code or a path")
     if action == "circular_dependencies" and not isinstance(language, str):
@@ -613,9 +609,39 @@ def _local_ai_repo_impl(
             "root": root, "file": path, "symbol": query,
         }, timeout=services_module._timeout("quick")), "architecture")
     if action == "split_changes":
+        view = ("details" if path else "summary") if mode == "adaptive" else mode
+        page_limit = limit if explicit_limit else 8
+        if view not in {"summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta"}:
+            return services_module.contract_error("invalid split_changes mode")
+        if path and changed_paths:
+            return services_module.contract_error("specify path or changed_paths, not both")
+        if type(page_limit) is not int or not 1 <= page_limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
+            return services_module.contract_error("split_changes limit must be 1 through 8 and offset 0 through 100000")
         return services_module._compact(services_module.CLIENT.post("/api/repo/split_changes", {
-            "root": root, "paths": [path] if path else None,
-        }, timeout=services_module._timeout("quick")), "architecture")
+            "root": root, "changed_paths": [path] if path else changed_paths,
+            "mode": view, "limit": page_limit, "offset": offset,
+            **({"expected_revision": expected_revision} if expected_revision is not None else {}),
+            **({"continuation_revision": continuation_revision} if continuation_revision is not None else {}),
+            **({"task_id": task_id} if task_id else {}),
+            **({"base": base, "head": head or "HEAD"} if base != "HEAD" or head else {}),
+        }, timeout=services_module._timeout("model" if view == "semantic" else "quick")), "architecture",
+            extra_fields=["clusters", "cluster_count", "total_files", "summary", "method",
+                          "verification_status", "commit_ready", "limitations", "patch_coverage_complete",
+                          "unavailable_patch_scopes", "unavailable_patch_scope_count", "unavailable_patch_scopes_omitted",
+                          "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id",
+                          "projection_mode", "projection_partial", "comparison", "offset", "limit", "has_more",
+                          "next_offset", "model_advice_status", "task_context", "local_ledger", "git_snapshot_metadata",
+                          "inventory_scope", "inventory_file_count", "git_visible_observation_complete", "dependency_plan",
+                          "selected_paths", "already_staged", "unstaged_selection", "outside_staged_count",
+                          "outside_staged_paths", "outside_staged_omitted", "blockers", "selection_matches_observation",
+                          "staging_preview_available", "stage_argv_preview", "index_scope_matches_selection",
+                          "candidate_dependency_count", "requires_explicit_approval", "requires_post_stage_reinspection",
+                          "prospective_index_tree_oid", "prospective_tree_status",
+                          "draft_summary", "summary_kind", "semantic_group_proposals", "semantic_group_scope",
+                          "semantic_group_proposals_authoritative", "artifact_id", "artifact_kind", "artifact_status", "artifact_bytes", "baseline_stored", "previous_observed_change_set_id", "continuation_revision", "restart_required", "changed_group_count", "updated_group_count", "review_verification_changed_group_count",
+                          "unchanged_content_group_count", "removed_group_count", "removed_group_keys",
+                          "removed_group_keys_omitted", "indexed_impact", "watcher_context", "broker_postimage_context",
+                          "content_changed_group_count", "dependency_context_only_changed_group_count"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,
@@ -674,11 +700,6 @@ def _local_ai_repo_impl(
         return services_module._compact(raw_status, "status")
     if action == "repo_state":
         return services_module._compact(services_module.CLIENT.post("/api/repo/state", {"root": root}, timeout=services_module._timeout("quick")), "status")
-    if action == "synthesize_commit":
-        synth_payload = {"root": root, "hint": query}
-        if task_id:
-            synth_payload["task_id"] = task_id
-        return services_module._compact(services_module.CLIENT.post("/api/git/synthesize_commit", synth_payload, timeout=services_module._timeout("quick")), "status")
     if action == "verify":
         return services_module._compact(services_module.CLIENT.post("/api/evidence/verify", {"root": root, "evidence": evidence or []}), "verify")
     if action == "pipeline":
@@ -1173,6 +1194,7 @@ def local_ai_repo(
     match_offset: int = 0,
     file_offset: int | None = None,
     expected_revision: str | None = None,
+    continuation_revision: str | None = None,
     search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -1303,7 +1325,8 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit,
         summarize_results=summarize_results, offset=offset, match_offset=match_offset,
-        file_offset=file_offset, expected_revision=expected_revision, search_mode=search_mode,
+        file_offset=file_offset, expected_revision=expected_revision, continuation_revision=continuation_revision,
+        search_mode=search_mode,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
         max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, owner=owner, lease_id=lease_id, **forward,
     )

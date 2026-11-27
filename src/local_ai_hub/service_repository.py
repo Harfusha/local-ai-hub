@@ -837,7 +837,7 @@ class ServiceRepositoryMixin:
         """Cache expensive deterministic analyses by repository fingerprint.
 
         These operations are pure derived views of repository state. Sharing the same
-        cache with search/context prevents dashboard, MCP and local-model callers from
+        cache with search/context prevents HTTP, MCP and local-model callers from
         independently repeating AST/security/test/dependency scans.
         """
         def wrapped_compute() -> dict[str, Any]:
@@ -877,8 +877,97 @@ class ServiceRepositoryMixin:
     def generate_mocks(self, root: str, file_path: str, symbol: str) -> dict[str, Any]:
         return self.deterministic.generate_mocks(root, file_path, symbol)
 
-    def split_changes(self, root: str, changed_files: list[str] | None = None) -> dict[str, Any]:
-        return self.deterministic.split_changes(root, changed_files)
+    def split_changes(
+        self, root: str, changed_files: list[str] | None = None, *,
+        mode: str = "summary", limit: int = 8, offset: int = 0,
+        base: str | None = None, head: str = "HEAD", task_id: str = "",
+        expected_revision: str | None = None, continuation_revision: str | None = None,
+    ) -> dict[str, Any]:
+        from .change_commit_preflight import commit_preflight, revision_error
+        from .change_plan_projection import project_change_plan
+
+        if mode not in {"summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta"}:
+            return {"success": False, "error": "invalid change plan mode"}
+        if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
+            return {"success": False, "error": "invalid change plan page"}
+        from .repository_scope import authorized_repository_root
+        from .change_task_context import attach_task_context, current_task_revision, scoped_tasks
+
+        root = authorized_repository_root(getattr(self, "config", {}), root)
+        if mode == "delta" and (base is not None or changed_files is not None):
+            return {"success": False, "error": "Delta requires the complete worktree scope"}
+        if mode in {"preflight", "artifact"} and (limit != 8 or offset != 0):
+            return {"success": False, "error": f"{mode} mode does not accept change-plan pagination"}
+        if continuation_revision is not None and mode != "delta":
+            return {"success": False, "error": "continuation_revision is only valid for delta mode"}
+        if offset > 0 and mode != "delta" and expected_revision is None:
+            return {"success": False, "error": "Continuation requires expected_revision from the prior page",
+                    "restart_required": True, "commit_ready": False}
+        if mode == "preflight":
+            if base is not None:
+                return {"success": False, "error": "Preflight requires a working tree"}
+            return commit_preflight(self.deterministic.split_changes(root, None), changed_files, expected_revision)
+        if mode in {"pr", "release"} and base is None:
+            return {"success": False, "error": "PR and release summaries require an explicit base revision"}
+        tasks: list[Any] = []
+        truncated = False
+        revision_before = ""
+        if base is None:
+            try:
+                tasks, truncated = scoped_tasks(getattr(self, "task_store", None), root, task_id)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+            if tasks:
+                revision_before = current_task_revision(self, root)
+        elif task_id:
+            return {"success": False, "error": "task_id is only supported for worktree changes"}
+        result = (self.deterministic.split_changes(root, changed_files, base=base, head=head)
+                  if base is not None else self.deterministic.split_changes(root, changed_files))
+        if result.get("success") is True and mode != "delta":
+            error = revision_error(result, expected_revision)
+            if error:
+                return {"success": False, "error": error, "commit_ready": False}
+        if base is None:
+            attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
+        if base is None and mode != "artifact" and result.get("git_visible_observation_complete") is True:
+            from .change_ledger import ChangeLedger, attach_watcher_candidates
+            from .state_paths import configured_state_dir
+            import sqlite3
+
+            try:
+                ledger = ChangeLedger(configured_state_dir(getattr(self, "config", {})))
+                if mode in {"summary", "delta"}:
+                    ledger.observe(result)
+                ledger.attach(result)
+                ledger.attach_broker_postimages(result)
+            except (OSError, ValueError, sqlite3.Error):
+                result["local_ledger"] = {"status": "unavailable", "authoritative_ownership_proven": False}
+            try:
+                attach_watcher_candidates(result, getattr(self, "preprocessor", None))
+            except (OSError, ValueError, AttributeError, sqlite3.Error):
+                result["watcher_context"] = {"status": "unavailable", "coverage_complete": False,
+                                             "authorship_proven": False, "verification_reuse_authorized": False}
+        from .change_plan_delta import change_delta, remember_baseline
+
+        cache = getattr(self.deterministic, "_change_summary_cache", None)
+        if mode == "delta":
+            return change_delta(result, cache, expected_revision, limit=limit, offset=offset,
+                                continuation_revision=continuation_revision)
+        if mode == "artifact":
+            from .change_plan_artifact import publish_change_plan
+
+            return publish_change_plan(result, getattr(self, "artifacts", None))
+        if mode == "details" and base is None:
+            from .change_task_context import attach_index_impact
+
+            attach_index_impact(self, result, root)
+        projected = project_change_plan(
+            result, mode=mode, limit=limit, offset=offset,
+            delegate=self.delegate if mode == "semantic" else None, root=root,
+        )
+        if mode == "summary" and projected.get("success") is True:
+            projected["baseline_stored"] = remember_baseline(result, cache)
+        return projected
 
     def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:
         return self.deterministic.synthesize_rules(root, limit)

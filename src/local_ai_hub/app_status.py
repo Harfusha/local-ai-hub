@@ -312,7 +312,6 @@ class AppStatusMixin:
                     "preprocessing": fs.preprocessing,
                     "subagents": fs.subagents,
                     "agent_os": fs.agent_os,
-                    "dashboard": fs.dashboard,
                     "work_orchestrator": fs.work_orchestrator,
                     "laya": fs.laya,
                 },

@@ -600,7 +600,7 @@ def _route_availability_gates(nodes: list[ast.AST]) -> list[str]:
         )
         has_feature_check = any(
             (isinstance(item, ast.Attribute) and item.attr == "features")
-            or (isinstance(item, ast.Constant) and item.value in {"features", "dashboard_enabled"})
+            or (isinstance(item, ast.Constant) and item.value == "features")
             for item in descendants
         )
         has_optional_compare = any(
@@ -2977,7 +2977,7 @@ def _operation_owner_task(finding: dict[str, Any]) -> str | None:
             return "T02"
         if any(word in action for word in ("release", "selftest", "self-test")):
             return "T20"
-        if action in {"status", "dashboard", "logs", "service-status", "watch"}:
+        if action in {"status", "logs", "service-status", "watch"}:
             return "T18"
         if action == "memory":
             return "T05"

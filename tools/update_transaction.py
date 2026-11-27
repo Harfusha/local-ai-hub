@@ -20,6 +20,9 @@ PAYLOAD_FILES = (
     "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
     "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
 )
+# Reports written by the retired web-dashboard updater contain no operator settings.
+# Move them into the update backup atomically, then discard them after activation.
+RETIRED_INSTALL_FILES = ("auto-update-dashboard.json",)
 
 
 def _is_link(path: Path) -> bool:
@@ -151,6 +154,7 @@ def replace_install_payload(
     config_source: Path,
     file_names: tuple[str, ...],
     *,
+    retired_files: tuple[str, ...] = (),
     ignored: tuple[str, ...] = ("__pycache__", "*.pyc", ".pytest_cache"),
     before_commit: Callable[[], tuple[bool, str]] | None = None,
     after_swap: Callable[[], tuple[bool, str]] | None = None,
@@ -195,6 +199,13 @@ def replace_install_payload(
             return False, f"update source is not a directory: {source}"
         if not is_tree and not source.is_file():
             return False, f"update source is not a file: {source}"
+    if any(Path(name).name != name or name in {".", ".."} for name in retired_files):
+        return False, "unsafe retired install filename rejected"
+    retired_targets = [install_dir / name for name in retired_files]
+    if any(_is_link(target) for target in retired_targets):
+        return False, "retired install target is a link; update refused"
+    if any(target.exists() and not stat.S_ISREG(target.lstat().st_mode) for target in retired_targets):
+        return False, "retired install target is not a regular file; update refused"
     try:
         source_digests = {
             source: _tree_digest(source, ignored) if is_tree else _file_digest(source)
@@ -222,6 +233,7 @@ def replace_install_payload(
     commit_complete = False
     stop_detail = ""
     runtime_stopped = False
+    retired_removed: list[str] = []
     try:
         for source, target, is_tree in entries:
             staged = payload_root / target.name
@@ -252,6 +264,16 @@ def replace_install_payload(
                 moved_old.append((backup, target))
             os.replace(staged, target)
             moved_new.append((target, staged, source_digests[source], is_tree))
+        for target in retired_targets:
+            if _is_link(target):
+                raise OSError(f"retired install target became a link during swap: {target}")
+            if target.exists():
+                if not stat.S_ISREG(target.lstat().st_mode):
+                    raise OSError(f"retired install target became non-regular during swap: {target}")
+                backup = backup_root / target.name
+                os.replace(target, backup)
+                moved_old.append((backup, target))
+                retired_removed.append(target.name)
         if after_swap is not None:
             accepted, detail = after_swap()
             if not accepted:
@@ -309,6 +331,8 @@ def replace_install_payload(
     except OSError as exc:
         return True, f"update payload installed; staging and prior backups retained at {stage_root}: {exc}"
     message = "update payload installed and staged verification passed"
+    if retired_removed:
+        message += "; one-time dashboard cleanup removed " + ", ".join(retired_removed)
     if stop_detail and stop_detail != "no existing managed runtime":
         message += f"; {stop_detail}"
     return True, message

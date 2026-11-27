@@ -807,11 +807,20 @@ def test_opencode_setup_uses_canonical_or_explicit_config_root_only(tmp_path, mo
     monkeypatch.setattr(setup.Path, "home", lambda: tmp_path)
     monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
     monkeypatch.delenv("OPENCODE_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     assert setup.opencode_config_dirs() == [tmp_path / ".config" / "opencode"]
 
     explicit = tmp_path / "custom-opencode"
     monkeypatch.setenv("OPENCODE_HOME", str(explicit))
     assert setup.opencode_config_dirs() == [explicit]
+
+
+def test_opencode_setup_uses_xdg_config_home_for_isolated_profile(tmp_path, monkeypatch):
+    xdg_config_home = tmp_path / "isolated-xdg-config"
+    monkeypatch.setenv("OPENCODE_HOME", str(tmp_path / "inherited-opencode-home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+
+    assert setup.opencode_config_dirs() == [xdg_config_home / "opencode"]
 
 
 def test_claude_plugin_route_detects_global_mcp_and_hooks(tmp_path):

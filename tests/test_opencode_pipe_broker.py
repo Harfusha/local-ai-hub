@@ -11,7 +11,9 @@ import local_ai_hub.opencode_pipe_broker as pipe_broker
 from local_ai_hub.opencode_pipe_broker import (
     MAX_PIPE_FRAME_BYTES,
     build_pipe_sddl,
+    dispatch_managed_mcp_request,
     encode_response_frame,
+    parse_hub_mcp_request,
     parse_hub_chat_request,
     verify_client_identity,
     verify_session_secret,
@@ -113,6 +115,97 @@ def test_hub_request_parser_rejects_chunked_and_ambiguous_http():
             b"POST /api/chat/completions HTTP/1.1\r\n"
             b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
         )
+
+
+def test_managed_mcp_pipe_supports_initialize_tools_list_and_status_only():
+    calls = []
+    session_state = {"initialized": False}
+    status = {"success": True, "hub_online": True, "active_model": "qwen2.5-coder:7b"}
+
+    initialize = dispatch_managed_mcp_request({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "opencode", "version": "2.2.5"},
+        },
+    }, lambda args: calls.append(args) or status, session_state=session_state)
+    catalog = dispatch_managed_mcp_request({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+    }, lambda args: calls.append(args) or status, session_state=session_state)
+    called = dispatch_managed_mcp_request({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "local_ai_status", "arguments": {"detail": "brief"}},
+    }, lambda args: calls.append(args) or status, session_state=session_state)
+
+    assert initialize["id"] == 1
+    assert initialize["result"]["protocolVersion"] == "2025-03-26"
+    assert catalog["result"]["tools"] == [catalog["result"]["tools"][0]]
+    assert catalog["result"]["tools"][0]["name"] == "local_ai_status"
+    assert called["id"] == 3
+    assert json.loads(called["result"]["content"][0]["text"]) == status
+    assert calls == [{"detail": "brief", "response_profile": "minimal"}]
+
+
+def test_managed_mcp_pipe_rejects_unapproved_dispatch_and_bad_status_arguments():
+    calls = []
+    status = lambda args: calls.append(args) or {"success": True}
+
+    for request in (
+        {"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "local_ai_repo", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "local_ai_status", "arguments": {"unknown": True}}},
+    ):
+        response = dispatch_managed_mcp_request(request, status)
+        assert "error" in response
+
+    assert calls == []
+
+
+def test_managed_mcp_pipe_requires_initialize_before_tools():
+    response = dispatch_managed_mcp_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        lambda _args: {"success": True},
+        session_state={"initialized": False},
+    )
+
+    assert response["error"]["code"] == -32002
+
+
+def test_managed_mcp_pipe_accepts_only_fixed_bounded_http_route():
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}).encode()
+    raw = (
+        b"POST /mcp HTTP/1.1\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode()
+        + body
+    )
+
+    assert parse_hub_mcp_request(raw) == {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    with pytest.raises(ValueError, match="route"):
+        parse_hub_mcp_request(raw.replace(b"POST /mcp", b"POST /other"))
+
+
+def test_mcp_pipe_rejects_oversized_body_before_reading_it():
+    header = (
+        b"POST /mcp HTTP/1.1\r\n"
+        b"Content-Length: 65537\r\n\r\n"
+    )
+    read_calls = 0
+
+    def read_some(_limit):
+        nonlocal read_calls
+        read_calls += 1
+        return header
+
+    def read_exact(_length):
+        pytest.fail("oversized MCP body must be rejected before reading payload bytes")
+
+    with pytest.raises(ValueError, match="body length"):
+        pipe_broker._read_pipe_http_request(read_some, read_exact)
+    assert read_calls == 1
     with pytest.raises(ValueError, match="duplicate"):
         parse_hub_chat_request(
             b"POST /api/chat/completions HTTP/1.1\r\n"

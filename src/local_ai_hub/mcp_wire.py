@@ -594,7 +594,13 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
                         content = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(compact_value))]
                         return content, compact_value if structured else None
 
-    inner_limits = list(dict.fromkeys((requested, max(64, requested - 32), max(64, requested // 2), 64)))
+    # The application compactor measures one JSON value, while this finalizer
+    # measures both text and structuredContent. Try smaller inner budgets when
+    # a candidate fits the former estimate but misses the actual MCP envelope.
+    inner_limits = list(dict.fromkeys((
+        requested, max(64, requested - 32), max(64, requested // 2),
+        max(64, requested // 3), max(64, requested // 4), 64,
+    )))
     for inner_limit in inner_limits:
         candidate = services_module.budget_response(
             services_module.copy.deepcopy(value),
@@ -808,6 +814,62 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         if recovery is not None:
             return project_early_result(recovery)
     contents, structured = services_module._build_mcp_budget_payload(name, arguments, value)
+    if (name == "local_ai_coord" and arguments.get("action") == "context_compile"
+            and type(arguments.get("max_response_tokens")) is int
+            and arguments["max_response_tokens"] >= 128 and isinstance(value, dict)):
+        requested = arguments["max_response_tokens"]
+
+        def artifact_pointer(candidate: Any) -> str:
+            if not isinstance(candidate, dict):
+                return ""
+            pointer = candidate.get("task_context_artifact_id")
+            if not isinstance(pointer, str) or not pointer:
+                nested = candidate.get("task_context")
+                pointer = nested.get("artifact_id") if isinstance(nested, dict) else None
+            return pointer if isinstance(pointer, str) else ""
+
+        try:
+            text_value = services_module.json.loads(contents[0].text)
+        except (IndexError, AttributeError, ValueError):
+            text_value = None
+        projected = structured if isinstance(structured, dict) else text_value
+        source_pointer = artifact_pointer(value)
+        lost_pointer = bool(source_pointer and artifact_pointer(projected) != source_pointer)
+        budget_failure = (
+            isinstance(projected, dict) and projected.get("success") is False
+            and projected.get("error") == "max_response_tokens too small"
+        ) or value.get("next_action") == "request_larger_response_budget"
+        if lost_pointer or budget_failure:
+            rejection: dict[str, Any] = {"success": False, "error": "max_response_tokens too small",
+                         "next_action": "request_larger_response_budget",
+                         "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True}}
+            candidates = [rejection]
+            if source_pointer:
+                candidates.insert(0, {
+                    "success": False, "complete": False, "partial": True,
+                    "error": "compiled context requires artifact retrieval",
+                    "next_action": "read_task_context_artifact",
+                    "task_context_artifact_id": source_pointer,
+                    "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "truncated": True},
+                })
+            # The finalizer always emits structuredContent, including when
+            # a caller returns a text-only tuple. Fit the real envelope:
+            # prefer a JSON mirror, then a short human-readable companion.
+            for candidate in candidates:
+                for compact_text in (False, True):
+                    for _ in range(16):
+                        text = ("Read the exact task_context_artifact_id."
+                                if candidate.get("task_context_artifact_id")
+                                else "Increase max_response_tokens.") if compact_text else services_module.json_dumps(candidate)
+                        content = [services_module.mcp_types.TextContent(type="text", text=text)]
+                        wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+                                "structuredContent": candidate, "isError": False}
+                        returned = services_module.json_tokens(wire)
+                        if candidate["response_budget"]["returned_tokens"] == returned:
+                            break
+                        candidate["response_budget"]["returned_tokens"] = returned
+                    if services_module.json_tokens(wire) <= requested:
+                        return content, candidate
     if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
             and isinstance(value, dict) and value.get("success") is True):
         try:
@@ -888,6 +950,22 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
     # Full telemetry capture is internal. It must not enable diagnostics on
     # ordinary MCP responses; only explicit agent-output diagnostics do that.
     safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
+    if isinstance(safe, dict):
+        if safe.get("success") is False and isinstance(structured.get("request_id"), str):
+            safe["request_id"] = structured["request_id"][:160]
+        # Explicitly requested budgets are public accounting. The original
+        # wire already fit; restoring the measured metadata cannot enlarge it.
+        if (type(arguments.get("max_response_tokens")) is int
+                and arguments["max_response_tokens"] >= 128
+                and isinstance(structured.get("response_budget"), dict)):
+            safe["response_budget"] = services_module.copy.deepcopy(structured["response_budget"])
+        if (arguments.get("action") == "context_compile" and name == "local_ai_coord"
+                and type(arguments.get("max_response_tokens")) is int
+                and arguments["max_response_tokens"] > 0
+                and isinstance(structured.get("response_budget"), dict)):
+            for key in ("next_action", "task_context_artifact_id"):
+                if isinstance(structured.get(key), str):
+                    safe[key] = structured[key]
     if safe == structured:
         return contents, structured
     try:
@@ -1020,18 +1098,16 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 candidate_value = services_module.json.loads(text_value)
             except Exception:
                 candidate_value = {}
-            emitted_response = {"content": [{"type": "text", "text": text_value}], "structuredContent": candidate_value}
+            emitted_response = {"content": [{"type": "text", "text": text_value}],
+                                "structuredContent": candidate_value, "isError": False}
             result = (contents, candidate_value)
         else:
             candidate_value = structured_value
             result = (contents, candidate_value)
-            if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):
-                emitted_response = {
-                    "content": [{"type": "text", "text": item.text} for item in contents],
-                    "structuredContent": candidate_value, "isError": False,
-                }
-            else:
-                emitted_response = services_module._mcp_wire_view(candidate_value, structured=True)
+            emitted_response = {
+                "content": [item.model_dump(mode="json", exclude_none=True) for item in contents],
+                "structuredContent": candidate_value, "isError": False,
+            }
         emitted_tokens = services_module.json_tokens(emitted_response)
         for item in pending_accounting:
             measured = dict(item["measured"])
@@ -1144,6 +1220,8 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 "terminal": True, "retryable": False,
                 "error": f"MCP output contract failed: {output_error}",
             }
+            if isinstance(raw, dict) and isinstance(raw.get("request_id"), str):
+                payload["request_id"] = raw["request_id"][:160]
             return finalize(services_module._mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
         if isinstance(raw, (dict, list)):
             return finalize(services_module._mcp_budget_payload(name, arguments, raw))

@@ -66,8 +66,8 @@ class HttpAuthorizationMixin:
             or (path == "/api/mode" and not read_only)
         ):
             return "admin:read" if read_only else "admin:write"
-        if path in {"/", "/dashboard", "/api/metrics", "/api/status"}:
-            return "dashboard:read"
+        if path in {"/", "/api/metrics", "/api/status"}:
+            return "operator:read"
         return "api:read" if read_only else "api:write"
 
     def _loopback_client(self) -> bool:
@@ -108,18 +108,12 @@ class HttpAuthorizationMixin:
         if not hasattr(request_headers, "get"):
             request_headers = {}
         header = lambda name, default="": request_headers.get(name, default)
-        if (
-            header("X-LocalAI-Client", "") == "dashboard"
-            and str(header("Sec-Fetch-Site", "")).strip().lower() != "same-origin"
+        if header("X-LocalAI-Client", "") == "desktop" and (
+            header("Origin", "") or any(header(name, "") for name in (
+                "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"
+            ))
         ):
-            self._send(403, {"success": False, "error": "forbidden: dashboard requests must be same-origin"})
-            return False
-        if (
-            header("X-LocalAI-Client", "") == "dashboard"
-            and str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD"}
-            and not str(header("Origin", "")).strip()
-        ):
-            self._send(403, {"success": False, "error": "forbidden: dashboard mutation requires Origin"})
+            self._send(403, {"success": False, "error": "forbidden: native desktop control is not a browser API"})
             return False
         host_header = str(header("Host", "") or "").strip()
         host_port: int | None = None

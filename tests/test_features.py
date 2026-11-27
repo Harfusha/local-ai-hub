@@ -351,10 +351,9 @@ enabled = true
         dec = engine.select(RouteRequest(has_fresh_cache=True, needs_model=True))
         assert dec.kind == "cache"
 
-    def test_dashboard_toggle(self):
-        assert FeatureSet({}).dashboard is True
-        assert FeatureSet({"features": {"dashboard": False}}).dashboard is False
-        assert FeatureSet({"monitoring": {"dashboard_enabled": False}}).dashboard is False
+    def test_retired_dashboard_settings_have_no_runtime_effect(self):
+        features = FeatureSet({"features": {"dashboard": False}, "monitoring": {"dashboard_enabled": False}})
+        assert not hasattr(features, "dashboard")
 
     def test_config_update_allows_feature_toggles(self, tmp_path):
         from local_ai_hub.http_server import Handler

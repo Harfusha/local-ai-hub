@@ -18,10 +18,16 @@ class HttpGetMixin:
         if path == "/ready":
             self._handle_health_route(path)
             return
+        if path.rstrip("/") in {"", "/favicon.ico"}:
+            self._send(404, {"success": False, "error": "Route not found."})
+            return
+        if not path.startswith("/api/") and path not in {"/export", "/metrics"}:
+            self._send(404, {"success": False, "error": "Route not found."})
+            return
         if services_module.APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
-        # The dashboard shell is public; loopback mode reads expose only local
+        # Loopback mode reads expose only local
         # runtime state, while mode mutations remain authenticated.
         if path == "/api/mode" and not services_module._is_loopback_peer(self):
             self._send(403, {"success": False, "error": "local_control_requires_loopback"})
@@ -29,10 +35,10 @@ class HttpGetMixin:
         elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
-        elif path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
+        elif not self._require_authorized():
             return
         if path == "/api/updates":
-            self._handle_dashboard_updates()
+            self._handle_desktop_updates()
             return
         mode_error = services_module._http_mode_gate_error("GET", path)
         if mode_error is not None:
@@ -61,7 +67,7 @@ class HttpGetMixin:
             if path.startswith("/api/debug-traces/") or path in {"/api/telemetry/timeline", "/api/logs/tail"}:
                 self._send(409, {
                     "success": False, "error_code": "detailed_diagnostics_disabled",
-                    "error": "Enable detailed diagnostics in the dashboard to read diagnostic detail.",
+                    "error": "Enable detailed diagnostics in desktop settings to read diagnostic detail.",
                     "terminal": True, "retryable": False,
                 })
                 return
@@ -95,7 +101,7 @@ class HttpGetMixin:
             if not self._bind_swarm_query(query):
                 return
         root_scoped_repo_get_paths = {
-            "/api/git/status", "/api/git/diff", "/api/git/history_search", "/api/git/synthesize_commit",
+            "/api/git/status", "/api/git/diff", "/api/git/history_search",
             "/api/hotspots", "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
             "/api/resolve_imports", "/api/security_audit", "/api/search",
             "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/project/config",
@@ -119,12 +125,6 @@ class HttpGetMixin:
             get_handler_name = services_module.select_get_handler(path)
             if get_handler_name is not None:
                 getattr(self, get_handler_name)(query)
-                return
-            if path in {'/', '/dashboard'}:
-                self._handle_dashboard_route()
-                return
-            if path == '/favicon.ico':
-                self._handle_favicon_route()
                 return
             if path == "/api/mode":
                 try:
@@ -977,15 +977,6 @@ class HttpGetMixin:
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/git/synthesize_commit":
-                root = (query.get("root") or ["."])[0]
-                hint = (query.get("hint") or [""])[0]
-                task_id = (query.get("task_id") or [""])[0]
-                if services_module.APP.deterministic is not None:
-                    self._send(200, services_module.APP.services.synthesize_commit(root, hint, task_id=task_id))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
             if path == "/api/models":
                 models = services_module.APP.runtime.installed_models()
                 self._send(200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "ollama"} for m in models]}); return
@@ -1016,11 +1007,15 @@ class HttpGetMixin:
             except Exception:
                 pass
 
-    def _handle_dashboard_updates(self, *, mutate: bool = False) -> None:
-        if self.headers.get("X-LocalAI-Client") != "dashboard" or not services_module._is_loopback_peer(self):
-            self._send(403, {"success": False, "error": "Update controls require the local dashboard."})
+    def _handle_desktop_updates(self, *, mutate: bool = False) -> None:
+        marker = self.headers.get("X-LocalAI-Client", "")
+        desktop = marker == "desktop" and not self.headers.get("Origin") and not any(
+            self.headers.get(name) for name in ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest")
+        )
+        if not services_module._is_loopback_peer(self) or not desktop:
+            self._send(403, {"success": False, "error": "Update controls require the local desktop."})
             return
-        controller = getattr(services_module.APP, "dashboard_updates", None)
+        controller = getattr(services_module.APP, "desktop_updates", None)
         if controller is None:
             self._send(503, {"success": False, "error": "Update controls are unavailable."})
             return

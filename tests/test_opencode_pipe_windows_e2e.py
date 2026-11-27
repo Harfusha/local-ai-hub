@@ -187,16 +187,19 @@ def _launch_appcontainer_process(
 
 def _client_js(
     pipe_basename: str, secret: bytes, *, request_target: str, ack: int, host_port: int,
+    request_body: bytes = b"{}", expected_response_body: str = '{"answer":"ok"}',
 ) -> str:
     if isinstance(host_port, bool) or not isinstance(host_port, int) or not 1 <= host_port <= 65535:
         raise ValueError("host_port must be a valid TCP port")
     path = json.dumps(r"\\.\pipe" + "\\" + pipe_basename)
     key = json.dumps(secret.hex())
     host_endpoint = json.dumps({"host": "127.0.0.1", "port": host_port})
-    request = json.dumps(
+    request = json.dumps(base64.b64encode(
         f"POST {request_target} HTTP/1.1\r\nHost: attacker.invalid\r\n"
-        "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
-    )
+        f"Content-Type: application/json\r\nContent-Length: {len(request_body)}\r\n\r\n".encode("ascii")
+        + request_body
+    ).decode("ascii"))
+    expected_body = json.dumps(expected_response_body)
     return f"""
 const net = require('node:net');
 const timer = setTimeout(() => process.exit(250), 12000);
@@ -225,7 +228,7 @@ async function checkNetworkBoundary() {{
 checkNetworkBoundary().then(() => {{
 const socket = net.connect({path});
 let pending = Buffer.alloc(0), chunks = [], ackSent = false;
-socket.on('connect', () => {{ socket.write(Buffer.concat([Buffer.from({key}, 'hex'), Buffer.from({request}, 'ascii')])); }});
+socket.on('connect', () => {{ socket.write(Buffer.concat([Buffer.from({key}, 'hex'), Buffer.from({request}, 'base64')])); }});
 socket.on('data', data => {{
   pending = Buffer.concat([pending, data]);
   while (pending.length >= 4) {{
@@ -237,7 +240,7 @@ socket.on('data', data => {{
     if (length === 0) {{
       if (pending.length) process.exit(239);
       const response = Buffer.concat(chunks).toString('ascii');
-      if (!response.startsWith('HTTP/1.1 200 OK\\r\\n') || !response.endsWith('{{"answer":"ok"}}')) process.exit(238);
+      if (!response.startsWith('HTTP/1.1 200 OK\\r\\n') || !response.endsWith({expected_body})) process.exit(238);
       ackSent = true;
       socket.write(Buffer.from([{ack}]), () => {{ clearTimeout(timer); socket.end(); process.exit(0); }});
       return;
@@ -247,6 +250,83 @@ socket.on('data', data => {{
 }});
 socket.on('error', error => {{ if (ackSent) return; clearTimeout(timer); process.exit(100 + ((Math.abs(error.errno || 1)) % 100)); }});
 }}).catch(() => process.exit(231));
+"""
+
+
+def _managed_mcp_client_js(pipe_basename: str, secret: bytes, status: dict[str, object]) -> str:
+    """Exercise the full bounded MCP handshake and status call over one secured pipe session."""
+    pipe_path = json.dumps(r"\\.\pipe" + "\\" + pipe_basename)
+    encoded_secret = json.dumps(secret.hex())
+    expected_status = json.dumps(json.dumps(status, separators=(",", ":")))
+    return f"""
+const net = require('node:net');
+const pipe = {pipe_path};
+const secret = {encoded_secret};
+const expectedStatus = {expected_status};
+const timer = setTimeout(() => process.exit(250), 15000);
+function transact(message) {{
+  return new Promise((resolve, reject) => {{
+    let attempts = 0, sent = false, done = false, ackPending = false, pending = Buffer.alloc(0), chunks = [], size = 0;
+    function connect() {{
+      attempts += 1;
+      const socket = net.connect(pipe);
+      let connected = false;
+      socket.on('connect', () => {{
+        connected = true; sent = true;
+        const body = Buffer.from(JSON.stringify(message), 'utf8');
+        const head = Buffer.from(`POST /mcp HTTP/1.1\\r\\nHost: local-ai-hub\\r\\nContent-Type: application/json\\r\\nContent-Length: ${{body.length}}\\r\\nConnection: close\\r\\n\\r\\n`, 'ascii');
+        socket.write(Buffer.concat([Buffer.from(secret, 'hex'), head, body]));
+      }});
+      socket.on('error', error => {{
+        if (ackPending) return;
+        const retryable = ['ENOENT','EBUSY','ERR_PIPE_BUSY','EAGAIN','ECONNREFUSED','EINTR'].includes(error?.code);
+        if (!connected && !sent && retryable && attempts < 40) {{ setTimeout(connect, Math.min(25 * attempts, 250)); return; }}
+        if (!done) {{ done = true; reject(new Error(`pipe connect failed:${{error?.code||'unknown'}}`)); }}
+      }});
+      socket.on('data', chunk => {{
+        pending = Buffer.concat([pending, chunk]);
+        while (pending.length >= 4) {{
+          const length = pending.readUInt32BE(0);
+          if (length > 65536 || size + length > 65536 + 16384) return reject(new Error('frame limit'));
+          if (pending.length < length + 4) return;
+          const frame = pending.subarray(4, length + 4); pending = pending.subarray(length + 4);
+          if (length === 0) {{
+            if (pending.length) return reject(new Error('trailing frame data'));
+            const raw = Buffer.concat(chunks, size);
+            ackPending = true;
+            socket.write(Buffer.from([6]), error => {{
+              if (error) return reject(new Error('response acknowledgement failed'));
+              const split = raw.indexOf(Buffer.from('\\r\\n\\r\\n'));
+              if (split < 0) return reject(new Error('bad HTTP response'));
+              const headers = raw.subarray(0, split).toString('ascii');
+              const body = raw.subarray(split + 4);
+              if (Number(/Content-Length: (\\d+)/i.exec(headers)?.[1]) !== body.length) return reject(new Error('bad HTTP envelope'));
+              done = true;
+              if (headers.startsWith('HTTP/1.1 204 ') && body.length === 0) resolve(undefined);
+              else if (headers.startsWith('HTTP/1.1 200 OK')) {{ try {{ resolve(JSON.parse(body.toString('utf8'))); }} catch {{ reject(new Error('bad MCP JSON')); }} }}
+              else reject(new Error(`unexpected HTTP status:${{headers.slice(0,32)}}`));
+              socket.end(); clearTimeout(timer);
+            }});
+            return;
+          }}
+          size += length; chunks.push(frame);
+        }}
+      }});
+    }}
+    connect();
+  }});
+}}
+(async () => {{
+  const initialized = await transact({{jsonrpc:'2.0',id:1,method:'initialize',params:{{protocolVersion:'2025-03-26',capabilities:{{}},clientInfo:{{name:'opencode',version:'2.2.5'}}}}}}).catch(() => process.exit(240));
+  if (initialized.id !== 1 || initialized.result.protocolVersion !== '2025-03-26') process.exit(231);
+  const ready = await transact({{jsonrpc:'2.0',method:'notifications/initialized',params:{{}}}}).catch(() => process.exit(241));
+  if (ready !== undefined) process.exit(232);
+  const catalog = await transact({{jsonrpc:'2.0',id:2,method:'tools/list',params:{{}}}}).catch(() => process.exit(242));
+  if (catalog.id !== 2 || catalog.result.tools.length !== 1 || catalog.result.tools[0].name !== 'local_ai_status') process.exit(233);
+  const called = await transact({{jsonrpc:'2.0',id:3,method:'tools/call',params:{{name:'local_ai_status',arguments:{{detail:'brief'}}}}}}).catch(() => process.exit(243));
+  if (called.id !== 3 || called.result.isError !== false || called.result.content[0].text !== expectedStatus) process.exit(234);
+  process.exit(0);
+}})().catch(() => process.exit(235));
 """
 
 
@@ -370,17 +450,17 @@ try {{
 @pytest.mark.parametrize(
     "client_kind",
     [
-        "node", "powershell-container", "powershell-host", "powershell-createfile",
+        "node", "node-mcp", "powershell-container", "powershell-host", "powershell-createfile",
         "dotnet-server-local-local", "dotnet-server-plain-local",
         "dotnet-server-local-plain", "dotnet-server-plain-plain", "fromapp-plain-pipe",
     ],
     ids=[
-        "node-roundtrip", "inbox-container-diagnostic", "inbox-host-control", "win32-createfile-diagnostic",
+        "node-roundtrip", "appcontainer-mcp-status", "inbox-container-diagnostic", "inbox-host-control", "win32-createfile-diagnostic",
         "dotnet-server-local-local", "dotnet-server-plain-local",
         "dotnet-server-local-plain", "dotnet-server-plain-plain", "fromapp-plain-pipe",
     ],
 )
-def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: str):
+def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: str, monkeypatch):
     observed: dict[str, object] = {}
 
     class Handler(BaseHTTPRequestHandler):
@@ -441,6 +521,17 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
     ]
     win32api.CloseHandle(current_token)
     assert len(logon_sids) == 1, f"expected one host logon SID, got {logon_sids!r}"
+    mcp_calls: list[dict[str, object]] = []
+    mcp_requests: list[dict[str, object]] = []
+    mcp_status = {"success": True, "hub_online": True, "active_model": "test-safe-status"}
+    if client_kind == "node-mcp":
+        dispatch_original = broker.dispatch_managed_mcp_request
+
+        def record_mcp_request(payload, status_handler, *, session_state=None):
+            mcp_requests.append(payload)
+            return dispatch_original(payload, status_handler, session_state=session_state)
+
+        monkeypatch.setattr(broker, "dispatch_managed_mcp_request", record_mcp_request)
     listener = broker.WindowsOpenCodePipeListener(
         session_id=session_id,
         appcontainer_sid=sid_text.value,
@@ -448,6 +539,7 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
         secret=secret,
         hub_port=hub.server_port,
         io_timeout=15,
+        mcp_status_handler=(lambda args: mcp_calls.append(args) or mcp_status) if client_kind == "node-mcp" else None,
     )
     if client_kind == "powershell-createfile":
         listener.pipe_name = rf"\\.\pipe\LOCAL\lah-opencode-{session_id}"
@@ -457,7 +549,10 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
     if client_kind not in dotnet_cases:
         def serve():
             try:
-                listener.serve_once()
+                if client_kind == "node-mcp":
+                    listener.serve_forever()
+                else:
+                    listener.serve_once()
                 outcome["returned"] = True
             except Exception as exc:
                 outcome["error"] = exc
@@ -477,6 +572,8 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
         f"lah-opencode-{session_id}", secret,
         request_target="/api/chat/completions", ack=6, host_port=hub.server_port,
     )
+    if client_kind == "node-mcp":
+        client_script = _managed_mcp_client_js(f"lah-opencode-{session_id}", secret, mcp_status)
     try:
         if client_kind in dotnet_cases:
             assert dotnet_server is not None and dotnet_server.stdout is not None
@@ -489,7 +586,7 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
             assert ready == {"line": "READY\n"}, f".NET pipe server failed to start: {ready}"
         else:
             assert listener.pipe_ready.wait(timeout=5), f"pipe listener did not become ready: {outcome}"
-        if client_kind == "node":
+        if client_kind in {"node", "node-mcp"}:
             application = shutil.which("node")
             assert application
             arguments = ["-e", client_script]
@@ -528,6 +625,8 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
                 application, arguments, app_sid, sid_text.value,
                 windows_session_id, logon_sids[0],
             )
+        if client_kind == "node-mcp":
+            listener.stop()
         if pipe_thread is not None:
             pipe_thread.join(timeout=20)
             assert not pipe_thread.is_alive(), "host pipe listener did not finish"
@@ -570,9 +669,16 @@ def test_named_pipe_transport_behavior_under_host_and_appcontainer(client_kind: 
             assert isinstance(outcome.get("error"), TimeoutError), outcome
             assert not observed
             return
-        assert exit_code == 0, f"AppContainer client stage exit {exit_code}; listener={outcome}; Hub={observed}"
+        assert exit_code == 0, f"AppContainer client stage exit {exit_code}; listener={outcome}; Hub={observed}; MCP={mcp_requests}"
         assert outcome == {"returned": True}
-        assert observed == {"path": "/api/chat/completions", "body": b"{}"}
+        if client_kind == "node-mcp":
+            assert observed == {}
+            assert [request["method"] for request in mcp_requests] == [
+                "initialize", "notifications/initialized", "tools/list", "tools/call",
+            ]
+            assert mcp_calls == [{"detail": "brief", "response_profile": "minimal"}]
+        else:
+            assert observed == {"path": "/api/chat/completions", "body": b"{}"}
     finally:
         if pipe_thread is not None:
             pipe_thread.join(timeout=20)
@@ -977,8 +1083,12 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
             assert json.loads(observed["body"]) == {"root": str(project_root.resolve())}
             assert observed["response_sent"] is True
 
-            opencode = shutil.which("opencode") or (
-                r"C:\Users\Adam\AppData\Local\Programs\OpenCode-LocalAIHub\2.2.5\opencode.exe"
+            opencode = shutil.which("opencode") or str(
+                Path(os.environ["LOCALAPPDATA"])
+                / "Programs"
+                / "OpenCode-LocalAIHub"
+                / "2.2.5"
+                / "opencode.exe"
             )
             assert opencode and os.path.isfile(opencode), "OpenCode 2.2.5 executable is unavailable"
             staged_opencode = stage / "opencode.exe"

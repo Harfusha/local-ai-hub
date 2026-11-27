@@ -207,7 +207,7 @@ class TelemetryEventMixin:
                 event[key] = ctx[key]
         self._publish_live(kind, self._clean_event(event))
 
-    def _refresh_dashboard_report_writer(self, report: dict[str, Any]) -> dict[str, Any]:
+    def _refresh_telemetry_report_writer(self, report: dict[str, Any]) -> dict[str, Any]:
         """Refresh cached dashboard writer evidence without querying SQLite."""
         refreshed = dict(report)
         summary = refreshed.get("summary")

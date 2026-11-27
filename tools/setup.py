@@ -2462,8 +2462,11 @@ def _remove_duplicate_antigravity_hooks(path: Path, backup_enabled: bool) -> boo
     # Recognize the previous exact Hub-owned hook shape so it can be safely
     # removed when the native plugin becomes active after this upgrade.
     for config in list(generated_configs):
-        config["PostToolUse"][0]["matcher"] = "edit_file|write_file"
-        generated_configs.append(config)
+        import copy
+
+        legacy = copy.deepcopy(config)
+        legacy["PostToolUse"][0]["matcher"] = "edit_file|write_file"
+        generated_configs.append(legacy)
     # Earlier releases emitted only the narrow PreToolUse policy.
     generated_configs.append({
         "enabled": True,
@@ -3482,7 +3485,10 @@ def copilot_hook_path() -> Path:
 
 
 def opencode_config_dirs() -> list[Path]:
-    """Return OpenCode's canonical user config root or its explicit override."""
+    """Return OpenCode's user config root, honoring XDG isolation first."""
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_config_home:
+        return [Path(xdg_config_home).expanduser() / "opencode"]
     configured = os.environ.get("OPENCODE_HOME", "").strip()
     if configured:
         return [Path(configured).expanduser()]
@@ -4161,12 +4167,14 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
-    sync_packaged_defaults()
-    if install_dir.resolve() != SOURCE_ROOT.resolve():
+    source_install = install_dir.resolve() == SOURCE_ROOT.resolve()
+    if source_install:
+        sync_packaged_defaults(SOURCE_ROOT)
+    else:
         sync_packaged_defaults(install_dir)
     write_all_generated(cfg, install_dir, hub_python, serena)
-    sync_generated_prompt_policies()
-    if install_dir.resolve() == SOURCE_ROOT.resolve():
+    if source_install:
+        sync_generated_prompt_policies(SOURCE_ROOT)
         generate_provider_plugin_skills()
     log(f"Dynamic skill, manifests, and schemas generated: {install_dir / 'generated'}")
 
@@ -5017,7 +5025,10 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             return 1
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
-            sync_packaged_defaults(install_dir)
+            # Generate-only supports a fresh output directory, not just an installed checkout.
+            # Synchronize package defaults only when the actual package exists there.
+            if (install_dir / "src" / "local_ai_hub").is_dir():
+                sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
             for manual_action in configure_agents(
                 install_dir, hub_python, None, cfg,
@@ -5836,7 +5847,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    log("Dashboard: http://127.0.0.1:11435/dashboard")
+    log("Desktop: python tools/hubctl.py desktop (build/install native binary first)")
     return 0
 
 

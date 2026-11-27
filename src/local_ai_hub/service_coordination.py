@@ -272,38 +272,6 @@ class ServiceCoordinationMixin:
         ws = self._plan_workspace(root, "plan_reconcile_steering", arguments)
         return reconcile_task_steering(self.task_store, root=str(ws.repo_root), **arguments)
 
-    def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
-        tasks_data: list[dict[str, Any]] = []
-        receipts_data: list[dict[str, Any]] = []
-
-        if self.task_store is not None:
-            if task_id:
-                t = self.task_store.get(task_id)
-                if t:
-                    tasks_data.append(t.to_dict())
-            else:
-                active = self.task_store.list_tasks(status=None, limit=5)
-                for t in active.tasks:
-                    tasks_data.append(t.to_dict())
-
-        if self.verification_store is not None:
-            tids = [task_id] if task_id else [str(t.get("task_id")) for t in tasks_data if t.get("task_id")]
-            for tid in tids[:5]:
-                comp = self.verification_store.completion(tid)
-                for r in comp.receipts:
-                    if r.passed:
-                        receipts_data.append(r.to_dict())
-
-        params = {"hint": hint, "task_id": task_id, "tasks_count": len(tasks_data), "receipts_count": len(receipts_data)}
-        return self.deterministic_operation(
-            "commit-synthesis",
-            root,
-            params,
-            lambda: self.deterministic.synthesize_commit(
-                root, hint, task_id=task_id, tasks=tasks_data, receipts=receipts_data
-            ),
-        )
-
     def code_inspect_symbol(self, root: str, symbol: str) -> dict[str, Any]:
         if self.code_index is None:
             return {"success": False, "error": "code index disabled"}
