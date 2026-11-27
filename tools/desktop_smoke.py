@@ -27,12 +27,15 @@ def isolated_hub(temp: Path):
     from local_ai_hub.app import LocalAIApp
 
     observed_ready = threading.Event()
+    observed_refresh = threading.Event()
 
     class SmokeHandler(http_server.Handler):
         def do_GET(self):
             super().do_GET()
             if self.path == "/ready":
                 observed_ready.set()
+            elif self.path.startswith("/api/live/status?"):
+                observed_refresh.set()
 
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), SmokeHandler)
     app = None
@@ -64,7 +67,7 @@ def isolated_hub(temp: Path):
         if not observed_ready.wait(timeout=5):
             raise RuntimeError("Initial readiness request was not observed")
         observed_ready.clear()
-        yield config, observed_ready, ready_url
+        yield config, observed_ready, ready_url, observed_refresh
     finally:
         if thread is not None:
             server.shutdown()
@@ -197,11 +200,25 @@ def measure(binary: Path, temp: Path, env: dict[str, str], idle_seconds: float,
             startup = time.monotonic() - started
             focus_window(process, window_id)
             first_ready = None
+            refresh_verified = None
             if online is not None:
-                _, observed_ready, _ = online
+                _, observed_ready, _, observed_refresh = online
                 if not observed_ready.wait(timeout=15):
                     raise RuntimeError("Real desktop adapter did not reach isolated Hub readiness")
                 first_ready = time.monotonic() - started
+                if sys.platform.startswith("linux"):
+                    # Actual keyboard input on the focused native window must
+                    # reach the real read endpoint; startup probe alone is not
+                    # evidence of native view interaction.
+                    deadline = time.monotonic() + 20
+                    while not observed_refresh.is_set() and time.monotonic() < deadline:
+                        if process.poll() is not None:
+                            raise RuntimeError("Desktop exited during keyboard refresh")
+                        subprocess.run(["xdotool", "key", "F5"], check=True, timeout=3)
+                        observed_refresh.wait(timeout=1)
+                    if not observed_refresh.is_set():
+                        raise RuntimeError("Native F5 refresh did not reach the isolated Hub")
+                    refresh_verified = True
             monitored = psutil.Process(process.pid)
             time.sleep(2)
             t0 = time.monotonic()
@@ -237,6 +254,7 @@ def measure(binary: Path, temp: Path, env: dict[str, str], idle_seconds: float,
                            else "macOS CoreGraphics owned visible window" if sys.platform == "darwin"
                            else "X11 visible window") + ", " + ("isolated real Hub online" if online else "Hub absent"),
                 "foreground_focus_verified": True,
+                "keyboard_refresh_verified": refresh_verified,
                 "window_id": str(window_id),
                 "platform": platform.platform(), "machine": platform.machine(),
                 "glibc": platform.libc_ver(), "first_window_seconds": startup,
