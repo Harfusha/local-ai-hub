@@ -376,6 +376,7 @@ jobs:
           tests/test_agent_identity.py
           tests/test_agent_memory.py
           tests/test_agent_memory_candidate_scope_recall.py
+          tests/unit/test_shutdown_coordinator.py
           tests/test_code_index_transaction_boundaries.py
           tests/test_file_locks.py
           tests/test_project_command_broker.py

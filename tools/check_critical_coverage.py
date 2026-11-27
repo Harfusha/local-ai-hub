@@ -12,12 +12,12 @@ CRITICAL = (
     "agent_policy", "async_jobs", "file_locks", "http_transport",
     "context_delivery", "command_batches", "operator_settings", "shutdown",
     "owned_model", "model_lifecycle", "semantic_quality",
-    "agent_identity", "agent_memory", "commands", "http_server",
+    "agent_identity", "agent_memory", "command_broker", "command_run", "http_api_auth", "http_server",
 )
 REQUIRED_FUNCTIONS = (
-    "src/local_ai_hub/http_server.py::Handler._require_authorized",
-    "src/local_ai_hub/http_server.py::Handler._authorized",
-    "src/local_ai_hub/command_broker.py::CommandBroker.run",
+    "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._require_authorized",
+    "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._authorized",
+    "src/local_ai_hub/command_run.py::CommandRunMixin.run",
     "src/local_ai_hub/agent_memory.py::MemoryStore.record",
 )
 

@@ -56,32 +56,40 @@
       "covered_branches": 279,
       "num_branches": 526
     },
-    "src/local_ai_hub/commands.py": {
-      "covered_branches": 454,
-      "num_branches": 2752
-    },
     "src/local_ai_hub/http_server.py": {
       "covered_branches": 424,
       "num_branches": 2780
+    },
+    "src/local_ai_hub/command_broker.py": {
+      "covered_branches": 6,
+      "num_branches": 12
+    },
+    "src/local_ai_hub/command_run.py": {
+      "covered_branches": 173,
+      "num_branches": 260
+    },
+    "src/local_ai_hub/http_api_auth.py": {
+      "covered_branches": 94,
+      "num_branches": 354
     }
   },
   "source_report_sha256": "1ad1464a914f8a1fc1e39f2cb1509a3f5af48102197ab194368ba09339f22e59",
   "functions": {
-    "src/local_ai_hub/http_server.py::Handler._require_authorized": {
-      "covered_branches": 11,
-      "num_branches": 16
-    },
-    "src/local_ai_hub/http_server.py::Handler._authorized": {
-      "covered_branches": 27,
-      "num_branches": 36
-    },
-    "src/local_ai_hub/commands.py::CommandBroker.run": {
-      "covered_branches": 86,
-      "num_branches": 236
-    },
     "src/local_ai_hub/agent_memory.py::MemoryStore.record": {
       "covered_branches": 5,
       "num_branches": 6
+    },
+    "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._require_authorized": {
+      "covered_branches": 14,
+      "num_branches": 14
+    },
+    "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._authorized": {
+      "covered_branches": 6,
+      "num_branches": 6
+    },
+    "src/local_ai_hub/command_run.py::CommandRunMixin.run": {
+      "covered_branches": 162,
+      "num_branches": 242
     }
   },
   "extension_provenance": [
@@ -100,6 +108,34 @@
         "src/local_ai_hub/http_server.py::Handler._authorized",
         "src/local_ai_hub/commands.py::CommandBroker.run",
         "src/local_ai_hub/agent_memory.py::MemoryStore.record"
+      ]
+    },
+    {
+      "repository_revision": "1b97cb0d691b2010151151ce9560419721485dcc17c11319c999150f6997187b",
+      "cohort": "win32-py3.13 fixed critical cohort: 1123 passed, 8 skipped; shutdown coordinator addition: 8 passed",
+      "source_report_sha256": "07573e4dc3b1712cba6e96f025af3fed7fe508cd9e83ba1cbe942d09c3197b05",
+      "added_modules": [
+        "src/local_ai_hub/command_broker.py",
+        "src/local_ai_hub/command_run.py",
+        "src/local_ai_hub/http_api_auth.py"
+      ],
+      "added_functions": [
+        "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._require_authorized",
+        "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._authorized",
+        "src/local_ai_hub/command_run.py::CommandRunMixin.run"
+      ]
+    },
+    {
+      "repository_revision": "1b97cb0d691b2010151151ce9560419721485dcc17c11319c999150f6997187b",
+      "cohort": "win32-py3.13 fixed critical cohort: 1123 passed, 8 skipped; shutdown coordinator addition: 8 passed",
+      "source_report_sha256": "07573e4dc3b1712cba6e96f025af3fed7fe508cd9e83ba1cbe942d09c3197b05",
+      "removed_modules": [
+        "src/local_ai_hub/commands.py"
+      ],
+      "removed_functions": [
+        "src/local_ai_hub/commands.py::CommandBroker.run",
+        "src/local_ai_hub/http_server.py::Handler._require_authorized",
+        "src/local_ai_hub/http_server.py::Handler._authorized"
       ]
     }
   ]

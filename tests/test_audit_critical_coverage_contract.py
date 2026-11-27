@@ -13,6 +13,20 @@ MODULE = "src/local_ai_hub/agent_memory.py"
 FUNCTION = "src/local_ai_hub/agent_memory.py::MemoryStore.record"
 
 
+def test_critical_contract_tracks_current_command_broker_surface():
+    modules = critical_coverage.critical_module_paths()
+
+    assert "src/local_ai_hub/command_broker.py" in modules
+    assert "src/local_ai_hub/command_run.py" in modules
+    assert "src/local_ai_hub/http_api_auth.py" in modules
+    assert "src/local_ai_hub/commands.py" not in modules
+    assert "src/local_ai_hub/command_run.py::CommandRunMixin.run" in critical_coverage.REQUIRED_FUNCTIONS
+    assert "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._require_authorized" in critical_coverage.REQUIRED_FUNCTIONS
+    assert "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._authorized" in critical_coverage.REQUIRED_FUNCTIONS
+    assert not any("/commands.py::" in name for name in critical_coverage.REQUIRED_FUNCTIONS)
+    assert not any("http_server.py::Handler." in name for name in critical_coverage.REQUIRED_FUNCTIONS)
+
+
 def _summary(covered: int, total: int) -> dict[str, int]:
     return {"covered_branches": covered, "num_branches": total}
 
