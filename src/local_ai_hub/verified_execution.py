@@ -405,6 +405,7 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
     counts = execution.get("coverage", {})
     problems = execution.get("problems", {})
     scope = execution.get("scope_check", {})
+    inventory = execution.get("inventory", {})
     next_unit = execution.get("next_obligation")
     progress = execution.get("progress", {})
     parts = [
@@ -414,6 +415,9 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
         f"open blocking problems={problems.get('blocking_open', 0)}",
         f"checkpoint blockers={execution.get('checkpoint_blocker_count', 0)}",
     ]
+    if isinstance(inventory, Mapping) and inventory.get("excluded_count", 0):
+        parts.append(f"Explicit scope exclusions: {inventory['excluded_count']}; inspect task contract for rationale. "
+                     "Coverage does not include excluded resources.")
     if scope and scope.get("complete") is not True:
         parts.append("Repository scope changed or unavailable; reconcile the scope before completion.")
     elif isinstance(next_unit, Mapping):
