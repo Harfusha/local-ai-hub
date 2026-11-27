@@ -1050,6 +1050,13 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 "terminal": True, "retryable": False,
                 "error": f"MCP output contract failed: {output_error}",
             }
+            # Preserve a validated correlation identifier without forwarding
+            # any other fields from a malformed tool response.
+            if isinstance(raw, dict):
+                request_id = raw.get("request_id")
+                if (isinstance(request_id, str) and 0 < len(request_id) <= 160
+                        and all(32 <= ord(char) < 127 for char in request_id)):
+                    payload["request_id"] = request_id
             return finalize(services_module._mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
         if isinstance(raw, (dict, list)):
             return finalize(services_module._mcp_budget_payload(name, arguments, raw))
