@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_knowledge_management import manage_repository_knowledge
@@ -102,6 +103,38 @@ def test_concurrent_bootstrap_agents_cannot_publish_different_project_ids(tmp_pa
     assert manifest["project_id"] in {
         "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "874b3b8d-2d4c-40d5-8d28-c6cf23a0f469",
     }
+
+
+def test_cli_initializes_an_existing_git_checkout(tmp_path):
+    import shutil
+    import subprocess
+    import sys
+
+    import pytest
+
+    if shutil.which("git") is None:
+        pytest.skip("Git unavailable")
+    root = tmp_path / "old-cli-repo"
+    local = root / ".local-ai-hub"
+    local.mkdir(parents=True)
+    (local / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "old checkout"],
+                   check=True, timeout=15)
+    project_id = "8fc42db9-b988-4c52-8b27-0d285b3a2928"
+    cli = Path(__file__).resolve().parents[1] / "tools" / "hubctl.py"
+
+    result = subprocess.run(
+        [sys.executable, str(cli), "knowledge", "init", "--root", str(root),
+         "--project-id", project_id, "--operation-id", "cli-bootstrap", "--apply"],
+        capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((local / "project.json").read_text(encoding="utf-8"))["project_id"] == project_id
 
 
 def test_legacy_record_publish_is_not_a_runtime_knowledge_action(tmp_path):

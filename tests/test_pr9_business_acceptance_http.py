@@ -116,6 +116,31 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
+        import subprocess
+
+        old_root = tmp_path / "pre-v4-checkout"
+        old_control = old_root / ".local-ai-hub"
+        old_control.mkdir(parents=True)
+        (old_control / ".gitignore").write_text("local/\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(old_root), "init", "--quiet"], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(old_root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(old_root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "old checkout"],
+                       check=True, timeout=15)
+        bootstrap = {
+            "action": "bootstrap", "root": str(old_root),
+            "project_id": "53e9f982-49f9-4a49-98fb-59491a38f140", "mode": "shared",
+            "operation_id": "bootstrap-http-old-checkout", "apply": True,
+        }
+        status, denied_bootstrap = _post(base_url, "/api/repo/knowledge/manage", bootstrap)
+        assert status == 403 and denied_bootstrap["success"] is False
+        assert not (old_control / "project.json").exists()
+        status, bootstrapped = _post(base_url, "/api/repo/knowledge/manage", bootstrap, dashboard=True)
+        assert status == 200 and bootstrapped["success"] is True
+        status, retried_bootstrap = _post(base_url, "/api/repo/knowledge/manage", bootstrap, dashboard=True)
+        assert status == 200 and retried_bootstrap["success"] is True
+
         status, preview = _post(base_url, "/api/repo/knowledge/manage", batch)
         assert status == 200 and preview["success"] is True
 
