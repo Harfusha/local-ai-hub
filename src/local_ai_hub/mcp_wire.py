@@ -777,22 +777,24 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                     "task_context_artifact_id": source_pointer,
                     "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "truncated": True},
                 })
-            # Prioritize exact recoverable identity; only reject when even
-            # text-only delivery of the pointer would exceed the budget.
+            # The finalizer always emits structuredContent, including when
+            # a caller returns a text-only tuple. Fit the real envelope:
+            # prefer a JSON mirror, then a short human-readable companion.
             for candidate in candidates:
-                for structured_result in (True, False):
+                for compact_text in (False, True):
                     for _ in range(16):
-                        returned = services_module.json_tokens(
-                            services_module._mcp_wire_view(candidate, structured=structured_result))
-                        candidate["response_budget"]["returned_tokens"] = returned
-                        if services_module.json_tokens(
-                                services_module._mcp_wire_view(candidate, structured=structured_result)) == returned:
+                        text = ("Read the exact task_context_artifact_id."
+                                if candidate.get("task_context_artifact_id")
+                                else "Increase max_response_tokens.") if compact_text else services_module.json_dumps(candidate)
+                        content = [services_module.mcp_types.TextContent(type="text", text=text)]
+                        wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+                                "structuredContent": candidate, "isError": False}
+                        returned = services_module.json_tokens(wire)
+                        if candidate["response_budget"]["returned_tokens"] == returned:
                             break
-                    if services_module.json_tokens(
-                            services_module._mcp_wire_view(candidate, structured=structured_result)) <= requested:
-                        return ([services_module.mcp_types.TextContent(
-                            type="text", text=services_module.json_dumps(candidate))],
-                                candidate if structured_result else None)
+                        candidate["response_budget"]["returned_tokens"] = returned
+                    if services_module.json_tokens(wire) <= requested:
+                        return content, candidate
     if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
             and isinstance(value, dict) and value.get("success") is True):
         try:
@@ -993,18 +995,16 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 candidate_value = services_module.json.loads(text_value)
             except Exception:
                 candidate_value = {}
-            emitted_response = {"content": [{"type": "text", "text": text_value}], "structuredContent": candidate_value}
+            emitted_response = {"content": [{"type": "text", "text": text_value}],
+                                "structuredContent": candidate_value, "isError": False}
             result = (contents, candidate_value)
         else:
             candidate_value = structured_value
             result = (contents, candidate_value)
-            if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):
-                emitted_response = {
-                    "content": [{"type": "text", "text": item.text} for item in contents],
-                    "structuredContent": candidate_value, "isError": False,
-                }
-            else:
-                emitted_response = services_module._mcp_wire_view(candidate_value, structured=True)
+            emitted_response = {
+                "content": [item.model_dump(mode="json", exclude_none=True) for item in contents],
+                "structuredContent": candidate_value, "isError": False,
+            }
         emitted_tokens = services_module.json_tokens(emitted_response)
         for item in pending_accounting:
             measured = dict(item["measured"])

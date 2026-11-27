@@ -38,13 +38,14 @@ def test_context_compile_minimum_wire_budget_keeps_recovery_instruction() -> Non
          "next_action": "request_larger_response_budget",
          "response_budget": {"requested_tokens": 128, "returned_tokens": 0, "rejected": True}},
     )
+    # The finalizer reconstructs structuredContent even for text-only tuples.
     value = structured if structured is not None else json.loads(content[0].text)
     assert value["success"] is False
     assert value["next_action"] == "request_larger_response_budget"
     assert value["response_budget"]["rejected"] is True
     wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content], "isError": False}
-    if structured is not None:
-        wire["structuredContent"] = structured
+    wire["structuredContent"] = value
+    assert value["response_budget"]["returned_tokens"] == json_tokens(wire)
     assert json_tokens(wire) <= 128
 
 
@@ -62,11 +63,12 @@ def test_context_compile_lost_artifact_pointer_returns_exact_recovery(monkeypatc
         {"action": "context_compile", "max_response_tokens": 1024, "response_profile": "compact"},
         {"success": False, "task_context_artifact_id": pointer, "next_action": "read_task_context_artifact"},
     )
+    # The finalizer reconstructs structuredContent even for text-only tuples.
     value = structured if structured is not None else json.loads(content[0].text)
     assert value["success"] is False and value["complete"] is False
     assert value["task_context_artifact_id"] == pointer
     assert value["next_action"] == "read_task_context_artifact"
     wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content], "isError": False}
-    if structured is not None:
-        wire["structuredContent"] = structured
+    wire["structuredContent"] = value
+    assert value["response_budget"]["returned_tokens"] == json_tokens(wire)
     assert json_tokens(wire) <= 1024
