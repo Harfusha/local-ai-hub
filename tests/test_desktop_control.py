@@ -252,3 +252,28 @@ def test_change_plan_bridge_is_read_only_and_scoped(tmp_path):
             desktop.dispatch(control, {"op": "change_plan", "args": {
                 "root": str(tmp_path), "mode": "apply",
             }})
+
+
+def test_change_transaction_rejects_unconfirmed_or_unknown_actions(tmp_path):
+    control = MagicMock()
+    for action in ("stage-apply", "commit-staged", "arbitrary-command"):
+        with pytest.raises(ValueError):
+            desktop.dispatch(control, {"op": "change_transaction", "args": {
+                "action": action, "root": str(tmp_path), "confirmed": False,
+            }})
+
+
+def test_local_stage_preview_bridge(tmp_path):
+    control = MagicMock()
+    with patch("local_ai_hub.config.load_config", return_value={}), \
+         patch("local_ai_hub.deterministic.DeterministicEngine"), \
+         patch("local_ai_hub.leases.ScopeLeaseStore"), \
+         patch("local_ai_hub.state_paths.configured_state_dir", return_value=tmp_path / "state"), \
+         patch("local_ai_hub.change_stage_execution.stage_selection", return_value={"success": True}) as stage:
+        result = desktop.dispatch(control, {"op": "change_transaction", "args": {
+            "action": "stage-preview", "root": str(tmp_path), "paths": ["a.py"],
+            "expected_revision": "a" * 64,
+        }})
+        assert result["success"]
+        assert stage.call_args.kwargs["apply"] is False
+        assert stage.call_args.kwargs["paths"] == ["a.py"]

@@ -1,9 +1,28 @@
 from __future__ import annotations
 
 import subprocess
+
+import pytest
 from unittest.mock import MagicMock
 
 from local_ai_hub.change_stage_execution import stage_selection
+
+
+@pytest.fixture(autouse=True)
+def isolated_git_config(monkeypatch, tmp_path):
+    from local_ai_hub import change_stage_execution as module
+
+    config = tmp_path / "isolated-git-config"
+    config.write_text("", encoding="utf-8")
+    overrides = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(config)}
+    for key, value in overrides.items():
+        monkeypatch.setenv(key, value)
+    original = module.clean_git_env
+
+    def clean(*args, **kwargs):
+        return {**original(*args, **kwargs), **overrides}
+
+    monkeypatch.setattr(module, "clean_git_env", clean)
 
 
 def _git(root, *args):

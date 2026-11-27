@@ -163,6 +163,13 @@ struct Desktop {
     change_base: String,
     change_head: String,
     change_expected: String,
+    change_paths: String,
+    change_hunks: String,
+    change_revision: String,
+    change_tree: String,
+    change_message: String,
+    change_mixed: bool,
+    change_operation: String,
     task_query: String,
     stream_id: String,
     event_cursor: i64,
@@ -203,7 +210,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), change_paths: String::new(), change_hunks: String::new(), change_revision: String::new(), change_tree: String::new(), change_message: String::new(), change_mixed: false, change_operation: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -655,7 +662,7 @@ impl Desktop {
                 });
             }
             11 => {
-                ui.label("Read-only commit planning; summaries are not approval or verification.");
+                ui.label("Commit planning and explicitly approved local Git transactions.");
                 ui.horizontal_wrapped(|ui| {
                     ui.label("View");
                     if egui::ComboBox::from_id_salt("change_mode").selected_text(&self.change_mode).show_ui(ui, |ui| {
@@ -693,6 +700,66 @@ impl Desktop {
                     }
                 });
                 ui.small("For PR/release choose the explicit base. Semantic mode uses local advisory messages only. Refresh after any repository edit.");
+                ui.separator();
+                ui.collapsing("Stage and commit reviewed changes", |ui| {
+                    ui.small("Local only. No push. Confirm the exact paths, revision and tree; a successful transaction is not proof of verification.");
+                    if ui.button("Use observation identities from displayed result").clicked() {
+                        if let Some(value) = &self.snapshot {
+                            if let Some(revision) = value["observed_change_set_id"].as_str() { self.change_revision = revision.into(); }
+                            self.change_tree = value["prospective_tree_oid"].as_str()
+                                .or_else(|| value["prospective_index_tree_oid"].as_str())
+                                .or_else(|| value.pointer("/git_snapshot_metadata/index_tree_oid").and_then(Value::as_str))
+                                .unwrap_or("").into();
+                        }
+                    }
+                    ui.label("Exact selected repository-relative paths (one per line)");
+                    ui.text_edit_multiline(&mut self.change_paths);
+                    ui.label("Optional exact unstaged hunk IDs (one per line)");
+                    ui.text_edit_multiline(&mut self.change_hunks);
+                    ui.label("Observed change-set ID");
+                    ui.text_edit_singleline(&mut self.change_revision);
+                    ui.label("Approved tree ID");
+                    ui.text_edit_singleline(&mut self.change_tree);
+                    ui.label("Commit message");
+                    ui.text_edit_multiline(&mut self.change_message);
+                    ui.checkbox(&mut self.change_mixed, "Explicitly leave remaining hunks unstaged");
+                    let paths: Vec<&str> = self.change_paths.lines().filter(|p| !p.is_empty()).collect();
+                    let hunks: Vec<&str> = self.change_hunks.lines().filter(|p| !p.is_empty()).collect();
+                    let ready = !paths.is_empty() && self.change_revision.len() == 64;
+                    let tree_ready = self.change_tree.len() == 40 || self.change_tree.len() == 64;
+                    let payload = |action: &str, confirmed: bool| request("change_transaction", json!({
+                        "action": action, "root": self.repo, "paths": paths, "hunk_ids": hunks,
+                        "expected_revision": self.change_revision, "expected_tree": self.change_tree,
+                        "message": self.change_message, "allow_mixed_staged": self.change_mixed, "confirmed": confirmed
+                    }));
+                    let preview = payload("stage-preview", false);
+                    let stage = payload("stage-apply", true);
+                    let commit = payload("commit-staged", true);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_enabled(ready, egui::Button::new("Preview staging")).clicked() {
+                            self.submit(ctx, "Stage preview".into(), preview);
+                        }
+                        if ui.add_enabled(ready && tree_ready, egui::Button::new("Apply reviewed staging")).clicked() {
+                            self.confirm("Apply reviewed staging", stage);
+                        }
+                        if ui.add_enabled(ready && tree_ready && !self.change_message.trim().is_empty(), egui::Button::new("Commit staged tree")).clicked() {
+                            self.confirm("Commit staged tree (no push)", commit);
+                        }
+                    });
+                    ui.small("After staging, refresh the plan and use the new observed revision and staged tree ID before committing. Sequence verification and publication remain available in hubctl.");
+                });
+                ui.collapsing("Commit recovery", |ui| {
+                    if ui.button("List recent local operations").clicked() {
+                        self.submit(ctx, "Commit operations".into(), request("change_transaction",
+                            json!({"action":"commit-list", "root": self.repo})));
+                    }
+                    ui.label("Operation ID");
+                    ui.text_edit_singleline(&mut self.change_operation);
+                    if ui.button("Inspect operation (no retry)").clicked() {
+                        self.submit(ctx, "Commit inspection".into(), request("change_transaction",
+                            json!({"action":"commit-inspect", "root": self.repo, "operation_id": self.change_operation})));
+                    }
+                });
             }
             _ => {}
         }

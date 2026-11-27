@@ -28,3 +28,7 @@ Select a repository root and open **Changes & commits** for summary, details, lo
 ## Release status
 
 The current PR is a draft. See [parity and evidence](DESKTOP_PARITY.md) for gaps and verification requirements. Passing builds do not establish complete behavioral parity.
+
+### Reviewed Git transactions
+
+Changes & commits also exposes local staging preview, confirmed staging apply, confirmed exact staged-tree commit and read-only recovery list/inspection. Supply explicit paths, hunk IDs if needed, observed revision and preview tree. Re-observe after staging. Sequence verification and publication remain CLI operations. No browser dashboard or arbitrary command bridge is introduced.

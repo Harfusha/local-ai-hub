@@ -260,6 +260,56 @@ def transfer(control: HubControl, op: str, args: dict[str, Any]) -> dict[str, An
         client.close()
 
 
+def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, Any]:
+    """Local-only named Git operations; never dispatch arbitrary CLI arguments."""
+    from local_ai_hub.change_commit_execution import execute_staged_commit
+    from local_ai_hub.change_commit_journal import CommitJournal
+    from local_ai_hub.change_stage_execution import stage_selection
+    from local_ai_hub.config import load_config
+    from local_ai_hub.deterministic import DeterministicEngine
+    from local_ai_hub.leases import ScopeLeaseStore
+    from local_ai_hub.repository_scope import authorized_repository_root
+    from local_ai_hub.state_paths import configured_state_dir
+
+    action = args.get("action")
+    if action not in {"stage-preview", "stage-apply", "commit-staged", "commit-list", "commit-inspect"}:
+        raise ValueError("Unsupported local Git operation")
+    if action in {"stage-apply", "commit-staged"} and args.get("confirmed") is not True:
+        raise ValueError("Explicit confirmation required")
+    config = load_config(control.config, probe_hardware=False)
+    root = authorized_repository_root(config, explicit_root(args.get("root")))
+    state = configured_state_dir(config)
+    if action == "commit-list":
+        return CommitJournal(state).list_recent(root)
+    if action == "commit-inspect":
+        return CommitJournal(state).inspect(root, text_field(args, "operation_id", 32))
+    paths = args.get("paths")
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 64 or any(
+        not isinstance(p, str) or not p or len(p) > 4096 or "\0" in p for p in paths
+    ) or len(set(paths)) != len(paths):
+        raise ValueError("Select distinct exact repository-relative paths")
+    revision = text_field(args, "expected_revision", 64)
+    tree = args.get("expected_tree", "")
+    if not isinstance(tree, str) or len(tree) > 64:
+        raise ValueError("Invalid tree identity")
+    engine = DeterministicEngine(config)
+    leases = ScopeLeaseStore(state)
+    if action.startswith("stage-"):
+        hunks = args.get("hunk_ids", [])
+        if not isinstance(hunks, list) or len(hunks) > 64 or any(
+            not isinstance(h, str) or len(h) != 64 for h in hunks
+        ):
+            raise ValueError("Invalid hunk selection")
+        return stage_selection(config, engine, leases, root=root, paths=paths,
+                               expected_revision=revision, expected_tree=tree,
+                               apply=action == "stage-apply", hunk_ids=hunks or None)
+    message = text_field(args, "message", 4096)
+    return execute_staged_commit(config, engine, leases, root=root, paths=paths,
+                                 expected_revision=revision, expected_tree=tree,
+                                 message=message, approved=True, journal=CommitJournal(state),
+                                 allow_mixed_staged=args.get("allow_mixed_staged") is True)
+
+
 def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
     """No caller-supplied route, executable, shell, or arbitrary action payload."""
     op = request.get("op")
@@ -268,6 +318,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         raise ValueError("args must be an object")
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "change_transaction":
+        return change_transaction(control, args)
     if op == "change_plan":
         root = explicit_root(args.get("root"))
         mode = args.get("mode", "summary")
