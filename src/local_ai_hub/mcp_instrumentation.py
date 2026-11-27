@@ -397,7 +397,12 @@ def _agent_output(
         return result
     # Reconciliation updates accounting after the first projection. Project
     # once more so that private envelope fields stay off the wire by default.
-    return projector(result, enabled=detail_enabled, extra_fields=extra)
+    projected = projector(result, enabled=detail_enabled, extra_fields=extra)
+    # Error correlation is part of the public failure contract, not telemetry.
+    if isinstance(value, dict) and isinstance(projected, dict) and projected.get("success") is False:
+        if isinstance(value.get("request_id"), str):
+            projected["request_id"] = value["request_id"][:160]
+    return projected
 
 def _instrumented_tool(services_module: Any = None):
     if services_module is None:
