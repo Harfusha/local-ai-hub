@@ -5,8 +5,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import threading
+
+import pytest
 
 from local_ai_hub import http_server
 from local_ai_hub.app import LocalAIApp
@@ -29,7 +32,7 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         + "state_dir = " + json.dumps(str(tmp_path / "state"))
         + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
-        + "\n[preprocessing]\nenabled = false\n",
+        + "\n[preprocessing]\nenabled = false\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
 
@@ -84,6 +87,36 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
             created = call("plan_create", root=str(root), id="plan_desktop",
                            title=f"Plan {index}", description=f"scope-{index}", confirmed=True)
             assert created["ok"], created
+        # Identical keys in unrelated repositories must not become a shared
+        # memory selection, even when their directory basenames are the same.
+        saved = []
+        for index, root in enumerate(roots):
+            record = call("memory_record", root=str(root), scope="repository",
+                          key="desktop-scope-marker", value=json.dumps(f"memory-{index}"),
+                          kind="fact", confirmed=True)
+            assert record["ok"] and record["result"]["success"] is True, record
+            saved.append(record["result"]["record"]["record_id"])
+        assert saved[0] != saved[1]
+        for index, root in enumerate(roots):
+            found = call("memory_find", root=str(root), scope="repository", query="")
+            assert found["ok"], found
+            ids = {item["record_id"] for item in found["result"]["records"]}
+            assert saved[index] in ids and saved[1-index] not in ids, found
+        wrong = call("memory_delete", root=str(roots[1]), scope="repository",
+                     record_id=saved[0], confirmed=True)
+        assert wrong["ok"] is False, wrong
+        missing_confirmation = call("memory_delete", root=str(roots[0]),
+                                    scope="repository", record_id=saved[0])
+        assert missing_confirmation["ok"] is False
+        deleted = call("memory_delete", root=str(roots[0]), scope="repository",
+                       record_id=saved[0], confirmed=True)
+        assert deleted["ok"] and deleted["result"]["deleted"] is True, deleted
+        for index, root in enumerate(roots):
+            found = call("memory_find", root=str(root), scope="repository", query="")
+            assert found["ok"], found
+            ids = {item["record_id"] for item in found["result"]["records"]}
+            assert saved[0] not in ids and (saved[1] in ids) == (index == 1), found
+
         original = call("plan_detail", root=str(roots[0]), id="plan_desktop")
         assert original["ok"], original
         revision = original["result"]["file_revision"]
@@ -120,6 +153,8 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         assert board["ok"], board
         assert any(card["task_id"] == "task_desktop"
                    for cards in board["result"]["columns"].values() for card in cards)
+        briefing = call("session_briefing", root=str(roots[0]), include=["board", "plans"])
+        assert briefing["ok"] and briefing["result"]["success"] is True, briefing
         other_board = call("plan_board", root=str(roots[1]))
         assert other_board["ok"] and other_board["result"]["total_items"] == 0, other_board
         listed = call("plans", root=str(roots[0]), query="scope-0", lifecycle="active", limit=25)
@@ -152,3 +187,16 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
     assert result["ok"] and result["result"]["online"] is False
     result = call("read", view="Endpoint analytics", root=str(roots[0]))
     assert result["ok"] is False
+
+
+def test_timeline_storage_failure_is_not_an_empty_success():
+    from local_ai_hub.telemetry_queries import TelemetryQueryMixin
+
+    class UnavailableStore:
+        enabled = True
+
+        def _connect(self):
+            raise sqlite3.OperationalError("database unavailable")
+
+    with pytest.raises(sqlite3.OperationalError, match="unavailable"):
+        TelemetryQueryMixin.get_timeline_page(UnavailableStore(), 50, _flush=False)
