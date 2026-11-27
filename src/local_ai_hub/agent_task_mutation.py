@@ -55,7 +55,10 @@ class TaskMutationMixin:
                 raise ValueError("execution problem reporting requires an owned nonterminal verified execution")
             incoming = dict(checkpoint.state_data)
             problem_report = incoming.pop(PROBLEM_REPORT_KEY)
-            validate_resolution_order(problem_report, current.contract.slo_profile[EXECUTION_KEY])
+            validate_resolution_order(
+                problem_report, current.contract.slo_profile[EXECUTION_KEY],
+                current.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+            )
             checkpoint = replace(checkpoint, state_data=incoming)
 
         checkpoint = _preserve_checkpoint_memory_state(
