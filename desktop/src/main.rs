@@ -170,6 +170,10 @@ struct Desktop {
     change_message: String,
     change_mixed: bool,
     change_operation: String,
+    change_annotation: String,
+    change_sequence: String,
+    change_verification: String,
+    change_preview_digest: String,
     task_query: String,
     stream_id: String,
     event_cursor: i64,
@@ -210,7 +214,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), change_paths: String::new(), change_hunks: String::new(), change_revision: String::new(), change_tree: String::new(), change_message: String::new(), change_mixed: false, change_operation: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), change_paths: String::new(), change_hunks: String::new(), change_revision: String::new(), change_tree: String::new(), change_message: String::new(), change_mixed: false, change_operation: String::new(), change_annotation: String::new(), change_sequence: String::new(), change_verification: String::new(), change_preview_digest: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -746,7 +750,61 @@ impl Desktop {
                             self.confirm("Commit staged tree (no push)", commit);
                         }
                     });
-                    ui.small("After staging, refresh the plan and use the new observed revision and staged tree ID before committing. Sequence verification and publication remain available in hubctl.");
+                    ui.small("After staging, refresh the plan and use the new observed revision and staged tree ID before committing. For multiple staged commits, use the sequence panel below.");
+                });
+                ui.collapsing("Review and assign observed atoms", |ui| {
+                    ui.small("Local declarations only; not authenticated ownership or verification. Use the observed revision above.");
+                    ui.label("Annotation JSON: atom_ids, actor, task_id, status");
+                    ui.text_edit_multiline(&mut self.change_annotation);
+                    let record = serde_json::from_str::<Value>(&self.change_annotation).ok().filter(Value::is_object);
+                    if ui.add_enabled(record.is_some() && self.change_revision.len() == 64, egui::Button::new("Record declaration")).clicked() {
+                        if let Some(record) = record {
+                            self.confirm("Record local review declaration", request("change_transaction", json!({
+                                "action": "annotate", "root": self.repo, "expected_revision": self.change_revision,
+                                "record": record, "confirmed": true
+                            })));
+                        }
+                    }
+                });
+                ui.collapsing("Ordered staged commit sequence", |ui| {
+                    ui.small("Use the exact staged paths, revision and tree above. Preview first. Run exact-tree checks through hubctl sequence-verify, then publish here with the same manifest. Desktop never executes supplied verification commands.");
+                    ui.label("Ordered sequence JSON (array of paths and message objects)");
+                    if ui.text_edit_multiline(&mut self.change_sequence).changed() {
+                        self.change_preview_digest.clear();
+                    }
+                    ui.label("Reviewed preview digest");
+                    ui.text_edit_singleline(&mut self.change_preview_digest);
+                    if ui.button("Use digest from displayed sequence result").clicked() {
+                        if let Some(digest) = self.snapshot.as_ref().and_then(|v| v["preview_digest"].as_str()) {
+                            self.change_preview_digest = digest.into();
+                        }
+                    }
+                    ui.label("Verification manifest JSON used in CLI checks");
+                    ui.text_edit_multiline(&mut self.change_verification);
+                    let sequence = serde_json::from_str::<Value>(&self.change_sequence).ok().filter(Value::is_array);
+                    let manifest = serde_json::from_str::<Value>(&self.change_verification).ok().filter(Value::is_object);
+                    let paths: Vec<&str> = self.change_paths.lines().filter(|p| !p.is_empty()).collect();
+                    let ready = !paths.is_empty() && self.change_revision.len() == 64
+                        && (self.change_tree.len() == 40 || self.change_tree.len() == 64) && sequence.is_some();
+                    let common = json!({
+                        "root": self.repo, "paths": paths, "expected_revision": self.change_revision,
+                        "expected_tree": self.change_tree, "sequence": sequence,
+                        "allow_mixed_staged": self.change_mixed
+                    });
+                    if ui.add_enabled(ready, egui::Button::new("Preview ordered commits")).clicked() {
+                        let mut args = common.clone();
+                        args["action"] = json!("sequence-preview");
+                        self.submit(ctx, "Sequence preview".into(), request("change_transaction", args));
+                    }
+                    if ui.add_enabled(ready && manifest.is_some() && self.change_preview_digest.len() == 64,
+                        egui::Button::new("Publish verified sequence (no push)")).clicked() {
+                        let mut args = common;
+                        args["action"] = json!("sequence-apply");
+                        args["verification_manifest"] = json!(manifest);
+                        args["preview_digest"] = json!(self.change_preview_digest);
+                        args["confirmed"] = json!(true);
+                        self.confirm("Publish exact verified commit sequence (no push)", request("change_transaction", args));
+                    }
                 });
                 ui.collapsing("Commit recovery", |ui| {
                     if ui.button("List recent local operations").clicked() {
@@ -1025,7 +1083,7 @@ impl eframe::App for Desktop {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind"] {
+                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "expected_revision", "expected_tree", "preview_digest"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
                 }
                 ui.horizontal(|ui| {
