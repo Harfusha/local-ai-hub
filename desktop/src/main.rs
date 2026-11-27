@@ -492,6 +492,14 @@ impl Desktop {
         self.operator_fields.clear();
         self.filter.clear();
     }
+    // A view change must not reuse a different view's selection, edit draft,
+    // history cursor, or mutation fields. Keep only installation-wide preferences.
+    fn navigate(&mut self, page: usize, view: usize) {
+        if !self.can_edit_context() || (self.page == page && self.view == view) { return; }
+        self.reset_scope();
+        self.page = page;
+        self.view = view;
+    }
     fn open_project(&mut self, ctx: &egui::Context, root: String) {
         if !self.can_edit_context() { return; }
         self.reset_scope();
@@ -502,7 +510,7 @@ impl Desktop {
     }
     fn open_linked_trace(&mut self, ctx: &egui::Context, id: String) {
         if !self.can_edit_context() { return; }
-        self.clear_response();
+        self.reset_scope();
         self.page = 1;
         self.view = PAGES[1].1.iter().position(|view| *view == "Trace index").expect("Trace index view");
         self.entity = id;
@@ -734,7 +742,7 @@ impl Desktop {
                     if matches!(self.memory_scope.as_str(), "task" | "session" | "clone" | "worktree" | "branch") {
                         ui.label(format!("Exact {} identity", self.memory_scope));
                         if ui.text_edit_singleline(&mut self.memory_scope_id).changed() {
-                            self.memory_record_id.clear(); self.clear_response();
+                            self.memory_record_id.clear(); self.memory_key.clear(); self.memory_value.clear(); self.clear_response();
                         }
                     }
                     ui.horizontal_wrapped(|ui| {
@@ -1232,8 +1240,7 @@ impl eframe::App for Desktop {
             ui.add_enabled_ui(self.can_edit_context(), |ui| {
                 for (index, (name, _)) in PAGES.iter().enumerate() {
                     if ui.selectable_label(self.page == index, *name).clicked() && self.page != index {
-                        self.page = index; self.view = 0; self.clear_response(); self.entity.clear(); self.revision.clear();
-                        self.filter.clear();
+                        self.navigate(index, 0);
                     }
                 }
             });
@@ -1244,7 +1251,7 @@ impl eframe::App for Desktop {
                 ui.horizontal_wrapped(|ui| {
                     for (index, view) in PAGES[self.page].1.iter().enumerate() {
                         if ui.selectable_label(self.view == index, *view).clicked() && self.view != index {
-                            self.view = index; self.clear_response(); self.entity.clear(); self.revision.clear();
+                            self.navigate(self.page, index);
                         }
                     }
                     if matches!(self.current(), "Overview" | "Requests" | "Active requests" | "Async jobs" | "Work orders" | "Commands" | "Process sessions" | "Recent errors" | "Runtime health" | "Models & search" | "Model statistics" | "Execution profiles" | "Cache layers" | "Agent statistics" | "Execution routes" | "Laya" | "Laya capture") {
@@ -1678,6 +1685,27 @@ mod tests {
         assert!(app.operator_fields.is_empty());
         app.installation_open = true;
         assert!(!app.can_edit_context());
+    }
+    #[test]
+    fn navigation_drops_cross_view_mutation_targets_and_preserves_root() {
+        let mut app = Desktop::new();
+        app.repo = "/repo".into();
+        app.entity = "old".into();
+        app.memory_record_id = "old-record".into();
+        app.lease_owner = "old-owner".into();
+        app.reason = "old continuation".into();
+        app.event_cursor = 123;
+        app.task_offset = 100;
+        app.navigate(2, 1);
+        assert_eq!(app.current(), "Memory");
+        assert_eq!(app.repo, "/repo");
+        assert!(app.entity.is_empty() && app.memory_record_id.is_empty());
+        assert!(app.lease_owner.is_empty() && app.reason.is_empty());
+        assert_eq!((app.event_cursor, app.task_offset), (0, 0));
+        app.pending = Some(Pending { label: "pending".into(), payload: json!({}) });
+        app.navigate(3, 0);
+        assert_eq!(app.current(), "Memory");
+        assert!(app.pending.is_some());
     }
     #[test]
     fn trace_links_use_only_explicit_valid_trace_ids() {
