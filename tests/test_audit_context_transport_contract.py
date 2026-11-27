@@ -113,7 +113,7 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
                     if budget == 128 and not artifact_id:
                         assert value["success"] is False
                         assert value["error"] == "max_response_tokens too small"
-                        assert value["next_action"] == "request_larger_response_budget"
+                        assert value.get("next_action") == "request_larger_response_budget", value
                         continue
                     if not isinstance(artifact_id, str) or not artifact_id:
                         pytest.fail(f"{profile}/{budget}: {json.dumps(value)}", pytrace=False)

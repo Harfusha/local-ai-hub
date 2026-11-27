@@ -845,7 +845,8 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                 )
     if not isinstance(structured, dict):
         return contents, structured
-    projector = (services_module.project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
+    projector = (services_module.project_status_response if name == "local_ai_status"
+                 else services_module.project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
                  else services_module.project_agent_response)
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
@@ -957,6 +958,28 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
         if not isinstance(result, tuple) or len(result) != 2:
             return result
         contents, structured_value = result
+        if isinstance(structured_value, dict):
+            context_rejection = (
+                name == "local_ai_coord"
+                and str(arguments.get("action") or "").lower() in {"context", "context_compile"}
+                and structured_value.get("success") is False
+                and structured_value.get("error") == "max_response_tokens too small"
+            )
+            if context_rejection:
+                structured_value.setdefault("next_action", "request_larger_response_budget")
+            if name == "local_ai_status" or context_rejection:
+                safe_value = services_module._agent_output(structured_value, name, arguments)
+                try:
+                    parsed_text = services_module.json.loads(contents[0].text) if len(contents) == 1 else None
+                except (AttributeError, TypeError, ValueError):
+                    parsed_text = None
+                if isinstance(parsed_text, dict):
+                    safe_text = services_module._agent_output(parsed_text, name, arguments)
+                    if safe_text != parsed_text:
+                        contents = [services_module.mcp_types.TextContent(
+                            type="text", text=services_module.json_dumps(safe_text),
+                        )]
+                structured_value = safe_value
         active_adapter = services_module.ClientRegistry.get(agent_header=services_module.os.environ.get("LOCAL_AI_AGENT"))
         if active_adapter.capabilities.prompt_cache_shield:
             if structured_value is not None:
@@ -974,6 +997,19 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 candidate_value = services_module.json.loads(text_value)
             except Exception:
                 candidate_value = {}
+            context_rejection = (
+                name == "local_ai_coord"
+                and str(arguments.get("action") or "").lower() in {"context", "context_compile"}
+                and isinstance(candidate_value, dict)
+                and candidate_value.get("success") is False
+                and candidate_value.get("error") == "max_response_tokens too small"
+            )
+            if context_rejection:
+                candidate_value.setdefault("next_action", "request_larger_response_budget")
+            if name == "local_ai_status" or context_rejection:
+                candidate_value = services_module._agent_output(candidate_value, name, arguments)
+                text_value = services_module.json_dumps(candidate_value)
+                contents = [services_module.mcp_types.TextContent(type="text", text=text_value)]
             emitted_response = {"content": [{"type": "text", "text": text_value}], "structuredContent": candidate_value}
             result = (contents, candidate_value)
         else:
