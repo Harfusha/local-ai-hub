@@ -478,10 +478,22 @@ class HttpPostHelpersMixin:
         )
         # Keep the canonical result for the journal, local trace and aggregate
         # telemetry. Only the wire projection drops internal observations.
-        detail_enabled = services_module.detailed_diagnostics_enabled(
-            getattr(services_module.APP, "config", {}), store=getattr(services_module.APP, "debug_traces", None),
-        )
         aggregate_report = response_path in {"/api/metrics", "/api/telemetry/report"}
+        config = getattr(services_module.APP, "config", {})
+        explicit_detail_request = response_path.startswith("/api/debug-traces") or aggregate_report
+        if response_path == "/api/live/status":
+            query = services_module.parse_qs(services_module.urlparse(str(getattr(self, "path", ""))).query)
+            explicit_detail_request = explicit_detail_request or any(
+                value.strip().lower() in {"0", "false", "no"}
+                for value in query.get("light", []) if isinstance(value, str)
+            )
+        detail_enabled = (
+            services_module.detailed_diagnostics_enabled(
+                config, store=getattr(services_module.APP, "debug_traces", None),
+            )
+            if explicit_detail_request
+            else services_module.agent_diagnostics_enabled(config, {})
+        )
         wire_data = (
             services_module.project_status_response(data, enabled=detail_enabled)
             if response_path in {"/api/status", "/api/live/status"}
@@ -493,8 +505,8 @@ class HttpPostHelpersMixin:
         if isinstance(wire_data, dict) and "returned_tokens" in (wire_data.get("response_budget") or {}):
             wire_data = services_module._reconcile_existing_budget(wire_data) or wire_data
         if not aggregate_report:
-            # Budget reconciliation adds wire-size accounting after projection;
-            # remove internal metadata from routine agent-facing responses.
+            # Budget reconciliation reattaches internal accounting after the
+            # first projection, so apply the same agent-facing policy again.
             if response_path == "/api/coord/pubsub_poll":
                 wire_data = services_module.project_pubsub_poll_response(wire_data, enabled=detail_enabled)
             elif response_path == "/api/coord/wait_for_event":

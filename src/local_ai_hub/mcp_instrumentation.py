@@ -340,8 +340,6 @@ def _agent_output(
     value: Any,
     tool: str,
     arguments: dict[str, Any],
-    *,
-    retain_internal_metadata: bool = False,
 ) -> Any:
     """Keep internal observations out of ordinary agent responses.
 
@@ -351,18 +349,6 @@ def _agent_output(
     services_module = _get_services_module()
     detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
     detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
-    # Full telemetry capture stays internal. It must not turn every ordinary
-    # agent response into a diagnostics response; agent_diagnostics_enabled
-    # also requires the explicit debug profile or output-diagnostics setting.
-    internal_fields = (
-        {key: value[key] for key in ("response_budget", "token_efficiency", "request_id", "reused") if key in value}
-        if retain_internal_metadata and isinstance(value, dict) else {}
-    )
-    truncated = (
-        isinstance(value, dict)
-        and isinstance(value.get("response_budget"), dict)
-        and value["response_budget"].get("truncated") is True
-    )
     projector = (services_module.project_status_response if tool == "local_ai_status"
                  else services_module.project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"
@@ -387,17 +373,7 @@ def _agent_output(
     if profile == "minimal" and tool != "local_ai_status" and isinstance(result, dict) and result.get("success") is True:
         result = _project_minimal_agent_response(result, tool=tool, action=str(arguments.get("action", "")))
 
-    if isinstance(result, dict):
-        if retain_internal_metadata:
-            result.update(internal_fields)
-        if truncated:
-            result["truncated"] = True
-    result = services_module._reconcile_existing_budget(result) or result
-    if retain_internal_metadata:
-        return result
-    # Reconciliation updates accounting after the first projection. Project
-    # once more so that private envelope fields stay off the wire by default.
-    return projector(result, enabled=detail_enabled, extra_fields=extra)
+    return services_module._reconcile_existing_budget(result) or result
 
 def _instrumented_tool(services_module: Any = None):
     if services_module is None:
@@ -581,7 +557,7 @@ def _instrumented_tool(services_module: Any = None):
                         clean = candidate
                         handoff_added = True
             clean = services_module._agent_output(
-                clean, fn.__name__, arguments, retain_internal_metadata=True,
+                clean, fn.__name__, arguments,
             )
             if (
                 isinstance(clean, dict)
@@ -619,7 +595,7 @@ def _instrumented_tool(services_module: Any = None):
                     "measured": measured, "metadata": metadata,
                     "event_id": call_event_id, "duration_ms": duration_ms, "call_success": call_success,
                 })
-            return services_module._agent_output(clean, fn.__name__, arguments)
+            return clean
 
         return wrapped
     return decorator

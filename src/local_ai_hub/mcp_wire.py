@@ -617,7 +617,12 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
                     candidate["response_budget"]["rejected"] = True
             finalized = services_module.json_tokens(services_module._mcp_wire_view(candidate, structured=True))
             if finalized == returned_tokens and finalized <= requested:
-                content = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(candidate))]
+                text_candidate = (
+                    {k: v for k, v in candidate.items() if k != "response_budget"}
+                    if (arguments.get("action") == "context" and "response_budget" not in (arguments.get("extra_fields") or ()))
+                    else candidate
+                )
+                content = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(text_candidate))]
                 return content, candidate
             budget_meta = candidate.get("response_budget") if isinstance(candidate, dict) else None
             if (
@@ -706,6 +711,36 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
 def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any:
     """Project again after pagination/accounting and measure the exact wire."""
     services_module = _get_services_module()
+
+    def project_early_result(result: Any) -> Any:
+        if not isinstance(result, tuple) or len(result) != 2:
+            return result
+        contents, structured = result
+        if not isinstance(structured, dict):
+            return result
+        if name == "local_ai_status":
+            projector = services_module.project_status_response
+        elif name == "local_ai_coord" and arguments.get("action") == "pubsub_poll":
+            projector = services_module.project_pubsub_poll_response
+        elif name == "local_ai_coord" and arguments.get("action") == "wait_for_event":
+            projector = services_module.project_wait_event_response
+        else:
+            projector = services_module.project_agent_response
+        detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
+        detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
+        safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
+        if safe != structured:
+            try:
+                mirror = len(contents) == 1 and services_module.json.loads(contents[0].text) == structured
+            except (AttributeError, TypeError, ValueError):
+                mirror = False
+            if mirror:
+                contents = [services_module.mcp_types.TextContent(
+                    type="text", text=services_module.json_dumps(safe),
+                )]
+            return contents, safe
+        return result
+
     def batch_recovery_wire(source: dict[str, Any]) -> Any:
         artifact_id = source.get("output_artifact_id")
         if not isinstance(artifact_id, str) or not artifact_id or source.get("request_not_sent") is True:
@@ -737,7 +772,7 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
             and isinstance(value, dict) and value.get("outcome_unknown") is True):
         recovery = batch_recovery_wire(value)
         if recovery is not None:
-            return recovery
+            return project_early_result(recovery)
     contents, structured = services_module._build_mcp_budget_payload(name, arguments, value)
     if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
             and isinstance(value, dict) and value.get("success") is True):
@@ -755,7 +790,7 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         if not exact_wait_payload(structured) or not exact_wait_payload(text_value):
             rejection = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
                          "error": "Event exceeds response budget; increase max_response_tokens"}
-            return services_module._build_mcp_budget_payload(name, arguments, rejection)
+            return project_early_result(services_module._build_mcp_budget_payload(name, arguments, rejection))
     if (name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
             and isinstance(value, dict) and value.get("success") is True
             and isinstance(value.get("messages"), list)):
@@ -770,7 +805,7 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                 or services_module.json.dumps(text_value.get("messages"), sort_keys=True, separators=(",", ":")) != expected_messages):
             rejection = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
                          "error": "Pubsub messages exceed response budget; reduce limit or increase max_response_tokens"}
-            return services_module._build_mcp_budget_payload(name, arguments, rejection)
+            return project_early_result(services_module._build_mcp_budget_payload(name, arguments, rejection))
     if (name == "local_ai_artifact" and arguments.get("action") == "get"
             and isinstance(value, dict) and value.get("success") is True
             and isinstance(value.get("text"), str)
@@ -779,7 +814,7 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         rejection = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
                      "error": "Reduce max_chars or increase max_response_tokens: artifact page exceeds response budget",
                      "artifact_id": value.get("artifact_id", "")}
-        return services_module._build_mcp_budget_payload(name, arguments, rejection)
+        return project_early_result(services_module._build_mcp_budget_payload(name, arguments, rejection))
     if name == "local_ai_task" and arguments.get("action") == "batch" and isinstance(value, dict):
         original_items = value.get("results")
         returned_items = structured.get("results") if isinstance(structured, dict) else None
@@ -797,14 +832,17 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                     rejection["output_artifact_id"] = value["output_artifact_id"]
                 recovery = batch_recovery_wire(rejection)
                 if recovery is not None:
-                    return recovery
+                    return project_early_result(recovery)
                 requested, _, _, _ = services_module._response_budget("batch", {
                     "max_response_tokens": arguments.get("max_response_tokens", 0),
                     "response_profile": arguments.get("response_profile", ""),
                     "reuse_key": arguments.get("reuse_key", ""), "tool": name,
                 })
                 bounded = services_module._mcp_bounded_error(rejection, requested)
-                return bounded if bounded is not None else services_module._build_mcp_budget_payload(name, arguments, rejection)
+                return project_early_result(
+                    bounded if bounded is not None
+                    else services_module._build_mcp_budget_payload(name, arguments, rejection)
+                )
     if not isinstance(structured, dict):
         return contents, structured
     projector = (services_module.project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
@@ -826,7 +864,12 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
     budget = safe.get("response_budget")
     for _ in range(16):
         if mirror:
-            contents = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(safe))]
+            text_payload = (
+                {k: v for k, v in safe.items() if k != "response_budget"}
+                if (arguments.get("action") == "context" and "response_budget" not in (arguments.get("extra_fields") or ()))
+                else safe
+            )
+            contents = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(text_payload))]
         wire = {
             "content": [item.model_dump(mode="json", exclude_none=True) for item in contents],
             "structuredContent": safe, "isError": False,
@@ -842,7 +885,12 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                 accounting["token_savings_delta_est"] = baseline - returned
                 accounting["avoided_payload_tokens_est"] = max(0, baseline - returned)
         if mirror:
-            contents = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(safe))]
+            text_payload = (
+                {k: v for k, v in safe.items() if k != "response_budget"}
+                if (arguments.get("action") == "context" and "response_budget" not in (arguments.get("extra_fields") or ()))
+                else safe
+            )
+            contents = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(text_payload))]
         wire["content"] = [item.model_dump(mode="json", exclude_none=True) for item in contents]
         if services_module.json_tokens(wire) == returned:
             break

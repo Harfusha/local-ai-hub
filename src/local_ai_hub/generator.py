@@ -281,22 +281,13 @@ def context_pack_guidance() -> str:
 def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     """Single short contract shared by skills, policies, and routing references."""
     features = FeatureSet.from_config(cfg or {})
-    budget = 8192
-    try:
-        section = (cfg or {}).get("mcp", {}).get("response_budget", {})
-        budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
-    except (TypeError, ValueError, AttributeError):
-        pass
     batch_line = '- Use `local_ai_task(action="batch")` for bounded independent tasks.' if "batch" in features.supported_task_actions() else ''
     return f"""## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈{budget} tokens).
-- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
-- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
-- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If a requested response is too large, fetch a smaller artifact page/slice; do not repeat the same oversized request.
 - For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
 - If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed.
 - After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
@@ -1171,11 +1162,9 @@ Avoid dumping source files longer than 80 lines; prefer precise, bounded slices
 and scoped indexed search. Use `tokcount` to measure actual token use and
 `trim-run` only for supported read-only or summary-producing commands.
 
-## Response budget and safe fallback
+## Safe response handling
 
-- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
-- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed.
 - After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
