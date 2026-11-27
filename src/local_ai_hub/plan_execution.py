@@ -52,6 +52,40 @@ def partition_coverage(configs: list[dict[str, Any]], *,
     return result
 
 
+def plan_actionability(plan_id: str, tasks: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Conservative local-plan scheduling preview, not authorization to execute."""
+    by_id = {row["plan_task_id"]: row for row in rows}
+    verified = {task_id for task_id, row in by_id.items() if row["status"] == "verified"}
+    ready: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    for task_id, row in by_id.items():
+        spec = tasks[task_id]
+        if row["status"] == "verified" or spec.get("work_status") == "cancelled":
+            continue
+        dependencies = spec.get("depends_on", [])
+        unresolved = [
+            {"plan_id": dep["plan_id"], "task_id": dep["task_id"],
+             "reason": ("external_plan_unchecked" if dep["plan_id"] != plan_id
+                        else "local_dependency_unverified")}
+            for dep in dependencies
+            if dep["plan_id"] != plan_id or dep["task_id"] not in verified
+        ]
+        if unresolved:
+            waiting.append({"plan_task_id": task_id, "reason": "dependencies_unverified",
+                            "waiting_count": len(unresolved), "waiting_preview": unresolved[:12]})
+        elif (row["status"] not in {"unbound", "incomplete"}
+              or spec.get("work_status") == "blocked" or spec.get("blocker")):
+            waiting.append({"plan_task_id": task_id, "reason": "task_blocked_or_binding_conflict"})
+        else:
+            ready.append({"plan_task_id": task_id, "status": row["status"],
+                          "next_obligation": row.get("next_obligation")})
+    ready.sort(key=lambda row: (row["status"] != "incomplete", row["plan_task_id"]))
+    waiting.sort(key=lambda row: row["plan_task_id"])
+    return {"ready_count": len(ready), "waiting_count": len(waiting),
+            "next_plan_task": ready[0] if ready else None,
+            "ready_preview": ready[:12], "waiting_preview": waiting[:12]}
+
+
 def _revision(tracker: Any, root: str) -> str:
     if tracker is None:
         return ""
@@ -162,6 +196,9 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
         "truncated": not exhaustive, "counts": dict(counts),
         "repository_revision": revision, "plan_revision": snapshot["file_revision"],
         "partition_groups": partitions, "tasks": rows,
+        "actionability": plan_actionability(plan_id, tasks, rows) if stable and exhaustive else {
+            "status": "partial_or_changed_snapshot", "next_plan_task": None,
+        },
         "obligation_coverage": {"tasks_with_coverage": tasks_with_coverage,
                                 "counts": dict(obligation_counts),
                                 "dimensions": {name: dict(values) for name, values in sorted(dimension_counts.items())},
