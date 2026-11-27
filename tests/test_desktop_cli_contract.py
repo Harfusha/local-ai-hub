@@ -29,4 +29,3 @@ def test_desktop_launcher_does_not_use_unversioned_install(monkeypatch, tmp_path
 
     assert main() == 1
     assert "Desktop binary missing" in capsys.readouterr().err
-

@@ -1,9 +1,9 @@
 # PR #10 Native Desktop Cutover — Design Specification
 
-**Status:** Active user-approved scope, 2026-11-27  
-**Source:** User-provided “GOAL: Complete Local AI Hub PR #10, native Rust desktop application and full dashboard replacement”, sections 1–35.  
-**Repository:** https://github.com/Harfusha/local-ai-hub  
-**Pull request:** https://github.com/Harfusha/local-ai-hub/pull/10  
+**Status:** Active user-approved scope, 2026-11-27
+**Source:** User-provided “GOAL: Complete Local AI Hub PR #10, native Rust desktop application and full dashboard replacement”, sections 1–35.
+**Repository:** https://github.com/Harfusha/local-ai-hub
+**Pull request:** https://github.com/Harfusha/local-ai-hub/pull/10
 **Branch:** `feat/native-desktop-hub` → `master`
 
 ## Goal
