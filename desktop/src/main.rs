@@ -489,13 +489,29 @@ impl Desktop {
     fn can_edit_context(&self) -> bool {
         self.busy.is_none() && self.pending.is_none() && !self.installation_open
     }
-    fn memory_args(&self) -> Value {
-        json!({"root": self.repo, "scope": self.memory_scope, "query": self.memory_query,
-            "record_id": self.memory_record_id, "key": self.memory_key,
-            "value": self.memory_value, "kind": self.memory_kind,
-            "task_id": self.memory_scope_id, "session_id": self.memory_scope_id,
-            "clone_id": self.memory_scope_id, "worktree_id": self.memory_scope_id,
-            "branch": self.memory_scope_id, "confirmed": true})
+    fn memory_args(&self, op: &str) -> Value {
+        let mut args = json!({"root": self.repo, "scope": self.memory_scope});
+        let field = match self.memory_scope.as_str() {
+            "task" => Some("task_id"), "session" => Some("session_id"),
+            "clone" => Some("clone_id"), "worktree" => Some("worktree_id"),
+            "branch" => Some("branch"), _ => None,
+        };
+        if let Some(field) = field { args[field] = json!(self.memory_scope_id); }
+        match op {
+            "memory_find" => { args["query"] = json!(self.memory_query); }
+            "memory_record" => {
+                args["key"] = json!(self.memory_key);
+                args["value"] = json!(self.memory_value);
+                args["kind"] = json!(self.memory_kind);
+                args["confirmed"] = json!(true);
+            }
+            "memory_delete" => {
+                args["record_id"] = json!(self.memory_record_id);
+                args["confirmed"] = json!(true);
+            }
+            _ => {}
+        }
+        args
     }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
@@ -503,7 +519,7 @@ impl Desktop {
             "Updates" => request("update_status", json!({})),
             "Service health" => request("log_tail", json!({"lines": self.log_lines})),
             "Diagnostics" => request("doctor", json!({})),
-            "Memory" => request("memory_find", self.memory_args()),
+            "Memory" => request("memory_find", self.memory_args("memory_find")),
             "Session briefing" => request("session_briefing", json!({"root": self.repo})),
             "Project and diagnostics archives" => { self.status = "Select an archive operation below.".into(); return; }
             "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
@@ -702,13 +718,13 @@ impl Desktop {
                     ui.text_edit_singleline(&mut self.memory_key);
                     ui.text_edit_multiline(&mut self.memory_value);
                     if ui.button("Record memory").clicked() {
-                        self.confirm("Record memory", request("memory_record", self.memory_args()));
+                        self.confirm("Record memory", request("memory_record", self.memory_args("memory_record")));
                     }
                     ui.label("Delete exact record ID (select a row or enter the ID)");
                     ui.text_edit_singleline(&mut self.memory_record_id);
                     if ui.add_enabled(!self.memory_record_id.trim().is_empty() && self.memory_scope != "worktree",
                         egui::Button::new("Delete memory record")).clicked() {
-                        self.confirm("Delete exact scoped memory record", request("memory_delete", self.memory_args()));
+                        self.confirm("Delete exact scoped memory record", request("memory_delete", self.memory_args("memory_delete")));
                     }
                     if self.memory_scope == "worktree" { ui.small("Worktree deletion requires an independently verified scope and is not supported here."); }
                     return;
