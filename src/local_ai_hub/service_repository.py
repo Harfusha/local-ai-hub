@@ -932,6 +932,7 @@ class ServiceRepositoryMixin:
                 if mode in {"summary", "delta"}:
                     ledger.observe(result)
                 ledger.attach(result)
+                ledger.attach_broker_postimages(result)
             except (OSError, ValueError, sqlite3.Error):
                 result["local_ledger"] = {"status": "unavailable", "authoritative_ownership_proven": False}
             try:
