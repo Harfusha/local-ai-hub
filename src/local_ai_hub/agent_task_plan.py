@@ -619,6 +619,7 @@ class TaskPlanSyncMixin:
             allow_server_memory_refresh=allow_server_memory_refresh,
             allow_server_work_update=allow_server_work_update,
             allow_server_execution_update=allow_server_execution_update,
+            allow_server_contract_update=event.kind == "task.contract_revised",
         )
         if checkpoint != updated.checkpoint:
             updated = replace(updated, checkpoint=checkpoint)
