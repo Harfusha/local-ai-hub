@@ -6,6 +6,104 @@ from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_knowledge_management import manage_repository_knowledge
 
 
+def test_old_checkout_can_be_explicitly_bootstrapped_once(tmp_path):
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("git") is None:
+        pytest.skip("Git unavailable")
+    root = tmp_path / "old-repo"
+    local = root / ".local-ai-hub"
+    local.mkdir(parents=True)
+    (local / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "old checkout"],
+                   check=True, timeout=15)
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    request = {
+        "action": "bootstrap", "root": str(root), "project_id": project_id,
+        "mode": "shared", "operation_id": "bootstrap-old-checkout", "apply": True,
+    }
+
+    result = manage_repository_knowledge({}, request, authorize_operator_write=lambda: True)
+
+    assert result["success"] is True, result
+    assert json.loads((local / "project.json").read_text(encoding="utf-8")) == {
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }
+    subprocess.run(["git", "-C", str(root), "add", ".local-ai-hub/project.json"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "project identity"],
+                   check=True, timeout=15)
+    from local_ai_hub.project_identity import project_scope_id
+
+    clone = tmp_path / "relocated-clone"
+    linked = tmp_path / "linked-worktree"
+    subprocess.run(["git", "clone", "--quiet", str(root), str(clone)], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "worktree", "add", "--quiet", "-b", "linked-agent",
+                    str(linked)], check=True, timeout=15)
+    assert project_scope_id(clone) == project_id
+    assert project_scope_id(linked) == project_id
+    retry = manage_repository_knowledge({}, request, authorize_operator_write=lambda: True)
+    assert retry["success"] is True
+    assert json.loads((local / "project.json").read_text(encoding="utf-8"))["project_id"] == project_id
+    conflict = manage_repository_knowledge(
+        {}, {**request, "project_id": "874b3b8d-2d4c-40d5-8d28-c6cf23a0f469",
+             "operation_id": "bootstrap-competing-agent"},
+        authorize_operator_write=lambda: True,
+    )
+    assert conflict["status_code"] == 409
+
+
+def test_concurrent_bootstrap_agents_cannot_publish_different_project_ids(tmp_path):
+    import shutil
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import pytest
+
+    if shutil.which("git") is None:
+        pytest.skip("Git unavailable")
+    root = tmp_path / "old-repo"
+    local = root / ".local-ai-hub"
+    local.mkdir(parents=True)
+    (local / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "old checkout"],
+                   check=True, timeout=15)
+    barrier = Barrier(2)
+
+    def bootstrap(project_id: str, operation_id: str) -> dict:
+        barrier.wait(timeout=10)
+        return manage_repository_knowledge(
+            {}, {"action": "bootstrap", "root": str(root), "project_id": project_id,
+                 "mode": "shared", "operation_id": operation_id, "apply": True},
+            authorize_operator_write=lambda: True,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda args: bootstrap(*args), [
+            ("41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "bootstrap-agent-a"),
+            ("874b3b8d-2d4c-40d5-8d28-c6cf23a0f469", "bootstrap-agent-b"),
+        ]))
+
+    assert sum(result.get("success") is True for result in results) == 1
+    assert sorted(result.get("status_code") for result in results if result.get("success") is False) == [409]
+    manifest = json.loads((local / "project.json").read_text(encoding="utf-8"))
+    assert manifest["project_id"] in {
+        "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "874b3b8d-2d4c-40d5-8d28-c6cf23a0f469",
+    }
+
+
 def test_legacy_record_publish_is_not_a_runtime_knowledge_action(tmp_path):
     response = manage_repository_knowledge(
         {"server": {"state_dir": str(tmp_path / "state")}},

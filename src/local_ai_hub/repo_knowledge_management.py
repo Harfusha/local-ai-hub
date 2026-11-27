@@ -16,6 +16,7 @@ from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidati
 from .repository_scope import RepositoryScopeError, authorized_repository_root
 
 _FIELDS = {
+    "bootstrap": {"action", "root", "project_id", "mode", "operation_id", "apply"},
     "audit": {"action", "root"},
     "sync_status": {"action", "root"},
     "diff": {"action", "root", "base", "head"},
@@ -50,7 +51,7 @@ def manage_repository_knowledge(
     action = payload.get("action")
     if not isinstance(action, str) or action not in _FIELDS or set(payload) != _FIELDS[action]:
         return _error(400, "Invalid knowledge management action or fields")
-    writing = action.startswith("save_")
+    writing = action.startswith("save_") or action == "bootstrap"
     if writing and (
         payload["apply"] is not True or authorize_operator_write() is not True
         or not isinstance(payload["operation_id"], str)
@@ -60,6 +61,21 @@ def manage_repository_knowledge(
     try:
         root = authorized_repository_root(config, payload["root"])
         store = RepoKnowledgeStore(root)
+        if action == "bootstrap":
+            try:
+                existing, revision = store.manifest()
+            except FileNotFoundError:
+                existing = None
+                revision = ""
+            if existing is not None:
+                if existing["project_id"] == payload["project_id"] and existing["mode"] == payload["mode"]:
+                    return {"success": True, "status": "already_initialized",
+                            "project_id": existing["project_id"], "revision": revision}
+                return _error(409, "Knowledge project identity already exists and cannot be replaced")
+            return store.bootstrap(
+                payload["project_id"], mode=payload["mode"], owner="local-operator",
+                idempotency_key=payload["operation_id"], authorize_write=authorize_operator_write,
+            )
         if action == "sync_status":
             from .repo_knowledge_sync import checkout_sync_status
 
