@@ -128,10 +128,18 @@ def execute_staged_commit(
             actual_tree = oid("write-tree", extra={"GIT_INDEX_FILE": str(temporary_index)})
             if actual_tree != expected_tree:
                 raise ValueError("Materialized Git tree does not match approved tree")
+            actual_paths = git("diff-tree", "--no-commit-id", "--name-only", "-z", "-r",
+                               "--no-renames", parent, actual_tree, "--")
+            if not actual_paths.endswith(b"\0") or set(actual_paths.split(b"\0")[:-1]) != {os.fsencode(path) for path in paths}:
+                raise ValueError("Exact tree diff does not match the reviewed path selection")
             # Candidate object creation does not publish a commit or alter the
             # index. An unsuccessful CAS may leave a normal unreachable object.
             candidate = oid("commit-tree", actual_tree, "-p", parent, "-m", message)
-        if index.stat().st_size != len(original) or index.read_bytes() != original:
+        if _is_redirecting_link(index) or index.stat().st_size != len(original):
+            raise ValueError("Index changed while locked")
+        with index.open("rb") as stream:
+            current_index = stream.read(_MAX_INDEX + 1)
+        if current_index != original:
             raise ValueError("Index changed while locked")
         require_supported_state(git_dir)
         if git("symbolic-ref", "--quiet", "HEAD").strip().decode("utf-8") != branch:

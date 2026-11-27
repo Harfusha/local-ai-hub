@@ -68,3 +68,15 @@ def test_commit_refuses_hook_and_existing_index_lock(tmp_path):
     assert lock.read_text() == "foreign"
     lock.unlink()
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
+
+
+def test_independent_tree_diff_rejects_misreported_selection(tmp_path):
+    engine, leases, parent, tree = _fixture(tmp_path)
+    plan = engine.split_changes.return_value
+    plan["clusters"] = [{"group_key": "b", "files": ["b"], "changes": [{"path": "b", "status": "M "}]}]
+    result = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()), paths=["b"],
+                                   expected_revision="a" * 64, expected_tree=tree,
+                                   message="chore: reviewed", approved=True)
+    assert not result["success"]
+    assert "tree diff" in result["error"]
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
