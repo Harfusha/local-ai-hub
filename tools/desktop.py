@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+from io import BytesIO
 from contextlib import closing
 import json
 import http.client
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, quote
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
@@ -26,6 +29,9 @@ from local_ai_hub.process_utils import hidden_run_kwargs
 
 LIFECYCLE = frozenset({"start", "stop", "restart"})
 MODES = ("active", "gaming", "maintenance", "preprocessing")
+MAX_VISION_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_VISION_IMAGE_DIMENSION = 8192
+MAX_VISION_IMAGE_PIXELS = 16_000_000
 VIEWS = {
     "Overview": "/api/live/status?light=1&scope=1h",
     "Requests": "/api/live/status?light=1&scope=1h",
@@ -187,6 +193,42 @@ def text_field(data: dict[str, Any], key: str, limit: int = 4096) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ValueError(f"Invalid or missing {key}")
     return value.strip()
+
+
+def validate_vision_image(raw: bytes) -> tuple[str, int, int]:
+    """Decode a bounded PNG/JPEG fully before issuing a vision request."""
+    try:
+        with Image.open(BytesIO(raw), formats=("PNG", "JPEG")) as image:
+            image_format = image.format
+            width, height = image.size
+    except (Image.DecompressionBombError, OSError, SyntaxError, ValueError) as exc:
+        raise ValueError("Choose a valid PNG or JPEG image") from exc
+
+    mime = {"PNG": "image/png", "JPEG": "image/jpeg"}.get(image_format or "")
+    if mime is None:
+        raise ValueError("Unsupported image format; choose PNG or JPEG")
+    if (
+        width < 1
+        or height < 1
+        or width > MAX_VISION_IMAGE_DIMENSION
+        or height > MAX_VISION_IMAGE_DIMENSION
+        or width * height > MAX_VISION_IMAGE_PIXELS
+    ):
+        raise ValueError(
+            f"Image dimensions exceed {MAX_VISION_IMAGE_DIMENSION} pixels per side "
+            f"or {MAX_VISION_IMAGE_PIXELS} total pixels"
+        )
+
+    try:
+        with Image.open(BytesIO(raw), formats=(image_format,)) as image:
+            image.verify()
+        with Image.open(BytesIO(raw), formats=(image_format,)) as image:
+            if image.size != (width, height):
+                raise ValueError("Image dimensions changed while validating")
+            image.load()
+    except (Image.DecompressionBombError, OSError, SyntaxError, ValueError) as exc:
+        raise ValueError("Choose a valid PNG or JPEG image") from exc
+    return mime, width, height
 
 
 def memory_scope_fields(args: dict[str, Any]) -> dict[str, Any]:
@@ -633,20 +675,17 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         fd = os.open(file, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(fd, "rb") as source:
             info = os.fstat(source.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_VISION_IMAGE_BYTES:
                 raise ValueError("Choose an existing PNG or JPEG of at most 8 MiB")
-            raw = source.read(8 * 1024 * 1024 + 1)
-        if len(raw) > 8 * 1024 * 1024:
+            raw = source.read(MAX_VISION_IMAGE_BYTES + 1)
+        if len(raw) > MAX_VISION_IMAGE_BYTES:
             raise ValueError("Image exceeds 8 MiB")
-        mime = "image/png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else (
-            "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "")
-        if not mime:
-            raise ValueError("Unsupported image format; choose PNG or JPEG")
+        mime, width, height = validate_vision_image(raw)
         digest = hashlib.sha256(raw).hexdigest()
         if op == "vision_inspect":
             # Local-only receipt: no image bytes or inference.
             return {"success": True, "file": selected, "image_sha256": digest,
-                    "mime": mime, "size_bytes": len(raw)}
+                    "mime": mime, "size_bytes": len(raw), "width": width, "height": height}
         prompt = text_field(args, "prompt", 12000)
         if args.get("image_sha256") != digest:
             raise ValueError("Image changed or was not inspected; inspect the file again")

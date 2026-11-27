@@ -230,7 +230,7 @@ def test_vision_rejects_non_image_before_transport(tmp_path):
     image = tmp_path / "not-image.png"
     image.write_bytes(b"not an image")
     control = MagicMock()
-    with pytest.raises(ValueError, match="Unsupported image"):
+    with pytest.raises(ValueError, match="valid PNG or JPEG"):
         desktop.dispatch(control, {"op": "vision_review", "args": {
             "file": str(image), "prompt": "Describe", "confirmed": True}})
     control._client.assert_not_called()
@@ -1144,12 +1144,31 @@ def test_instruction_manifest_rejects_foreign_scope_and_modified_candidate(tmp_p
     assert source.read_bytes() == original.encode("utf-8")
 
 
+def _encoded_image(format_name="PNG", size=(1, 1), color=(255, 0, 0)):
+    from io import BytesIO
+    from PIL import Image
+
+    output = BytesIO()
+    Image.new("RGB", size, color).save(output, format=format_name)
+    return output.getvalue()
+
+
+def _png_with_declared_dimensions(width, height):
+    import struct
+    import zlib
+
+    raw = bytearray(_encoded_image())
+    raw[16:24] = struct.pack(">II", width, height)
+    raw[29:33] = struct.pack(">I", zlib.crc32(raw[12:29]) & 0xFFFFFFFF)
+    return bytes(raw)
+
+
 def test_vision_inspection_is_local_and_binds_exact_uploaded_bytes(tmp_path):
     import hashlib
     import base64
 
     image = tmp_path / "image.png"
-    raw = b"\x89PNG\r\n\x1a\nfixture"
+    raw = _encoded_image()
     image.write_bytes(raw)
     control = MagicMock()
     args = {"file": str(image), "prompt": "Describe"}
@@ -1157,7 +1176,8 @@ def test_vision_inspection_is_local_and_binds_exact_uploaded_bytes(tmp_path):
         receipt = desktop.dispatch(control, {"op": "vision_inspect", "args": args})
         assert receipt == {"success": True, "file": str(image),
                            "image_sha256": hashlib.sha256(raw).hexdigest(),
-                           "mime": "image/png", "size_bytes": len(raw)}
+                           "mime": "image/png", "size_bytes": len(raw),
+                           "width": 1, "height": 1}
         post.assert_not_called()
         with pytest.raises(ValueError, match="confirmation"):
             desktop.dispatch(control, {"op": "vision_review", "args": {
@@ -1165,7 +1185,7 @@ def test_vision_inspection_is_local_and_binds_exact_uploaded_bytes(tmp_path):
         with pytest.raises(ValueError, match="not inspected"):
             desktop.dispatch(control, {"op": "vision_review", "args": {
                 **args, "confirmed": True}})
-        image.write_bytes(raw + b"changed")
+        image.write_bytes(_encoded_image(color=(0, 0, 255)))
         with pytest.raises(ValueError, match="Image changed"):
             desktop.dispatch(control, {"op": "vision_review", "args": {
                 **args, "image_sha256": receipt["image_sha256"], "confirmed": True}})
@@ -1176,6 +1196,41 @@ def test_vision_inspection_is_local_and_binds_exact_uploaded_bytes(tmp_path):
         post.assert_called_once_with(control, "/api/vision/review", {
             "prompt": "Describe", "source": "upload",
             "image": "data:image/png;base64," + base64.b64encode(raw).decode("ascii")}, timeout=360.0)
+
+
+def test_vision_inspection_rejects_empty_unsupported_and_magic_only_images(tmp_path):
+    invalid_images = {
+        "empty.png": b"",
+        "fake.png": b"\x89PNG\r\n\x1a\nnot a PNG",
+        "animated.gif": _encoded_image("GIF"),
+    }
+    with patch.object(desktop, "checked_post") as post:
+        for name, raw in invalid_images.items():
+            image = tmp_path / name
+            image.write_bytes(raw)
+            with pytest.raises(ValueError, match="valid PNG or JPEG"):
+                desktop.dispatch(MagicMock(), {"op": "vision_inspect", "args": {"file": str(image)}})
+        post.assert_not_called()
+
+
+def test_vision_inspection_rejects_corrupt_and_oversized_images(tmp_path):
+    corrupt = tmp_path / "truncated.png"
+    corrupt.write_bytes(_encoded_image()[:-8])
+    oversized = tmp_path / "oversized.png"
+    oversized.write_bytes(_png_with_declared_dimensions(5000, 4000))
+    with patch.object(desktop, "checked_post") as post:
+        for image in (corrupt, oversized):
+            with pytest.raises(ValueError):
+                desktop.dispatch(MagicMock(), {"op": "vision_inspect", "args": {"file": str(image)}})
+        post.assert_not_called()
+
+
+def test_vision_inspection_accepts_decodable_jpeg(tmp_path):
+    image = tmp_path / "image.jpg"
+    image.write_bytes(_encoded_image("JPEG", size=(2, 3)))
+    result = desktop.dispatch(MagicMock(), {"op": "vision_inspect", "args": {"file": str(image)}})
+    assert result["mime"] == "image/jpeg"
+    assert (result["width"], result["height"]) == (2, 3)
 
 
 def test_vision_inspection_rejects_large_file_without_contacting_hub(tmp_path):
