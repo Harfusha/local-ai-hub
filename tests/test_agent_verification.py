@@ -2301,6 +2301,7 @@ def test_verified_execution_distinct_confirmation_after_task_adoption(stores):
     blocked = verifier.completion(task.task_id)
     assert not blocked.complete
     assert blocked.execution["problems"]["open_preview"][0]["resolution_status"] == "awaiting_distinct_owner"
+    assert blocked.execution["problems"]["owner_handoff_criteria"] == ["review"]
     with pytest.raises(CompletionGateError, match="blocking problems"):
         task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
     task_store.claim(task.task_id, "reviewer", actor="reviewer")
