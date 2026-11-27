@@ -644,8 +644,9 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             ):
                 raise ValueError("Lease and owner not present in selected repository; reload inventory")
             result = checked_post(control, "/api/leases/release", {"lease_id": lease_id, "owner": owner})
-            if result.get("success") is not True:
-                raise RuntimeError("Lease release not confirmed")
+            if (result.get("success") is not True or type(result.get("released_rows")) is not int
+                    or result["released_rows"] < 1):
+                raise RuntimeError("Lease release not confirmed; lease may already be gone")
             return result
         if op.startswith("semaphore_"):
             payload = {"name": text_field(args, "name", 200)}
