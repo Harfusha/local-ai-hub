@@ -128,6 +128,11 @@ def execute_staged_commit(
             original = stream.read(_MAX_INDEX + 1)
         if len(original) > _MAX_INDEX:
             raise ValueError("Index exceeds budget")
+        from .change_tree_verification import commit_policy, require_sequence_receipts
+
+        policy = commit_policy(root)
+        if policy["required"] and not preview_only and (sequence is None or verification_manifest is None):
+            raise ValueError("Project git_commit policy requires a verified commit sequence (one step is allowed)")
         sequence_plan = None
         verification_receipts: list[str] = []
         if sequence is not None:
@@ -137,14 +142,19 @@ def execute_staged_commit(
                 git("ls-tree", "-r", "-z", parent), git("ls-files", "--stage", "-z"),
                 parent, expected_tree, sequence, plan["clusters"], expected_revision,
             )
+            sequence_plan["project_commit_policy"] = policy
+            if policy["required"]:
+                import hashlib
+
+                sequence_plan["preview_digest"] = hashlib.sha256(
+                    (sequence_plan["preview_digest"] + policy["config_digest"]).encode("ascii")
+                ).hexdigest()
             if preview_only is True:
                 outcome = {"success": True, "applied": False, **sequence_plan}
                 return outcome
             if preview_digest != sequence_plan["preview_digest"]:
                 raise ValueError("Sequence differs from approved preview")
             if verification_manifest is not None:
-                from .change_tree_verification import require_sequence_receipts
-
                 if journal is None:
                     raise ValueError("Verification receipt journal unavailable")
                 verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
@@ -208,6 +218,8 @@ def execute_staged_commit(
         if journal is not None:
             journal.prepare(operation_id=operation_id, root=root, branch=branch, parent=parent,
                             tree=actual_tree, candidate=candidate)
+        if commit_policy(root) != policy:
+            raise ValueError("Project commit policy changed during transaction")
         if sequence_plan is not None and verification_manifest is not None:
             verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
         update_attempted = True
