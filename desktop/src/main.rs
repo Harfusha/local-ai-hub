@@ -322,6 +322,7 @@ struct Desktop {
     task_non_goals: String,
     task_constraints: String,
     task_slo: String,
+    task_session: String,
     task_risk: String,
     incident_kind: String,
     incident_message: String,
@@ -333,6 +334,7 @@ struct Desktop {
     plan_title: String,
     revision: String,
     plan_task: String,
+    plan_execution_id: String,
     plan_draft: Option<PlanDraft>,
     description: String,
     archive_path: String,
@@ -408,7 +410,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_non_goals: String::new(), task_constraints: String::new(), task_slo: String::new(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), incident_cause: String::new(), incident_fix: String::new(), incident_status: String::new(), incident_query: String::new(), incident_limit: 100, plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_non_goals: String::new(), task_constraints: String::new(), task_slo: String::new(), task_session: String::new(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), incident_cause: String::new(), incident_fix: String::new(), incident_status: String::new(), incident_query: String::new(), incident_limit: 100, plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_execution_id: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -483,7 +485,7 @@ impl Desktop {
                                 value["file_revision"].as_str().unwrap_or("").to_owned()
                             } else { String::new() };
                         }
-                        if matches!(done.label.as_str(), "Update plan" | "Edit plan task" | "Add plan task" | "Delete plan task" | "Move plan task" | "Archive plan") {
+                        if matches!(done.label.as_str(), "Update plan" | "Edit plan task" | "Add plan task" | "Delete plan task" | "Move plan task" | "Archive plan" | "Bind execution task") {
                             self.plan_draft = None;
                             self.revision.clear();
                         }
@@ -586,6 +588,8 @@ impl Desktop {
         self.task_non_goals.clear();
         self.task_constraints.clear();
         self.task_slo.clear();
+        self.task_session.clear();
+        self.plan_execution_id.clear();
         self.reason.clear();
         self.prompt.clear();
         self.incident_kind.clear();
@@ -1052,6 +1056,8 @@ impl Desktop {
                         ui.text_edit_multiline(&mut self.task_non_goals);
                         ui.label("Constraints (one per line)");
                         ui.text_edit_multiline(&mut self.task_constraints);
+                        ui.label("Session ID (optional; required for plan binding)");
+                        ui.text_edit_singleline(&mut self.task_session);
                         ui.label("SLO profile (optional JSON object)");
                         ui.text_edit_multiline(&mut self.task_slo);
                     });
@@ -1061,7 +1067,7 @@ impl Desktop {
                             "goal": self.goal, "criteria": self.criteria, "scope": self.task_scope,
                             "risk": self.task_risk, "description": self.description,
                             "non_goals": self.task_non_goals, "constraints": self.task_constraints,
-                            "slo": self.task_slo, "confirmed": true})));
+                            "slo": self.task_slo, "session_id": self.task_session, "confirmed": true})));
                     }
                 });
                 ui.label("Task ID and reason (repository required)");
@@ -1154,12 +1160,12 @@ impl Desktop {
                 });
                 ui.label("Selected plan ID (independent of board filter)");
                 if ui.text_edit_singleline(&mut self.entity).changed() {
-                    self.revision.clear(); self.plan_draft = None; self.plan_task.clear();
+                    self.revision.clear(); self.plan_draft = None; self.plan_task.clear(); self.plan_execution_id.clear();
                     self.plan_title.clear(); self.description.clear();
                 }
                 ui.label("Task ID (empty for plan-level edit)");
                 if ui.text_edit_singleline(&mut self.plan_task).changed() {
-                    self.plan_draft = None; self.plan_title.clear(); self.description.clear();
+                    self.plan_draft = None; self.plan_title.clear(); self.description.clear(); self.plan_execution_id.clear();
                 }
                 ui.label(format!("Observed revision: {}", if self.revision.is_empty() { "not loaded" } else { &self.revision }));
                 if ui.button("Load exact plan / task for editing").clicked() {
@@ -1174,6 +1180,18 @@ impl Desktop {
                     if ui.add_enabled(!self.entity.trim().is_empty() && !self.revision.is_empty(), egui::Button::new("Archive plan")).clicked() {
                         self.confirm("Archive plan", request("plan_archive", json!({"root": self.repo,
                             "id": self.entity, "revision": self.revision, "confirmed": true})));
+                    }
+                });
+                ui.collapsing("Bind existing execution task", |ui| {
+                    ui.small("The task must belong to this repository, have a persisted session and matching acceptance criteria. Binding synchronizes its checkpoint into the plan.");
+                    ui.label("Exact Agent OS execution task ID");
+                    ui.text_edit_singleline(&mut self.plan_execution_id);
+                    let ready = self.plan_draft.as_ref().is_some_and(|draft|
+                        !draft.task_id.is_empty() && draft.matches(&self.entity, &self.plan_task, &self.revision));
+                    if ui.add_enabled(ready && !self.plan_execution_id.trim().is_empty(), egui::Button::new("Bind execution task")).clicked() {
+                        self.confirm("Bind execution task", request("plan_bind_task", json!({
+                            "root": self.repo, "id": self.entity, "task_id": self.plan_task,
+                            "execution_id": self.plan_execution_id, "revision": self.revision, "confirmed": true})));
                     }
                 });
                 let mut edit_request = None;
