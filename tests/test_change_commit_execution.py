@@ -208,3 +208,40 @@ def test_commit_list_is_root_scoped(tmp_path):
                     parent="2" * 40, tree="3" * 40, candidate="4" * 40)
     assert len(journal.list_recent(str(tmp_path))["operations"]) == 1
     assert not journal.list_recent(str(tmp_path / "other"))["operations"]
+
+
+def test_shared_project_commit_policy_requires_exact_manifest_and_receipts(tmp_path):
+    import json
+    import sys
+
+    import pytest
+
+    from local_ai_hub.change_tree_verification import commit_policy
+
+    engine, leases, parent, tree = _fixture(tmp_path)
+    executable = str(Path(sys.executable).absolute())
+    argv = [executable, "-c", "print('verified')"]
+    (tmp_path / ".local-ai.toml").write_text(
+        "[commands.check]\nargv = " + json.dumps(argv) +
+        "\n[verification_rules]\ngit_commit = [\"check\"]\n", encoding="utf-8",
+    )
+    root = str(tmp_path.resolve())
+    policy = commit_policy(root)
+    assert policy["required"] is True
+    assert policy["command_aliases"] == ["check"]
+    manifest = {"environment_id": "b" * 64, "commands": [argv]}
+    assert commit_policy(root, manifest, require_manifest=True) == policy
+    with pytest.raises(ValueError, match="exactly match"):
+        commit_policy(root, {**manifest, "commands": [[executable, "-V"]]}, require_manifest=True)
+    kwargs = dict(root=root, paths=["a"], expected_revision="a" * 64, expected_tree=tree,
+                  message="fix: reviewed", approved=True)
+    refused = execute_staged_commit({}, engine, leases, **kwargs)
+    assert not refused["success"] and "git_commit policy" in refused["error"]
+    sequence = [{"paths": ["a"], "message": "fix: reviewed"}]
+    preview = execute_staged_commit({}, engine, leases, **kwargs, sequence=sequence, preview_only=True)
+    assert preview["success"], preview
+    assert preview["project_commit_policy"] == policy
+    refused = execute_staged_commit({}, engine, leases, **kwargs, sequence=sequence,
+                                   preview_digest=preview["preview_digest"])
+    assert not refused["success"]
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
