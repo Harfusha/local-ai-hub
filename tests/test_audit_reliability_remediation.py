@@ -116,3 +116,72 @@ def test_application_close_retries_failed_components_without_reclosing_completed
     assert calls["preprocessor"] == 2
     assert calls["scheduler"] == 1
     assert app.close_report["success"] is True
+
+
+@pytest.mark.parametrize("timeout", [True, -1, float("inf"), float("nan"), "1", None])
+def test_close_coordinator_rejects_invalid_timeout(timeout):
+    from local_ai_hub.shutdown import CloseCoordinator
+
+    calls = []
+    coordinator = CloseCoordinator([("component", lambda: calls.append("closed"))])
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        coordinator.close(timeout)
+    assert not calls
+
+
+@pytest.mark.parametrize("failure", [{"success": False}, {"cleanup_unconfirmed": True}])
+def test_close_coordinator_retries_incomplete_receipts_without_reclosing_completed(failure):
+    from local_ai_hub.shutdown import CloseCoordinator
+
+    calls = []
+    outcomes = iter([failure, {"success": True}])
+
+    def retryable():
+        calls.append("retryable")
+        return next(outcomes)
+
+    coordinator = CloseCoordinator([("once", lambda: calls.append("once")), ("retryable", retryable)])
+    report = coordinator.close(timeout=5)
+    assert report["settled"] and not report["success"]
+    assert report["failed"] == ["retryable"]
+    assert coordinator.close(timeout=5)["success"]
+    assert coordinator.close(timeout=0)["success"]
+    assert calls == ["once", "retryable", "retryable"]
+
+
+def test_close_coordinator_timeout_does_not_duplicate_or_terminate_callback():
+    from local_ai_hub.shutdown import CloseCoordinator
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def close():
+        calls.append("entered")
+        started.set()
+        if not release.wait(10):
+            raise RuntimeError("fixture release deadline")
+
+    coordinator = CloseCoordinator([("slow", close)])
+    try:
+        coordinator.close(timeout=0)
+        assert started.wait(5)
+        report = coordinator.close(timeout=0)
+        assert report["timed_out"] and report["worker_running"]
+        assert not report["settled"] and not report["success"]
+        assert report["pending"] == ["slow"]
+        assert calls == ["entered"]
+    finally:
+        release.set()
+    assert coordinator.close(timeout=5)["success"]
+    assert calls == ["entered"]
+
+
+def test_close_coordinator_reentrant_callback_never_waits_on_itself():
+    from local_ai_hub.shutdown import CloseCoordinator
+
+    receipts = []
+    coordinator = CloseCoordinator([("reentrant", lambda: receipts.append(coordinator.close(timeout=5)))])
+    assert coordinator.close(timeout=5)["success"]
+    assert len(receipts) == 1
+    assert receipts[0]["worker_running"] and not receipts[0]["settled"]
