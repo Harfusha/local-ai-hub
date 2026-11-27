@@ -292,6 +292,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Apply reviewed compressed candidates in-place (default: preview/stage only)")
     parser.add_argument("--model", type=str, default="", help="Model name for caveman compression (defaults to configured model)")
     parser.add_argument("--staging-dir", type=Path, default=None, help="Directory for backups and candidates")
+    parser.add_argument("--manifest", type=Path, default=None, help="Exact staged instruction manifest for review-staged, apply-staged or restore-staged")
+    parser.add_argument("--manifest-sha256", default="", help="Digest of the reviewed staged instruction manifest")
     parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
     parser.add_argument("--status", type=str, default="", help="Task status filter (planned, active, verifying, completed, failed, blocked)")
     parser.add_argument("--complete", action="store_true", help="Mark task as completed")
@@ -876,6 +878,25 @@ def main() -> int:
         from local_ai_hub import caveman_instructions
         from tools import setup as setup_mod
 
+        state_dir = Path(cfg.get("server", {}).get("state_dir", ROOT / "state"))
+        staging_dir = args.staging_dir or (state_dir / "caveman-staging")
+        if args.sub_arg in {"review-staged", "apply-staged", "restore-staged"}:
+            if args.root is None or args.manifest is None or args.all_agents or args.apply:
+                parser.error("staged instruction operations require --root and --manifest, without --all-agents or --apply")
+            operation = {"review-staged": "inspect", "apply-staged": "apply", "restore-staged": "restore"}[args.sub_arg]
+            try:
+                result = caveman_instructions.reviewed_instruction_manifest(
+                    args.manifest, repository_root=args.root, stage_root=staging_dir,
+                    action=operation, expected_digest=args.manifest_sha256,
+                )
+            except (OSError, ValueError) as exc:
+                print(json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+                return 1
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if args.sub_arg is not None or args.manifest is not None or args.manifest_sha256:
+            parser.error("unknown compression subcommand or misplaced manifest options")
+
         roots: list[Path] = []
         if args.all_agents:
             for u_home in setup_mod.get_user_homes():
@@ -901,8 +922,6 @@ def main() -> int:
         review_model = cfg.get("models", {}).get("reasoning") or model
         endpoint = cfg.get("ollama", {}).get("endpoint") or "http://127.0.0.1:11434"
 
-        state_dir = Path(cfg.get("server", {}).get("state_dir", ROOT / "state"))
-        staging_dir = args.staging_dir or (state_dir / "caveman-staging")
         staging_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Found {len(files)} instruction file(s) across {len(roots)} root(s).")
@@ -911,14 +930,16 @@ def main() -> int:
         print(f"Mode: {'APPLY (in-place replacement)' if args.apply else 'PREVIEW / STAGE (pass --apply to overwrite)'}\n")
 
         prepared = []
+        backup_failures = 0
         for f in files:
             try:
                 prepared.append(caveman_instructions.backup_instruction(f, staging_dir))
             except Exception as exc:
+                backup_failures += 1
                 print(f"[SKIP] Backup failed for {f.name}: {exc}")
 
         applied = 0
-        failed = 0
+        failed = backup_failures
         total_before = 0
         total_after = 0
 
@@ -947,15 +968,18 @@ def main() -> int:
                     status_lbl = "STAGED"
 
                 print(f"[{status_lbl}] {item.source.name} ({item.source.parent.name}) — {before}B -> {after}B (-{saved_pct:.1f}%) in {res.duration_seconds:.1f}s")
+                if res.candidate is not None:
+                    print(f"Manifest: {res.candidate.parent / 'manifest.json'}")
             except Exception as exc:
                 failed += 1
                 print(f"[FAILED] {item.source.name}: {exc}")
 
         net_saved = ((total_before - total_after) / total_before) * 100 if total_before > 0 else 0
         print("\n" + "=" * 55)
-        print(f"Summary: {len(prepared) - failed}/{len(prepared)} succeeded. Total bytes: {total_before}B -> {total_after}B (-{net_saved:.1f}%)")
-        if not args.apply and (len(prepared) - failed) > 0:
-            print("Note: Run with --apply to apply candidates in-place.")
+        print(f"Summary: {len(files) - failed}/{len(files)} succeeded. Total bytes: {total_before}B -> {total_after}B (-{net_saved:.1f}%)")
+        if not args.apply and (len(files) - failed) > 0:
+            print("Review a manifest using compress-instructions review-staged --root ROOT --manifest PATH.")
+            print("Then use apply-staged with the reviewed --manifest-sha256; this never regenerates the candidate.")
         return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
