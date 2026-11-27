@@ -1050,6 +1050,8 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 "terminal": True, "retryable": False,
                 "error": f"MCP output contract failed: {output_error}",
             }
+            if isinstance(raw, dict) and isinstance(raw.get("request_id"), str):
+                payload["request_id"] = raw["request_id"][:160]
             return finalize(services_module._mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
         if isinstance(raw, (dict, list)):
             return finalize(services_module._mcp_budget_payload(name, arguments, raw))
