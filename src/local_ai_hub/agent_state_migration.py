@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -362,6 +363,7 @@ def preview_legacy_memory_batch(
 def preview_legacy_incident_batch(
     state_dir: Path | str, store: RepoKnowledgeStore, *, limit: int = 16,
     after_incident_id: str = "", expected_snapshot: str = "", repository_roots: tuple[str, ...] | None = None,
+    repository_key_aliases: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Prepare reviewed incident records batch from clean offline database."""
     from .agent_incidents import _incident_scope_key
@@ -390,6 +392,13 @@ def preview_legacy_incident_batch(
     ):
         raise RepoPlanValidationError("Legacy incident roots do not match the current project identity")
     repository_keys = tuple(_incident_scope_key("repository", item) for item in roots)
+    if (
+        not isinstance(repository_key_aliases, tuple) or len(repository_key_aliases) > 8
+        or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
+               for item in repository_key_aliases)
+    ):
+        raise RepoPlanValidationError("Invalid one-time incident migration key aliases")
+    repository_keys = tuple(dict.fromkeys((*repository_keys, *repository_key_aliases)))
     key_placeholders = ",".join("?" for _ in repository_keys)
     deadline = time.monotonic() + 3.0
     try:
@@ -461,6 +470,29 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
     state = Path(state_dir).resolve(strict=True)
     root = Path(repo_root).resolve(strict=True)
     store = RepoKnowledgeStore(root)
+    manifest_path = root / ".local-ai-hub" / "project.json"
+    legacy_repository_key = ""
+    if not manifest_path.exists():
+        from .agent_incidents import _incident_scope_key
+
+        legacy_repository_key = _incident_scope_key("repository", str(root))
+        origin = _git_origin_identity(root)
+        if not origin:
+            raise RepoPlanValidationError(
+                "Old checkout has no stable project manifest or credential-free Git origin; "
+                "bootstrap project identity before update migration"
+            )
+        project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-ai-hub-project:{origin}"))
+        try:
+            store.bootstrap(
+                project_id, mode="shared", owner="release-update",
+                idempotency_key=f"update-project-bootstrap-{project_id}",
+                authorize_write=lambda: True,
+            )
+        except (OSError, RepoPlanValidationError, RuntimeError) as exc:
+            raise RepoPlanValidationError(
+                "Old checkout project identity could not be bootstrapped safely"
+            ) from exc
     manifest, _ = store.manifest()
     project_id = manifest["project_id"]
     marker = state / "project_state_migration_v1.json"
@@ -515,6 +547,8 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
             batch = previewer(
                 state, store, limit=16,
                 **{cursor_name: cursor, "expected_snapshot": source_snapshot, "repository_roots": repository_roots},
+                **({"repository_key_aliases": (legacy_repository_key,)}
+                   if kind == "incident" and legacy_repository_key else {}),
             )
             states = batch["states"]
             blocked = [item for item in states if item["state"] not in {"review_required", "already_published", "blocked_live_attempt"}]

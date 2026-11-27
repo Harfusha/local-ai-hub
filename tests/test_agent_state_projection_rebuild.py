@@ -7,8 +7,11 @@ import shutil
 import subprocess
 import sys
 import uuid
+from dataclasses import replace
 from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_project_tasks import build_project_task_record
@@ -16,8 +19,9 @@ from local_ai_hub.repo_project_memory import build_project_memory_record
 from local_ai_hub.repo_project_incidents import build_project_incident_record
 from local_ai_hub.repo_agent_state import rebuild_agent_state_projection, ensure_agent_os_layout
 from local_ai_hub.agent_incidents import _incident_scope_key
-from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_task_models import ConcurrentTaskUpdateError, TaskCheckpoint
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 
 
@@ -551,3 +555,72 @@ def test_task_reads_rebuild_projection_after_branch_switch(tmp_path: Path):
     assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None
     subprocess.run(["git", "switch", "main"], cwd=repo, check=True, capture_output=True)
     assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None
+
+
+def test_shared_task_checkpoint_is_git_canonical_across_state_dirs_without_head_change(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+    control = repo / ".local-ai-hub"
+    control.mkdir()
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
+    project_id = "f008c4d5-3391-4dcf-9630-20ed06f86c04"
+    (control / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    ensure_agent_os_layout(repo)
+    subprocess.run(["git", "-C", str(repo), "add", ".local-ai-hub"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "--quiet", "-m", "project identity"], check=True)
+    initial_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    agent_a = TaskStore(AgentStateStore(tmp_path / "agent-a" / "agent_state.sqlite"))
+    agent_b = TaskStore(AgentStateStore(tmp_path / "agent-b" / "agent_state.sqlite"))
+    task_id = "task-shared-checkpoint"
+    contract = GoalContract(
+        goal="Reconcile billing retries",
+        acceptance_criteria=["One charge per request key"],
+    )
+    created = agent_a.create(
+        contract, ScopeContext(task_id=task_id), task_id=task_id, repo_root=str(repo),
+    )
+    assert created.task_id == task_id
+    stale_agent_b = agent_b.get(task_id, repo_root=str(repo))
+    assert stale_agent_b.checkpoint.next_action == ""
+
+    updated_checkpoint = TaskCheckpoint(
+        phase="verification", next_action="run duplicate-charge scenario",
+        affected_paths=("src/billing.py",),
+    )
+    agent_a.checkpoint(task_id, updated_checkpoint)
+
+    stale_updated = replace(
+        stale_agent_b,
+        checkpoint=replace(
+            stale_agent_b.checkpoint, phase="planning", next_action="overwrite stale progress",
+        ),
+    )
+    with pytest.raises(ConcurrentTaskUpdateError):
+        agent_b._commit_update(
+            stale_agent_b, stale_updated,
+            AgentEvent.create(
+                f"task:{task_id}", "task.checkpoint",
+                {"phase": "planning", "next_action": "overwrite stale progress"},
+                actor="agent-b",
+            ),
+        )
+
+    canonical = RepoKnowledgeStore(repo).get("task", task_id, verify_sources=False)["record"]
+    assert canonical["payload"]["checkpoint"]["phase"] == "verification"
+    assert canonical["payload"]["checkpoint"]["next_action"] == "run duplicate-charge scenario"
+    assert "repo_root" not in json.dumps(canonical)
+    assert agent_b.get(task_id, repo_root=str(repo)).checkpoint.next_action == "run duplicate-charge scenario"
+    assert subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True,
+        text=True,
+    ).stdout.strip() == initial_head
+    assert subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--quiet"]).returncode == 0

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import uuid
 from contextlib import closing
 from pathlib import Path
 import pytest
@@ -91,8 +92,6 @@ def test_update_migration_resumes_after_a_late_blocker(tmp_path: Path):
 
 
 def test_update_migration_rejects_source_change_between_record_kinds(tmp_path: Path, monkeypatch):
-    import local_ai_hub.agent_state_migration as migration
-
     root, _, state_dir = _setup_migration_env(tmp_path)
     import local_ai_hub.repo_knowledge_batch as knowledge_batch
 
@@ -315,10 +314,68 @@ def test_release_update_invokes_project_cutover_once(tmp_path: Path, monkeypatch
     assert (state_dir / "project_state_migration_v1.json").is_file()
 
 
-def test_release_update_surfaces_missing_project_identity_for_old_checkout(tmp_path: Path, monkeypatch):
+def test_release_update_bootstraps_missing_identity_for_old_git_checkout(tmp_path: Path, monkeypatch):
     root, _, state_dir = _setup_migration_env(tmp_path)
     (root / ".local-ai-hub/project.json").unlink()
+    with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as con:
+        con.execute(
+            "UPDATE agent_incidents SET repository_key=? WHERE incident_id='inc-mig-1'",
+            (_incident_scope_key("repository", str(root)),),
+        )
+        con.commit()
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "old checkout"], check=True, capture_output=True)
+    old_clone = tmp_path / "old-clone"
+    subprocess.run(["git", "clone", "--quiet", str(root), str(old_clone)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(old_clone), "remote", "set-url", "origin", "https://example.invalid/org/project.git"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "add", "origin", "https://example.invalid/org/project.git"],
+        check=True,
+    )
     (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
+    from tools import setup as setup_module
+
+    monkeypatch.setattr(setup_module, "SOURCE_ROOT", root)
+    monkeypatch.setattr(setup_module, "run_state_migrations", lambda *args, **kwargs: {"status": "current", "backups": []})
+    monkeypatch.setattr(setup_module, "apply_embedding_reset", lambda *args, **kwargs: {"status": "not_required"})
+    monkeypatch.setattr(setup_module, "discard_stale_migration_artifacts", lambda *args, **kwargs: [])
+
+    result = setup_module.migrate_release_state(state_dir)
+    manifest = json.loads((root / ".local-ai-hub/project.json").read_text(encoding="utf-8"))
+    assert str(uuid.UUID(manifest["project_id"])) == manifest["project_id"]
+    assert manifest["mode"] == "shared"
+    assert result["project_state_migration"]["status"] == "migrated"
+    assert result["project_state_migration"]["records"] == {"task": 1, "memory": 1, "incident": 1}
+    assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
+
+    clone_state = tmp_path / "clone-state"
+    clone_state.mkdir()
+    clone_result = migrate_project_state_on_update(clone_state, old_clone)
+    clone_manifest = json.loads((old_clone / ".local-ai-hub/project.json").read_text(encoding="utf-8"))
+    assert clone_result["status"] == "no_legacy_state"
+    assert clone_manifest["project_id"] == manifest["project_id"]
+
+    repeated = setup_module.migrate_release_state(state_dir)
+    assert repeated["project_state_migration"]["status"] == "already_migrated"
+    assert json.loads((root / ".local-ai-hub/project.json").read_text(encoding="utf-8"))["project_id"] == manifest["project_id"]
+
+
+def test_release_update_rejects_old_checkout_without_stable_origin(tmp_path: Path, monkeypatch):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    (root / ".local-ai-hub/project.json").unlink()
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "old checkout"], check=True, capture_output=True)
     from tools import setup as setup_module
 
     migration_calls = []
@@ -327,9 +384,10 @@ def test_release_update_surfaces_missing_project_identity_for_old_checkout(tmp_p
     monkeypatch.setattr(setup_module, "apply_embedding_reset", lambda *args, **kwargs: {"status": "not_required"})
     monkeypatch.setattr(setup_module, "discard_stale_migration_artifacts", lambda *args, **kwargs: [])
 
-    with pytest.raises(RepoPlanValidationError, match="stable project identity"):
+    with pytest.raises(RepoPlanValidationError, match="credential-free Git origin"):
         setup_module.migrate_release_state(state_dir)
     assert migration_calls == []
+    assert not (root / ".local-ai-hub/project.json").exists()
     assert not (state_dir / "project_state_migration_v1.json").exists()
 
 

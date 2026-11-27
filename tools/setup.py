@@ -357,13 +357,7 @@ def migrate_release_state(state_dir: Path, *, create_backup: bool = True) -> dic
     project_migration: dict[str, Any] | None = None
     project_manifest = SOURCE_ROOT / ".local-ai-hub" / "project.json"
     legacy_db = state_dir / "agent_state.sqlite"
-    if state_dir.is_dir() and legacy_db.exists() and not project_manifest.is_file():
-        from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
-
-        raise RepoPlanValidationError(
-            "A stable project identity is required before migrating legacy project records"
-        )
-    if state_dir.is_dir() and project_manifest.is_file():
+    if state_dir.is_dir() and (project_manifest.is_file() or legacy_db.exists()):
         from local_ai_hub.agent_state_migration import migrate_project_state_on_update
 
         project_migration = migrate_project_state_on_update(state_dir, SOURCE_ROOT)

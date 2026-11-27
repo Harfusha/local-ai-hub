@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Mapping
 import uuid
 
 from .agent_events import AgentEvent
@@ -785,6 +785,7 @@ class TaskPlanSyncMixin:
             latest = self.get(current.task_id)
             if latest is None or self._plan_sync_task_digest(latest) != self._plan_sync_task_digest(current):
                 raise ConcurrentTaskUpdateError(f"Task {current.task_id} changed during transition; reload and retry")
+            self._publish_project_task_update(current, updated, event, root)
             binding = TaskBindingManager(root).get_binding(current.task_id)
             if binding is None and pending.exists():
                 raise ValueError("checkpoint recovery binding is unavailable")
@@ -839,6 +840,86 @@ class TaskPlanSyncMixin:
                 "with the same task and session after resolving the error"
             ) from exc
         return res
+
+    def _publish_project_task_update(
+        self, current: TaskState, updated: TaskState, event: AgentEvent, root: str,
+    ) -> None:
+        """CAS-publish shared task progress before updating its SQLite projection."""
+        project_dir = Path(root) / ".local-ai-hub"
+        if not project_dir.exists():
+            return
+        manifest_path = project_dir / "project.json"
+        if not manifest_path.is_file():
+            raise ValueError("A stable project identity must be bootstrapped before updating a project task")
+
+        from .repo_knowledge import RepoKnowledgeStore
+        from .repo_plan.schema_validation import RepoPlanConflictError
+        from .repo_project_tasks import build_project_task_record, validate_project_task_payload
+
+        store = RepoKnowledgeStore(root)
+        manifest, _ = store.manifest()
+        if manifest["mode"] != "shared":
+            return
+        scope = current.checkpoint.state_data.get("_agent_task_scope", {})
+        if scope.get("project_id") != manifest["project_id"]:
+            raise ValueError("Task project identity no longer matches its repository manifest")
+
+        try:
+            existing = store.get("task", current.task_id, verify_sources=False)
+        except FileNotFoundError as exc:
+            raise RepoPlanConflictError(
+                "Canonical project task is missing; complete the one-time project migration before updating it"
+            ) from exc
+        existing_record = existing["record"]
+        if existing_record.get("project_id") != manifest["project_id"]:
+            raise RepoPlanConflictError("Canonical task belongs to a different project")
+
+        def durable_projection(state: TaskState) -> dict[str, Any]:
+            candidate = build_project_task_record(store, {
+                "task_id": state.task_id,
+                "status": state.status.value,
+                "contract": state.contract.to_dict(),
+                "checkpoint": state.checkpoint.to_dict(),
+            })
+            return candidate["payload"]
+
+        current_payload = durable_projection(current)
+        updated_payload = durable_projection(updated)
+        actual_payload = existing_record.get("payload", {})
+        durable_fields = ("task_id", "status", "contract", "checkpoint")
+
+        def has_payload(payload: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+            return all(payload.get(key) == expected.get(key) for key in durable_fields)
+
+        if has_payload(actual_payload, updated_payload):
+            return
+        if not has_payload(actual_payload, current_payload):
+            raise ConcurrentTaskUpdateError(
+                f"Canonical task {current.task_id} changed in Git; reload before retrying"
+            )
+
+        candidate_record = dict(existing_record)
+        candidate_record["payload"] = {**actual_payload, **updated_payload}
+        validate_project_task_payload(candidate_record)
+        saved = store.save(
+            candidate_record,
+            expected_revision=existing["revision"],
+            owner=event.actor or "agent-task-update",
+            idempotency_key=event.idempotency_key,
+            authorize_write=lambda: True,
+        )
+        if saved.get("success") is True:
+            return
+
+        # A same-checkout agent may have published the identical safe state
+        # after our read. Only that exact result counts as an idempotent retry.
+        try:
+            latest_record = store.get("task", current.task_id, verify_sources=False)["record"]
+        except FileNotFoundError:
+            latest_record = None
+        if latest_record is not None and has_payload(latest_record.get("payload", {}), updated_payload):
+            return
+        raise RepoPlanConflictError("Canonical task update lost its Git revision race")
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (

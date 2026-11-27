@@ -6,6 +6,7 @@ deterministically rebuild project projections.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -21,6 +22,37 @@ from .repo_knowledge import _git_checkout_generation
 from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 AGENT_OS_SUBDIRS = ("tasks", "memory", "incidents", "handoffs", "verification")
+_MAX_PROJECT_RECORD_FILES = 10000
+
+
+def _projection_generation(root: Path) -> tuple[Any, ...]:
+    """Fence projections on both Git checkout identity and current record files."""
+    checkout = _git_checkout_generation(root)
+    digest = hashlib.sha256()
+    count = 0
+    manifest = root / ".local-ai-hub" / "project.json"
+    candidates = [manifest] if manifest.is_file() else []
+    for name in AGENT_OS_SUBDIRS:
+        directory = root / ".local-ai-hub" / "agent-os" / name
+        if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)():
+            raise ValueError(f"Agent OS record directory is a link: {name}")
+        if directory.is_dir():
+            candidates.extend(path for path in directory.iterdir() if path.suffix == ".json")
+    for path in sorted(candidates, key=lambda value: value.relative_to(root).as_posix().casefold()):
+        if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+            raise ValueError(f"Agent OS canonical record is a link: {path.relative_to(root).as_posix()}")
+        stat = path.stat()
+        count += 1
+        if count > _MAX_PROJECT_RECORD_FILES:
+            raise ValueError("Agent OS canonical record inventory exceeds the projection limit")
+        item = (
+            path.relative_to(root).as_posix(), stat.st_size,
+            getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
+            getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000)),
+        )
+        digest.update(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return (*checkout, count, digest.hexdigest()) if checkout is not None else (None, count, digest.hexdigest())
 
 
 def ensure_agent_os_layout(repo_root: Path | str) -> None:
@@ -48,7 +80,7 @@ def rebuild_agent_state_projection(
     """
     root = Path(repo_root).resolve(strict=True)
     try:
-        checkout_generation = _git_checkout_generation(root)
+        checkout_generation = _projection_generation(root)
     except (OSError, ValueError, RuntimeError) as exc:
         return {"success": False, "error": f"Git checkout snapshot is unavailable: {exc}"}
     try:
@@ -388,7 +420,7 @@ def rebuild_agent_state_projection(
                     (str(root), record_kind, record_id),
                 )
 
-        if _git_checkout_generation(root) != checkout_generation:
+        if _projection_generation(root) != checkout_generation:
             con.rollback()
             return {"success": False, "error": "Git checkout changed during projection rebuild"}
         con.execute(
@@ -412,7 +444,7 @@ def ensure_agent_state_projection_current(
     """Refresh a checkout projection when its branch or HEAD changed."""
     root = Path(repo_root).resolve(strict=True)
     try:
-        generation = _git_checkout_generation(root)
+        generation = _projection_generation(root)
     except (OSError, ValueError, RuntimeError) as exc:
         return {"success": False, "error": f"Git checkout snapshot is unavailable: {exc}"}
     metadata_db = Path(state_dir).resolve() / "agent_project_projection.sqlite"
