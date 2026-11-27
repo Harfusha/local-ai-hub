@@ -426,7 +426,7 @@ def consecutive_failed_verifications(
 def evidence_progress(
     *, created_at: float, now: float, active: bool, complete: bool,
     observed_receipt_times: Sequence[float], threshold_seconds: int = 900,
-    repeated_failure_count: int = 0,
+    repeated_failure_count: int = 0, repeated_checkpoint_count: int = 0,
 ) -> dict[str, Any]:
     """Advisory evidence age, not an estimate of effort or proof of stagnation."""
     last_observation = max([created_at, *(t for t in observed_receipt_times if 0 < t <= now)])
@@ -435,11 +435,14 @@ def evidence_progress(
     if active and not complete:
         if repeated_failure_count >= 3:
             status = "repeated_failed_verification"
+        elif repeated_checkpoint_count >= 4:
+            status = "repeated_checkpoint_pattern"
         elif elapsed >= threshold_seconds:
             status = "no_recent_verified_evidence"
     return {
         "status": status,
         **({"consecutive_failed_verifications": repeated_failure_count} if repeated_failure_count else {}),
+        **({"repeated_checkpoints": repeated_checkpoint_count} if repeated_checkpoint_count else {}),
         "seconds_since_verified_observation_or_creation": elapsed,
         "threshold_seconds": threshold_seconds,
         "advisory": True,
@@ -499,6 +502,8 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
         parts.append("Completion not ready; inspect remaining obligations and blockers.")
     if progress.get("status") == "repeated_failed_verification":
         parts.append("Repeated failed verification of the next obligation; diagnose the failure before retrying.")
+    if progress.get("status") == "repeated_checkpoint_pattern":
+        parts.append("Repeated checkpoint pattern without new receipt mapping; diagnose the loop or hand off.")
     if progress.get("status") == "no_recent_verified_evidence":
         parts.append("No recent verified evidence; check for blocked or repetitive work.")
     return "\n".join(parts)
