@@ -134,6 +134,20 @@ pub fn render_plan(ui: &mut egui::Ui, snapshot: &Value) {
     if plan["truncated"].as_bool() == Some(true) {
         ui.label("Scan limit reached. Unscanned tasks cannot be counted as complete.");
     }
+    let aggregate = &plan["obligation_coverage"];
+    if let Some((verified, total)) = progress(&aggregate["counts"]) {
+        ui.label(format!("Observed plan obligations: {verified}/{total} verified"));
+        if aggregate["partial"].as_bool() == Some(true) {
+            ui.small("Partial coverage: not all task obligations are available in this snapshot.");
+        }
+        if let Some(dimensions) = aggregate["dimensions"].as_object() {
+            for (name, counts) in dimensions.iter().take(64) {
+                if let Some((verified, total)) = progress(counts) {
+                    ui.small(format!("{name}: {verified}/{total}"));
+                }
+            }
+        }
+    }
     if let Some(tasks) = plan["tasks"].as_array() {
         for task in tasks.iter().take(64) {
             ui.separator();
@@ -155,6 +169,9 @@ pub fn render_plan(ui: &mut egui::Ui, snapshot: &Value) {
                 count(group, "expected_partitions").unwrap_or(0),
                 count(group, "missing_count").unwrap_or(0),
                 count(group, "duplicate_count").unwrap_or(0)));
+            if let Some(verified) = count(group, "verified_partitions") {
+                ui.small(format!("Verified partitions: {verified}/{}", count(group, "expected_partitions").unwrap_or(0)));
+            }
         }
     }
 }
