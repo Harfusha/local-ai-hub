@@ -92,7 +92,7 @@ Local CLI commit execution persists an intent in the local state directory befor
 
 ## Two-phase local staging
 
-Use `hubctl changes stage-preview --root ... --expected-revision ... --changed-path ...` to calculate the exact prospective tree via an isolated index and object directory. Use the same arguments plus `stage-apply --expected-tree <preview tree> --apply` to publish the staged index. It claims the shared lease, locks the index, verifies the full observed revision before and after constructing the prospective tree, independently checks the selected tree diff, and publishes via an atomic index replacement. It accepts complete tracked paths and bounded observed regular untracked files (explicitly selected); mixed staged/unstaged paths, unrelated staged changes, dependency blockers, filters, installed hooks, sparse/split index and linked worktrees are refused. Preview creates temporary files/locks but no real Git objects or index changes. Apply may create unreachable objects on failure; it does not commit or push. Re-observe the new index and perform required validation before commit. Hunk-level staging is not implemented.
+Use `hubctl changes stage-preview --root ... --expected-revision ... --changed-path ...` to calculate the exact prospective tree via an isolated index and object directory. Use the same arguments plus `stage-apply --expected-tree <preview tree> --apply` to publish the staged index. It claims the shared lease, locks the index, verifies the full observed revision before and after constructing the prospective tree, independently checks the selected tree diff, and publishes via an atomic index replacement. It accepts complete tracked paths and bounded observed regular untracked files (explicitly selected); mixed staged/unstaged paths, unrelated staged changes, dependency blockers, filters, installed hooks, sparse/split index and linked worktrees are refused. Preview creates temporary files/locks but no real Git objects or index changes. Apply may create unreachable objects on failure; it does not commit or push. Re-observe the new index and perform required validation before commit. Hunk-level staging is described in the following section.
 
 ## Partial hunk staging
 
@@ -108,7 +108,7 @@ A JSON array of steps (`{"paths":["file"],"message":"chore: ..."}`) can be passe
 
 Use `changes commit-list --root ...` to recover recent operation IDs when a process exits before returning its result. A new exact-tree verification attempt invalidates any earlier success for the same tree/command/environment and fences concurrent stale completions. Materialization refuses platform-reserved names and case/Unicode-colliding path prefixes.
 
-The Rust desktop now exposes named local staging and staged commit operations and recovery inspection through its one-shot allowlisted bridge. Explicit confirmation is required for mutation; the existing transaction implementations enforce exact identities. Sequence checks and publication are still CLI-only.
+The Rust desktop now exposes named local staging and staged commit operations and recovery inspection through its one-shot allowlisted bridge. Explicit confirmation is required for mutation; the existing transaction implementations enforce exact identities. The desktop additionally exposes reviewed sequence preview and receipt-gated publication, and local atom annotation. Run sequence checks through the trusted local CLI, then supply the exact same verification manifest and preview digest to the desktop. The one-shot desktop bridge does not execute supplied commands or offer an unverified sequence bypass.
 
 ## Local observation and review ledger
 
@@ -119,3 +119,8 @@ Complete worktree summary/delta observations retain bounded atom identities and 
 `python tools/benchmark_git_change_context.py --files 12 --lines 120` creates a disposable synthetic Git fixture and reports estimated request+response tokens for two raw diff reads versus full summary, incremental delta and one targeted raw follow-up. It uses Hub's existing byte-based estimator, reports the signed net difference (including negative results), and never sends data to an external model. This is a transport-size benchmark, not evidence of equivalent review coverage or billed cloud-token savings. CI runs a small fixture and retains its JSON output in the job log.
 
 Local stage and commit transactions now derive the same project coordination namespace as Agent OS before claiming the root lease; changed or unavailable project identity prevents publication. The focused suite includes an actual Git/index/lease integration test for partial staging and unrelated worktree changes.
+
+
+## Isolated staging and CI dependency separation
+
+Selected tracked regular files are explicitly reread in the temporary index before normal staging, including same-size edits whose timestamps did not advance. Publication still requires the exact approved prospective tree and repeated full observation. This does not make Git-visible observations a filesystem-wide snapshot. CI exercises PyTorch and Pillow tests in a dedicated CPU environment; the ordinary dependency matrix reports skips for missing optional libraries instead of failing during collection.
