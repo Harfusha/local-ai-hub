@@ -14,7 +14,7 @@ dependency license/security review remain release gates.
 
 Build from a trusted Hub checkout with Rust stable and platform OpenGL
 libraries: `cargo build --manifest-path desktop/Cargo.toml --release`.
-Run `python tools/hubctl.py desktop` (the legacy `dashboard` CLI alias opens the same native binary), or run `desktop/target/release/local-ai-hub-desktop` directly from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
+Run `python tools/hubctl.py desktop`, or run `desktop/target/release/local-ai-hub-desktop` directly from the Hub root. The retired `dashboard` CLI command is rejected. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
 LOCAL_AI_CONFIG or choose the installation in the UI. Python is still
 required by the existing Hub; it is not used for GUI rendering. The desktop
 executes a fixed adapter script with JSON stdin/stdout and named operations.
@@ -74,7 +74,7 @@ surface or the required future surface, not a completed implementation.
 | `stop` | Stop Hub | Controller present; run focused tests and real CLI/API integration |
 | `restart` | Restart Hub | Controller present; run focused tests and real CLI/API integration |
 | `watch` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
-| `desktop` / legacy `dashboard` | Native launcher | No HTTP URL; verify launch and missing binary error |
+| `desktop` | Native launcher | No HTTP URL; verify launch and missing binary error; retired `dashboard` command rejected |
 | `service-status` | Future typed operational form or documented CLI-only workflow | Incomplete; classify subcommands/options and test parity or document exclusion |
 | `agent-state` | Scoped Tasks/Memory/Incidents reads only | Incomplete; classify subcommands/options and test parity or document exclusion |
 | `cleanup` | Confirmed stale agent state cleanup only | Incomplete; classify subcommands/options and test parity or document exclusion |
