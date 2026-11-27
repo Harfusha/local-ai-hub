@@ -44,13 +44,6 @@ jobs:
       - name: Linux system libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils xauth libgl1-mesa-dri libegl-mesa0
-      - name: Resolve and record dependency lock
-        shell: bash
-        run: |
-          cargo generate-lockfile
-          echo 'BEGIN_DESKTOP_CARGO_LOCK'
-          cat Cargo.lock
-          echo 'END_DESKTOP_CARGO_LOCK'
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Package verified portable desktop
