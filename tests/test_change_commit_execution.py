@@ -347,6 +347,30 @@ def test_historical_context_benchmark_measures_real_commit_without_mutation(tmp_
     assert (tmp_path / "b").read_bytes() == before
 
 
+def test_historical_context_benchmark_pages_large_patch_payload_without_mutation(tmp_path):
+    from tools.benchmark_git_change_context import measure_history
+
+    _fixture(tmp_path)
+    _git(tmp_path, "add", "--", "a", "b")
+    _git(tmp_path, "commit", "-m", "complete benchmark baseline")
+    large = tmp_path / "large.txt"
+    large.write_text("large change " + "x" * (5 * 1024 * 1024), encoding="utf-8")
+    _git(tmp_path, "add", "--", "large.txt")
+    _git(tmp_path, "commit", "-m", "add large fixture")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    index = (tmp_path / ".git" / "index").read_bytes()
+
+    result = measure_history(tmp_path, "HEAD~1", "HEAD")
+
+    assert result["inventory"]["changed_paths"] == 1
+    assert result["inventory"]["observed_paths"] == 1
+    assert result["transport"]["raw_diff_bytes"] > 4 * 1024 * 1024
+    assert result["transport"]["raw_response_pages"] > 1
+    assert result["estimated_tokens"]["raw"] > 0
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert (tmp_path / ".git" / "index").read_bytes() == index
+
+
 def test_sequence_suggestion_is_editable_and_requires_exact_preview(tmp_path):
     from local_ai_hub.change_commit_sequence import suggest_sequence
 

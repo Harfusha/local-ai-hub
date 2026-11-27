@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import subprocess
@@ -18,6 +19,12 @@ from local_ai_hub.change_plan_projection import project_change_plan  # noqa: E40
 from local_ai_hub.split_changes import run_split_changes  # noqa: E402
 from local_ai_hub.token_accounting import tool_request_tokens, tool_response_tokens  # noqa: E402
 from local_ai_hub.process_utils import clean_git_env, run_hidden  # noqa: E402
+
+_MAX_HISTORY_PATHS = 10000
+_MAX_HISTORY_DIFF_BYTES = 64 * 1024 * 1024
+_MAX_RAW_RESPONSE_PAGE_BYTES = 1024 * 1024
+_MAX_RAW_PATH_BATCH_BYTES = 12000
+_MAX_RAW_PATH_BATCH_COUNT = 64
 
 
 class _Cache:
@@ -135,16 +142,69 @@ def measure_history(root: Path, base: str, head: str) -> dict[str, Any]:
         return cp.stdout
 
     flags = ("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none")
-    raw = git(*flags, "--binary", "--full-index", "--no-color", *revisions, "--")
     raw_paths = git(*flags, "--name-only", "-z", *revisions, "--")
-    expected = {os.fsdecode(path) for path in raw_paths.split(b"\0") if path}
+    expected_paths = sorted(os.fsdecode(path) for path in raw_paths.split(b"\0") if path)
+    if len(expected_paths) > _MAX_HISTORY_PATHS:
+        raise ValueError("Historical Git comparison exceeds the 10000-path benchmark limit")
+    expected = set(expected_paths)
     observed = {path for group in result["clusters"] for path in group["files"]}
     if observed != expected:
         raise ValueError("Historical plan inventory disagrees with independent Git path inventory")
-    if len(result["clusters"]) > 256:
-        raise ValueError("Historical group count exceeds benchmark budget")
-    raw_cost = tool_request_tokens("git_diff", {"root": str(root), "rev1": revisions[0], "rev2": revisions[1]})
-    raw_cost += tool_response_tokens({"diff": raw.decode("utf-8", errors="replace")})
+    if len(result["clusters"]) > _MAX_HISTORY_PATHS:
+        raise ValueError("Historical group count exceeds the 10000-group benchmark limit")
+
+    raw_cost = 0
+    raw_diff_bytes = 0
+    raw_diff_batches = 0
+    raw_response_pages = 0
+
+    def measure_raw_batch(paths: list[str], output: Path) -> None:
+        nonlocal raw_cost, raw_diff_bytes, raw_diff_batches, raw_response_pages
+        output.unlink(missing_ok=True)
+        git("--literal-pathspecs", *flags, "--binary", "--full-index", "--no-color",
+            "--output=" + str(output), *revisions, "--", *paths)
+        if not output.is_file():
+            raise ValueError("Historical Git comparison did not write a patch batch")
+        size = output.stat().st_size
+        if raw_diff_bytes + size > _MAX_HISTORY_DIFF_BYTES:
+            raise ValueError("Historical Git comparison exceeds the 64 MiB benchmark diff limit")
+        raw_diff_bytes += size
+        raw_diff_batches += 1
+        request = {"root": str(root), "rev1": revisions[0], "rev2": revisions[1], "paths": paths}
+        raw_cost += tool_request_tokens("git_diff", request)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        with output.open("rb") as stream:
+            while block := stream.read(_MAX_RAW_RESPONSE_PAGE_BYTES):
+                text = decoder.decode(block)
+                raw_cost += tool_response_tokens({"diff": text})
+                raw_response_pages += 1
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                raw_cost += tool_response_tokens({"diff": tail})
+                raw_response_pages += 1
+
+    with tempfile.TemporaryDirectory(prefix="hub-change-history-benchmark-") as tmp:
+        output = Path(tmp) / "patch.diff"
+        batches: list[list[str]] = []
+        current: list[str] = []
+        current_bytes = 0
+        for path in expected_paths:
+            path_bytes = len(os.fsencode(path)) + 1
+            if path_bytes > _MAX_RAW_PATH_BATCH_BYTES:
+                raise ValueError("Historical Git path exceeds the 12000-byte benchmark argument limit")
+            if current and (current_bytes + path_bytes > _MAX_RAW_PATH_BATCH_BYTES
+                            or len(current) >= _MAX_RAW_PATH_BATCH_COUNT):
+                batches.append(current)
+                current, current_bytes = [], 0
+            current.append(path)
+            current_bytes += path_bytes
+        if current:
+            batches.append(current)
+        if not batches:
+            batches.append([])
+        for batch in batches:
+            measure_raw_batch(batch, output)
+
     compact_cost = 0
     visible_paths = set()
     omitted_paths = 0
@@ -163,12 +223,14 @@ def measure_history(root: Path, base: str, head: str) -> dict[str, Any]:
         "workload": "real_committed_range", "comparison": comparison,
         "estimated_tokens": {"raw": raw_cost, "compact_all_pages": compact_cost},
         "estimated_net_difference": raw_cost - compact_cost,
+        "transport": {"raw_diff_bytes": raw_diff_bytes, "raw_diff_batches": raw_diff_batches,
+                      "raw_response_pages": raw_response_pages},
         "inventory": {"changed_paths": len(expected), "observed_paths": len(observed),
                       "explicitly_listed_paths": len(visible_paths), "omitted_paths": omitted_paths,
                       "patch_coverage_complete": result["patch_coverage_complete"],
                       "semantic_observed_scopes": sum(g["semantic_observed_scopes"] for g in result["clusters"])},
-        "method": "Hub JSON transport estimator on actual committed patches and paginated metadata",
-        "limitations": "No cloud calls, billing, model accuracy or review completeness measured; omitted paths require additional inspection.",
+        "method": "Hub JSON transport estimator on actual committed patches, bounded raw path batches, and paginated metadata",
+        "limitations": "No cloud calls, billing, model accuracy or review completeness measured; token costs are estimates. Limits: 10000 paths, 64 MiB total diff bytes, 12000 encoded bytes per path batch argument, and 1 MiB per response page.",
     }
 
 
