@@ -127,6 +127,10 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
     edges: dict[str, set[str]] = {group["group_key"]: set() for group in groups}
     evidence: dict[str, list[dict[str, str]]] = {key: [] for key in edges}
     ambiguous = 0
+    removed_paths = {change["path"] for group in groups for change in group["changes"]
+                     if change.get("status") in {"D", "D ", " D"}}
+    removal_edges = 0
+    unresolved_removed_imports = 0
     for group in groups:
         key = group["group_key"]
         for change in group["changes"]:
@@ -147,11 +151,40 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                     other = owner[target]
                     if other == key:
                         continue
+                    if target in removed_paths:
+                        unresolved_removed_imports += 1
+                        group["risks"] = sorted(set(group["risks"]) | {"import_candidate_points_to_removed_path"})
                     edges[key].add(other)
                     if len(evidence[key]) < 16:
                         item = {"source": path, "target": target, "kind": "import_candidate"}
                         if item not in evidence[key]:
                             evidence[key].append(item)
+                semantic = atom.get("semantic", {})
+                # For a removed module, consumers must drop their imports
+                # before the provider disappears. Only reverse the edge when
+                # both sides of the import observation are available, and the
+                # file has one observed scope (mixed stages are ambiguous).
+                if (len(change.get("atoms", [])) != 1 or semantic.get("status") != "observed"
+                        or semantic.get("imports_before_truncated") is not False
+                        or semantic.get("imports_truncated") is not False
+                        or suffix in {".php", ".ctp"}):
+                    continue
+                removed_imports = set(semantic.get("imports_before", [])) - set(semantic.get("imports_after", []))
+                for name in sorted(removed_imports):
+                    matches = (_python_module_paths(path, name, available) if suffix == ".py"
+                               else _js_module_paths(path, name, available))
+                    if len(matches) != 1:
+                        continue
+                    target = next(iter(matches))
+                    other = owner[target]
+                    if target not in removed_paths or other == key:
+                        continue
+                    if key not in edges[other]:
+                        removal_edges += 1
+                    edges[other].add(key)
+                    item = {"source": target, "target": path, "kind": "import_removal_candidate"}
+                    if len(evidence[other]) < 16 and item not in evidence[other]:
+                        evidence[other].append(item)
     remaining = {key: set(deps) for key, deps in edges.items()}
     order = []
     while remaining:
@@ -179,5 +212,7 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
         "candidate_commit_units": units,
         "cyclic_unit_count": sum(len(unit) > 1 for unit in units),
         "ambiguous_import_count": ambiguous,
+        "removed_import_ordering_edges": removal_edges,
+        "unresolved_removed_import_count": unresolved_removed_imports,
         "dependencies_verified": False,
     }
