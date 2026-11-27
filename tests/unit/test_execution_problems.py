@@ -152,3 +152,54 @@ def test_execution_problem_dispositions_never_waive_evidence():
                                  actor="reviewer", now=15)
     assert len(resumed["issue"]["dispositions"]) == 3
     assert project_problems(resumed, satisfied=(), receipts={})["deferred_open"] == 0
+
+
+def test_related_execution_problem_leads_require_explicit_publication_and_checkout_scope(tmp_path):
+    from local_ai_hub.execution_problems import PROBLEM_STATE_KEY
+    from local_ai_hub.execution_related import related_problem_leads
+
+    identity = {"repository_id": "repo", "clone_id": "clone", "worktree_id": "tree", "branch": "main"}
+
+    def task(task_id, *, root=tmp_path, context=None, registry=None):
+        return SimpleNamespace(
+            task_id=task_id, context=SimpleNamespace(**(context or identity)),
+            contract=SimpleNamespace(acceptance_criteria=("review",)),
+            checkpoint=SimpleNamespace(state_data={
+                "_agent_task_scope": {"version": 2, "repo_root": str(root)},
+                PROBLEM_STATE_KEY: registry or {},
+            }),
+        )
+
+    base = {"id": "issue", "title": "known issue", "criterion": "review",
+            "evidence_ids": ["private-artifact"]}
+    shared = record_problem({}, {**base, "share_repository": True}, criteria=("review",),
+                            receipt_ids={}, reporter="agent", now=1)
+    private = record_problem({}, base, criteria=("review",),
+                             receipt_ids={}, reporter="agent", now=1)
+    other = tmp_path / "other"
+    other.mkdir()
+    current = task("current")
+    candidates = [
+        current, task("private", registry=private),
+        task("foreign-checkout", root=other, registry=shared),
+        task("foreign-branch", context={**identity, "branch": "dev"}, registry=shared),
+        task("published", registry=shared),
+        task("duplicate", registry=shared),
+    ]
+
+    def list_tasks(**kwargs):
+        assert kwargs["repo_root"] == str(tmp_path)
+        assert kwargs["limit"] == 32
+        return SimpleNamespace(tasks=tuple(candidates))
+
+    store = SimpleNamespace(list_tasks=list_tasks)
+    request = SimpleNamespace(root=str(tmp_path), scoped_task_only=False, **identity)
+    assert related_problem_leads(store, current, request) == [{
+        "source_task_id": "published", "problem_id": "issue", "title": "known issue",
+        "criterion": "review", "reported_at": 1.0, "status": "historical_unverified",
+    }]
+    request.scoped_task_only = True
+    assert related_problem_leads(store, current, request) == []
+    request.scoped_task_only = False
+    request.repository_id = "foreign"
+    assert related_problem_leads(store, current, request) == []
