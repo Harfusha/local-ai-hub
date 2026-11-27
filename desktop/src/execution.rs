@@ -148,6 +148,18 @@ pub fn render_plan(ui: &mut egui::Ui, snapshot: &Value) {
             }
         }
     }
+    let referenced = &plan["referenced_dependencies"];
+    if let (Some(verified), Some(scanned)) = (count(referenced, "verified_tasks"), count(referenced, "scanned_tasks")) {
+        ui.label(format!("Referenced plan tasks: {verified}/{scanned} verified"));
+        if referenced["truncated"].as_bool() == Some(true) {
+            ui.small("Referenced dependency scan incomplete; next task is not authorized by this preview.");
+        }
+        if let Some(rows) = referenced["unresolved_preview"].as_array() {
+            for row in rows.iter().take(12) {
+                ui.small(format!("Unresolved: {}/{}", label(row, "plan_id"), label(row, "task_id")));
+            }
+        }
+    }
     let actionable = &plan["actionability"];
     if let Some(next) = actionable["next_plan_task"].as_object() {
         if let Some(task_id) = next.get("plan_task_id").and_then(Value::as_str) {
