@@ -823,12 +823,43 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                             {"root": explicit_root(args.get("root")), "action": action,
                              **({"purge_data": purge} if action == "unregister" else {})})
     if op == "memory_find":
+        from local_ai_hub.agent_identity import MemoryStatus
         payload = memory_scope_fields(args)
         query = args.get("query", "")
-        if not isinstance(query, str) or len(query) > 2000:
+        key = args.get("key", "")
+        status = args.get("status", "")
+        limit = args.get("limit", 100)
+        if not isinstance(query, str) or len(query) > 2000 or "\x00" in query:
             raise ValueError("Invalid memory search")
-        payload.update({"action": "find", "query": query, "limit": 100})
+        if not isinstance(key, str) or len(key) > 200 or "\x00" in key:
+            raise ValueError("Invalid memory key filter")
+        if type(status) is not str or (status and status not in {item.value for item in MemoryStatus}):
+            raise ValueError("Invalid memory status filter")
+        if type(limit) is not int or limit not in (25, 50, 100):
+            raise ValueError("Invalid memory result limit")
+        payload.update({"action": "find", "query": query, "limit": limit})
+        if key:
+            payload["key"] = key
+        if status:
+            payload["status"] = status
         return checked_post(control, "/api/agent-state/memory", payload)
+    if op in {"memory_get", "memory_quarantine"}:
+        payload = memory_scope_fields(args)
+        record_id = text_field(args, "record_id", 200)
+        payload.update({"record_id": record_id, "action": "get"})
+        if op == "memory_quarantine":
+            if args.get("confirmed") is not True:
+                raise ValueError("Explicit confirmation required")
+            if payload["scope"] == "worktree":
+                raise ValueError("Worktree mutation requires independently verified scope")
+            payload.update({"action": "quarantine", "reason": text_field(args, "reason", 4096)})
+        result = checked_post(control, "/api/agent-state/memory", payload)
+        record = result.get("record")
+        if (result.get("success") is not True or not isinstance(record, dict)
+                or record.get("record_id") != record_id or record.get("scope") != payload["scope"]
+                or (op == "memory_quarantine" and record.get("status") != "quarantined")):
+            raise RuntimeError("Memory operation not confirmed for exact scoped record")
+        return result
     if op == "task_gate":
         return checked_post(control, "/api/agent-state/verification", {
             "root": explicit_root(args.get("root")), "action": "completion",
