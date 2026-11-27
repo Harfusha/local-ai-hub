@@ -65,7 +65,7 @@
         "Routing minimizes repeated reads and token use through indexed evidence, bounded artifact slices, compact responses, reuse keys, and no redundant retrieval; it respects latency and preprocessing rules.",
         "Semantic calls remain advisory where required; deterministic facts, tests, builds, security, permissions, user approval, task identity, and model capability/quality gates remain authoritative."
       ],
-      "blocker": "Current OpenCode checks cover the shared repository-scoped proxy Laya route and deterministic model selection only; live provider-specific Codex/Antigravity routing and production OpenCode process integration remain unverified. Do not claim this task complete.",
+      "blocker": "Current parameterized provider tests cover the shared repository-scoped route and OpenCode auto gateway using mocks; they do not prove live Codex or Antigravity routing. Production OpenCode launcher remains fail-closed because filesystem/network containment, process cleanup, and GPU admission are not certified. Do not close this task.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -137,7 +137,7 @@
       "depends_on": [],
       "description": "Checkpoint 2026-11-25: Gemini CLI workspace root was trusted with explicit user approval; gemini mcp list from Hub root now reports local-ai Connected. Cursor installed native plugin refreshed to 8.1.0 and its live MCP wrapper completed initialize/tools/list with 7 tools. Handshake verifier now compares Antigravity/Cursor native plugin versions against the source release; stale Cursor 6.1.0 regression was observed failing before the fix. Focused provider/setup suite: 194 passed; release_check --allow-installed passed; full provider verifier reports all configured provider bundles current, Codex runtime current, Hub ready, and stdio handshake 7/7. GPU reservation unknown fence was released through the authorized endpoint and rechecked free. Remaining work: investigate unattributed admin.action.result 500 telemetry; do not claim active app windows reloaded from wrapper evidence. Checkpoint 2026-11-25 21:42 CET: durable inventory recovery guidance now lives in tracked src/local_ai_hub/generator.py; provider bundle parity and runtime/release version consistency are regression-tested. Bumped package/runtime/manifests/docs to 8.2.1, refreshed Gemini extension, Cursor, and Antigravity/Multigravity profiles, restarted Hub; health and doctor both report 8.2.1. Fifteen source/installed MCP launchers plus four Multigravity profiles completed initialize/tools/list with 7 tools. Focused suites passed: 251 + 125; release_check, compileall and diff-check passed. Codex global skill and active cached launcher work, but plugin cache still reports 8.2.0: plugin inventory exceeded 30s and official cache refresh failed Access denied under running Codex app. Historical 8 admin.action.result 500s remain unattributed; current 8.2.1 runtime has no failures in its active preprocessing/scheduler status. Continue only after safe Codex host cache refresh and attributable historical failure evidence.",
       "kind": "code",
-      "next_action": "Verify provider-specific Laya route decisions and host runtime evidence; keep OpenCode launcher fail-closed until AppContainer process, named-pipe ownership, filesystem/network boundary, and cleanup are certified.",
+      "next_action": "Verify live Codex/Antigravity provider route behavior and production OpenCode containment; attach command receipts only for criteria proven by fresh evidence.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
@@ -170,7 +170,7 @@
         "Focused tests cover changed config, routing, lifecycle/recovery, receipts, GPU fencing and sandbox behavior; final acceptance separately records a real local-model and GPU run, live client handshake, installation state, and sandbox evidence."
       ],
       "accountable_role": "primary_agent",
-      "blocker": "Current default OpenCode profile still lacks a Hub native MCP entry, provider and default local model; the running service/config were preserved. Prior isolated OpenCode 2.2.5 evidence includes a real Gemma 4 12B Code Mode execute with successful Hub repository search (21 results, req_e988cc7121ac), but exact symbol lookup and task/checkpoint/resume/cancel/receipt flow remain unverified. Current readiness: Hub/Ollama online, no resident model, reservation free, 11,738 MiB free, but Hub VRAM telemetry is stale/unknown (sample_pending), so 128K/Q4 KV inference is not admitted. Focused source checks passed 167 Python tests (1 platform skip) and 14 Node tests. AppContainer + pipe + fake-model internal transport tests pass, but production snapshot/path-race/cleanup and atomic cross-process GPU fencing are not closed; managed launcher remains disabled.",
+      "blocker": "AppContainer helper tests run actual OpenCode 2.2.5 through the named-pipe bridge and verify secret/stage cleanup, but tools/opencode_local.py remains a fail-closed stub. No managed workspace snapshot/copyback with conflict/path-race controls, production launcher ownership, or atomic OpenCode GPU reservation lifecycle is certified. Live model readiness remains blocked by unknown VRAM pressure; no live coding/model acceptance is proven.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -191,7 +191,7 @@
       "depends_on": [],
       "description": "Dodat úplnou, nativní a bezpečnostně ověřenou integraci OpenCode s Local AI Hubem podle Superpowers specifikace a plánu; cílový model Gemma 4 12B Q4_K_M, runtime context 128k a Q4 KV pouze při živém potvrzení.",
       "kind": "code",
-      "next_action": "Resolve Hub MCP visibility in the generated isolated profile and prove current OpenCode tool catalog plus a read-only indexed Hub action; then wire the isolated managed profile install with exact rollback. Implement and verify task lifecycle/checkpoint/recovery/receipt paths and cross-process GPU admission before enabling launch. Re-sample live telemetry only for the inference decision; run the Gemma 128K/Q4 KV session only after fresh Hub admission and VRAM qualification. Keep user profile and service untouched.",
+      "next_action": "Implement a production-owned isolated profile and workspace snapshot lifecycle with safe conflict-aware result transfer; wire launcher-owned bridge/process cleanup and GPU reservation integration. Keep launch disabled until adversarial containment and actual launcher E2E pass. Then verify plugin/MCP/task receipt flow and run local model acceptance only after fresh VRAM admission.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-opencode-max-integration.md",

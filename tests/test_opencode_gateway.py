@@ -100,6 +100,61 @@ def test_openai_sse_can_emit_final_usage_chunk():
     assert output[-1] == b"data: [DONE]\n\n"
 
 
+def test_opencode_auto_model_routes_with_authorized_repository_scope(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub.http_routes_post import HTTPPostRoutesMixin
+    from local_ai_hub.http_server_proxy import services_module
+    from local_ai_hub.services import LocalAIServices
+
+    root = str(tmp_path.resolve())
+    config = {"models": {"general": "base-model", "opencode": "base-model"}}
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = config
+    service.model_policy = SimpleNamespace(apply_payload=lambda _model, payload, **_kwargs: (payload, None))
+    service.semantic_cache = SimpleNamespace(enabled=False)
+    service.router = SimpleNamespace(classify=lambda *_args: {"task_type": "code", "complexity": "fast"})
+    service._resolve_local_task_project = lambda *_args: (None, None, None, None)
+    service.scheduled_models = []
+    service._request_laya_model_route = lambda _args, route, *_rest, **_kwargs: (
+        route.update(model="smart-model") or "smart"
+    )
+    service.runtime = SimpleNamespace(
+        installed_models=lambda: ["base-model", "smart-model"],
+        request=lambda _endpoint, payload, **_kwargs: {
+            "model": payload["model"], "done": True,
+            "message": {"role": "assistant", "content": "routed"},
+        },
+    )
+    service.generation_cache = SimpleNamespace(
+        get_or_compute=lambda _key, compute: (compute(), False, False),
+    )
+    service.scheduler = SimpleNamespace(
+        submit=lambda model, *, execute, **_kwargs: (service.scheduled_models.append(model), execute())[1],
+    )
+    app = SimpleNamespace(config=config, runtime=service.runtime, services=service)
+    monkeypatch.setattr(services_module, "APP", app)
+
+    class Handler(HTTPPostRoutesMixin):
+        response = None
+
+        def _bind_repository_root_payload(self, payload):
+            return payload.get("root") == root
+
+        def _send(self, status, body, **_kwargs):
+            self.response = (status, body)
+
+    handler = Handler()
+    handler._handle_post_opencode_gateway({
+        "root": root,
+        "model": "auto",
+        "messages": [{"role": "user", "content": "Explain this repository module"}],
+    })
+
+    assert handler.response[0] == 200
+    assert service.scheduled_models == ["smart-model"]
+
+
 @pytest.mark.parametrize("payload", [
     {"model": "cloud/model", "messages": [{"role": "user", "content": "hi"}]},
     {"model": "gemma4:12b-128k", "messages": [{"role": "user", "content": "hi"}], "stream": "yes"},

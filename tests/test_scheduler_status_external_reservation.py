@@ -1,9 +1,12 @@
 import multiprocessing
+import subprocess
+import sys
 
 import pytest
 
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+from local_ai_hub.process_utils import process_is_alive
 from local_ai_hub.scheduler import AffinityScheduler, Job
 
 
@@ -53,6 +56,35 @@ def test_scheduler_reaps_only_confirmed_dead_opencode_owner(tmp_path, monkeypatc
         scheduler.status()
 
         assert (store.read() is None) is (process_alive is False)
+    finally:
+        if reservation is not None:
+            current = store.read()
+            if current is not None:
+                store.release(current["token_digest"], current["generation"])
+        scheduler.close()
+
+
+def test_scheduler_reaps_opencode_reservation_for_a_process_that_really_exited(tmp_path):
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    owner_pid = child.pid
+    assert child.wait(timeout=10) == 0
+    assert process_is_alive(owner_pid) is False
+
+    scheduler = AffinityScheduler(object(), {"server": {"state_dir": str(tmp_path)}})
+    store = scheduler._external_gpu_store
+    reservation = None
+    try:
+        reservation = store.reserve(
+            "d" * 64,
+            owner=f"opencode:{owner_pid}:session-real-exit",
+            owner_vram_budget_bytes=4 * 1024**3,
+        )
+        assert reservation is not None
+
+        scheduler.status()
+
+        assert store.read() is None
+        assert not store.path.exists()
     finally:
         if reservation is not None:
             current = store.read()

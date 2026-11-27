@@ -850,6 +850,33 @@ def test_managed_session_stops_owned_pipe_listener_before_profile_cleanup():
             session.close()
 
 
+def test_managed_session_close_invalidates_credentials_and_removes_stage():
+    from local_ai_hub.opencode_appcontainer import ManagedAppContainerProcessSession
+
+    session = ManagedAppContainerProcessSession.create()
+    stage = session.stage
+    profile = session.profile
+    session.start_pipe_listener(hub_port=1, hub_api_token="host-only-test-token")
+    listener = session.pipe_listener
+    assert listener is not None
+    temporary_descriptor = stage / ("bridge-" + session.session_id + ".port")
+    temporary_descriptor.write_text("12345", encoding="ascii")
+
+    session.close()
+
+    assert session.state == "closed"
+    assert session.secret == b""
+    assert listener.secret == b""
+    assert listener.hub_api_token is None
+    assert session.pipe_listener is None
+    assert session.pipe_thread is None
+    assert session.stage_handle is None
+    assert session.job_handle == 0
+    assert profile._closed
+    assert not temporary_descriptor.exists()
+    assert not stage.exists()
+
+
 def test_managed_session_bridge_and_opencode_profile_boundary():
     from local_ai_hub.opencode_appcontainer import ManagedAppContainerProcessSession
 
@@ -898,9 +925,13 @@ def test_managed_session_bridge_and_opencode_profile_boundary():
     session = None
     try:
         with tempfile.TemporaryDirectory(prefix="lah-opencode-managed-roundtrip-") as temp_root:
+            project_root = Path(temp_root) / "authorized-project"
+            project_root.mkdir()
             session = ManagedAppContainerProcessSession.create()
             stage = session.stage
-            session.start_pipe_listener(hub_port=hub.server_port, io_timeout=10)
+            session.start_pipe_listener(
+                hub_port=hub.server_port, repository_root=str(project_root.resolve()), io_timeout=10,
+            )
             node = shutil.which("node")
             assert node
             bridge_source = Path(__file__).resolve().parents[1] / "tools" / "opencode_pipe_client.cjs"
@@ -942,9 +973,9 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
                 f"request child failed; listener={session.pipe_error}; Hub={observed}"
             )
             assert bridge_pid in [child.pid for child in session.processes]
-            assert observed == {
-                "path": "/api/chat/completions", "body": b"{}", "response_sent": True,
-            }
+            assert observed["path"] == "/api/chat/completions"
+            assert json.loads(observed["body"]) == {"root": str(project_root.resolve())}
+            assert observed["response_sent"] is True
 
             opencode = shutil.which("opencode") or (
                 r"C:\Users\Adam\AppData\Local\Programs\OpenCode-LocalAIHub\2.2.5\opencode.exe"
@@ -960,15 +991,15 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
                         "package": "@opencode/ai/providers/openai-compatible",
                         "settings": {"baseURL": f"http://127.0.0.1:{bridge_port}/api"},
                         "headers": {"X-LocalAI-Agent": "opencode"},
-                        "models": {"fake-model": {
-                            "name": "Fake model",
-                            "modelID": "fake-model",
+                        "models": {"auto": {
+                            "name": "Local AI Hub Auto",
+                            "modelID": "auto",
                             "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
                             "limit": {"context": 32768, "output": 1024},
                         }},
                     },
                 },
-                "model": "local-ai-hub/fake-model",
+                "model": "local-ai-hub/auto",
             }), encoding="utf-8")
             opencode_environment = {
                 **environment,
@@ -988,7 +1019,7 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
             observed.clear()
             opencode_pid = session.launch(str(staged_opencode), [
                 "--print-logs", "--log-level", "error", "run", "--standalone",
-                "--model", "local-ai-hub/fake-model", "--format", "json",
+                "--model", "local-ai-hub/auto", "--format", "json",
                 "respond with exactly managed ok",
             ], opencode_environment)
             try:
@@ -1002,10 +1033,11 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
                 summary = {
                     "path": observed.get("path"), "model": request.get("model"),
                     "stream": request.get("stream"), "prompt_present": prompt_present,
-                    "response_sent": observed.get("response_sent"),
+                    "root": request.get("root"), "response_sent": observed.get("response_sent"),
                 }
                 assert observed.get("path") == "/api/chat/completions"
-                assert request["model"] == "fake-model"
+                assert request["model"] == "auto"
+                assert request.get("root") == str(project_root.resolve())
                 assert prompt_present, f"OpenCode lost the test prompt; request={summary}"
                 assert observed.get("response_sent") is True, "fake Hub response was not fully written"
                 assert session.state == "cancelled" and not session.processes
@@ -1018,7 +1050,8 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
                 assert opencode_exit == 0, f"OpenCode failed after the fake Hub response; {summary}"
                 assert observed.get("path") == "/api/chat/completions"
                 request = json.loads(observed["body"])
-                assert request["model"] == "fake-model"
+                assert request["model"] == "auto"
+                assert request.get("root") == str(project_root.resolve())
                 assert any("respond with exactly managed ok" in str(message.get("content"))
                            for message in request["messages"])
             staged_path = session.stage

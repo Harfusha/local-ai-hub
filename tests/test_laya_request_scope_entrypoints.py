@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from local_ai_hub.services import LocalAIServices
 
 
@@ -96,7 +98,8 @@ def _direct_proxy_service():
     return service
 
 
-def test_repository_scoped_chat_uses_taskless_laya_model_route(tmp_path):
+@pytest.mark.parametrize("source", ["proxy:opencode", "proxy:codex", "proxy:antigravity"])
+def test_repository_scoped_chat_uses_taskless_laya_model_route_for_provider(source, tmp_path):
     service = _direct_proxy_service()
     service.router = SimpleNamespace(classify=lambda *_args: {"task_type": "code", "complexity": "fast"})
     service._resolve_local_task_project = lambda *_args: (None, None, None, None)
@@ -111,7 +114,7 @@ def test_repository_scoped_chat_uses_taskless_laya_model_route(tmp_path):
     result = service.proxy_request(
         "/api/chat",
         {"messages": [{"role": "user", "content": "Explain this repository module"}]},
-        source="proxy:/api/chat",
+        source=source,
         repository_root=str(tmp_path),
     )
 

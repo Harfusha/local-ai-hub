@@ -547,6 +547,7 @@ class ManagedAppContainerProcessSession:
             raise RuntimeError("pipe listener exited during startup") from self.pipe_error
 
     def start_pipe_listener(self, *, hub_port: int, hub_api_token: str | None = None,
+                            repository_root: str | None = None,
                             io_timeout: float = 120.0, ready_timeout: float = 5.0) -> None:
         """Create and attach the listener with session-owned identity and secret."""
         from .opencode_pipe_broker import WindowsOpenCodePipeListener
@@ -558,6 +559,7 @@ class ManagedAppContainerProcessSession:
             secret=self.secret,
             hub_port=hub_port,
             hub_api_token=hub_api_token,
+            repository_root=repository_root,
             io_timeout=io_timeout,
         )
         self.attach_pipe_listener(listener, ready_timeout=ready_timeout)
@@ -565,11 +567,14 @@ class ManagedAppContainerProcessSession:
     def _stop_pipe_listener(self) -> None:
         if self.pipe_thread is None:
             return
-        self.pipe_listener.stop()
+        listener = self.pipe_listener
+        listener.stop()
         self.pipe_thread.join(float(self.pipe_listener.io_timeout) + 1)
         if self.pipe_thread.is_alive():
             self.state = "cleanup_failed"
             raise AppContainerCleanupError("pipe listener cleanup could not be confirmed")
+        listener.secret = b""
+        listener.hub_api_token = None
         self.pipe_listener = None
         self.pipe_thread = None
 
@@ -626,6 +631,7 @@ class ManagedAppContainerProcessSession:
         if self.state == "cleanup_failed":
             raise AppContainerCleanupError("session cleanup state is unknown; profile retained")
         self._stop_pipe_listener()
+        self.secret = b""
         if self.job_handle:
             if not wait_job_object_empty(self.job_handle, timeout_ms=5000) or not close_job_object(self.job_handle):
                 self.state = "cleanup_failed"

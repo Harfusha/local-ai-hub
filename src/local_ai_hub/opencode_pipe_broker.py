@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hmac
 import http.client
+import json
+import ntpath
 import re
 import time
 import threading
@@ -14,6 +16,20 @@ SESSION_SECRET_BYTES = 32
 MAX_HTTP_HEADER_BYTES = 16_384
 MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024
 MAX_HUB_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
+def _is_local_absolute_windows_path(value: str) -> bool:
+    if not ntpath.isabs(value):
+        return False
+    drive, tail = ntpath.splitdrive(value)
+    return (
+        len(drive) == 2
+        and drive[0].isascii()
+        and drive[0].isalpha()
+        and drive[1] == ":"
+        and tail.startswith(("\\", "/"))
+        and ":" not in tail
+    )
 _APPCONTAINER_SID = re.compile(r"S-1-15-2-(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*))*\Z")
 _ANY_SID = re.compile(r"S-1-(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*))*\Z")
 _LOGON_SID = re.compile(r"S-1-5-5-(?:0|[1-9][0-9]*)-(?:0|[1-9][0-9]*)\Z")
@@ -172,6 +188,7 @@ def forward_hub_chat(
     *,
     hub_port: int,
     api_token: str | None = None,
+    repository_root: str | None = None,
     timeout: float = 120.0,
 ) -> tuple[int, str, bytes]:
     """Forward JSON to the fixed loopback Hub endpoint with bounded output.
@@ -190,8 +207,29 @@ def forward_hub_chat(
         or any(ord(char) < 0x21 or ord(char) > 0x7E for char in api_token)
     ):
         raise ValueError("Hub API token is invalid")
+    if repository_root is not None and (
+        not isinstance(repository_root, str)
+        or not repository_root
+        or repository_root != repository_root.strip()
+        or "\x00" in repository_root
+        or len(repository_root) > 4096
+        or not _is_local_absolute_windows_path(repository_root)
+    ):
+        raise ValueError("managed repository root must be a local absolute Windows path")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 600:
         raise ValueError("Hub timeout must be greater than 0 and at most 600 seconds")
+
+    if repository_root is not None:
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("managed OpenCode request body must be JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("managed OpenCode request body must be a JSON object")
+        payload["root"] = repository_root
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(body) > MAX_HTTP_BODY_BYTES:
+            raise ValueError("Hub request body exceeds the permitted length")
 
     headers = {
         "Content-Type": "application/json",
@@ -356,6 +394,7 @@ class WindowsOpenCodePipeListener:
         secret: bytes,
         hub_port: int,
         hub_api_token: str | None = None,
+        repository_root: str | None = None,
         io_timeout: float = 120.0,
     ) -> None:
         self.session_id = session_id
@@ -376,10 +415,20 @@ class WindowsOpenCodePipeListener:
             or any(ord(char) < 0x21 or ord(char) > 0x7E for char in hub_api_token)
         ):
             raise ValueError("Hub API token is invalid")
+        if repository_root is not None and (
+            not isinstance(repository_root, str)
+            or not repository_root
+            or repository_root != repository_root.strip()
+            or "\x00" in repository_root
+            or len(repository_root) > 4096
+            or not _is_local_absolute_windows_path(repository_root)
+        ):
+            raise ValueError("managed repository root must be a local absolute Windows path")
         self.windows_session_id = windows_session_id
         self.secret = bytes(secret)
         self.hub_port = hub_port
         self.hub_api_token = hub_api_token
+        self.repository_root = repository_root
         self.io_timeout = float(io_timeout)
         self.pipe_ready = threading.Event()
         self._stop_event = threading.Event()
@@ -592,7 +641,8 @@ class WindowsOpenCodePipeListener:
             request = _read_pipe_http_request(read_some, read_exact)
             body = parse_hub_chat_request(request)
             status, content_type, response_body = forward_hub_chat(
-                body, hub_port=self.hub_port, api_token=self.hub_api_token, timeout=self.io_timeout
+                body, hub_port=self.hub_port, api_token=self.hub_api_token,
+                repository_root=self.repository_root, timeout=self.io_timeout
             )
             for frame in frame_http_response(status, content_type, response_body):
                 write_all(frame)

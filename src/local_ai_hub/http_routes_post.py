@@ -12,12 +12,26 @@ class HTTPPostRoutesMixin:
         from .opencode_gateway import openai_sse, to_openai_completion, to_ollama_chat
 
         app = services_module.APP
+        repository_root = None
+        if isinstance(payload, dict) and "root" in payload:
+            payload = dict(payload)
+            root_payload = {"root": payload.pop("root")}
+            if not self._bind_repository_root_payload(root_payload):
+                return
+            repository_root = root_payload["root"]
         configured = app.config.get("models", {}) if isinstance(app.config, dict) else {}
         role_keys = {"opencode", "general", "fast_code", "heavy_code", "reasoning", "background_code"}
         configured_models = {
             value.strip() for key, value in configured.items()
             if key in role_keys and isinstance(value, str) and value.strip()
         } if isinstance(configured, dict) else set()
+        auto_model_route = isinstance(payload, dict) and payload.get("model") == "auto"
+        if auto_model_route:
+            default_model = configured.get("opencode") or configured.get("general")
+            if not isinstance(default_model, str) or not default_model.strip():
+                self._send(503, {"success": False, "error": "OpenCode auto model route is not configured", "terminal": True, "retryable": False})
+                return
+            payload = {**payload, "model": default_model.strip()}
         try:
             request, wants_stream = to_ollama_chat(payload, configured_models)
         except (TypeError, ValueError) as exc:
@@ -38,7 +52,11 @@ class HTTPPostRoutesMixin:
             elif request["model"].startswith("qwen2.5-coder:"):
                 options["num_ctx"] = 32768
         try:
-            result = app.services.proxy_request("/api/chat", request, source="proxy:opencode")
+            result = app.services.proxy_request(
+                "/api/chat", request, source="proxy:opencode",
+                repository_root=repository_root,
+                model_route_requested=auto_model_route,
+            )
             if isinstance(result, dict) and result.get("error") and result.get("done") is not True:
                 error = result.get("error")
                 response = {

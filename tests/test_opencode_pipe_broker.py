@@ -167,6 +167,67 @@ def test_hub_forwarder_uses_only_loopback_fixed_route_and_configured_token():
     assert result == (200, "text/event-stream; charset=utf-8", b"data: [DONE]\n\n")
 
 
+def test_hub_forwarder_injects_managed_repository_scope_over_client_value(tmp_path):
+    observed = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            observed["payload"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            body = b'{"success":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    body = json.dumps({"model": "auto", "root": "C:/attacker", "messages": [{"role": "user", "content": "scope"}]}).encode()
+    managed_root = str(tmp_path.resolve())
+    try:
+        result = pipe_broker.forward_hub_chat(
+            body, hub_port=server.server_port, repository_root=managed_root,
+        )
+    finally:
+        server.shutdown()
+        worker.join(timeout=2)
+        server.server_close()
+
+    assert result == (200, "application/json", b'{"success":true}')
+    assert observed["payload"]["root"] == managed_root
+
+
+@pytest.mark.parametrize("repository_root", [
+    r"\\server\share\repo",
+    r"\\?\C:\repo",
+    r"\??\C:\repo",
+    r"C:relative\repo",
+    r"\rooted\repo",
+    "é:\\repo",
+])
+def test_hub_forwarder_rejects_nonlocal_repository_roots(repository_root):
+    with pytest.raises(ValueError, match="local absolute Windows path"):
+        pipe_broker.forward_hub_chat(
+            b"{}", hub_port=11435, repository_root=repository_root,
+        )
+
+
+def test_pipe_listener_rejects_unc_repository_root():
+    with pytest.raises(ValueError, match="local absolute Windows path"):
+        pipe_broker.WindowsOpenCodePipeListener(
+            session_id=uuid.uuid4().hex,
+            appcontainer_sid="S-1-15-2-123-456",
+            windows_session_id=1,
+            secret=b"x" * 32,
+            hub_port=11435,
+            repository_root=r"\\server\share\repo",
+        )
+
+
 @pytest.mark.parametrize("port", [0, -1, 65536, True, "1234"])
 def test_hub_forwarder_rejects_invalid_ports_before_connecting(port):
     forward = getattr(pipe_broker, "forward_hub_chat", None)
