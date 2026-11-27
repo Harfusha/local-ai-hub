@@ -136,6 +136,7 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
         (install_dir / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8")
     )
     _assert_portable_keys_are_supported(config, defaults)
+    assert "dashboard" not in config.get("features", {})
     assert defaults == source_defaults
 
     project = tomllib.loads((install_dir / "pyproject.toml").read_text(encoding="utf-8"))

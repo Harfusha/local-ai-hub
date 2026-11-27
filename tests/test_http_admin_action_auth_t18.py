@@ -167,61 +167,46 @@ def _handler(path, token):
     handler._send = lambda status, payload: handler.responses.append((status, payload))
     return handler
 
-def _dashboard_handler(path, *, fetch_site="same-origin", client_address=("127.0.0.1", 23456), origin="http://127.0.0.1:11435"):
+
+def _origin_guard_handler(path, *, host="127.0.0.1:11435", origin="http://127.0.0.1:11435"):
     handler = _handler(path, "")
-    handler.headers = {
-        "X-LocalAI-Client": "dashboard",
-        "Sec-Fetch-Site": fetch_site,
-        "Host": "127.0.0.1:11435",
-        "Origin": origin,
-    }
-    handler.client_address = client_address
+    handler.headers.update({"Host": host, "Origin": origin})
     handler._validate_host_and_origin = lambda: http_server.Handler._validate_host_and_origin(handler)
     return handler
 
 
-def test_same_origin_loopback_dashboard_uses_local_auth_without_api_token(monkeypatch):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {},
-        "server": {"bind": "127.0.0.1"},
-    }, telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: True)))
-    handler = _dashboard_handler("/api/config/update")
-
-    assert handler._require_authorized() is True
-    assert handler._authorization_actor == "local"
-    assert handler._authorization_status == 200
-    assert handler._authorization_permissions == frozenset()
-    assert handler.responses == []
-
-def test_dashboard_origin_guard_rejects_cross_site_and_invalid_origins(monkeypatch):
+def test_api_origin_guard_rejects_cross_origin_and_dns_rebinding(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {},
         "server": {"bind": "127.0.0.1"},
     }))
-    cross_site = _dashboard_handler("/api/config/update", fetch_site="cross-site")
-    remote = _dashboard_handler("/api/config/update", client_address=("203.0.113.7", 23456))
-    markerless = _dashboard_handler("/api/config/update")
-    markerless.headers.pop("X-LocalAI-Client")
-    invalid_origin = _dashboard_handler("/api/config/update", origin="https://attacker.example")
-    missing_origin = _dashboard_handler("/api/config/update", origin="")
+    cross_origin = _origin_guard_handler(
+        "/api/config/update", origin="https://attacker.example",
+    )
+    rebinding_host = _origin_guard_handler(
+        "/api/config/update", host="127.0.0.1.attacker.example:11435",
+    )
+    same_origin = _origin_guard_handler("/api/config/update")
 
-    assert cross_site._validate_host_and_origin() is False
-    assert remote._authorized() is False
-    assert markerless._validate_host_and_origin() is True
-    assert invalid_origin._validate_host_and_origin() is False
-    assert missing_origin._validate_host_and_origin() is False
+    assert cross_origin._validate_host_and_origin() is False
+    assert cross_origin.responses[-1][0] == 403
+    assert rebinding_host._validate_host_and_origin() is False
+    assert rebinding_host.responses[-1][1]["error"] == "forbidden: invalid Host header"
+    assert same_origin._validate_host_and_origin() is True
 
-def test_dashboard_host_guard_rejects_dns_rebinding_host(monkeypatch):
+
+def test_require_authorized_rejects_cross_origin_api_before_authorization(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {},
         "server": {"bind": "127.0.0.1"},
     }))
-    handler = _dashboard_handler("/api/config/update")
-    handler.headers["Host"] = "127.0.0.1.attacker.example:11435"
+    handler = _origin_guard_handler(
+        "/api/config/update", origin="https://attacker.example",
+    )
 
-    assert handler._validate_host_and_origin() is False
-    assert handler.responses[-1][0] == 403
-    assert handler.responses[-1][1]["error"] == "forbidden: invalid Host header"
+    assert handler._require_authorized() is False
+    assert handler.responses[0][0] == 403
+
 
 def test_loopback_routes_are_authorized_and_admin_actions_are_audited(monkeypatch):
     telemetry = AuditTelemetry()
@@ -318,20 +303,9 @@ def test_http_server_rejects_non_loopback_bind_configuration():
         server.server_bind()
 
 
-def test_require_authorized_rejects_cross_origin_before_authorization(monkeypatch):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"security": {}, "server": {"bind": "127.0.0.1"}},
-        telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: True),
-    ))
-    handler = _dashboard_handler("/api/config/update", fetch_site="cross-site")
-
-    assert handler._require_authorized() is False
-    assert handler.responses[0][0] == 403
-
-
 def test_require_authorized_rejects_retired_identity_query_fields(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
-    handler = _dashboard_handler("/api/capabilities?tenant_id=retired")
+    handler = _handler("/api/capabilities?tenant_id=retired", "")
 
     assert handler._require_authorized() is False
     assert handler.responses[0][0] == 400
@@ -342,7 +316,8 @@ def test_require_authorized_enforces_rate_limit_after_authentication(monkeypatch
         config={"security": {}, "server": {"bind": "127.0.0.1"}},
         telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: True),
     ))
-    handler = _dashboard_handler("/api/capabilities")
+    handler = _handler("/api/capabilities", "")
+    handler.command = "GET"
     handler.server = SimpleNamespace(check_rate_limit=lambda: False)
 
     assert handler._require_authorized() is False

@@ -131,7 +131,6 @@ code_intelligence = true  # Serena integration
 preprocessing = true      # background idle project warmup
 subagents = true          # advisory local profiles
 agent_os = true           # durable execution: tasks, verification receipts, memory
-dashboard = true          # legacy compatibility flag; browser UI retired
 work_orchestrator = true  # whole-task plan/edit/verify/handoff (local_ai_work)
 
 # After changing configuration, regenerate dynamic agent skills, instructions, and MCP schemas:

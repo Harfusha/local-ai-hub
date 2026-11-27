@@ -1083,8 +1083,12 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
             assert json.loads(observed["body"]) == {"root": str(project_root.resolve())}
             assert observed["response_sent"] is True
 
-            opencode = shutil.which("opencode") or (
-                r"C:\Users\Adam\AppData\Local\Programs\OpenCode-LocalAIHub\2.2.5\opencode.exe"
+            opencode = shutil.which("opencode") or str(
+                Path(os.environ["LOCALAPPDATA"])
+                / "Programs"
+                / "OpenCode-LocalAIHub"
+                / "2.2.5"
+                / "opencode.exe"
             )
             assert opencode and os.path.isfile(opencode), "OpenCode 2.2.5 executable is unavailable"
             staged_opencode = stage / "opencode.exe"
