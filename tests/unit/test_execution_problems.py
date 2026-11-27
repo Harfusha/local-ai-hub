@@ -203,3 +203,89 @@ def test_related_execution_problem_leads_require_explicit_publication_and_checko
     request.scoped_task_only = False
     request.repository_id = "foreign"
     assert related_problem_leads(store, current, request) == []
+
+
+def test_execution_portable_problem_preview_apply_and_clone_retrieval(tmp_path):
+    import json
+    import subprocess
+
+    from local_ai_hub.execution_portable import (
+        build_publication_candidate, portable_leads, publication_candidates,
+    )
+    from local_ai_hub.execution_problems import PROBLEM_STATE_KEY
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_knowledge_management import manage_repository_knowledge
+
+    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".local-ai-hub").mkdir()
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project, "mode": "shared",
+    }), encoding="utf-8")
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+
+    def git(path, *args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+
+    git(root, "init")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    git(root, "config", "user.name", "Fixture")
+    shared = {"id": "issue", "title": "Unexpected mismatch", "criterion": "review",
+              "share_repository": True, "evidence_ids": ["private-artifact"]}
+    registry = record_problem({}, shared, criteria=("review",), receipt_ids={},
+                              reporter="author", now=1)
+    registry = record_problem(registry, {"id": "private", "title": "Private observation",
+                                       "criterion": "review"}, criteria=("review",),
+                              receipt_ids={}, reporter="author", now=2)
+    identity = {"repository_id": project, "clone_id": "one", "worktree_id": "one", "branch": "main"}
+
+    def fixture_task(path, scope, reports):
+        return SimpleNamespace(task_id="local-task", context=SimpleNamespace(**scope),
+                               contract=SimpleNamespace(acceptance_criteria=("review",)),
+                               checkpoint=SimpleNamespace(state_data={
+                                   "_agent_task_scope": {"version": 2, "repo_root": str(path)},
+                                   PROBLEM_STATE_KEY: reports,
+                               }))
+
+    task = fixture_task(root, identity, registry)
+    request = SimpleNamespace(root=str(root), scoped_task_only=False, **identity)
+    store = SimpleNamespace(get=lambda task_id: task if task_id == task.task_id else None)
+    candidates = publication_candidates(task, request)
+    assert len(candidates) == 1
+    assert "private-artifact" not in json.dumps(candidates)
+    assert "local-task" not in json.dumps(candidates)
+    with pytest.raises(ValueError, match="private data"):
+        build_publication_candidate({**shared, "title": "password=very-secret-value"}, project)
+    preview_request = {"action": "preview_execution_problem", "root": str(root),
+                       "task_id": task.task_id, "problem_id": "issue", "expected_revision": ""}
+    preview = manage_repository_knowledge({}, preview_request, authorize_operator_write=lambda: False,
+                                          task_store=store)
+    assert preview["success"] and preview["after"] == candidates[0]
+    assert not (root / ".local-ai-hub/local").exists()
+    assert manage_repository_knowledge({}, {**preview_request, "problem_id": "private"},
+                                       authorize_operator_write=lambda: False, task_store=store)["status_code"] == 404
+    apply = {**preview_request, "action": "save_execution_problem",
+             "preview_digest": preview["preview_digest"], "operation_id": "publish", "apply": True}
+    assert manage_repository_knowledge({}, apply, authorize_operator_write=lambda: False,
+                                       task_store=store)["status_code"] == 403
+    assert manage_repository_knowledge({}, {**apply, "preview_digest": "0" * 64},
+                                       authorize_operator_write=lambda: True, task_store=store)["status_code"] == 409
+    assert manage_repository_knowledge({}, apply, authorize_operator_write=lambda: True,
+                                       task_store=store)["success"]
+    record = RepoKnowledgeStore(root).get("observation", candidates[0]["id"])
+    assert record["freshness"] == "unknown"
+    git(root, "add", ".")
+    git(root, "commit", "-m", "share historical observation")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", str(root), str(clone))
+    clone_identity = {**identity, "clone_id": "two", "worktree_id": "two"}
+    new_task = fixture_task(clone, clone_identity, {})
+    clone_request = SimpleNamespace(root=str(clone), scoped_task_only=False, **clone_identity)
+    leads = portable_leads(new_task, clone_request)
+    assert len(leads) == 1 and leads[0]["status"] == "historical_unverified"
+    assert leads[0]["title"] == shared["title"]
+    assert leads[0]["record_revision"] == record["revision"]
+    assert not (clone / ".local-ai-hub/local").exists()
+    clone_request.scoped_task_only = True
+    assert portable_leads(new_task, clone_request) == []
