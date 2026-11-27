@@ -78,6 +78,10 @@ def isolated_hub(temp: Path):
         http_server.APP = original_app
 
 
+def _same_windows_handle(first, second):
+    return getattr(first, "value", first) == getattr(second, "value", second)
+
+
 def _windows_window(pid: int):
     import ctypes
     from ctypes import wintypes
@@ -123,6 +127,11 @@ def _mac_window(pid: int):
     return None
 
 
+def _linux_window_id(window_tree: str):
+    match = re.search(r'(0x[0-9a-fA-F]+)\s+"Local AI Hub"', window_tree)
+    return match.group(1) if match else None
+
+
 def wait_for_window(process, errors, started):
     tree = ""
     while time.monotonic() - started < 30:
@@ -138,13 +147,12 @@ def wait_for_window(process, errors, started):
             windows = subprocess.run(["xwininfo", "-root", "-tree"], check=True,
                                      capture_output=True, text=True, timeout=3)
             tree = windows.stdout
-            match = re.search(r'(0x[0-9a-fA-F]+)\\s+"Local AI Hub"', tree)
-            candidate = None
-            if match:
-                info = subprocess.run(["xwininfo", "-id", match.group(1)],
+            candidate = _linux_window_id(tree)
+            if candidate is not None:
+                info = subprocess.run(["xwininfo", "-id", candidate],
                                       capture_output=True, text=True, timeout=3)
-                if info.returncode == 0 and "Map State: IsViewable" in info.stdout:
-                    candidate = match.group(1)
+                if info.returncode != 0 or "Map State: IsViewable" not in info.stdout:
+                    candidate = None
         else:
             raise RuntimeError("Unsupported native window verification platform")
         if candidate is not None:
@@ -165,7 +173,7 @@ def focus_window(process, window_id):
             user32.GetForegroundWindow.restype = wintypes.HWND
             user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
             user32.SetForegroundWindow(window_id)
-            if user32.GetForegroundWindow() == window_id:
+            if _same_windows_handle(user32.GetForegroundWindow(), window_id):
                 return
         elif sys.platform == "darwin":
             from AppKit import NSRunningApplication, NSWorkspace, NSApplicationActivateIgnoringOtherApps

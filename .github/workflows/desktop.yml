@@ -8,6 +8,7 @@ on:
       - 'tools/desktop_operator.py'
       - 'tools/desktop_smoke.py'
       - 'tests/test_desktop_control.py'
+      - 'tests/test_desktop_smoke.py'
       - 'tests/test_desktop_http_acceptance.py'
       - 'tests/test_dashboard_operational_surfaces.py'
       - 'src/local_ai_hub/http_*.py'
@@ -53,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux system libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxkbcommon-x11-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils xauth xdotool libgl1-mesa-dri libegl-mesa0
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxkbcommon-x11-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils xauth xdotool libgl1-mesa-dri libegl-mesa0 libvulkan1 mesa-vulkan-drivers
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Package verified portable desktop
