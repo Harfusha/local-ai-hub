@@ -292,7 +292,10 @@ def test_next_obligation_source_preview_is_exact_bounded_and_scope_fenced(tmp_pa
     assert result["file_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert obligation_source_context(config, execution, **{**kwargs, "requested_root": str(tmp_path.parent)}) is None
     assert obligation_source_context(config, {**execution, "scope_check": {"complete": False}}, **kwargs) is None
-    assert obligation_source_context({"inventory": {"scope": "changes", "resources": ["module.py"]}}, execution, **kwargs) is None
+    changed_config = {"inventory": {"scope": "changes", "resources": ["module.py"]}}
+    changed_result = obligation_source_context(changed_config, execution, **kwargs)
+    assert changed_result is not None and changed_result["file_sha256"] == result["file_sha256"]
+    assert obligation_source_context({"inventory": {"scope": "declared", "resources": ["module.py"]}}, execution, **kwargs) is None
     assert obligation_source_context(config, {**execution, "next_obligation": {
         "resource": "module.py", "evidence_type": "test"}}, **kwargs) is None
     (tmp_path / ".local-ai.toml").write_text('exclude_paths = ["module.py"]\n', encoding="utf-8")
@@ -319,3 +322,19 @@ def test_next_obligation_source_preview_rejects_symlink_and_unlisted_path(tmp_pa
     assert obligation_source_context(config, execution, **kwargs) is None
     execution["next_obligation"]["resource"] = "../outside.py"
     assert obligation_source_context(config, execution, **kwargs) is None
+
+
+def test_changed_source_context_rejects_deleted_and_excluded_sources(tmp_path: Path):
+    from local_ai_hub.execution_source_context import obligation_source_context
+
+    hidden = tmp_path / ".git" / "private.py"
+    hidden.parent.mkdir()
+    hidden.write_text("private = 1\n", encoding="utf-8")
+    for resource in (".git/private.py", "deleted.py"):
+        config = {"inventory": {"scope": "changes", "resources": [resource]}}
+        execution = {"scope_check": {"complete": True}, "next_obligation": {
+            "resource": resource, "evidence_type": "source_review",
+        }}
+        assert obligation_source_context(
+            config, execution, requested_root=str(tmp_path), trusted_root=str(tmp_path),
+        ) is None
