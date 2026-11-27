@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tomllib
 from pathlib import Path
@@ -32,12 +33,13 @@ def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Pa
     monkeypatch.setattr(uninstall, "_owned_hub_pids", lambda _install: [])
     monkeypatch.setattr(sys, "argv", ["uninstall.py", "--keep-install"])
 
+    devin_home = setup.devin_config_dir()
     placements = [
         (home / ".agents" / "skills", "ponytail"),
         (home / ".codex" / "skills", "plan-led-work"),
         (home / ".cursor" / "skills", "ponytail-audit"),
         (home / ".codeium" / "windsurf" / "skills", "ponytail-review"),
-        (home / "AppData" / "Roaming" / "devin" / "skills", "local-ai-orchestrator"),
+        (devin_home / "skills", "local-ai-orchestrator"),
         (home / ".copilot" / "skills", "token-economizer"),
         (profile_home / ".gemini" / "config" / "skills", "using-superpowers"),
         (home / ".gemini" / "skills", "former-managed-skill"),
@@ -79,13 +81,15 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     codex_home = home / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
+    shutil.copyfile(ROOT / "defaults.toml", install / "defaults.toml")
+    devin_relative = setup.devin_config_dir().relative_to(home).as_posix()
     config_roots = {
         ".claude.json": "mcpServers",
         ".gemini/settings.json": "mcpServers",
         ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
-        "AppData/Roaming/devin/mcp_config.json": "mcpServers",
+        f"{devin_relative}/mcp_config.json": "mcpServers",
         ".copilot/mcp-config.json": "mcpServers",
         ".local-ai/generic-mcp.json": "mcpServers",
         ".local-ai/vscode-mcp.json": "servers",
