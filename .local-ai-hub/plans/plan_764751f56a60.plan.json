@@ -21,7 +21,7 @@
       "depends_on": [],
       "description": "Implement the user clarification for PR #9: stable Git project identity across relocated checkouts and linked worktrees, safe concurrent agents with local runtime state, and one idempotent updater migration followed by removal of legacy runtime behavior.",
       "kind": "code",
-      "next_action": "Implement failing tests for checkout relocation, worktree-scoped task projection, concurrent stale writes, and one-time updater migration; then repair the smallest shared ownership layer.",
+      "next_action": "Verify project identity bootstrap on the actual release updater; cover old checkout safety, actual clone/worktree portability, and stale/disjoint writes with real Git tests; then commit, push, and verify the complete acceptance.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",

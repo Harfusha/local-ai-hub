@@ -114,6 +114,39 @@ def test_update_migration_recognizes_registered_linked_worktree_roots(tmp_path: 
     assert result["records"] == {"task": 1, "memory": 1, "incident": 1}
 
 
+def test_completed_migration_does_not_read_legacy_database_again(tmp_path: Path, monkeypatch):
+    import local_ai_hub.agent_state_migration as migration
+
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    first = migrate_project_state_on_update(state_dir, root)
+    assert first["status"] == "migrated"
+
+    def reject_legacy_scan(*_args, **_kwargs):
+        raise AssertionError("completed migration must not read legacy checkout metadata")
+
+    monkeypatch.setattr(migration, "_database_project_roots", reject_legacy_scan)
+    second = migrate_project_state_on_update(state_dir, root)
+    assert second == {"status": "already_migrated", "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "records": 0}
+
+
+def test_update_without_legacy_database_does_not_scan_or_create_a_marker(tmp_path: Path, monkeypatch):
+    import local_ai_hub.agent_state_migration as migration
+
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    (state_dir / "agent_state.sqlite").unlink()
+
+    first = migrate_project_state_on_update(state_dir, root)
+    assert first["status"] == "no_legacy_state"
+    assert not (state_dir / "project_state_migration_v1.json").exists()
+
+    def reject_legacy_scan(*_args, **_kwargs):
+        raise AssertionError("completed no-state migration must not scan legacy metadata")
+
+    monkeypatch.setattr(migration, "_database_project_roots", reject_legacy_scan)
+    second = migrate_project_state_on_update(state_dir, root)
+    assert second == {"status": "no_legacy_state", "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "records": 0}
+
+
 def test_update_migration_recognizes_existing_relocated_checkout_by_project_id(tmp_path: Path):
     root, _, state_dir = _setup_migration_env(tmp_path)
     old_checkout = tmp_path / "old-checkout"
@@ -133,6 +166,45 @@ def test_update_migration_recognizes_existing_relocated_checkout_by_project_id(t
     assert result["records"] == {"task": 1, "memory": 1, "incident": 1}
 
 
+@pytest.mark.parametrize("same_origin", [True, False])
+def test_update_migration_maps_unmanifested_old_clone_only_by_matching_origin(tmp_path: Path, same_origin: bool):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    project_manifest = root / ".local-ai-hub/project.json"
+    project_data = project_manifest.read_bytes()
+    project_manifest.unlink()
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "old checkout"], check=True, capture_output=True)
+    old_checkout = tmp_path / "old-checkout"
+    subprocess.run(["git", "clone", str(root), str(old_checkout)], check=True, capture_output=True)
+    project_manifest.parent.mkdir(parents=True, exist_ok=True)
+    project_manifest.write_bytes(project_data)
+    subprocess.run(["git", "-C", str(root), "add", ".local-ai-hub/project.json"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "bootstrap project identity"], check=True, capture_output=True)
+    shared_origin = "https://example.invalid/org/project.git"
+    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", shared_origin], check=True)
+    old_origin = shared_origin if same_origin else "https://example.invalid/org/unrelated.git"
+    subprocess.run(["git", "-C", str(old_checkout), "remote", "set-url", "origin", old_origin], check=True)
+
+    db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        task_row = con.execute("SELECT checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'").fetchone()
+        checkpoint = json.loads(task_row[0])
+        checkpoint["state_data"]["_agent_task_scope"]["repo_root"] = str(old_checkout)
+        con.execute("UPDATE agent_tasks_projection SET checkpoint=? WHERE task_id='task-mig-1'", (json.dumps(checkpoint),))
+        con.execute("UPDATE agent_memory_records SET provenance=? WHERE record_id='mem-mig-1'", (json.dumps({"root": str(old_checkout)}),))
+        con.execute("UPDATE agent_incidents SET repository_key=? WHERE incident_id='inc-mig-1'", (_incident_scope_key("repository", str(old_checkout)),))
+        con.commit()
+
+    result = migrate_project_state_on_update(state_dir, root)
+
+    expected = 1 if same_origin else 0
+    assert result["records"] == {"task": expected, "memory": expected, "incident": expected}
+
+
 def test_release_update_invokes_project_cutover_once(tmp_path: Path, monkeypatch):
     root, _, state_dir = _setup_migration_env(tmp_path)
     (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
@@ -147,3 +219,32 @@ def test_release_update_invokes_project_cutover_once(tmp_path: Path, monkeypatch
     assert result["project_state_migration"]["status"] == "migrated"
     assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
     assert (state_dir / "project_state_migration_v1.json").is_file()
+
+
+def test_release_update_surfaces_missing_project_identity_for_old_checkout(tmp_path: Path, monkeypatch):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    (root / ".local-ai-hub/project.json").unlink()
+    (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
+    from tools import setup as setup_module
+
+    migration_calls = []
+    monkeypatch.setattr(setup_module, "SOURCE_ROOT", root)
+    monkeypatch.setattr(setup_module, "run_state_migrations", lambda *args, **kwargs: migration_calls.append(args) or {"status": "current", "backups": []})
+    monkeypatch.setattr(setup_module, "apply_embedding_reset", lambda *args, **kwargs: {"status": "not_required"})
+    monkeypatch.setattr(setup_module, "discard_stale_migration_artifacts", lambda *args, **kwargs: [])
+
+    with pytest.raises(RepoPlanValidationError, match="stable project identity"):
+        setup_module.migrate_release_state(state_dir)
+    assert migration_calls == []
+    assert not (state_dir / "project_state_migration_v1.json").exists()
+
+
+def test_real_repository_update_hook_has_a_published_project_identity(tmp_path: Path, monkeypatch):
+    from tools import setup as setup_module
+
+    repository_root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(setup_module, "SOURCE_ROOT", repository_root)
+
+    result = setup_module.migrate_release_state(tmp_path, create_backup=False)
+
+    assert result["project_state_migration"]["status"] == "no_legacy_state"

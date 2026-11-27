@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .agent_state_inventory import _identity, _sidecars_absent
 from .repo_knowledge import RepoKnowledgeStore, _digest_value, _encode, _path_for, validate_knowledge_file
@@ -34,6 +36,59 @@ _SCOPED = (
 )
 
 
+def _git_origin_identity(root: Path) -> str:
+    """Return a credential-free origin key for one-time checkout attribution."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=2.0, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value or len(value) > 2048 or any(not char.isprintable() for char in value):
+        return ""
+    if "://" in value:
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme.casefold() not in {"http", "https", "ssh", "git"} or not parsed.hostname:
+                return ""
+            host = parsed.hostname.casefold()
+            if parsed.port is not None:
+                host += f":{parsed.port}"
+            path = parsed.path.strip("/")
+        except ValueError:
+            return ""
+    else:
+        # Git's SCP-style SSH syntax is user@host:owner/repository.git.
+        match = re.fullmatch(r"(?:[^@/:]+@)?([^:/]+):(.+)", value)
+        if match is None:
+            return ""
+        host, path = match.group(1).casefold(), match.group(2).strip("/")
+    if path.casefold().endswith(".git"):
+        path = path[:-4]
+    return f"{host}:{path}" if host and path else ""
+
+
+def _same_git_origin(left: Path, right: Path) -> bool:
+    left_origin = _git_origin_identity(left)
+    return bool(left_origin) and left_origin == _git_origin_identity(right)
+
+
+def _is_project_checkout(candidate: Path, canonical_root: Path, project_id: str) -> bool:
+    if not candidate.is_absolute() or candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)():
+        return False
+    try:
+        candidate = candidate.resolve(strict=True)
+        if candidate == canonical_root.resolve(strict=True):
+            return True
+        if project_scope_id(candidate) == project_id:
+            return True
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return _same_git_origin(candidate, canonical_root)
+
+
 def _registered_project_roots(root: Path, project_id: str) -> tuple[str, ...]:
     roots = {str(root.resolve(strict=True))}
     try:
@@ -51,7 +106,9 @@ def _registered_project_roots(root: Path, project_id: str) -> tuple[str, ...]:
         candidate = Path(line[len("worktree "):])
         try:
             candidate = candidate.resolve(strict=True)
-            if candidate.is_dir() and project_scope_id(candidate) == project_id:
+            if candidate.is_dir() and (
+                project_scope_id(candidate) == project_id or _same_git_origin(candidate, root)
+            ):
                 roots.add(str(candidate))
         except (OSError, RuntimeError, TypeError, ValueError):
             continue
@@ -94,9 +151,14 @@ def _database_project_roots(state_dir: Path, root: Path, project_id: str) -> tup
                 continue
             candidate = candidate.resolve(strict=True)
             manifest_file = candidate / ".local-ai-hub" / "project.json"
-            if not manifest_file.is_file() or manifest_file.is_symlink() or getattr(manifest_file, "is_junction", lambda: False)():
+            has_safe_manifest = (
+                manifest_file.is_file() and not manifest_file.is_symlink()
+                and not getattr(manifest_file, "is_junction", lambda: False)()
+            )
+            if has_safe_manifest and project_scope_id(candidate) == project_id:
+                accepted.add(str(candidate))
                 continue
-            if project_scope_id(candidate) == project_id:
+            if _same_git_origin(candidate, root):
                 accepted.add(str(candidate))
         except (OSError, RuntimeError, TypeError, ValueError):
             continue
@@ -128,7 +190,9 @@ def preview_legacy_canonical_task_batch(
     epoch = store.read_epoch()
     manifest, manifest_revision = store.manifest()
     roots = repository_roots or (str(store.root),)
-    if not roots or len(roots) > 64 or any(project_scope_id(item) != manifest["project_id"] for item in roots):
+    if not roots or len(roots) > 64 or any(
+        not _is_project_checkout(Path(item), store.root, manifest["project_id"]) for item in roots
+    ):
         raise RepoPlanValidationError("Legacy task roots do not match the current project identity")
     root_placeholders = ",".join("?" for _ in roots)
     deadline = time.monotonic() + 3.0
@@ -228,7 +292,9 @@ def preview_legacy_memory_batch(
     epoch = store.read_epoch()
     manifest, manifest_revision = store.manifest()
     roots = repository_roots or (str(store.root),)
-    if not roots or len(roots) > 64 or any(project_scope_id(item) != manifest["project_id"] for item in roots):
+    if not roots or len(roots) > 64 or any(
+        not _is_project_checkout(Path(item), store.root, manifest["project_id"]) for item in roots
+    ):
         raise RepoPlanValidationError("Legacy memory roots do not match the current project identity")
     root_placeholders = ",".join("?" for _ in roots)
     deadline = time.monotonic() + 3.0
@@ -319,7 +385,9 @@ def preview_legacy_incident_batch(
     epoch = store.read_epoch()
     manifest, manifest_revision = store.manifest()
     roots = repository_roots or (str(store.root),)
-    if not roots or len(roots) > 64 or any(project_scope_id(item) != manifest["project_id"] for item in roots):
+    if not roots or len(roots) > 64 or any(
+        not _is_project_checkout(Path(item), store.root, manifest["project_id"]) for item in roots
+    ):
         raise RepoPlanValidationError("Legacy incident roots do not match the current project identity")
     repository_keys = tuple(_incident_scope_key("repository", item) for item in roots)
     key_placeholders = ",".join("?" for _ in repository_keys)
@@ -395,9 +463,6 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
     store = RepoKnowledgeStore(root)
     manifest, _ = store.manifest()
     project_id = manifest["project_id"]
-    repository_roots = tuple(sorted(set(_registered_project_roots(root, project_id)) | set(
-        _database_project_roots(state, root, project_id)
-    )))
     marker = state / "project_state_migration_v1.json"
     if marker.is_symlink() or getattr(marker, "is_junction", lambda: False)():
         raise RepoPlanValidationError("Project state migration marker is not a regular file")
@@ -416,6 +481,11 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
     db = state / "agent_state.sqlite"
     if not db.exists():
         return {"status": "no_legacy_state", "project_id": project_id, "records": 0}
+
+    # Do not inspect legacy paths or databases after this project has been cut over.
+    repository_roots = tuple(sorted(set(_registered_project_roots(root, project_id)) | set(
+        _database_project_roots(state, root, project_id)
+    )))
 
     counts = {"task": 0, "memory": 0, "incident": 0}
     plans = (
@@ -459,8 +529,14 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
             cursor = next_cursor
 
     saved["projects"][project_id] = {"status": "complete", "records": counts}
+    _write_project_migration_marker(marker, saved)
+    return {"status": "migrated", "project_id": project_id, "records": counts}
+
+
+def _write_project_migration_marker(marker: Path, saved: dict[str, Any]) -> None:
+    """Persist the one-time cutover marker atomically inside local state."""
     marker.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix="project-state-migration-", suffix=".tmp", dir=state)
+    fd, temp_name = tempfile.mkstemp(prefix="project-state-migration-", suffix=".tmp", dir=marker.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(saved, handle, sort_keys=True, separators=(",", ":"))
@@ -471,4 +547,3 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
-    return {"status": "migrated", "project_id": project_id, "records": counts}

@@ -104,6 +104,64 @@ def test_two_clone_semantic_conflict_is_read_only(tmp_path, divergent):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_two_offline_agents_conflicting_project_task_requires_manual_review(tmp_path):
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_project_tasks import build_project_task_record
+
+    root = tmp_path / "agent-a"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Agent A")
+    _git(root, "config", "user.email", "agent-a@example.invalid")
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    hub = root / ".local-ai-hub"
+    hub.mkdir()
+    (hub / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    record = build_project_task_record(RepoKnowledgeStore(root), {
+        "task_id": "task-multi-agent",
+        "status": "planned",
+        "contract": {
+            "goal": "Resolve shared task",
+            "description": "",
+            "acceptance_criteria": ["preserve both agents' intent"],
+            "non_goals": [], "constraints": [], "risk_profile": "normal",
+        },
+        "checkpoint": {"phase": "planned", "next_action": "", "blockers": [], "affected_paths": []},
+    })
+    relative = ".local-ai-hub/agent-os/tasks/task-multi-agent.json"
+    task_path = root / relative
+    task_path.parent.mkdir(parents=True)
+    task_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "shared task")
+
+    second = tmp_path / "agent-b"
+    _git(root, "clone", str(root), str(second))
+    _git(second, "config", "user.name", "Agent B")
+    _git(second, "config", "user.email", "agent-b@example.invalid")
+
+    for checkout, phase, agent in ((root, "analysis by A", "A"), (second, "analysis by B", "B")):
+        current = json.loads((checkout / relative).read_text(encoding="utf-8"))
+        current["payload"]["checkpoint"]["phase"] = phase
+        (checkout / relative).write_text(json.dumps(current) + "\n", encoding="utf-8")
+        _git(checkout, "commit", "-am", f"agent {agent} update")
+
+    _git(second, "fetch", "origin")
+    merge = subprocess.run(["git", "-C", str(second), "merge", "origin/main"], capture_output=True, timeout=10)
+    assert merge.returncode == 1
+    before = (second / relative).read_bytes()
+    result = checkout_sync_status(second)
+    assert result["state"] == "conflict"
+    assert result["conflicts"] == [{
+        "path": relative,
+        "classification": "manual_review_required",
+    }]
+    assert (second / relative).read_bytes() == before
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
 def test_committed_knowledge_diff_is_scoped_and_does_not_claim_runtime_verification(tmp_path):
     from local_ai_hub.repo_knowledge_sync import compare_knowledge_revisions
 

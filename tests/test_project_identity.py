@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import UUID
 
 from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
 
@@ -27,3 +28,10 @@ def test_non_git_workspace_scope_is_local_and_deterministic(tmp_path: Path):
 
     assert project_scope_id(root) == project_scope_id(root)
     assert project_scope_id(root) != project_scope_id(tmp_path)
+
+
+def test_local_ai_hub_checkout_has_a_portable_project_identity():
+    root = Path(__file__).resolve().parents[1]
+    project_id = project_scope_id(root)
+
+    assert str(UUID(project_id)) == project_id
