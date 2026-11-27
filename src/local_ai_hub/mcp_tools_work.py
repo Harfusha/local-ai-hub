@@ -30,7 +30,7 @@ def local_ai_work(
     max_response_tokens: int = 0,
     reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
+    """MCP public tool entrypoint. Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
     from . import mcp_server as services_module
     if not getattr(services_module.FEATURES, "work_orchestrator", False):
         return {"success": False, "unsupported": True, "error": "local_ai_work is disabled in configuration"}
