@@ -304,3 +304,16 @@ def test_evidence_progress_detects_repeated_failures_only_for_current_scope():
     assert result["consecutive_failed_verifications"] == 3
     assert evidence_progress(created_at=90, now=100, active=True, complete=True,
                              observed_receipt_times=[], repeated_failure_count=count)["status"] == "recent_or_not_active"
+
+
+def test_verified_execution_seeded_graph_benchmark():
+    from tools.benchmark_verified_execution import run_benchmark
+
+    result = run_benchmark(seed=17, trials=8, obligations=64)
+    graph = result["metrics"]["graph"]
+    baseline = result["metrics"]["receipt_only"]
+    assert graph["false_positive"] == graph["false_negative"] == 0
+    assert graph["recall_ppm"] == graph["precision_ppm"] == 1_000_000
+    assert baseline["false_negative"] > 0
+    assert result["compact_resume_estimated_tokens"] < result["full_contract_estimated_tokens"]
+    assert result["graph_projection_seconds"] >= 0
