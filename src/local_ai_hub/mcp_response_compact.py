@@ -54,6 +54,16 @@ def _compact(
                     memory_projection["unchanged"] = True
         return services_module._normalize_task_memory_response(services_module.account_projection(value, memory_projection))
     raw_value = value
+    # Reject malformed envelopes before compaction can discard correlation data.
+    tool, action = options.get("tool"), options.get("action")
+    if isinstance(tool, str) and isinstance(action, str):
+        error = services_module.validate_operation_output(tool, action, raw_value)
+        if error is not None:
+            failure = {"success": False, "status_code": 500, "terminal": True, "retryable": False,
+                       "error": f"MCP output contract failed: {error}", "failure_kind": "output_contract_violation"}
+            if isinstance(raw_value, dict) and isinstance(raw_value.get("request_id"), str):
+                failure["request_id"] = raw_value["request_id"][:160]
+            return failure
     exact_artifact_text = None
     exact_artifact_slices = None
     oversized_artifact_page = False
