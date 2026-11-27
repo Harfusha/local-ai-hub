@@ -510,3 +510,57 @@ disposition reasons and private checkpoint data are not shared. Leads are
 explicitly marked historical and unverified and never count as receipts or
 alter the completion gate. Publication is local to the Hub state store;
 Git-backed team publication is not implemented by this mechanism.
+
+
+### Git-backed historical problem publication
+
+Use the existing knowledge project, not a separate execution database or Git
+namespace. A task problem explicitly marked `share_repository: true` can be
+published as a content-addressed `observation` in
+`.local-ai-hub/knowledge/observations/`. Only the exact criterion and observation
+text are transferred; no local task IDs, artifact IDs, receipts, owner or
+session metadata, disposition history or checkpoint contents are exported.
+Recognizable private values and invalid knowledge records are rejected.
+Privacy scanning is not a guarantee; the operator must review the candidate.
+
+Local operator workflow (initialize the knowledge project first):
+
+```sh
+python tools/hubctl.py knowledge execution-publish --root /path/to/repo --task-id task_123 --problem-id issue --expected-revision ""
+```
+
+Review the returned record and preview digest, then repeat with
+`--apply --preview-digest <reviewed-digest> --operation-id <unique-operation-id>`.
+For an existing record provide its exact file revision instead of the empty
+create revision. The operation uses the normal knowledge-store journal, CAS,
+manifest and local-operator checks. The HTTP knowledge management actions
+`preview_execution_problem` and `save_execution_problem` use the same preview
+and explicit apply fields, subject to the existing operator authorization.
+Commit the resulting observation with normal Git tooling; the Hub never
+commits or pushes it automatically. An initialized clone can retrieve exact
+overlapping criterion observations with the opt-in `execution_git_leads`
+context kind; `execution_publication` provides unpublished candidates.
+Portable observations are historical and unverified even in the originating
+checkout. They cannot satisfy a receipt or suppress a live problem.
+
+### Required deterministic knowledge consistency
+
+Set `"knowledge_guard": true` in the verified execution profile to require
+the existing repository knowledge model to be consistent before completion.
+The task must have an authorized initialized repository and a trusted current
+revision. The guard checks explicitly modeled intended/observed claim
+contradictions, stale or unverified modeled claims, source literal mismatches
+or unavailable assertions, and missing or unknown declared verification
+targets. It rejects an incomplete catalog, an unstable read epoch, a changed
+snapshot or an unavailable revision. A Git review disposition alone cannot
+waive a contradiction. Historical interpretation-only problem leads do not
+become blocking claims merely because they were published.
+
+The completion projection exposes `knowledge_check` with bounded finding
+identifiers. The task gate cannot waive this required check using an operator
+receipt waiver. Native Work Center and host continuation expose the status.
+The implementation uses the default repository fingerprint configuration;
+a differently configured tracker can fail closed on a revision mismatch.
+It performs two bounded knowledge catalog reads when enabled, and is therefore
+opt-in. It is a deterministic check of the declared model, not a general
+semantic proof, an independent authenticated reviewer or an LLM critic.
