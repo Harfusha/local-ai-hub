@@ -250,6 +250,36 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         assert listed["result"]["desktop_list_limit"] == 25
         valid = call("plan_validate", root=str(roots[0]), id="plan_desktop")
         assert valid["ok"] and valid["result"]["valid"] is True, valid
+        # Metadata and dependencies use the canonical revision CAS, with
+        # server-side dependency/cycle validation and isolation.
+        initial_revision = own["result"]["file_revision"]
+        changed = call("plan_update", root=str(roots[0]), id="plan_desktop",
+                       revision=initial_revision, lifecycle="paused", accountable_role="reviewer",
+                       default_target_ref="refs/heads/master", confirmed=True)
+        assert changed["ok"], changed
+        paused = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        assert paused["result"]["plan"]["lifecycle"] == "paused"
+        assert paused["result"]["plan"]["accountable_role"] == "reviewer"
+        refused = call("plan_update", root=str(roots[0]), id="plan_desktop",
+                       revision=paused["result"]["file_revision"], lifecycle="completed", confirmed=True)
+        assert refused["ok"] is False
+        dependency = [{"plan_id": "plan_desktop", "task_id": "task_desktop"}]
+        child = call("plan_task_create", root=str(roots[0]), id="plan_desktop",
+                     revision=paused["result"]["file_revision"], task_id="task_child",
+                     title="Dependent analysis", kind="analysis", work_phase="discovery",
+                     order="7", depends_on_json=json.dumps(dependency), confirmed=True)
+        assert child["ok"], child
+        own = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        task = own["result"]["plan"]["tasks"]["task_child"]
+        assert task["depends_on"] == dependency and task["kind"] == "analysis"
+        assert task["work_phase"] == "discovery" and task["order"] == 7
+        cyclic = call("plan_task_edit", root=str(roots[0]), id="plan_desktop",
+                      revision=own["result"]["file_revision"], task_id="task_desktop",
+                      depends_on_json=json.dumps([{"plan_id": "plan_desktop", "task_id": "task_child"}]),
+                      confirmed=True)
+        assert cyclic["ok"] is False
+        unchanged = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        assert unchanged["result"]["file_revision"] == own["result"]["file_revision"]
         archive = dict(root=str(roots[0]), id="plan_desktop",
                        revision=own["result"]["file_revision"])
         assert call("plan_archive", **archive)["ok"] is False
