@@ -54,6 +54,65 @@ def _js_module_paths(path: str, name: str, available: set[str]) -> set[str]:
     return available & ({base} | {base + ext for ext in extensions} | {base + "/index" + ext for ext in extensions})
 
 
+def _dependency_units(edges: dict[str, set[str]]) -> list[list[str]]:
+    """Order strongly connected groups as indivisible candidate units.
+
+    Iterative Kosaraju avoids recursion limits on long dependency chains.
+    Edges point from a consumer to its prerequisites.
+    """
+    visited: set[str] = set()
+    finished: list[str] = []
+    for root in sorted(edges):
+        if root in visited:
+            continue
+        stack = [(root, False)]
+        while stack:
+            key, expanded = stack.pop()
+            if expanded:
+                finished.append(key)
+                continue
+            if key in visited:
+                continue
+            visited.add(key)
+            stack.append((key, True))
+            stack.extend((dep, False) for dep in sorted(edges[key], reverse=True) if dep not in visited)
+    reverse: dict[str, set[str]] = {key: set() for key in edges}
+    for key, deps in edges.items():
+        for dep in deps:
+            reverse[dep].add(key)
+    components: list[list[str]] = []
+    membership: dict[str, int] = {}
+    for root in reversed(finished):
+        if root in membership:
+            continue
+        component_id = len(components)
+        members = []
+        pending = [root]
+        while pending:
+            key = pending.pop()
+            if key in membership:
+                continue
+            membership[key] = component_id
+            members.append(key)
+            pending.extend(reverse[key] - membership.keys())
+        components.append(sorted(members))
+    remaining = {i: set() for i in range(len(components))}
+    for key, deps in edges.items():
+        own = membership[key]
+        remaining[own].update(membership[dep] for dep in deps if membership[dep] != own)
+    units = []
+    while remaining:
+        ready = sorted((i for i, deps in remaining.items() if not deps), key=components.__getitem__)
+        if not ready:
+            raise ValueError("Invalid component graph")
+        units.extend(components[i] for i in ready)
+        for i in ready:
+            del remaining[i]
+        for deps in remaining.values():
+            deps.difference_update(ready)
+    return units
+
+
 def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
     """Order candidate groups by uniquely matched import paths, never assert completeness."""
     owner = {path: group["group_key"] for group in groups for path in group["files"]}
@@ -104,16 +163,21 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
             del remaining[key]
         for deps in remaining.values():
             deps.difference_update(ready)
+    units = _dependency_units(edges)
+    membership = {key: unit for unit in units for key in unit}
     for group in groups:
         key = group["group_key"]
+        group["dependency_component_keys"] = membership[key]
         group["dependency_group_candidates"] = sorted(edges[key])
         group["dependency_evidence"] = evidence[key]
-        if key in remaining:
-            group["risks"] = sorted(set(group["risks"]) | {"dependency_cycle_or_blocked"})
+        if len(membership[key]) > 1:
+            group["risks"] = sorted(set(group["risks"]) | {"dependency_cycle_requires_joint_commit"})
     return {
         "method": "observed_import_candidates_v1",
         "candidate_order": order,
         "blocked_group_keys": sorted(remaining),
+        "candidate_commit_units": units,
+        "cyclic_unit_count": sum(len(unit) > 1 for unit in units),
         "ambiguous_import_count": ambiguous,
         "dependencies_verified": False,
     }
