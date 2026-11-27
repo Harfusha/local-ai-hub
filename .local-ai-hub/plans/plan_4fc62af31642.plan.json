@@ -157,6 +157,60 @@
       "title": "Plná integrace Laya a všech podporovaných providerů",
       "work_phase": "verification",
       "work_status": "in_progress"
+    },
+    "task_opencode_max_integration": {
+      "acceptance_criteria": [
+        "Setup installs or merges the OpenCode V2 Hub MCP server, agents, commands and plugin into an isolated managed configuration; unrelated user config is preserved and exact rollback is available.",
+        "A live OpenCode 2.2.5 session visibly loads the Hub MCP tools and successfully invokes a repository-aware Hub action.",
+        "Hub-aware model routing selects the configured Gemma 4 12B Q4_K_M local model when eligible, respects explicit choices, validates the effective 128k context and Q4 KV cache against runtime capability, and has no silent cloud or duplicate endpoint fallback.",
+        "A model-driven OpenCode coding session uses current repository evidence, creates/binds a real Agent OS task, checkpoints, resumes and cancels safely, runs an authorized verification command, records authentic task/session-bound receipts, and completes only after Hub receipt verification.",
+        "Concurrent OpenCode and Hub inference obey one atomic GPU admission/fence; unknown requests, shutdown, process identity or VRAM state fail closed and retain the reservation until verified safe release.",
+        "The managed launcher enforces bounded configuration, environment, secret, filesystem/workspace and network access; OpenCode's own internal transport works within the boundary; adversarial checks cover junction/path changes and child-process cleanup without broadening host loopback or applying out-of-scope security changes.",
+        "Setup and diagnostics distinguish proposed, generated, configured, installed, trusted, connected, visible and runtime-verified states; docs report remaining blockers precisely.",
+        "Focused tests cover changed config, routing, lifecycle/recovery, receipts, GPU fencing and sandbox behavior; final acceptance separately records a real local-model and GPU run, live client handshake, installation state, and sandbox evidence."
+      ],
+      "accountable_role": "primary_agent",
+      "blocker": "Current default OpenCode profile still lacks a Hub native MCP entry, provider and default local model; the running service/config were preserved. Prior isolated OpenCode 2.2.5 evidence includes a real Gemma 4 12B Code Mode execute with successful Hub repository search (21 results, req_e988cc7121ac), but exact symbol lookup and task/checkpoint/resume/cancel/receipt flow remain unverified. Current readiness: Hub/Ollama online, no resident model, reservation free, 11,738 MiB free, but Hub VRAM telemetry is stale/unknown (sample_pending), so 128K/Q4 KV inference is not admitted. Focused source checks passed 167 Python tests (1 platform skip) and 14 Node tests. AppContainer + pipe + fake-model internal transport tests pass, but production snapshot/path-race/cleanup and atomic cross-process GPU fencing are not closed; managed launcher remains disabled.",
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_b9089eed4c634561fd4e_980a217bd8106f41e05e4afb9e03e31b_r2",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-25-opencode-max-integration.md",
+              "revision": {
+                "content_sha256": "67accd5944ba57922ba76b490898145cc6f8a8901bc3f8915fcd8abe156f5338",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User requests maximum integration with OpenCode and instructs continuation of the active goal. Preserve the full scope: V2 MCP/config/agents/commands, Hub local model/context routing, Agent OS lifecycle/receipts, GPU admission, managed launcher, and security sandbox. Use the current Gemma 4 12B Q4_K_M route and 128k only after runtime confirms it. Existing probes and fake-model tests do not satisfy real installation/model/GPU/sandbox acceptance.",
+          "supersedes": []
+        }
+      ],
+      "depends_on": [],
+      "description": "Dodat úplnou, nativní a bezpečnostně ověřenou integraci OpenCode s Local AI Hubem podle Superpowers specifikace a plánu; cílový model Gemma 4 12B Q4_K_M, runtime context 128k a Q4 KV pouze při živém potvrzení.",
+      "kind": "code",
+      "next_action": "Resolve Hub MCP visibility in the generated isolated profile and prove current OpenCode tool catalog plus a read-only indexed Hub action; then wire the isolated managed profile install with exact rollback. Implement and verify task lifecycle/checkpoint/recovery/receipt paths and cross-process GPU admission before enabling launch. Re-sample live telemetry only for the inference decision; run the Gemma 128K/Q4 KV session only after fresh Hub admission and VRAM qualification. Keep user profile and service untouched.",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-25-opencode-max-integration.md",
+          "revision": {
+            "content_sha256": "6c03ee94fbe9583879bdfc7cb3d1473774d71df96398868e3f2c509c44895a20",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-25-opencode-max-integration.md",
+          "revision": {
+            "content_sha256": "6071d3a84ad989a6dff7cdaa339d401287a898178efb420d7797676c3865fdad",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Maximální bezpečná integrace Local AI Hub s OpenCode",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
     }
   },
   "title": "Make applicable Local AI Hub endpoints default in Codex and Antigravity"

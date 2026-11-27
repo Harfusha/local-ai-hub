@@ -417,6 +417,7 @@ class WindowsOpenCodePipeListener:
         """Accept, authenticate, forward, frame and acknowledge one request."""
         if __import__("sys").platform != "win32":
             raise OSError("OpenCode named-pipe listener requires Windows")
+        import pywintypes
         import win32api
         import win32pipe
         import win32security

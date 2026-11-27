@@ -98,6 +98,7 @@ class ModelExecutionPolicy:
         self.models = raw_models if isinstance(raw_models, Mapping) else {}
         self.cfg = raw_cfg if isinstance(raw_cfg, Mapping) else {}
         self.fast_model = _clean_str(self.models.get("fast_code", "")).strip()
+        self.opencode_model = _clean_str(self.models.get("opencode", "")).strip()
         self.background_model = _clean_str(self.models.get("background_code", "")).strip()
         self.vision_model = _clean_str(self.models.get("vision", "")).strip()
         self.smart_models = {
@@ -109,6 +110,8 @@ class ModelExecutionPolicy:
 
     def tier_for(self, model: str) -> str:
         model = _clean_str(model).strip()
+        if self.opencode_model and model == self.opencode_model:
+            return "opencode"
         if self.vision_model and model == self.vision_model:
             return "vision"
         if model in self.smart_models:
@@ -177,6 +180,8 @@ class ModelExecutionPolicy:
             tier = "background"
         elif role_l == "vision":
             tier = "vision"
+        elif role_l == "opencode":
+            tier = "opencode"
         elif role_l in {"fast", "fast_code"}:
             tier = "fast"
         elif role_l in {"smart", "heavy_code", "reasoning"}:

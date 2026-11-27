@@ -560,6 +560,45 @@ def _hub_navigation_denial(action: str) -> dict[str, str]:
             "local_ai_repo(action='search' or 'code_index') for indexed, bounded evidence."
         )
     return {"decision": "deny", "reason": reason}
+def _active_plan_summary(root: Path) -> str:
+    plans_dir = root / ".local-ai-hub" / "plans"
+    if not plans_dir.is_dir():
+        return ""
+    try:
+        active_plans: list[dict[str, Any]] = []
+        for plan_file in sorted(plans_dir.glob("*.plan.json")):
+            if plan_file.is_symlink() or getattr(plan_file, "is_junction", lambda: False)():
+                continue
+            if plan_file.stat().st_size > MAX_JSON_BYTES:
+                continue
+            try:
+                data = json.loads(plan_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("lifecycle") == "active":
+                plan_id = str(data.get("id") or plan_file.stem)
+                desc = str(data.get("description") or "").strip()
+                tasks = data.get("tasks") if isinstance(data.get("tasks"), dict) else {}
+                active_tasks: list[str] = []
+                for tid, tinfo in tasks.items():
+                    if isinstance(tinfo, dict) and tinfo.get("work_status") in ("in_progress", "active"):
+                        t_desc = str(tinfo.get("description") or tid).strip()[:80]
+                        active_tasks.append(f"{tid} ({t_desc})")
+                active_plans.append({
+                    "id": plan_id,
+                    "desc": desc[:150],
+                    "active_tasks": active_tasks[:3],
+                })
+        if not active_plans:
+            return ""
+        lines: list[str] = []
+        for p in active_plans[:2]:
+            lines.append(f"- Plan '{p['id']}': {p['desc']}")
+            if p["active_tasks"]:
+                lines.append(f"  Active tasks: {', '.join(p['active_tasks'])}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _check_codex_tool_use(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -816,10 +855,25 @@ def _normalize_copilot_event(payload: Any) -> Any:
 
 
 def _normalize_opencode_event(payload: Any) -> Any:
-    """Accept only bounded permission and post-edit fields forwarded by the OpenCode plugin."""
-    if not isinstance(payload, dict) or payload.get("hook_event_name") not in ("PostToolUse", "PermissionRequest"):
+    """Accept bounded permission, pre-tool, post-edit, session start and user prompt submit fields forwarded by OpenCode."""
+    if not isinstance(payload, dict) or payload.get("hook_event_name") not in (
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest"
+    ):
         raise ValueError("unsupported OpenCode hook event")
-    if payload.get("hook_event_name") == "PermissionRequest":
+    event = payload.get("hook_event_name")
+    session_id = payload.get("session_id", "")
+    cwd = payload.get("cwd")
+    if event == "SessionStart":
+        return {"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd}
+    if event == "UserPromptSubmit":
+        prompt_val = payload.get("prompt") or payload.get("text") or ""
+        return {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "cwd": cwd,
+            "prompt": str(prompt_val)[:4096],
+        }
+    if event == "PermissionRequest":
         if payload.get("tool_name") != "Bash":
             raise ValueError("unsupported OpenCode permission action")
         tool_input = payload.get("tool_input")
@@ -828,10 +882,20 @@ def _normalize_opencode_event(payload: Any) -> Any:
             raise ValueError("invalid OpenCode shell permission command")
         return {
             "hook_event_name": "PermissionRequest",
-            "session_id": payload.get("session_id", ""),
-            "cwd": payload.get("cwd"),
+            "session_id": session_id,
+            "cwd": cwd,
             "tool_name": "Bash",
             "tool_input": {"command": command},
+        }
+    if event == "PreToolUse":
+        tool_name = str(payload.get("tool_name") or "").strip()
+        tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+        return {
+            "hook_event_name": "PreToolUse",
+            "session_id": session_id,
+            "cwd": cwd,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
         }
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input")
@@ -843,8 +907,8 @@ def _normalize_opencode_event(payload: Any) -> Any:
         raise ValueError("invalid OpenCode edited file path")
     return {
         "hook_event_name": "PostToolUse",
-        "session_id": payload.get("session_id", ""),
-        "cwd": payload.get("cwd"),
+        "session_id": session_id,
+        "cwd": cwd,
         "tool_name": tool_name,
         "tool_input": {"file_path": path_value},
     }
@@ -907,7 +971,7 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
     cwd = bounded_text(payload.get("cwd"), "cwd", 4096)
     if checked_root(cwd) != root:
         raise ValueError("event repository root mismatch")
-    valid_events = ({"PostToolUse", "PermissionRequest"} if host == "opencode" else
+    valid_events = ({"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest"} if host == "opencode" else
                     {"PostToolUse"} if host in HOOK_ONLY_HOSTS else
                     {"SessionStart", HOSTS[host][1], HOSTS[host][2], "PreToolUse", "PostToolUse"})
     if host in {"codex", "claude"}:
@@ -982,6 +1046,40 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
         if decision.get("decision") == "deny":
             return {"decision": "deny", "reason": str(decision.get("reason") or "Blocked by Local AI Hub policy.")}
         # OpenCode retains its configured allow/ask flow for all other commands.
+        return {}
+
+    if host == "opencode" and event in ("SessionStart", "UserPromptSubmit"):
+        _trigger_repo_warmup(root)
+        plan_summary = _active_plan_summary(root)
+        parts = [
+            "Local AI Hub Proactive Context: Local AI Hub is active and monitoring repository integrity.",
+        ]
+        if plan_summary:
+            parts.append(f"Active project plan:\n{plan_summary}")
+        parts.append(
+            "Guidance: Prioritize Local AI Hub MCP tools (local_ai_repo, local_ai_artifact, local_ai_coord) "
+            "over broad unconstrained directory searches. Mint authentic receipts via "
+            "local_ai_coord(action='verify_completion') before completing goals."
+        )
+        return {"additionalContext": "\n\n".join(parts)}
+
+    if host == "opencode" and event == "PreToolUse":
+        tool_name = str(payload.get("tool_name") or "")
+        tool_args = payload.get("tool_input") or {}
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+        decision = _check_codex_tool_use(tool_name, tool_args)
+        if decision.get("decision") == "deny":
+            return {"decision": "deny", "reason": str(decision.get("reason") or "Blocked by Local AI Hub policy.")}
+        name_l = tool_name.lower().strip()
+        if name_l in ("edit", "write", "apply_patch", "edit_file", "write_file", "replace"):
+            path_val = next((tool_args[k] for k in ("file_path", "filePath", "path", "target")
+                             if isinstance(tool_args.get(k), str)), None)
+            if path_val:
+                try:
+                    confined_path(root, Path(path_val))
+                except ValueError as exc:
+                    return {"decision": "deny", "reason": f"Target edit path outside repository root: {exc}"}
         return {}
 
     if host == "gemini_cli" and event == "BeforeAgent":
@@ -1062,7 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", help="explicit repository root; otherwise use the hook event cwd")
     parser.add_argument("--host", choices=(*HOSTS, *HOOK_ONLY_HOSTS), required=True)
     parser.add_argument(
-        "--event", choices=("afterFileEdit", "beforeShellExecution", "preToolUse", "postToolUse", "PreToolUse", "PostToolUse", "PermissionRequest"),
+        "--event", choices=("afterFileEdit", "beforeShellExecution", "preToolUse", "postToolUse", "PreToolUse", "PostToolUse", "PermissionRequest", "SessionStart", "UserPromptSubmit"),
     )
     args = parser.parse_args(argv)
     try:

@@ -447,6 +447,83 @@ def test_opencode_permission_request_rejects_unbounded_or_unrelated_events(tmp_p
         handle_host_event(tmp_path, "opencode", {**base, "tool_name": "Bash", "tool_input": {"command": "x" * 4100}})
 
 
+def test_opencode_session_start_and_user_prompt_submit_injects_plan_context(tmp_path):
+    import json
+    from local_ai_hub.repo_plan.host_hooks import handle_host_event
+
+    plans_dir = tmp_path / ".local-ai-hub" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    plan_file = plans_dir / "plan_123.plan.json"
+    plan_file.write_text(json.dumps({
+        "id": "plan_123",
+        "lifecycle": "active",
+        "description": "Opencode integration plan",
+        "tasks": {
+            "task_1": {"work_status": "in_progress", "description": "Implement proactive hooks"},
+        },
+    }), encoding="utf-8")
+
+    session_start_payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "s-1",
+        "cwd": str(tmp_path),
+    }
+    res = handle_host_event(tmp_path, "opencode", session_start_payload)
+    assert "additionalContext" in res
+    assert "Local AI Hub Proactive Context" in res["additionalContext"]
+    assert "plan_123" in res["additionalContext"]
+    assert "task_1" in res["additionalContext"]
+
+    user_prompt_payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "s-1",
+        "cwd": str(tmp_path),
+        "prompt": "Fix bug in hooks",
+    }
+    res_prompt = handle_host_event(tmp_path, "opencode", user_prompt_payload)
+    assert "additionalContext" in res_prompt
+    assert "Local AI Hub Proactive Context" in res_prompt["additionalContext"]
+    assert "plan_123" in res_prompt["additionalContext"]
+
+
+def test_opencode_pre_tool_use_denies_bare_pytest_and_outside_edits(tmp_path):
+    from local_ai_hub.repo_plan.host_hooks import handle_host_event
+
+    bare_pytest_payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s-1",
+        "cwd": str(tmp_path),
+        "tool_name": "bash",
+        "tool_input": {"command": "python -m pytest -q"},
+    }
+    denied = handle_host_event(tmp_path, "opencode", bare_pytest_payload)
+    assert denied.get("decision") == "deny"
+    assert "Unconstrained bare pytest" in denied.get("reason", "")
+
+    outside_target = tmp_path.parent / "outside.py"
+    outside_edit_payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s-1",
+        "cwd": str(tmp_path),
+        "tool_name": "edit",
+        "tool_input": {"filePath": str(outside_target)},
+    }
+    denied_outside = handle_host_event(tmp_path, "opencode", outside_edit_payload)
+    assert denied_outside.get("decision") == "deny"
+    assert "outside repository root" in denied_outside.get("reason", "")
+
+    inside_target = tmp_path / "inside.py"
+    allowed_edit_payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s-1",
+        "cwd": str(tmp_path),
+        "tool_name": "edit",
+        "tool_input": {"filePath": str(inside_target)},
+    }
+    allowed = handle_host_event(tmp_path, "opencode", allowed_edit_payload)
+    assert allowed == {}
+
+
 def test_devin_post_tool_use_checks_edit_and_returns_context_without_permission(tmp_path, monkeypatch):
     from local_ai_hub import shadow_compiler
     from local_ai_hub.repo_plan.host_hooks import handle_host_event

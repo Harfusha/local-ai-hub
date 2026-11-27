@@ -58,7 +58,7 @@ def _model_capability_guidance(cfg: dict[str, Any]) -> str:
         return ""
     seen: set[str] = set()
     parts: list[str] = []
-    for role in ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision"):
+    for role in ("background_code", "fast_code", "heavy_code", "reasoning", "general", "opencode", "vision"):
         model = str(models.get(role, "") or "")
         if not model or model in seen:
             continue
