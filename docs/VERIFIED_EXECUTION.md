@@ -39,7 +39,10 @@ The completion result includes `execution` with exact coverage counts,
 per-dimension counts, a bounded remaining preview and the highest-priority
 unblocked next obligation. Status comes from the persisted receipt evaluator,
 not agent-reported progress. Stale prerequisites prevent dependents from
-counting toward coverage. Project-configured verification obligations are
+counting toward coverage. A new prerequisite receipt also supersedes any older
+receipt of a dependent obligation; reverify the affected chain in dependency
+order. Independent valid receipts remain counted, subject to the existing
+repository revision and mutation-generation gates. Project-configured verification obligations are
 included when the evaluator applies project rules. Receipt IDs are informational.
 
 Use authorized contract steering to add newly discovered obligations; criteria
@@ -177,6 +180,8 @@ For changes scope, set `include_mapped_tests: true`. Hub resolves the existing
 `affected_tests_mapping` target patterns against its confined repository
 inventory. All matched allowed test paths become resources in the same check
 matrix. A missing target or invalid config is an error, not a skipped check.
+Matching rules are evaluated transitively until no new affected paths appear.
+Cycles terminate; missing targets and an exceeded expansion deadline fail closed.
 The effective project configuration digest is bound to the contract and
 checked again before completion, including partition aggregation. This uses
 explicit project-maintained dependency knowledge; it does not claim exhaustive
@@ -290,7 +295,8 @@ Remaining acceptance work (not claimed complete):
 2. Authorized rejection/defer dispositions, independent resolution verification
    and cross-task/Git knowledge sharing for problem reports.
 3. Full graph metadata steering and replay beyond additive criteria.
-4. Dependency-selective receipt invalidation with conservative fallback and
+4. Dependency-selective receipt invalidation across repository mutations (prerequisite
+   receipt ordering is implemented) with conservative fallback and
    obligation-specific retrieval of source context (not just exact resource identity).
 5. Semantic consistency guard, independent critic and representative seeded-defect
    evaluations. Deterministic projection regression tests do not measure model recall.
