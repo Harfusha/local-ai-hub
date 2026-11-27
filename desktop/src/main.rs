@@ -1100,12 +1100,25 @@ impl eframe::App for Desktop {
         }
         if self.pending.is_some() {
             let mut decision = None;
-            egui::Window::new("Confirm operation").collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Window::new("Confirm operation").collapsible(false).resizable(true).default_width(560.0).show(ctx, |ui| {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
                 for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "expected_revision", "expected_tree", "preview_digest"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
+                }
+                if self.pending.as_ref().unwrap().payload["op"].as_str() == Some("change_transaction") {
+                    ui.separator();
+                    ui.label("Exact reviewed operation (including paths, messages and selected hunks):");
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for key in ["paths", "hunk_ids", "message", "sequence", "record", "allow_mixed_staged", "verification_manifest"] {
+                            if let Some(value) = args.get(key) {
+                                ui.label(key);
+                                let display = serde_json::to_string_pretty(value).unwrap_or_default();
+                                ui.monospace(display);
+                            }
+                        }
+                    });
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { decision = Some(false); }
