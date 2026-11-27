@@ -79,7 +79,11 @@ jobs:
             desktop/desktop-online-smoke.json
           if-no-files-found: error
   bridge:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,6 +94,7 @@ jobs:
       - run: python -m compileall -q tools/desktop.py tests/test_desktop_control.py
       - run: python -m pytest tests/test_desktop_control.py tests/test_desktop_http_acceptance.py tests/test_dashboard_operational_surfaces.py::test_retired_dashboard_route_returns_json_not_found tests/test_packaging_assets.py tests/test_dashboard_updates.py tests/test_audit_dashboard_setting_types.py tests/test_desktop_install.py tests/test_endpoint_stats_integration.py -q
       - name: Real isolated supervisor lifecycle (Linux)
+        if: runner.os == 'Linux'
         timeout-minutes: 10
         env:
           LOCAL_AI_RUN_DESKTOP_LIFECYCLE_SMOKE: '1'
