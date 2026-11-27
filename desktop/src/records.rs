@@ -7,6 +7,13 @@ pub struct Records<'a> {
 }
 
 pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
+    if view == "Semaphores" {
+        let semaphores = response.get("semaphores")?.as_object()?;
+        return Some(Records {
+            columns: &["name", "capacity", "active_count", "queue_length", "updated_at"],
+            values: semaphores.values().take(12_000).collect(),
+        });
+    }
     let (paths, columns): (&[&str], &[&str]) = match view {
         "Requests" => (&["/observability/recent_http"], &["request_id", "project", "agent", "action", "status_code", "duration_ms", "error_type"]),
         "Telemetry history" => (&["/timeline"], &["id", "timestamp", "event_type", "agent", "action", "duration_ms", "success", "route", "stage", "error_type"]),
@@ -30,12 +37,28 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Projects" => (&["/projects", "/preprocessing/projects"], &["root", "project", "phase", "phase_progress_pct", "active_detail", "waiting_reason"]),
         "Plans" => (&["/plans", "/items"], &["id", "title", "lifecycle", "file_revision"]),
         "Worktrees" => (&["/worktrees", "/items"], &["path", "branch", "head", "status"]),
+        "File leases" => (&["/leases"], &["lease_id", "owner", "paths", "purpose", "expires_at"]),
+        "Session briefing" => (&["/active_tasks"], &["task_id", "goal", "status", "owner"]),
         "Model inventory" => (&["/data"], &["id", "owned_by", "object"]),
         "Activity" | "Agent event stream" => (&["/events", "/items"], &["seq", "kind", "agent", "action", "success", "duration_ms"]),
         _ => return None,
     };
     let values = paths.iter().find_map(|p| response.pointer(p).and_then(Value::as_array))?;
     Some(Records { columns, values: values.iter().take(12_000).collect() })
+}
+
+pub fn selection_id<'a>(view: &str, item: &'a Value) -> Option<&'a str> {
+    let key = match view {
+        "Trace index" => "trace_id",
+        "Tasks" | "Run history" => "task_id",
+        "Async jobs" | "Scheduler queue" | "Scheduler running" => "job_id",
+        "Work orders" => "work_id",
+        "Plans" => "id",
+        "File leases" => "lease_id",
+        "Worktrees" => "path",
+        _ => return None,
+    };
+    item.get(key)?.as_str().filter(|id| !id.trim().is_empty())
 }
 
 pub fn field<'a>(item: &'a Value, name: &str) -> &'a Value {
@@ -143,6 +166,24 @@ pub fn merge_events(buffer: &mut Vec<Value>, incoming: &[Value], limit: usize) {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn selection_uses_view_specific_identity_not_trace_or_request_aliases() {
+        let item = json!({"trace_id":"trace_a","task_id":"task_a","job_id":"job_a","lease_id":"lease_a"});
+        assert_eq!(selection_id("Tasks", &item), Some("task_a"));
+        assert_eq!(selection_id("Trace index", &item), Some("trace_a"));
+        assert_eq!(selection_id("Async jobs", &item), Some("job_a"));
+        assert_eq!(selection_id("File leases", &item), Some("lease_a"));
+        assert_eq!(selection_id("Work orders", &item), None);
+        assert_eq!(selection_id("Memory", &item), None);
+    }
+    #[test]
+    fn semaphore_and_lease_tables_use_canonical_shapes() {
+        let response = json!({"semaphores":{"gpu":{"name":"gpu","capacity":1}}});
+        assert_eq!(records("Semaphores", &response).unwrap().values.len(), 1);
+        assert!(records("Semaphores", &json!({})).is_none());
+        let leases = json!({"leases":[{"lease_id":"lease_a","owner":"writer"}]});
+        assert_eq!(records("File leases", &leases).unwrap().values[0]["owner"], "writer");
+    }
     #[test]
     fn missing_is_not_empty() {
         assert!(records("Requests", &json!({})).is_none());
