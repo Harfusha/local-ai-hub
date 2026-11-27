@@ -46,6 +46,18 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
     if let Some(scope) = execution.get("scope_check") {
         ui.label(format!("Scope: {}", label(scope, "status")));
     }
+    let inventory = &execution["inventory"];
+    if let Some(excluded) = count(inventory, "excluded_count") {
+        if excluded > 0 {
+            ui.label(format!("Explicit scope exclusions: {excluded} (not covered)"));
+            if let Some(entries) = inventory["exclusions_preview"].as_array() {
+                for entry in entries.iter().take(12) {
+                    ui.small(format!("{} — {}", label(entry, "path"), label(entry, "reason")));
+                }
+            }
+            if excluded > 12 { ui.small("Additional exclusions: inspect the task contract."); }
+        }
+    }
     if let Some(dimensions) = execution["dimensions"].as_object() {
         ui.heading("Coverage by dimension");
         for (name, counts) in dimensions.iter().take(512) {
