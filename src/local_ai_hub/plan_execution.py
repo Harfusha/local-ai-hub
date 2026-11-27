@@ -52,6 +52,34 @@ def partition_coverage(configs: list[dict[str, Any]], *,
     return result
 
 
+def reconcile_plan_dependencies(
+    plan_id: str, tasks: dict[str, Any], rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Only count a verified task if its complete local prerequisite chain is verified.
+
+    External dependencies are unresolved by this bounded single-plan snapshot.
+    The closure starts empty so cycles cannot justify their own verification.
+    """
+    verified_candidates = {row["plan_task_id"] for row in rows if row["status"] == "verified"}
+    pending = set(verified_candidates)
+    verified: set[str] = set()
+    while pending:
+        ready = {
+            task_id for task_id in pending
+            if all(dep["plan_id"] == plan_id and dep["task_id"] in verified
+                   for dep in tasks[task_id].get("depends_on", []))
+        }
+        if not ready:
+            break
+        verified.update(ready)
+        pending.difference_update(ready)
+    return [
+        {**row, "status": "dependency_unverified", "receipt_status": "verified"}
+        if row["plan_task_id"] in pending else dict(row)
+        for row in rows
+    ]
+
+
 def plan_actionability(plan_id: str, tasks: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Conservative local-plan scheduling preview, not authorization to execute."""
     by_id = {row["plan_task_id"]: row for row in rows}
@@ -118,7 +146,7 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
     deadline = time.monotonic() + 15.0
     rows: list[dict[str, Any]] = []
     configs: list[dict[str, Any]] = []
-    verified_configs: list[bool] = []
+    config_task_ids: list[str] = []
     obligation_counts: Counter[str] = Counter()
     dimension_counts: dict[str, Counter[str]] = defaultdict(Counter)
     tasks_with_coverage = 0
@@ -176,10 +204,12 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
                 )
                 if isinstance(config, dict):
                     configs.append(config)
-                    verified_configs.append(row["status"] == "verified")
-        counts[row["status"]] += 1
+                    config_task_ids.append(plan_task_id)
         rows.append(row)
-    partitions = partition_coverage(configs, verified=verified_configs)
+    rows = reconcile_plan_dependencies(plan_id, tasks, rows)
+    counts.update(row["status"] for row in rows)
+    verified_task_ids = {row["plan_task_id"] for row in rows if row["status"] == "verified"}
+    partitions = partition_coverage(configs, verified=[task_id in verified_task_ids for task_id in config_task_ids])
     stable = (
         workspace.get_plan(plan_id)["file_revision"] == snapshot["file_revision"]
         and _revision(tracker, root) == revision
