@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sqlite3
 import tempfile
 import uuid
 from pathlib import Path
@@ -24,7 +25,7 @@ _MAX_INDEX = 16 * 1024 * 1024
 def execute_staged_commit(
     config: dict[str, Any], engine: Any, lease_store: Any, *,
     root: str, paths: list[str], expected_revision: str, expected_tree: str,
-    message: str, approved: bool,
+    message: str, approved: bool, journal: Any | None = None,
 ) -> dict[str, Any]:
     """Commit a reviewed stage-zero tree only, under a root lease and index lock."""
     if approved is not True or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
@@ -34,7 +35,8 @@ def execute_staged_commit(
         or any(ord(c) < 32 and c not in "\n\t" for c in message)
     ):
         return {"success": False, "error": "Invalid commit message"}
-    owner = "git-commit-" + uuid.uuid4().hex
+    operation_id = uuid.uuid4().hex
+    owner = "git-commit-" + operation_id
     lease_id = ""
     candidate = ""
     branch = ""
@@ -147,16 +149,25 @@ def execute_staged_commit(
         renewed = lease_store.renew(owner=owner, lease_id=lease_id, ttl_seconds=600)
         if renewed.get("success") is not True:
             raise ValueError("Repository lease expired")
+        if journal is not None:
+            journal.prepare(operation_id=operation_id, root=root, branch=branch, parent=parent,
+                            tree=actual_tree, candidate=candidate)
         update_attempted = True
         git("update-ref", "--no-deref", "-m", "Local AI Hub: approved staged commit", branch, candidate, parent)
         outcome = {
             "success": True, "commit_oid": candidate, "parent_oid": parent, "tree_oid": actual_tree,
             "branch": branch, "index_rewritten": False, "pushed": False,
             "verification_status": "not_assessed", "explicit_user_approval": True,
+            "operation_id": operation_id,
         }
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        if journal is not None:
+            try:
+                journal.published(operation_id)
+            except Exception:
+                outcome["journal_update_unconfirmed"] = True
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, sqlite3.Error) as exc:
         outcome = {"success": False, "error": str(exc), "commit_ready": False,
-                   "outcome_unknown": update_attempted, "retryable": False}
+                   "outcome_unknown": update_attempted, "retryable": False, "operation_id": operation_id}
         if candidate:
             outcome.update(candidate_commit_oid=candidate, branch=branch)
         if update_attempted:

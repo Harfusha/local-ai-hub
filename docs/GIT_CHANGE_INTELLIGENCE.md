@@ -85,3 +85,7 @@ The staged executor also independently compares the exact materialized Git tree 
 ## Delta summaries
 
 A complete worktree summary stores a bounded, root-scoped derived map of group IDs and atom digests in the existing cache. When `baseline_stored=true`, call `split_changes(mode="delta", expected_revision=<previous observed change-set ID>)` after edits. Only changed groups are projected, with counts of unchanged-content and removed groups. Expired, incomplete, scoped or malformed baselines fail closed. A delta does not reuse review or verification status; even identical group content can have different dependencies and task context. CLI supports `changes delta --expected-revision ...`. No measured cloud savings are claimed.
+
+## Commit recovery journal
+
+Local CLI commit execution persists an intent in the local state directory before branch CAS and marks it published after success. The journal stores only root, branch and object identities, not commit messages or source. Use `hubctl changes commit-inspect --root ... --operation-id ...` to inspect the observed branch tip and index lock after uncertainty. It does not automatically replay, unlock or roll back. A failed journal prepare prevents publication; failed post-publication bookkeeping is distinguished from commit failure. The direct internal API can still be used without the optional journal; the local CLI always supplies it.

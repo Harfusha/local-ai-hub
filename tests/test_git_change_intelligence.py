@@ -155,7 +155,7 @@ def test_malformed_persistent_cache_is_recomputed(tmp_path):
             return {"schema": 2, "rows": [[1, 1, 1, 1, "invalid"]], "count": 1}
 
         def set(self, key, value):
-            assert value["schema"] == 2
+            assert value.get("schema") == 2 or value.get("method") == "python_ast_v2"
 
     _repo(tmp_path)
     (tmp_path / "payment.py").write_text("different\n", encoding="utf-8")

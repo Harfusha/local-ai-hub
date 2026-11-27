@@ -300,13 +300,15 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "commit-staged":
             if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
                 parser.error("commit-staged requires --apply, --expected-revision, --expected-tree, --commit-message and exact --changed-path values")
         elif args.apply:
             parser.error("only commit-staged accepts --apply")
+        if args.sub_arg == "commit-inspect" and not args.operation_id:
+            parser.error("commit-inspect requires --operation-id")
         requested_mode = None
     elif args.action == "knowledge":
         if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
@@ -365,7 +367,19 @@ def main() -> int:
         requested_mode = None
 
     if args.action == "changes":
+        if args.sub_arg == "commit-inspect":
+            from local_ai_hub.change_commit_journal import CommitJournal
+            from local_ai_hub.repository_scope import authorized_repository_root
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            result = CommitJournal(configured_state_dir(config)).inspect(
+                authorized_repository_root(config, str(args.root.resolve())), args.operation_id,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
         if args.sub_arg == "commit-staged":
+            from local_ai_hub.change_commit_journal import CommitJournal
             from local_ai_hub.change_commit_execution import execute_staged_commit
             from local_ai_hub.deterministic import DeterministicEngine
             from local_ai_hub.leases import ScopeLeaseStore
@@ -377,6 +391,7 @@ def main() -> int:
                 root=str(args.root.resolve()), paths=args.changed_path,
                 expected_revision=args.expected_revision, expected_tree=args.expected_tree,
                 message=args.commit_message, approved=args.apply,
+                journal=CommitJournal(configured_state_dir(config)),
             )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1

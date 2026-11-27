@@ -80,3 +80,34 @@ def test_independent_tree_diff_rejects_misreported_selection(tmp_path):
     assert not result["success"]
     assert "tree diff" in result["error"]
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
+
+
+def test_persistent_commit_journal_and_scope(tmp_path):
+    from local_ai_hub.change_commit_journal import CommitJournal
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    engine, leases, parent, tree = _fixture(repo)
+    journal = CommitJournal(tmp_path / "state")
+    result = execute_staged_commit({}, engine, leases, root=str(repo.resolve()), paths=["a"],
+                                   expected_revision="a" * 64, expected_tree=tree,
+                                   message="chore: reviewed", approved=True, journal=journal)
+    assert result["success"], result
+    reopened = CommitJournal(tmp_path / "state")
+    observed = reopened.inspect(str(repo.resolve()), result["operation_id"])
+    assert observed["state"] == "published"
+    assert observed["recovery_status"] == "candidate_is_branch_tip"
+    assert observed["retry_authorized"] is False
+    assert not reopened.inspect(str(tmp_path), result["operation_id"])["success"]
+
+
+def test_journal_failure_before_cas_is_non_mutating(tmp_path):
+    engine, leases, parent, tree = _fixture(tmp_path)
+    journal = MagicMock()
+    journal.prepare.side_effect = OSError("storage unavailable")
+    result = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()), paths=["a"],
+                                   expected_revision="a" * 64, expected_tree=tree,
+                                   message="chore: reviewed", approved=True, journal=journal)
+    assert not result["success"]
+    assert not result["outcome_unknown"]
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
