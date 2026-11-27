@@ -765,7 +765,7 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
             and projected.get("error") == "max_response_tokens too small"
         ) or value.get("next_action") == "request_larger_response_budget"
         if lost_pointer or budget_failure:
-            rejection = {"success": False, "error": "max_response_tokens too small",
+            rejection: dict[str, Any] = {"success": False, "error": "max_response_tokens too small",
                          "next_action": "request_larger_response_budget",
                          "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True}}
             candidates = [rejection]

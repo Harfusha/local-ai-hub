@@ -358,6 +358,11 @@ def _agent_output(
         {key: value[key] for key in ("response_budget", "token_efficiency", "request_id", "reused") if key in value}
         if retain_internal_metadata and isinstance(value, dict) else {}
     )
+    recovery_fields = (
+        {key: value[key] for key in ("next_action", "task_context_artifact_id") if isinstance(value.get(key), str)}
+        if tool == "local_ai_coord" and arguments.get("action") == "context_compile"
+        and isinstance(value, dict) and value.get("success") is False else {}
+    )
     truncated = (
         isinstance(value, dict)
         and isinstance(value.get("response_budget"), dict)
@@ -390,6 +395,7 @@ def _agent_output(
     if isinstance(result, dict):
         if retain_internal_metadata:
             result.update(internal_fields)
+        result.update(recovery_fields)
         if truncated:
             result["truncated"] = True
     result = services_module._reconcile_existing_budget(result) or result
@@ -402,6 +408,7 @@ def _agent_output(
     if isinstance(value, dict) and isinstance(projected, dict) and projected.get("success") is False:
         if isinstance(value.get("request_id"), str):
             projected["request_id"] = value["request_id"][:160]
+        projected.update(recovery_fields)
     return projected
 
 def _instrumented_tool(services_module: Any = None):
