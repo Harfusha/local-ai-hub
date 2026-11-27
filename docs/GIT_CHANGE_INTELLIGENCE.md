@@ -146,3 +146,14 @@ git_commit = ["unit"]
 Use one to four structured argv aliases. Shell strings and injected environment references are unsupported for this policy. Resolve executable names through absolute PATH entries and provide the matching absolute argv arrays in the explicit local verification manifest. The environment capsule digest is still supplied by the operator. The policy applies to each intermediate tree; a direct commit or unverified sequence is refused. A single-step sequence is supported. Preview identity includes the effective project configuration digest when the rule is active, and publication rechecks policy and receipts before updating the branch. No arbitrary commands are automatically executed from the repository configuration.
 
 This is a cooperative project policy, not a branch protection rule or a sandbox. The current local configuration and permitted overlays can be changed by an operator with filesystem access. Use protected branches and independent CI for enforcement against untrusted contributors. Authorship of native worktree edits cannot be inferred from task checkpoints, leases or watcher events.
+
+
+## Fenced Command Broker postimage receipts
+
+After a private transaction successfully imports and verifies output under an active server-validated work-attempt fence, the broker records the latest bounded file digest and mode with its task, attempt and transaction identifiers. The local ledger retains up to 2048 records for seven days, records no source text, and supersedes evidence on a later broker import (including deletion). Change summaries count current matches; detail mode reports the corresponding task/attempt/transaction when a fresh bounded read matches. At most eight candidate files are reread per request. Native edits with different content no longer match, and records are physically root scoped. A matching postimage does not prove that the whole Git patch was written by that task: pre-existing edits, later identical bytes, uncovered files and staging state remain possible. Receipt recording is best effort and never triggers a retry of an already committed mutation.
+
+## Benchmarking actual Git history
+
+`python tools/benchmark_git_change_context.py --repo /absolute/repository --base HEAD~1 --head HEAD`
+
+The historical benchmark reads a real committed range without changing HEAD, index or worktree. It compares the raw patch and all paginated summaries using the same transport estimator, independently verifies the changed-path inventory against Git, reports explicitly listed and omitted paths and patch/semantic coverage, and rejects oversized Git output. This measures transport estimates for a real workload; it is not provider billing or an LLM quality comparison. Actual provider-token/quality experiments still require a chosen cloud model, approved data and a paired independent evaluation protocol.
