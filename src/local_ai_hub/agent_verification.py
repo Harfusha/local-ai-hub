@@ -1921,6 +1921,18 @@ class VerificationStore:
             from .execution_problems import PROBLEM_STATE_KEY, problem_confirmation_dependencies, project_problems
 
             problem_registry = task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {})
+            from .execution_steering import revision_proof_cutoffs
+
+            cutoffs = revision_proof_cutoffs(state_data.get("contract_history", []))
+            retired_receipts = {
+                receipt.criterion for receipt in visible_receipts
+                if receipt.criterion in satisfied and receipt.criterion in cutoffs
+                and receipt.observed_at <= cutoffs[receipt.criterion]
+            }
+            if retired_receipts:
+                satisfied = [criterion for criterion in satisfied if criterion not in retired_receipts]
+                stale = list(dict.fromkeys((*stale, *sorted(retired_receipts))))
+                is_complete = False
 
             problems = project_problems(
                 problem_registry,
@@ -1940,6 +1952,8 @@ class VerificationStore:
                 include_verified_criteria=True,
                 confirmation_dependencies=problem_confirmation_dependencies(problem_registry),
             )
+            if retired_receipts:
+                execution["revision_stale_criteria"] = sorted(retired_receipts)
             effective = set(execution.pop("verified_criteria"))
             dependency_stale = set(execution.get("dependency_stale_criteria", []))
             invalidated = set(satisfied) - effective
