@@ -1,5 +1,6 @@
 """Contract tests for the native desktop controller (no service or display)."""
 import io
+import json
 import os
 import stat
 import zipfile
