@@ -151,3 +151,66 @@ def test_verified_plan_rows_require_transitive_prerequisites():
     result = {row["plan_task_id"]: row for row in reconcile_plan_dependencies("p", tasks, rows)}
     assert result["leaf"]["status"] == "verified"
     assert result["cycle1"]["status"] == "dependency_unverified"
+
+
+def test_cross_plan_preview_resolves_only_current_canonical_prerequisites(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub import agent_tasks, verification_rules
+    from local_ai_hub.repo_plan import agent_bridge
+    from local_ai_hub.plan_execution import plan_execution_preview
+
+    root = str(tmp_path)
+
+    def spec(*deps):
+        return {"acceptance_criteria": ["inspect"], "work_status": "done",
+                "depends_on": [{"plan_id": p, "task_id": t} for p, t in deps]}
+
+    snapshots = {
+        "a": {"plan": {"tasks": {"leaf": spec(("b", "mid"))}}, "file_revision": "a-rev", "rel_path": "a.json"},
+        "b": {"plan": {"tasks": {"mid": spec(("c", "root")), "irrelevant": spec()}},
+              "file_revision": "b-rev", "rel_path": "b.json"},
+        "c": {"plan": {"tasks": {"root": spec()}}, "file_revision": "c-rev", "rel_path": "c.json"},
+    }
+    tasks = {}
+    bindings = {}
+    for plan, task in (("a", "leaf"), ("b", "mid"), ("c", "root")):
+        key = f"{plan}-{task}"
+        tasks[key] = SimpleNamespace(
+            contract=SimpleNamespace(acceptance_criteria=("inspect",), slo_profile={}),
+            context=SimpleNamespace(session_id="session"), checkpoint=SimpleNamespace(state_data={}),
+            status=SimpleNamespace(value="completed"),
+        )
+        bindings[plan] = [SimpleNamespace(plan_task_id=task, task_id=key, bound_at=1,
+                                          plan_rel_path=f"{plan}.json", session_id="session", contract_revision=1)]
+    monkeypatch.setattr(agent_tasks, "_task_scope_root", lambda _: root)
+    monkeypatch.setattr(agent_bridge, "TaskBindingManager",
+                        lambda _: SimpleNamespace(bindings_for_plan=lambda plan: bindings[plan]))
+    invalid = set()
+    evaluated = []
+
+    def verify(_store, task_id, **kwargs):
+        evaluated.append(task_id)
+        assert kwargs["current_revision"] == "repo-rev"
+        return SimpleNamespace(complete=task_id not in invalid, execution={})
+
+    monkeypatch.setattr(verification_rules, "evaluate_project_completion", verify)
+    workspace = SimpleNamespace(repo_root=tmp_path, get_plan=snapshots.__getitem__)
+    store = SimpleNamespace(get=tasks.get)
+    verifier = SimpleNamespace(state_store=SimpleNamespace(db_path=tmp_path / "state.sqlite"))
+    tracker = SimpleNamespace(fingerprint=lambda *args, **kwargs: {"fingerprint": "repo-rev"})
+    result = plan_execution_preview(workspace, "a", store, verifier, tracker)
+    assert result["complete"]
+    assert result["referenced_dependencies"]["verified_tasks"] == 2
+    assert evaluated == ["a-leaf", "b-mid", "c-root"]
+    invalid.add("c-root")
+    result = plan_execution_preview(workspace, "a", store, verifier, tracker)
+    assert not result["complete"]
+    assert result["counts"] == {"dependency_unverified": 1}
+    assert result["referenced_dependencies"]["unresolved_count"] == 2
+    assert result["actionability"]["waiting_preview"][0]["waiting_preview"][0]["reason"] == "external_dependency_unverified"
+    invalid.clear()
+    snapshots["c"]["plan"]["tasks"]["root"] = spec(("a", "leaf"))
+    result = plan_execution_preview(workspace, "a", store, verifier, tracker)
+    assert not result["complete"]
+    assert result["referenced_dependencies"]["verified_tasks"] == 0
