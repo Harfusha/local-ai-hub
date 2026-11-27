@@ -683,6 +683,12 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             payload.update(plan_text_patch(args, task=False))
         else:
             payload["task_id"] = text_field(args, "task_id", 200)
+            if op == "plan_task_move":
+                status = text_field(args, "status", 30)
+                if status not in {"planned", "ready", "in_progress", "blocked"}:
+                    raise ValueError("Only ordinary work states may be changed here; completion requires evidence")
+            else:
+                status = ""
             # plan_task_edit is an upsert. Fence both creation and mutations
             # using the exact observed document and revision, so edit/move
             # cannot accidentally create a new card with a mistyped ID.
@@ -706,9 +712,6 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                     op = "plan_task_edit"
                 payload["task_data"] = data
             if op == "plan_task_move":
-                status = text_field(args, "status", 30)
-                if status not in {"planned", "ready", "in_progress", "blocked"}:
-                    raise ValueError("Only ordinary work states may be changed here; completion requires evidence")
                 payload["task_data"] = {"work_status": status}
                 op = "plan_task_edit"
         return checked_post(control, "/api/coord/" + op, payload)
