@@ -105,8 +105,10 @@ def test_two_clone_semantic_conflict_is_read_only(tmp_path, divergent):
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
 def test_two_offline_agents_conflicting_project_task_requires_manual_review(tmp_path):
-    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
-    from local_ai_hub.repo_project_tasks import build_project_task_record
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_task_models import TaskCheckpoint
+    from local_ai_hub.agent_tasks import GoalContract, TaskStore
 
     root = tmp_path / "agent-a"
     root.mkdir()
@@ -116,24 +118,23 @@ def test_two_offline_agents_conflicting_project_task_requires_manual_review(tmp_
     project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
     hub = root / ".local-ai-hub"
     hub.mkdir()
+    (hub / ".gitignore").write_text("local/\n", encoding="utf-8")
     (hub / "project.json").write_text(json.dumps({
         "schema_version": 1, "project_id": project_id, "mode": "shared",
     }), encoding="utf-8")
-    record = build_project_task_record(RepoKnowledgeStore(root), {
-        "task_id": "task-multi-agent",
-        "status": "planned",
-        "contract": {
-            "goal": "Resolve shared task",
-            "description": "",
-            "acceptance_criteria": ["preserve both agents' intent"],
-            "non_goals": [], "constraints": [], "risk_profile": "normal",
-        },
-        "checkpoint": {"phase": "planned", "next_action": "", "blockers": [], "affected_paths": []},
-    })
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "project identity")
     relative = ".local-ai-hub/agent-os/tasks/task-multi-agent.json"
-    task_path = root / relative
-    task_path.parent.mkdir(parents=True)
-    task_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    state_a = TaskStore(AgentStateStore(tmp_path / "agent-a-state" / "agent_state.sqlite"))
+    task = state_a.create(
+        GoalContract(
+            goal="Resolve shared task",
+            acceptance_criteria=("preserve both agents' intent",),
+        ),
+        ScopeContext(repository_id=project_id, task_id="task-multi-agent"),
+        task_id="task-multi-agent", repo_root=str(root), actor="agent-a",
+    )
+    assert task.task_id == "task-multi-agent"
     _git(root, "add", ".")
     _git(root, "commit", "-m", "shared task")
 
@@ -141,11 +142,17 @@ def test_two_offline_agents_conflicting_project_task_requires_manual_review(tmp_
     _git(root, "clone", str(root), str(second))
     _git(second, "config", "user.name", "Agent B")
     _git(second, "config", "user.email", "agent-b@example.invalid")
+    state_b = TaskStore(AgentStateStore(tmp_path / "agent-b-state" / "agent_state.sqlite"))
+    assert state_b.get("task-multi-agent", repo_root=str(second)) is not None
 
-    for checkout, phase, agent in ((root, "analysis by A", "A"), (second, "analysis by B", "B")):
-        current = json.loads((checkout / relative).read_text(encoding="utf-8"))
-        current["payload"]["checkpoint"]["phase"] = phase
-        (checkout / relative).write_text(json.dumps(current) + "\n", encoding="utf-8")
+    for checkout, task_store, phase, agent in (
+        (root, state_a, "analysis by A", "A"),
+        (second, state_b, "analysis by B", "B"),
+    ):
+        task_store.checkpoint(
+            "task-multi-agent", TaskCheckpoint(phase=phase, next_action=f"continue as {agent}"),
+            actor=f"agent-{agent.casefold()}",
+        )
         _git(checkout, "commit", "-am", f"agent {agent} update")
 
     _git(second, "fetch", "origin")
@@ -159,6 +166,62 @@ def test_two_offline_agents_conflicting_project_task_requires_manual_review(tmp_
         "classification": "manual_review_required",
     }]
     assert (second / relative).read_bytes() == before
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_two_offline_agents_update_disjoint_tasks_and_merge_without_crossing_state(tmp_path):
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_task_models import TaskCheckpoint
+    from local_ai_hub.agent_tasks import GoalContract, TaskStore
+
+    root = tmp_path / "agent-a"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Agent A")
+    _git(root, "config", "user.email", "agent-a@example.invalid")
+    project_id = "b1807f30-0e2a-4433-9384-36b62667ec26"
+    hub = root / ".local-ai-hub"
+    hub.mkdir()
+    (hub / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (hub / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "project identity")
+
+    state_a = TaskStore(AgentStateStore(tmp_path / "agent-a-state" / "agent_state.sqlite"))
+    for task_id in ("task-agent-a", "task-agent-b"):
+        state_a.create(
+            GoalContract(goal=f"Work owned by {task_id}", acceptance_criteria=("preserve scope",)),
+            ScopeContext(repository_id=project_id, task_id=task_id),
+            task_id=task_id, repo_root=str(root), actor="agent-a",
+        )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "shared tasks")
+
+    second = tmp_path / "agent-b"
+    _git(root, "clone", str(root), str(second))
+    _git(second, "config", "user.name", "Agent B")
+    _git(second, "config", "user.email", "agent-b@example.invalid")
+    state_b = TaskStore(AgentStateStore(tmp_path / "agent-b-state" / "agent_state.sqlite"))
+    for task_id in ("task-agent-a", "task-agent-b"):
+        assert state_b.get(task_id, repo_root=str(second)) is not None
+
+    state_a.checkpoint("task-agent-a", TaskCheckpoint(phase="analysis-a"), actor="agent-a")
+    _git(root, "commit", "-am", "agent A checkpoint")
+    state_b.checkpoint("task-agent-b", TaskCheckpoint(phase="analysis-b"), actor="agent-b")
+    _git(second, "commit", "-am", "agent B checkpoint")
+
+    _git(second, "fetch", "origin")
+    merge = subprocess.run(
+        ["git", "-C", str(second), "merge", "origin/main"],
+        capture_output=True, timeout=10,
+    )
+    assert merge.returncode == 0, merge.stderr.decode(errors="replace")
+    assert checkout_sync_status(second)["state"] == "clean_shared_paths"
+    assert state_b.get("task-agent-a", repo_root=str(second)).checkpoint.phase == "analysis-a"
+    assert state_b.get("task-agent-b", repo_root=str(second)).checkpoint.phase == "analysis-b"
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")

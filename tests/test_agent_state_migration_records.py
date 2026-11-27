@@ -332,11 +332,13 @@ def test_release_update_bootstraps_missing_identity_for_old_git_checkout(tmp_pat
     old_clone = tmp_path / "old-clone"
     subprocess.run(["git", "clone", "--quiet", str(root), str(old_clone)], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(old_clone), "remote", "set-url", "origin", "https://example.invalid/org/project.git"],
+        ["git", "-C", str(old_clone), "remote", "set-url", "origin",
+         "https://clone-user:clone-secret@example.invalid/org/project.git?token=clone-secret"],
         check=True,
     )
     subprocess.run(
-        ["git", "-C", str(root), "remote", "add", "origin", "https://example.invalid/org/project.git"],
+        ["git", "-C", str(root), "remote", "add", "origin",
+         "https://user:secret@example.invalid/org/project.git?token=secret"],
         check=True,
     )
     (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
@@ -349,6 +351,7 @@ def test_release_update_bootstraps_missing_identity_for_old_git_checkout(tmp_pat
 
     result = setup_module.migrate_release_state(state_dir)
     manifest = json.loads((root / ".local-ai-hub/project.json").read_text(encoding="utf-8"))
+    assert "secret" not in json.dumps(manifest)
     assert str(uuid.UUID(manifest["project_id"])) == manifest["project_id"]
     assert manifest["mode"] == "shared"
     assert result["project_state_migration"]["status"] == "migrated"

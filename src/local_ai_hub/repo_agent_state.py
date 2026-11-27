@@ -15,14 +15,17 @@ from pathlib import Path
 from typing import Any
 
 from .agent_incidents import _incident_scope_key
+from .agent_task_models import GoalContract, TaskCheckpoint
 from .repo_project_tasks import list_project_tasks
 from .repo_project_memory import list_project_memory
 from .repo_project_incidents import list_project_incidents
 from .repo_knowledge import _git_checkout_generation
 from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
+from .json_utils import dumps as json_dumps
 
 AGENT_OS_SUBDIRS = ("tasks", "memory", "incidents", "handoffs", "verification")
 _MAX_PROJECT_RECORD_FILES = 10000
+_PROJECTION_GENERATION_VERSION = 3
 
 
 def _projection_generation(root: Path) -> tuple[Any, ...]:
@@ -52,7 +55,11 @@ def _projection_generation(root: Path) -> tuple[Any, ...]:
         )
         digest.update(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         digest.update(b"\n")
-    return (*checkout, count, digest.hexdigest()) if checkout is not None else (None, count, digest.hexdigest())
+    return (
+        (_PROJECTION_GENERATION_VERSION, *checkout, count, digest.hexdigest())
+        if checkout is not None else
+        (_PROJECTION_GENERATION_VERSION, None, count, digest.hexdigest())
+    )
 
 
 def ensure_agent_os_layout(repo_root: Path | str) -> None:
@@ -126,9 +133,9 @@ def rebuild_agent_state_projection(
             task_id = payload.get("task_id")
             if not task_id:
                 continue
-            contract_json = json.dumps(payload.get("contract", {}), ensure_ascii=False)
-            checkpoint = dict(payload.get("checkpoint", {}))
-            checkpoint["state_data"] = {
+            contract_json = json_dumps(GoalContract.from_dict(payload.get("contract", {})).to_dict())
+            checkpoint_data = dict(payload.get("checkpoint", {}))
+            checkpoint_data["state_data"] = {
                 "_agent_task_scope": {
                     "version": 4,
                     "project_id": project_id,
@@ -137,7 +144,21 @@ def rebuild_agent_state_projection(
                     "snapshot_id": repository_snapshot_id(root),
                 }
             }
-            checkpoint_json = json.dumps(checkpoint, ensure_ascii=False)
+            checkpoint_projection = TaskCheckpoint.from_dict(checkpoint_data).to_dict()
+            checkpoint_json = json_dumps(checkpoint_projection)
+            branch = (
+                checkout_generation[4]
+                if len(checkout_generation) > 4 and isinstance(checkout_generation[4], str)
+                else ""
+            )
+            context_json = json.dumps({
+                "repository_id": project_id,
+                "clone_id": "",
+                "worktree_id": worktree_id,
+                "branch": branch,
+                "task_id": task_id,
+                "session_id": "",
+            }, separators=(",", ":"))
             status = payload.get("status", "planned")
             # Canonical project records accept the plan-facing spelling, while
             # the runtime TaskStore uses TaskStatus.ACTIVE.
@@ -173,7 +194,7 @@ def rebuild_agent_state_projection(
                         same_content = (
                             existing_project_id == project_id
                             and json.loads(existing[2] or "{}") == json.loads(contract_json)
-                            and existing_checkpoint == checkpoint
+                                and existing_checkpoint == checkpoint_projection
                         )
                     except (TypeError, ValueError):
                         same_content = False
@@ -184,14 +205,14 @@ def rebuild_agent_state_projection(
                 """INSERT INTO agent_tasks_projection (
                     task_id, status, contract, checkpoint, context, owner, lease_id, receipts,
                     created_at, updated_at, heartbeat_expires_at
-                ) VALUES (?, ?, ?, ?, '{}', 'canonical-git', '', '{}', ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, ?, 'canonical-git', '', '{}', ?, ?, 0)
                 ON CONFLICT(task_id) DO UPDATE SET
                     status=excluded.status,
                     contract=excluded.contract,
                     checkpoint=excluded.checkpoint,
                     updated_at=excluded.updated_at
                 """,
-                (task_id, status, contract_json, checkpoint_json, now, now),
+                (task_id, status, contract_json, checkpoint_json, context_json, now, now),
             )
             counts["tasks"] += 1
 

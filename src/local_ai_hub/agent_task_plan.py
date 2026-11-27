@@ -748,8 +748,22 @@ class TaskPlanSyncMixin:
                     (*values, *expected_values),
                 )
                 if con.execute("SELECT changes()").fetchone()[0] != 1:
+                    current_row = con.execute(
+                        "SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts, "
+                        "heartbeat_expires_at, updated_at FROM agent_tasks_projection WHERE task_id = ?",
+                        (current.task_id,),
+                    ).fetchone()
+                    columns = (
+                        "task_id", "status", "owner", "lease_id", "contract", "context",
+                        "checkpoint", "receipts", "heartbeat_expires_at", "updated_at",
+                    )
+                    changed_fields = [
+                        name for name, actual, expected in zip(columns, current_row or (), expected_values)
+                        if actual != expected
+                    ]
                     raise ConcurrentTaskUpdateError(
-                        f"Task {current.task_id} changed during transition; reload and retry"
+                        f"Task {current.task_id} changed during transition; fields changed: "
+                        f"{', '.join(changed_fields) or 'projection unavailable'}; reload and retry"
                     )
                 if (
                     updated.owner != current.owner
