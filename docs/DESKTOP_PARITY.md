@@ -5,7 +5,30 @@ requested feature/verification matrix, not a second project plan. The authoritat
 work plan is `.local-ai-hub/plans/plan_pr10_native_desktop.plan.json` and is
 maintained through the Local AI Hub planner API.
 
-## Current local audit — 2026-11-27
+## Current local audit — 2026-11-27, commit 6a2351f1
+
+- `feat/native-desktop-hub` is at `6a2351f1a75b232e74fa9c0e0f7e7e88dc73e149`,
+  pushed to its origin branch. `origin/master` is `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc`
+  and is an ancestor of the PR head (0 behind, 206 commits ahead).
+- Local Windows x64 verification at this commit: `cargo fmt --check`, 39 locked
+  Rust tests, and `cargo build --release --locked` passed. Focused desktop
+  smoke/control tests passed. A local window opened, but host policy
+  prevented focus; this is not interactive Windows acceptance.
+- Main CI run [46050120943](https://github.com/Harfusha/local-ai-hub/actions/runs/46050120943)
+  showed 12 jobs passed, 4 still running, and the optional release-assets job
+  skipped when inspected. Do not treat the incomplete matrix as a final receipt.
+- Native desktop run [46050121130](https://github.com/Harfusha/local-ai-hub/actions/runs/46050121130)
+  passed all four bridge jobs, Linux Xvfb smoke, and both macOS desktop targets.
+  Windows tests, release build, and packaging passed, but the visible-window
+  smoke failed before opening a window: `Wgpu(NoSuitableAdapterFound)` on
+  `windows-latest`. This hosted VM currently provides no suitable WGPU adapter;
+  Windows runtime acceptance needs a GPU-capable runner. See [GitHub-hosted
+  runner options](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job).
+- The PR remains a draft. Historical UI/CLI parity, full current CI, Windows
+  runtime, accessibility, security/performance audit, signed installer and
+  release acceptance remain open. No merge-readiness claim is made.
+
+## Earlier local audit snapshot — 2026-11-27, before commit 6a2351f1
 
 - `feat/native-desktop-hub` contains `origin/master` at `8fa0dbf3` via merge
   commit `eda8fca1`. Fetched `origin/feat/native-desktop-hub` at
@@ -43,14 +66,14 @@ maintained through the Local AI Hub planner API.
 
 ## Architecture (Rust revision)
 
-The desktop is now compiled Rust, using eframe/egui 0.31.1 with the Glow
-OpenGL renderer. No Tkinter, Qt, Electron, browser engine or local UI server.
+The desktop is compiled Rust, using eframe/egui 0.31.1 with the WGPU
+renderer. No Tkinter, Qt, Electron, browser engine or local UI server.
 The toolkit is MIT/Apache-2.0 licensed. The explicit 0.31.1 pin targets a
 known App::update API, not a claim to be the newest release. Upgrade and
 dependency license/security review remain release gates.
 
-Build from a trusted Hub checkout with Rust stable and platform OpenGL
-libraries: `cargo build --manifest-path desktop/Cargo.toml --release`.
+Build from a trusted Hub checkout with Rust stable and the platform graphics
+runtime: `cargo build --manifest-path desktop/Cargo.toml --release`.
 Run `python tools/hubctl.py desktop`, or run `desktop/target/release/local-ai-hub-desktop` directly from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
 LOCAL_AI_CONFIG or choose the installation in the UI. Python is still
 required by the existing Hub; it is not used for GUI rendering. The desktop
