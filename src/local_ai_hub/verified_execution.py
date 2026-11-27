@@ -328,8 +328,8 @@ def execution_projection(
     total = len(ordered)
     inventory_summary = ({
         "authority": "declared", "resources": len(inventory["resources"]),
-        "excluded_count": len(inventory.get("exclusions", [])),
-        "exclusions_preview": inventory.get("exclusions", [])[:MAX_PREVIEW],
+        **({"excluded_count": len(inventory["exclusions"]),
+            "exclusions_preview": inventory["exclusions"][:MAX_PREVIEW]} if inventory.get("exclusions") else {}),
         "checks": len(inventory["checks"]),
         "obligations": len(inventory["resources"]) * len(inventory["checks"]),
         **({"partition": dict(inventory["partition"])} if "partition" in inventory else {}),
