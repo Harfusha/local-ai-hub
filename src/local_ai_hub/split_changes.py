@@ -10,6 +10,7 @@ from typing import Any
 
 from .change_index_tree import index_tree_oid
 from .change_atoms import PatchBudgetExceeded, identity, inspect_change_atoms
+from .change_patch_batch import patch_output_limit
 from .change_dependencies import annotate_dependencies
 from .process_utils import clean_git_env, run_hidden
 
@@ -240,11 +241,11 @@ def run_split_changes(
         })
         patch = "--patch" in args
         cp = git_runner(
-            ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", *args],
+            ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.quotePath=true", *args],
             cwd=str(resolved_root), capture_output=True, check=False,
             timeout=engine.git_status_timeout, env=env,
             stdin=subprocess_module.DEVNULL,
-            max_output_bytes=512 * 1024 if patch else 4 * 1024 * 1024,
+            max_output_bytes=patch_output_limit(args) if patch else 4 * 1024 * 1024,
             **hidden_run_kwargs_fn(),
         )
         if getattr(cp, "stdout_truncated", False):
@@ -313,6 +314,7 @@ def run_split_changes(
             staged_scope="committed" if comparison else "staged",
             persistent_cache=getattr(engine, "_change_summary_cache", None),
             fact_extractor=getattr(engine, "_extract_source_facts", None),
+            batch_patches=git_runner is run_hidden,
         )
         if comparison is None and (
             git(*args) != before or _git_snapshot_metadata(git) != snapshot_before
@@ -407,6 +409,8 @@ def run_split_changes(
         "unavailable_patch_scopes": observed["unavailable"],
         "summary_cache_hits": observed["cache_hits"],
         "persistent_summary_cache_hits": observed["persistent_cache_hits"],
+        "patch_batch_reads": observed["patch_batch_reads"],
+        "patch_scope_limit": observed["patch_scope_limit"],
         "observed_change_set_id": identity(
             "observed-change-set-v2", str(top),
             comparison["base"] if comparison else snapshot_before["head"],

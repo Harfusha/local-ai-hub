@@ -15,11 +15,12 @@ from collections.abc import Callable
 from typing import Any
 
 from .change_semantics import summarize_source_patch, summarize_source_bytes
+from .change_patch_batch import MAX_PATCH_BYTES, PatchBatchReader, patch_arguments
 from .change_source_facts import supports_facts
 from .change_untracked import observe_untracked
 
-_MAX_PATCH_BYTES = 512 * 1024
-_MAX_PATCHES = 64
+_MAX_PATCH_BYTES = MAX_PATCH_BYTES
+_MAX_PATCHES = 256
 _MAX_LINES = 10000
 _MAX_HUNKS = 64
 _CACHE_SIZE = 256
@@ -127,6 +128,7 @@ def inspect_change_atoms(
     persistent_cache: Any | None = None,
     staged_scope: str = "staged",
     fact_extractor: Callable[[str, str], Any] | None = None,
+    batch_patches: bool = False,
 ) -> dict[str, Any]:
     """Inspect tracked textual patches twice and publish only matched observations.
 
@@ -141,9 +143,18 @@ def inspect_change_atoms(
     persistent_hits = 0
     semantic_attempts = 0
     deadline = time.monotonic() + 10
+    max_patches = _MAX_PATCHES if batch_patches else 64
+    readers: dict[str, PatchBatchReader] = {}
+    if batch_patches:
+        for scope, counts_by_path, position in ((staged_scope, staged, 0), ("unstaged", unstaged, 1)):
+            paths = [path for path, xy in sorted(statuses.items()) if xy != "??"
+                     and xy not in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+                     and xy[position] != " " and path in counts_by_path
+                     and sum(n for n in counts_by_path[path] if n is not None) <= _MAX_LINES]
+            readers[scope] = PatchBatchReader(git, paths[:max_patches], staged=scope == staged_scope)
     for path, xy in sorted(statuses.items()):
         if xy == "??":
-            if len(pending) + len(pending_untracked) >= _MAX_PATCHES or time.monotonic() >= deadline:
+            if len(pending) + len(pending_untracked) >= max_patches or time.monotonic() >= deadline:
                 unavailable.append({"path": path, "scope": "untracked", "reason": "analysis_budget"})
                 continue
             try:
@@ -181,18 +192,13 @@ def inspect_change_atoms(
                 unavailable.append({"path": path, "scope": scope, "reason": "missing_numstat"})
                 continue
             binary = any(n is None for n in counts)
-            if sum(n for n in counts if n is not None) > _MAX_LINES or len(pending) + len(pending_untracked) >= _MAX_PATCHES or time.monotonic() >= deadline:
+            if sum(n for n in counts if n is not None) > _MAX_LINES or len(pending) + len(pending_untracked) >= max_patches or time.monotonic() >= deadline:
                 unavailable.append({"path": path, "scope": scope, "reason": "analysis_budget"})
                 continue
-            args = (
-                "diff", "--patch", "--binary", "--full-index", "--no-renames", "--no-ext-diff",
-                "--no-textconv", "--no-color", "--unified=0", "--no-indent-heuristic",
-                "--diff-algorithm=myers", "--submodule=short", "--ignore-submodules=none",
-                *(("--cached",) if scope == staged_scope else ()),
-                "--", ":(literal)" + path,
-            )
+            args = patch_arguments([path], staged=scope == staged_scope)
             try:
-                patch = git(*args)
+                reader = readers.get(scope)
+                patch = reader.read(path) if reader is not None else git(*args)
             except PatchBudgetExceeded:
                 unavailable.append({"path": path, "scope": scope, "reason": "patch_output_budget"})
                 continue
@@ -235,13 +241,17 @@ def inspect_change_atoms(
 
     # Re-read selected patches to detect content edits that preserve status and
     # line counts. This is optimistic observation, not a filesystem lock.
+    batch_reads = sum(reader.batch_reads for reader in readers.values())
+    readers = {scope: PatchBatchReader(git, [path for path, observed_scope, _, _ in pending if observed_scope == scope],
+                                        staged=scope == staged_scope) for scope in readers}
     for path, scope, args, digest in pending:
         if time.monotonic() >= deadline:
             observations[path] = [item for item in observations[path] if item["scope"] != scope]
             unavailable.append({"path": path, "scope": scope, "reason": "recheck_budget"})
             continue
         try:
-            current = git(*args)
+            reader = readers.get(scope)
+            current = reader.read(path) if reader is not None else git(*args)
         except PatchBudgetExceeded as exc:
             raise ValueError("Git patch exceeded budget during recheck") from exc
         if hashlib.sha256(current).hexdigest() != digest:
@@ -264,4 +274,6 @@ def inspect_change_atoms(
         "unavailable": unavailable,
         "cache_hits": cache_hits,
         "persistent_cache_hits": persistent_hits,
+        "patch_batch_reads": batch_reads + sum(reader.batch_reads for reader in readers.values()),
+        "patch_scope_limit": max_patches,
     }

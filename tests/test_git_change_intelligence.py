@@ -454,3 +454,55 @@ def test_module_path_candidates_typescript_emitted_extensions_and_python_oversho
     assert _js_module_paths("src/main.ts", "./entry.mjs", paths) == {"src/entry.mts"}
     assert _js_module_paths("src/main.ts", "./worker.cjs", paths) == {"src/worker.cts"}
     assert _python_module_paths("pkg/main.py", "...api", {"api.py"}) == set()
+
+
+def test_patch_batch_preserves_exact_individual_bytes_and_special_filenames(tmp_path):
+    import os
+
+    from local_ai_hub.change_patch_batch import PatchBatchReader, patch_arguments, partition_patches
+
+    _repo(tmp_path)
+    names = ["a b.txt", "unicode-é.txt", "binary.dat", "delete.txt", "mode.txt"]
+    if os.name != "nt":
+        names += ["with\ttab", 'quote".txt', "line\nbreak"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"\0old" if name == "binary.dat" else b"old\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "fixture")
+    for name in names:
+        if name == "delete.txt":
+            (tmp_path / name).unlink()
+        else:
+            (tmp_path / name).write_bytes(b"\0new" if name == "binary.dat" else b"new\n")
+    def git(*args):
+        return _git(tmp_path, "-c", "core.quotePath=true", *args)
+    raw = git(*patch_arguments(names, staged=False))
+    parts = partition_patches(raw, names)
+    assert parts == {name: git(*patch_arguments([name], staged=False)) for name in names}
+    reader = PatchBatchReader(git, names, staged=False)
+    assert {name: reader.read(name) for name in names} == parts
+    assert reader.batch_reads == 1
+
+
+def test_large_dirty_worktree_batches_all_supported_patch_scopes(tmp_path):
+    _repo(tmp_path)
+    names = [f"component_{index:03d}.txt" for index in range(80)]
+    for name in names:
+        (tmp_path / name).write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "large fixture")
+    for name in names:
+        (tmp_path / name).write_text("after\n", encoding="utf-8")
+    before = _git(tmp_path, "diff", "--binary")
+    result = _plan(tmp_path)
+    assert result["success"], result
+    assert result["patch_scope_limit"] == 256
+    assert result["git_visible_observation_complete"], result["unavailable_patch_scopes"]
+    assert result["patch_batch_reads"] >= 20
+    changes = {change["path"]: change for group in result["clusters"] for change in group["changes"]}
+    assert set(changes) == set(names)
+    assert all(len(change["atoms"]) == 1 for change in changes.values())
+    for name in (names[0], names[-1]):
+        focused = _plan(tmp_path, [name])
+        assert focused["clusters"][0]["changes"][0]["atoms"][0]["atom_id"] == changes[name]["atoms"][0]["atom_id"]
+    assert _git(tmp_path, "diff", "--binary") == before

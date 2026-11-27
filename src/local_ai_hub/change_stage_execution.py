@@ -12,6 +12,7 @@ from typing import Any
 
 from .change_commit_preflight import commit_preflight
 from .change_git_coordination import git_coordination_id
+from .change_patch_batch import patch_arguments
 from .process_utils import clean_git_env, run_hidden
 from .repository_scope import authorized_repository_root, _is_redirecting_link
 
@@ -39,7 +40,7 @@ def stage_selection(
 
     def git(*args: str, extra: dict[str, str] | None = None, missing: bool = False) -> bytes:
         cp = run_hidden(
-            ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.splitIndex=false", *args],
+            ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.splitIndex=false", "-c", "core.quotePath=true", *args],
             cwd=root, capture_output=True, check=False, stdin=subprocess.DEVNULL,
             timeout=20.0, max_output_bytes=4 * 1024 * 1024,
             env=clean_git_env(extra_env={"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
@@ -159,10 +160,7 @@ def stage_selection(
                 atoms = [a for c in changes for a in c.get("atoms", []) if a.get("scope") == "unstaged"]
                 if len(atoms) != 1 or atoms[0].get("content_kind") != "text" or atoms[0].get("hunks_truncated"):
                     raise ValueError("Complete tracked text patch required")
-                patch = git("diff", "--patch", "--binary", "--full-index", "--no-renames", "--no-ext-diff",
-                            "--no-textconv", "--no-color", "--unified=0", "--no-indent-heuristic",
-                            "--diff-algorithm=myers", "--submodule=short", "--ignore-submodules=none",
-                            "--", ":(literal)" + path)
+                patch = git(*patch_arguments([path], staged=False))
                 if len(patch) > 512 * 1024:
                     raise ValueError("Patch exceeds budget")
                 old, _, _ = patch_blob_pair(patch)
