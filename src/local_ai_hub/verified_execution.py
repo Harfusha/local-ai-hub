@@ -186,7 +186,7 @@ def expand_declared_inventory(
 
 def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     """Validate contract metadata. Missing metadata means a mandatory independent unit."""
-    if type(raw) is not dict or set(raw) - {"version", "profile", "units", "required_dimensions", "inventory", "host_continuation"}:
+    if type(raw) is not dict or set(raw) - {"version", "profile", "units", "required_dimensions", "inventory", "host_continuation", "knowledge_guard"}:
         raise ValueError("invalid verified_execution contract")
     expanded, raw = expand_declared_inventory(criteria, raw)
     if tuple(criteria) != expanded:
@@ -198,6 +198,9 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     for criterion in criteria:
         _canonical(criterion, "criterion")
     profile = _canonical(raw.get("profile", "custom"), "profile", 64)
+    knowledge_guard = raw.get("knowledge_guard", False)
+    if type(knowledge_guard) is not bool:
+        raise ValueError("knowledge_guard must be a boolean")
     host_continuation = raw.get("host_continuation", False)
     if type(host_continuation) is not bool:
         raise ValueError("host_continuation must be a boolean")
@@ -241,6 +244,8 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
         normalized["inventory"] = raw["inventory"]
     if host_continuation:
         normalized["host_continuation"] = True
+    if knowledge_guard:
+        normalized["knowledge_guard"] = True
     return normalized
 
 
@@ -486,6 +491,10 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
     if isinstance(inventory, Mapping) and inventory.get("excluded_count", 0):
         parts.append(f"Explicit scope exclusions: {inventory['excluded_count']}; inspect task contract for rationale. "
                      "Coverage does not include excluded resources.")
+    knowledge = execution.get("knowledge_check", {})
+    if knowledge and knowledge.get("complete") is not True:
+        parts.append(f"Required repository knowledge guard: {knowledge.get('status', 'unavailable')}; "
+                     f"blocking findings={knowledge.get('blocking_count', 0)}. Inspect current knowledge before completion.")
     if scope and scope.get("complete") is not True:
         parts.append("Repository scope changed or unavailable; reconcile the scope before completion.")
     elif isinstance(next_unit, Mapping):
