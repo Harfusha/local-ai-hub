@@ -96,3 +96,29 @@ def test_plan_preview_aggregates_only_available_obligation_coverage(tmp_path, mo
     assert aggregate["tasks_with_coverage"] == 1
     assert aggregate["counts"]["verified"] == aggregate["counts"]["total"] == 1
     assert aggregate["dimensions"] == {"general": {"total": 1, "verified": 1}}
+
+
+def test_plan_actionability_requires_verified_local_dependencies_and_defers_external():
+    from local_ai_hub.plan_execution import plan_actionability
+
+    tasks = {
+        "api": {"depends_on": [], "work_status": "done"},
+        "consumer": {"depends_on": [{"plan_id": "p", "task_id": "api"}]},
+        "integration": {"depends_on": [{"plan_id": "p", "task_id": "consumer"}]},
+        "external": {"depends_on": [{"plan_id": "other", "task_id": "done"}]},
+        "blocked": {"depends_on": [], "work_status": "blocked"},
+        "conflict": {"depends_on": []},
+        "cancelled": {"depends_on": [], "work_status": "cancelled"},
+    }
+    statuses = {"api": "verified", "consumer": "incomplete", "conflict": "binding_conflict"}
+    rows = [{"plan_task_id": key, "status": statuses.get(key, "unbound")} for key in tasks]
+    result = plan_actionability("p", tasks, rows)
+    assert result["ready_count"] == 1
+    assert result["next_plan_task"]["plan_task_id"] == "consumer"
+    assert result["waiting_count"] == 4
+    waiting = {row["plan_task_id"]: row for row in result["waiting_preview"]}
+    assert waiting["external"]["waiting_preview"][0]["reason"] == "external_plan_unchecked"
+    assert waiting["integration"]["waiting_preview"][0]["reason"] == "local_dependency_unverified"
+    assert waiting["conflict"]["reason"] == "task_blocked_or_binding_conflict"
+    rows[0]["status"] = "incomplete"
+    assert plan_actionability("p", tasks, rows)["next_plan_task"]["plan_task_id"] == "api"
