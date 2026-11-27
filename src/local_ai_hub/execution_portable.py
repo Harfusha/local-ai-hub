@@ -15,6 +15,7 @@ from .agent_task_models import _task_scope_root
 from .execution_problems import PROBLEM_STATE_KEY, _validated_records
 from .repo_knowledge import RepoKnowledgeStore, _encode, _path_for, validate_knowledge_file
 from .repo_knowledge_privacy import contains_private_project_data
+from .repo_plan.schema_validation import RepoPlanValidationError
 from .verified_execution import _canonical
 
 PREFIX = "execution-lead-"
@@ -78,7 +79,7 @@ def publication_candidates(task: Any, request: Any) -> list[dict[str, Any]]:
             continue
         try:
             candidate = build_publication_candidate(report, manifest["project_id"])
-        except ValueError:
+        except (ValueError, RepoPlanValidationError):
             continue
         if candidate not in result:
             result.append(candidate)
@@ -116,10 +117,10 @@ def portable_leads(task: Any, request: Any) -> list[dict[str, Any]]:
             }, manifest["project_id"])
             if expected != record:
                 continue
-            if store.get("observation", record["id"], verify_sources=False)["revision"] != item["revision"]:
-                raise ValueError("execution observation changed during read")
-        except (TypeError, KeyError, json.JSONDecodeError):
+        except (TypeError, KeyError, ValueError, RepoPlanValidationError):
             continue
+        if store.get("observation", record["id"], verify_sources=False)["revision"] != item["revision"]:
+            raise ValueError("execution observation changed during read")
         result.append({"id": record["id"], "criterion": decoded["criterion"],
                        "title": decoded["observation"], "record_revision": item["revision"],
                        "status": "historical_unverified", "catalog_complete": catalog["complete"]})
