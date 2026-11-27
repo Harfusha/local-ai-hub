@@ -160,7 +160,7 @@ def _materialize(root: str, entries: dict[bytes, tuple[bytes, bytes]], directory
             target.chmod(0o755)
 
 
-def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: Any) -> dict[str, Any]:
+def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: Any, *, rerun: bool = False) -> dict[str, Any]:
     if preview.get("success") is not True:
         return preview
     try:
@@ -185,6 +185,12 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
             tree = index_tree_oid(parent_raw_to_index(entries), parent)
             if tree != step["tree_oid"]:
                 raise ValueError("Intermediate tree changed after preview")
+            existing = None if rerun else journal.current_tree_checks(
+                root=root, tree=tree, command_id=command_id, environment_id=environment_id,
+            )
+            if existing:
+                results.append({"tree_oid": tree, "receipt_id": existing, "reused": True})
+                continue
             attempt = journal.begin_tree_checks(root=root, tree=tree, command_id=command_id,
                                                 environment_id=environment_id)
             checks = []
@@ -226,9 +232,14 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                 raise ValueError("Observed verification environment changed")
             receipt = journal.record_tree_checks(root=root, tree=tree, command_id=command_id,
                                                  environment_id=environment_id, checks=checks, ttl=_TTL, attempt=attempt)
-            results.append({"tree_oid": tree, "receipt_id": receipt, "checks": checks})
+            results.append({"tree_oid": tree, "receipt_id": receipt, "checks": checks, "reused": False})
+        current = require_sequence_receipts(root, preview, manifest, journal)
+        if current != [step["receipt_id"] for step in results]:
+            raise ValueError("Verification receipts changed during the sequence; refresh verification")
         return {"success": True, "verified_steps": results, "preview_digest": preview["preview_digest"],
                 "commands_digest": command_id, "observed_environment_digest": environment_id,
+                "reused_step_count": sum(step["reused"] for step in results),
+                "executed_step_count": sum(not step["reused"] for step in results),
                 "verification_status": "configured_commands_passed", "commit_ready": False,
                 "limitations": "Not a sandbox, not proof of complete test coverage or external dependency immutability."}
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
