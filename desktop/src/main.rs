@@ -18,13 +18,13 @@ use std::{
 
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
-    ("Requests", &["Requests", "Active requests", "Async jobs", "Work orders", "Trace index", "Endpoint analytics"]),
+    ("Requests", &["Requests", "Active requests", "Scheduler queue", "Scheduler running", "Async jobs", "Work orders", "Trace index", "Endpoint analytics"]),
     ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review", "Run history"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
     ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Laya"]),
-    ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Diagnostics", "Audit"]),
+    ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Recovery journal", "Diagnostics", "Audit"]),
     ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Search workspaces"]),
@@ -158,6 +158,15 @@ struct Desktop {
     semaphore: String,
     capacity: i64,
     trace_cursor: i64,
+    trace_offset: i64,
+    trace_kind: String,
+    trace_state: String,
+    trace_action: String,
+    trace_min_ms: i64,
+    request_status: String,
+    request_action: String,
+    request_sort: String,
+    request_desc: bool,
     trace_before: i64,
     trace_content_field: String,
     trace_content_offset: i64,
@@ -209,7 +218,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -277,7 +286,7 @@ impl Desktop {
                         self.record_detail = None;
                         if done.label == "Settings" { self.settings_draft = settings::Draft::from_response(&value); }
                         if done.label == "Save settings" || done.label == "Reset configuration overrides" { self.settings_draft = settings::Draft::default(); }
-                        if done.label == "Run events" { value = trace::sanitize(&value); }
+                        if matches!(done.label.as_str(), "Run events" | "Trace index") { value = trace::sanitize(&value); }
                         if done.label == "Trace content" {
                             // Do not flatten arbitrary stored text into searchable or copyable rows.
                             self.rows.clear();
@@ -331,6 +340,7 @@ impl Desktop {
         let data = match view {
             "Updates" => request("update_status", json!({})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
+            "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
             "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
             "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
@@ -360,6 +370,19 @@ impl Desktop {
                     });
                     return;
                 }
+                if self.current() == "Requests" {
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("request_status").selected_text(&self.request_status).show_ui(ui, |ui| {
+                            for status in ["all", "failed", "2xx", "4xx", "5xx"] { ui.selectable_value(&mut self.request_status, status.into(), status); }
+                        });
+                        ui.label("Exact action");
+                        ui.text_edit_singleline(&mut self.request_action);
+                        egui::ComboBox::from_id_salt("request_sort").selected_text(&self.request_sort).show_ui(ui, |ui| {
+                            for key in ["created_at", "duration_ms", "status_code", "action"] { ui.selectable_value(&mut self.request_sort, key.into(), key); }
+                        });
+                        ui.checkbox(&mut self.request_desc, "Descending");
+                    });
+                }
                 if self.current() == "Endpoint analytics" {
                     ui.horizontal_wrapped(|ui| {
                         egui::ComboBox::from_id_salt("endpoint_scope").selected_text(&self.endpoint_scope).show_ui(ui, |ui| {
@@ -379,10 +402,31 @@ impl Desktop {
                     });
                 }
                 if self.current() == "Trace index" {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Kind");
+                        egui::ComboBox::from_id_salt("trace_kind").selected_text(if self.trace_kind.is_empty() { "All" } else { &self.trace_kind }).show_ui(ui, |ui| {
+                            for kind in ["", "api_request", "async_job"] { ui.selectable_value(&mut self.trace_kind, kind.into(), if kind.is_empty() { "All" } else { kind }); }
+                        });
+                        ui.label("State");
+                        egui::ComboBox::from_id_salt("trace_state").selected_text(if self.trace_state.is_empty() { "All" } else { &self.trace_state }).show_ui(ui, |ui| {
+                            for state in ["", "running", "queued", "completed", "failed", "interrupted"] { ui.selectable_value(&mut self.trace_state, state.into(), if state.is_empty() { "All" } else { state }); }
+                        });
+                        ui.label("Action");
+                        ui.text_edit_singleline(&mut self.trace_action);
+                        ui.label("Minimum ms");
+                        ui.add(egui::DragValue::new(&mut self.trace_min_ms).range(0..=86400000));
+                        if ui.button("Apply trace filters").clicked() { self.trace_offset = 0; self.refresh(ctx); }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let total = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Trace index").and_then(|v| v["total"].as_i64());
+                        if ui.add_enabled(self.trace_offset > 0, egui::Button::new("Previous trace page")).clicked() { self.trace_offset = (self.trace_offset - 100).max(0); self.refresh(ctx); }
+                        if ui.add_enabled(total.is_some_and(|n| self.trace_offset + 100 < n), egui::Button::new("Next trace page")).clicked() { self.trace_offset += 100; self.refresh(ctx); }
+                        ui.label(format!("Offset {} / {}", self.trace_offset, total.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into())));
+                    });
                     ui.small("Full inputs and outputs are captured only when detailed telemetry is enabled. Stored details appear as recorded; local access only; separate local retention policy.");
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Trace ID");
-                        ui.text_edit_singleline(&mut self.entity);
+                        if ui.text_edit_singleline(&mut self.entity).changed() { self.trace_cursor = 0; self.trace_before = 0; self.trace_content_offset = 0; self.clear_response(); }
                         ui.label("After sequence");
                         ui.add(egui::DragValue::new(&mut self.trace_cursor).range(0..=i64::MAX));
                         ui.label("Before sequence (0 = unset)");
@@ -487,7 +531,7 @@ impl Desktop {
                 });
                 if self.current() == "Run history" {
                     ui.label("Select a task from the table or enter its ID. History stays repository-scoped.");
-                    if ui.text_edit_singleline(&mut self.entity).changed() { self.history_cursor = 0; }
+                    if ui.text_edit_singleline(&mut self.entity).changed() { self.history_cursor = 0; self.clear_response(); }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("After sequence");
                         ui.add(egui::DragValue::new(&mut self.history_cursor).range(0..=i64::MAX));
@@ -1037,6 +1081,10 @@ impl eframe::App for Desktop {
                             filtered.retain(|item| records::endpoint_matches(item, &self.endpoint_scope));
                             records::sort_records(&mut filtered, &self.endpoint_sort, self.endpoint_desc);
                         }
+                        if self.current() == "Requests" {
+                            filtered.retain(|item| records::request_matches(item, &self.request_status, &self.request_action));
+                            records::sort_records(&mut filtered, &self.request_sort, self.request_desc);
+                        }
                         ui.label(format!("{} matching records (bounded response)", filtered.len()));
                         let mut selected = None;
                         egui::ScrollArea::horizontal().id_salt("records").show(ui, |ui| {
@@ -1051,7 +1099,7 @@ impl eframe::App for Desktop {
                                     let item = filtered[index];
                                     ui.horizontal(|ui| {
                                         for (col, field) in table.columns.iter().enumerate() {
-                                            let value = if self.current() == "Trace index" { records::display(&trace::sanitize(&item[*field])) } else { records::display(records::field(item, field)) };
+                                            let value = if self.current() == "Trace index" { records::display(&trace::sanitize(records::field(item, field))) } else { records::display(records::field(item, field)) };
                                             let display: String = value.chars().take(32).collect();
                                             if col == 0 {
                                                 if ui.add_sized([155.0, height], egui::Button::new(display)).clicked() { selected = Some(item.clone()); }
@@ -1064,7 +1112,7 @@ impl eframe::App for Desktop {
                             });
                         });
                         if let Some(item) = selected {
-                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { if self.entity != id { self.history_cursor = 0; } self.entity = id.to_owned(); }
+                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { if self.entity != id { self.history_cursor = 0; self.trace_cursor = 0; self.trace_before = 0; self.trace_content_offset = 0; } self.entity = id.to_owned(); }
                             if self.current() == "Plans" {
                                 if let Some(revision) = item["file_revision"].as_str() { self.revision = revision.to_owned(); }
                                 if let Some(title) = item["title"].as_str() { self.plan_title = title.to_owned(); }

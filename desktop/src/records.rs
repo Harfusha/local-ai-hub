@@ -10,9 +10,12 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
     let (paths, columns): (&[&str], &[&str]) = match view {
         "Requests" => (&["/observability/recent_http"], &["request_id", "project", "agent", "action", "status_code", "duration_ms", "error_type"]),
         "Active requests" => (&["/observability/active_requests"], &["request_id", "agent", "action", "project", "duration_ms", "state"]),
+        "Scheduler queue" => (&["/scheduler/pending_jobs"], &["job_id", "state", "model", "source", "agent", "wait_ms", "wait_reason"]),
+        "Scheduler running" => (&["/scheduler/inflight_jobs"], &["job_id", "state", "model", "source", "agent", "wait_ms", "service_ms"]),
+        "Recovery journal" => (&["/recovery/recent"], &["request_id", "action", "state", "updated_at", "detail"]),
         "Async jobs" => (&["/async_jobs/recent", "/async_jobs/jobs", "/async_jobs/items"], &["job_id", "action", "state", "created_at", "updated_at", "error"]),
         "Work orders" => (&["/work_orchestrator/recent", "/work_orchestrator/orders", "/work_orchestrator/items"], &["work_id", "goal", "state", "updated_at", "error"]),
-        "Trace index" => (&["/items"], &["trace_id", "request_id", "action", "agent", "kind", "status", "updated_at"]),
+        "Trace index" => (&["/items"], &["trace_id", "request_id", "action", "agent", "kind", "status", "duration_ms", "updated_at"]),
         "Commands" => (&["/runtime_stats/commands/active"], &["command", "cwd", "class", "age_ms", "timeout_seconds"]),
         "Process sessions" => (&["/observability/sessions"], &["session_id", "pid", "status", "started_at", "duration_seconds", "events", "cache_hit_rate", "version"]),
         "Recent errors" => (&["/observability/recent_errors"], &["component", "operation", "safe_message", "count", "recovered_count", "last_seen"]),
@@ -40,6 +43,18 @@ pub fn field<'a>(item: &'a Value, name: &str) -> &'a Value {
         "status" => item.get("state"),
         _ => None,
     }).unwrap_or(&Value::Null)
+}
+
+pub fn request_matches(item: &Value, status: &str, action: &str) -> bool {
+    if !action.is_empty() && item["action"].as_str() != Some(action) { return false; }
+    let code = item["status_code"].as_u64();
+    match status {
+        "failed" => item["success"].as_bool() == Some(false) || code.is_some_and(|n| n >= 400),
+        "2xx" => code.is_some_and(|n| (200..300).contains(&n)),
+        "4xx" => code.is_some_and(|n| (400..500).contains(&n)),
+        "5xx" => code.is_some_and(|n| (500..600).contains(&n)),
+        _ => true,
+    }
 }
 
 pub fn endpoint_matches(item: &Value, scope: &str) -> bool {

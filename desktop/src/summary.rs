@@ -117,6 +117,31 @@ pub fn render(ui: &mut egui::Ui, view: &str, snapshot: &Value) {
             }
         });
     }
+    if matches!(view, "Overview" | "Runtime health" | "Models & search" | "Telemetry report") {
+        ui.collapsing("Recorded token efficiency", |ui| {
+            let obs = &snapshot["observability"];
+            if obs["stale"] == true || obs["data_available"] != true {
+                ui.label("Current aggregate unavailable or stale. No zero-value estimate inferred.");
+                return;
+            }
+            for (label, key) in [
+                ("Gross estimated avoided cloud tokens", "gross_cloud_tokens_avoided_est"),
+                ("Net estimated cloud-token delta", "net_cloud_token_delta_est"),
+                ("Realistic estimated net delta", "realistic_net_cloud_token_delta_est"),
+            ] { ui.label(format!("{label}: {}", crate::records::display(&obs[key]))); }
+        });
+        ui.collapsing("Circuit breakers", |ui| {
+            if let Some(rows) = snapshot["circuit_breakers"].as_object() {
+                if rows.is_empty() { ui.label("No circuit breaker records returned"); }
+                for (target, state) in rows.iter().take(100) {
+                    ui.label(format!("{target}: open={} · failures={} · cooldown seconds={}", crate::records::display(&state["open"]), crate::records::display(&state["failures"]), crate::records::display(&state["cooldown_remaining_seconds"])));
+                }
+            } else { ui.label("Unavailable"); }
+        });
+    }
+    if view == "Scheduler queue" {
+        ui.label(format!("Pending total: {} · truncated: {}", crate::records::display(&snapshot["scheduler"]["pending_jobs_total"]), crate::records::display(&snapshot["scheduler"]["pending_jobs_truncated"])));
+    }
     if view == "Commands" {
         ui.group(|ui| {
             ui.heading("Command runtime");

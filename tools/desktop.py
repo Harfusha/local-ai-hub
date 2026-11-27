@@ -27,6 +27,9 @@ VIEWS = {
     "Overview": "/api/live/status?light=1&scope=1h",
     "Requests": "/api/live/status?light=1&scope=1h",
     "Active requests": "/api/live/status?light=1&scope=1h",
+    "Scheduler queue": "/api/live/status?light=1&scope=1h",
+    "Scheduler running": "/api/live/status?light=1&scope=1h",
+    "Recovery journal": "/api/live/status?light=1&scope=1h",
     "Async jobs": "/api/live/status?light=1&scope=1h",
     "Work orders": "/api/live/status?light=1&scope=1h",
     "Laya": "/api/live/status?light=1&scope=1h",
@@ -291,6 +294,30 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         return control._cli(argv, timeout=spec.timeout, structured=True)
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "trace_page":
+        offset = args.get("offset", 0)
+        minimum = args.get("min_duration_ms", 0)
+        if type(offset) is not int or not 0 <= offset <= (1 << 31) - 1:
+            raise ValueError("Invalid trace offset")
+        if type(minimum) is not int or not 0 <= minimum <= 86400000:
+            raise ValueError("Invalid trace duration")
+        params: dict[str, Any] = {"limit": 100, "offset": offset, "min_duration_ms": minimum}
+        for key in ("kind", "state", "agent", "model", "action"):
+            value = args.get(key, "")
+            if not isinstance(value, str) or len(value) > (64 if key == "action" else 200):
+                raise ValueError("Invalid trace filter: " + key)
+            if value:
+                params[key] = value
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            result = client.get("/api/debug-traces?" + urlencode(params), timeout=15.0, requires_heavy_work=False)
+            if result.get("success") is not True:
+                raise RuntimeError(str(result.get("error") or "Trace page unavailable"))
+            return result
+        finally:
+            client.close()
     if op == "task_page":
         root = explicit_root(args.get("root"))
         offset = args.get("offset", 0)
