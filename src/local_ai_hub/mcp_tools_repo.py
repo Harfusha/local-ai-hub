@@ -1195,7 +1195,7 @@ def local_ai_repo(
     owner: str | None = None,
     lease_id: str | None = None,
 ) -> dict[str, Any]:
-    """Primary bounded repository worker. For simple fact/location questions, use one concise `context` query for natural language, `search` for a known filename/term, or `code_index` for a known symbol. These lookup actions default to compact output; an explicit `response_profile` overrides that default. Stop when source-backed evidence answers the question; inspect only the exact candidate path if needed. Avoid generic one-word searches, repeated retrieval layers, unrelated call sites, and language-specific actions unsupported by the project."""
+    """MCP public tool entrypoint. Primary bounded repository worker. For simple fact/location questions, use one concise `context` query for natural language, `search` for a known filename/term, or `code_index` for a known symbol. These lookup actions default to compact output; an explicit `response_profile` overrides that default. Stop when source-backed evidence answers the question; inspect only the exact candidate path if needed. Avoid generic one-word searches, repeated retrieval layers, unrelated call sites, and language-specific actions unsupported by the project."""
     from . import mcp_server as services_module
     forward: dict[str, services_module.Any] = {}
     context_controls = {
