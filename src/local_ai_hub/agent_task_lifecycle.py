@@ -273,6 +273,9 @@ class TaskLifecycleMixin:
             scope_check = execution.get("scope_check", {})
             if scope_check and scope_check.get("complete") is not True:
                 raise CompletionGateError("Cannot transition to COMPLETED: repository inventory scope changed or is unavailable")
+            if (task.contract.slo_profile[EXECUTION_KEY].get("knowledge_guard")
+                    and execution.get("knowledge_check", {}).get("complete") is not True):
+                raise CompletionGateError("Cannot transition to COMPLETED: required repository knowledge consistency check failed")
             problems = execution.get("problems", {})
             if problems.get("blocking_open", 0):
                 raise CompletionGateError("Cannot transition to COMPLETED: verified execution has unresolved blocking problems")
