@@ -2251,7 +2251,7 @@ def test_verified_execution_problem_requires_separate_confirmation(stores):
         GoalContract(
             goal="repair consumer", acceptance_criteria=("repair consumer", "review resolution"),
             slo_profile={"verified_execution": {
-                "units": {"review resolution": {"depends_on": ["repair consumer"]}},
+                "units": {"review resolution": {"priority": 100}},
             }},
         ),
         ScopeContext(task_id="problem-confirmation"),
@@ -2263,6 +2263,9 @@ def test_verified_execution_problem_requires_separate_confirmation(stores):
             "criterion": "repair consumer", "resolution_criterion": "review resolution",
         },
     }))
+    initial = verifier.completion(task.task_id)
+    assert initial.execution["next_obligation"]["criterion"] == "repair consumer"
+    assert initial.execution["coverage"]["dependency_blocked"] == 1
     verifier.record(receipt_for(task.task_id, "repair consumer", artifact_store=verifier.artifact_store))
     pending = verifier.completion(task.task_id)
     assert not pending.complete
