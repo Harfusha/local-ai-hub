@@ -2190,8 +2190,11 @@ def _remove_duplicate_antigravity_hooks(path: Path, backup_enabled: bool) -> boo
     # Recognize the previous exact Hub-owned hook shape so it can be safely
     # removed when the native plugin becomes active after this upgrade.
     for config in list(generated_configs):
-        config["PostToolUse"][0]["matcher"] = "edit_file|write_file"
-        generated_configs.append(config)
+        import copy
+
+        legacy = copy.deepcopy(config)
+        legacy["PostToolUse"][0]["matcher"] = "edit_file|write_file"
+        generated_configs.append(legacy)
     # Earlier releases emitted only the narrow PreToolUse policy.
     generated_configs.append({
         "enabled": True,
