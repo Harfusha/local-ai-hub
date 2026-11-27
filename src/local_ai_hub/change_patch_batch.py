@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 MAX_PATCH_BYTES = 512 * 1024
 MAX_BATCH_PATHS = 8
+_MAX_BATCH_ARG_BYTES = 12 * 1024
 PATCH_FLAGS = (
     "diff", "--patch", "--binary", "--full-index", "--no-renames", "--no-ext-diff",
     "--no-textconv", "--no-color", "--unified=0", "--no-indent-heuristic",
@@ -81,11 +82,12 @@ class PatchBatchReader:
             self.active = position
             self.patches = {}
             chunk = self.chunks[position]
-            if len(chunk) > 1:
+            # Leave headroom for Windows command-line encoding and flags.
+            if len(chunk) > 1 and sum(len(os.fsencode(name)) + 16 for name in chunk) <= _MAX_BATCH_ARG_BYTES:
                 try:
                     self.patches = partition_patches(self.git(*patch_arguments(chunk, staged=self.staged)), chunk)
                     self.batch_reads += 1
-                except ValueError:
+                except (OSError, ValueError):
                     # Oversized, missing, ambiguous, or unsupported batches
                     # fall back to exact one-path reads, never inferred bytes.
                     self.patches = {}

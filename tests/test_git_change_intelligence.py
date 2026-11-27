@@ -506,3 +506,24 @@ def test_large_dirty_worktree_batches_all_supported_patch_scopes(tmp_path):
         focused = _plan(tmp_path, [name])
         assert focused["clusters"][0]["changes"][0]["atoms"][0]["atom_id"] == changes[name]["atoms"][0]["atom_id"]
     assert _git(tmp_path, "diff", "--binary") == before
+
+
+def test_patch_batch_falls_back_when_partition_or_transport_fails():
+    from local_ai_hub.change_patch_batch import PatchBatchReader, patch_arguments
+
+    names = ["a.txt", "b.txt"]
+    patches = {name: f"diff --git a/{name} b/{name}\n".encode() for name in names}
+    calls = []
+
+    def git(*args):
+        calls.append(args)
+        paths = [arg[len(":(literal)"):] for arg in args if arg.startswith(":(literal)")]
+        if len(paths) > 1:
+            return b"unexpected batch response\n"
+        return patches[paths[0]]
+
+    reader = PatchBatchReader(git, names, staged=False)
+    assert [reader.read(name) for name in names] == [patches[name] for name in names]
+    assert reader.batch_reads == 0
+    assert calls == [patch_arguments(names, staged=False),
+                     *[patch_arguments([name], staged=False) for name in names]]

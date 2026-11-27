@@ -1,5 +1,9 @@
 # Git Change Intelligence and Commit Orchestration
 
+## Current operational contract
+
+The historical delivery notes below describe successive versions. The current implementation supports canonical batched patch identities (up to 256 scopes within the time/byte budget), paginated plans and deltas, exact staged-tree and hunk operations, ordered sequences, scoped local review declarations, fenced broker postimage observations, and receipt-gated verification/publication. Native desktop replaces the web dashboard; configured policy checks can run locally after explicit confirmation. Unconfigured commands remain CLI-only. No authority is inferred from a summary, index candidate or declaration. The bounded review model is not a compiler-complete dependency graph, authenticated native-editor attribution, or proof of cloud token savings. Current CI and external paired provider experiments are separate acceptance gates.
+
 ## Initial implementation
 
 Use existing `local_ai_repo(action="split_changes", root="/absolute/worktree")` before proposing a commit. The existing HTTP route is unchanged. The deterministic proposal uses a NUL-delimited Git inventory, staged/unstaged line counts, and component-name matching for tracked implementation/test/documentation files. Unknown, ambiguous and untracked changes are conservative candidates, not authorization. No Git mutation occurs. Legacy explicit-path classification outside a Git repository remains available, labeled as caller-supplied and unverified. The result is **not** a content fingerprint, dependency proof, semantic review, ownership claim or valid verification receipt. Use `synthesize_commit` for existing task/receipt-based synthesis, subject to independent freshness checks. Do not infer readiness from the proposal.

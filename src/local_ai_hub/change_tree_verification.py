@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -270,7 +271,7 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                 "executed_step_count": sum(not step["reused"] for step in results),
                 "verification_status": "configured_commands_passed", "commit_ready": False,
                 "limitations": "Not a sandbox, not proof of complete test coverage or external dependency immutability."}
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, sqlite3.Error) as exc:
         if active_attempt is not None:
             try:
                 journal.record_tree_check_failure(**active_attempt, reason="verification_interrupted")
@@ -320,5 +321,5 @@ def sequence_receipt_status(root: str, preview: dict[str, Any], manifest: Any, j
                 "observed_environment_digest": environment_id, "project_commit_policy": policy,
                 "commit_ready": False, "commands_executed": False,
                 "publication_rechecks_receipts": True}
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, sqlite3.Error) as exc:
         return {"success": False, "error": str(exc), "commit_ready": False, "commands_executed": False}
