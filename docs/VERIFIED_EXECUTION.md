@@ -297,7 +297,12 @@ repository and enter an Agent OS task ID. Load / refresh queries the same
 verification endpoint as the CLI. The view shows verified coverage,
 dimensions, stale and dependent obligations, scope, next action and problem
 reports. Tasks → Plan execution requests the existing read-only plan
-validation projection. Neither view changes task state or treats a ready
+validation projection. The plan preview reports observed obligation totals and
+verified partition coverage, separately from partition presence. On stable,
+exhaustive snapshots it recommends a next actionable task only when local
+plan dependencies are currently verified; unresolved cross-plan dependencies,
+blocked tasks and binding conflicts are listed separately. It does not resolve
+external plans or authorize execution. Neither view changes task state or treats a ready
 preview as a completed task. The retired web dashboard is not required.
 
 ## Opt-in host continuation
