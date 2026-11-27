@@ -57,7 +57,7 @@
       "depends_on": [],
       "description": "Deliver every requirement in the supplied goal document, sections 1–35, including branch synchronization, complete native UI and CLI parity, system and workload views, Agent OS and knowledge workflows, project/model/telemetry features, security, performance, cross-platform runtime, installation/updater, documentation, complete validation, independent audit, and actual PR merge/post-merge verification. No runtime backward compatibility or legacy behavior; the only exception is one-time migration during update.",
       "kind": "code",
-      "next_action": "Vision hardening is implemented and locally validated: 187 desktop bridge tests, pyflakes, compileall, and release_check pass; changed helper lines have no mypy diagnostics. Semantic review returned source_citation_unverified; Pillow 12.3 was already available and pyproject now declares Pillow>=12,<13. Commit/push code plus parity evidence, then await exact-head CI. Continue complete sections 1–35; do not merge until all release gates pass.",
+      "next_action": "Removed legacy direct compression --apply from hubctl while retaining digest-bound staged review/apply/restore. Added regression for rejected no-write invocation and exercised staged apply; 43 focused compression/client/knowledge tests pass; pyflakes, compileall and diff-check pass. Continue parity/runtime audit and full scope.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",

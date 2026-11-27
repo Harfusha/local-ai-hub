@@ -131,8 +131,8 @@ surface or the required future surface, not a completed implementation.
 | `pause` | Activity mode selector; explicit confirmation | Implemented surface (not all flags); real integration and acceptance pending |
 | `resume` | Activity mode selector; explicit confirmation | Implemented surface (not all flags); real integration and acceptance pending |
 | `mode` | Activity mode selector | Controller present; run focused tests and real CLI/API integration |
-| `caveman-compress` | Operator tools: stage candidates; in-place apply CLI-only (review binding missing) | Implemented surface (not all flags); real integration and acceptance pending |
-| `compress-instructions` | Operator tools: stage candidates; in-place apply CLI-only | Implemented surface (not all flags); real integration and acceptance pending |
+| `caveman-compress` | Operator tools: stage candidates; digest-bound review/apply/restore from manifest; direct `--apply` removed | Implemented surface (not all flags); real integration and acceptance pending |
+| `compress-instructions` | Operator tools: stage candidates; digest-bound review/apply/restore from manifest; direct `--apply` removed | Implemented surface (not all flags); real integration and acceptance pending |
 | `client` | Operator tools: status/detect/preview/inject/remove/config | Implemented surface (not all flags); real integration and acceptance pending |
 | `knowledge` | Operator tools: typed catalog, query, audit, validation, mutations, batches, migration and handoff | Implemented surface (not all flags); real integration and acceptance pending |
 

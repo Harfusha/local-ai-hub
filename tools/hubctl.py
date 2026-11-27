@@ -289,7 +289,7 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
     parser.add_argument("--all-agents", action="store_true", help="Discover and compress instructions across all configured agent directories (.gemini, .codex, .claude, etc.)")
-    parser.add_argument("--apply", action="store_true", help="Apply reviewed compressed candidates in-place (default: preview/stage only)")
+    parser.add_argument("--apply", action="store_true", help="Apply explicitly reviewed knowledge or supported client configuration changes")
     parser.add_argument("--model", type=str, default="", help="Model name for caveman compression (defaults to configured model)")
     parser.add_argument("--staging-dir", type=Path, default=None, help="Directory for backups and candidates")
     parser.add_argument("--manifest", type=Path, default=None, help="Exact staged instruction manifest for review-staged, apply-staged or restore-staged")
@@ -379,6 +379,10 @@ def main() -> int:
             parser.error("--apply for client config currently requires 'config --client vscode'")
         if args.apply and args.root is None:
             parser.error("client config --apply requires an explicit --root workspace path")
+        requested_mode = None
+    elif args.action in {"caveman-compress", "compress-instructions"}:
+        if args.apply:
+            parser.error("direct compression --apply was removed; review and apply a staged manifest instead")
         requested_mode = None
     elif args.action == "agent-state" and args.sub_arg == "storage-inventory":
         if args.apply:
@@ -877,7 +881,7 @@ def main() -> int:
         print(f"Found {len(files)} instruction file(s) across {len(roots)} root(s).")
         print(f"Compressor model: {model} | Review model: {review_model}")
         print(f"Staging/backup: {staging_dir}")
-        print(f"Mode: {'APPLY (in-place replacement)' if args.apply else 'PREVIEW / STAGE (pass --apply to overwrite)'}\n")
+        print("Mode: STAGE (review and apply the manifest explicitly)\n")
 
         prepared = []
         backup_failures = 0
@@ -888,7 +892,6 @@ def main() -> int:
                 backup_failures += 1
                 print(f"[SKIP] Backup failed for {f.name}: {exc}")
 
-        applied = 0
         failed = backup_failures
         total_before = 0
         total_after = 0
@@ -910,12 +913,7 @@ def main() -> int:
                 total_before += before
                 total_after += after
 
-                if args.apply:
-                    caveman_instructions.apply_instruction(res)
-                    status_lbl = "APPLIED"
-                    applied += 1
-                else:
-                    status_lbl = "STAGED"
+                status_lbl = "STAGED"
 
                 print(f"[{status_lbl}] {item.source.name} ({item.source.parent.name}) — {before}B -> {after}B (-{saved_pct:.1f}%) in {res.duration_seconds:.1f}s")
                 if res.candidate is not None:
@@ -927,7 +925,7 @@ def main() -> int:
         net_saved = ((total_before - total_after) / total_before) * 100 if total_before > 0 else 0
         print("\n" + "=" * 55)
         print(f"Summary: {len(files) - failed}/{len(files)} succeeded. Total bytes: {total_before}B -> {total_after}B (-{net_saved:.1f}%)")
-        if not args.apply and (len(files) - failed) > 0:
+        if (len(files) - failed) > 0:
             print("Review a manifest using compress-instructions review-staged --root ROOT --manifest PATH.")
             print("Then use apply-staged with the reviewed --manifest-sha256; this never regenerates the candidate.")
         return 0 if failed == 0 else 1
