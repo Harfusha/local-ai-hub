@@ -152,7 +152,7 @@ def test_v10_to_v11_normalizes_incident_placeholder(tmp_path: Path):
     result = run_state_migrations(state)
 
     assert result["status"] == "migrated"
-    assert read_state_version(state) == 11
+    assert read_state_version(state) == 12
     with closing(sqlite3.connect(database)) as con:
         assert con.execute(
             "SELECT incident_id,verified_fix,resolved,root_cause FROM agent_incidents ORDER BY incident_id"
@@ -271,7 +271,7 @@ def test_v9_to_v10_migrates_exact_legacy_laya_snapshot_and_preserves_values(tmp_
     result = run_state_migrations(state)
 
     assert result["status"] == "migrated"
-    assert read_state_version(state) == 11
+    assert read_state_version(state) == 12
     with closing(sqlite3.connect(database)) as con:
         stored = json.loads(con.execute("SELECT metrics_json FROM snapshots WHERE name='laya_decision'").fetchone()[0])
     assert stored == {
@@ -319,9 +319,9 @@ def test_v6_to_v7_migration_converts_exact_agent_schema_and_preserves_rows(tmp_p
 
     result = run_state_migrations(tmp_path / "state")
 
-    assert CURRENT_STATE_VERSION == 11
+    assert CURRENT_STATE_VERSION == 12
     assert result["status"] == "migrated"
-    assert read_state_version(tmp_path / "state") == 11
+    assert read_state_version(tmp_path / "state") == 12
     with closing(sqlite3.connect(database)) as con:
         relation = con.execute(
             "SELECT relation_id,source_entity,relation,target_entity,weight,metadata,created_at,updated_at,repository_id "
@@ -361,7 +361,7 @@ def test_v6_to_v7_migration_is_idempotent_for_canonical_agent_schema(tmp_path: P
     result = run_state_migrations(tmp_path / "state")
 
     assert result["status"] == "migrated"
-    assert read_state_version(tmp_path / "state") == 11
+    assert read_state_version(tmp_path / "state") == 12
     with closing(sqlite3.connect(database)) as con:
         assert con.execute("SELECT repository_id FROM agent_entity_relations WHERE relation_id='relation-1'").fetchone() == ("",)
 
@@ -391,9 +391,9 @@ def test_unversioned_v5_state_is_recognized_and_migrated_through_registered_chai
     plan = inspect_state_migration_path(state)
     result = run_state_migrations(state)
 
-    assert plan == {"status": "migratable", "version": 6, "backups": [], "migration_count": 5}
+    assert plan == {"status": "migratable", "version": 6, "backups": [], "migration_count": 6}
     assert result["status"] == "migrated"
-    assert read_state_version(state) == 11
+    assert read_state_version(state) == 12
     assert not (state / "agent_board.sqlite").exists()
     assert read_legacy_board_archive(state) == [{
         "item_id": "item-1", "title": "Ship cleanup", "status": "active", "priority": "medium",
@@ -516,7 +516,7 @@ def test_v6_to_v7_migration_converts_preprocess_schema_and_legacy_fts(tmp_path: 
     result = run_state_migrations(state)
 
     assert result["status"] == "migrated"
-    assert read_state_version(state) == 11
+    assert read_state_version(state) == 12
     with closing(sqlite3.connect(database)) as con:
         assert [row[1] for row in con.execute("PRAGMA table_info(source_index)")] == [
             "root", "path", "content_hash", "text", "updated_at", "text_origin",
@@ -649,7 +649,7 @@ def test_v7_to_v8_archives_global_board_and_removes_active_database(tmp_path: Pa
     result = run_state_migrations(state)
 
     assert result["status"] == "migrated"
-    assert read_state_version(state) == 11
+    assert read_state_version(state) == 12
     assert not database.exists()
     assert (state / ARCHIVE_NAME).is_file()
     assert read_legacy_board_archive(state) == [{

@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from .agent_identity import AgentScope, ScopeContext
+from .project_identity import project_scope_id, worktree_scope_id
 
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
 MAX_TASK_REAP_BATCH = 64
@@ -561,8 +562,14 @@ def _task_scope_root(task: TaskState) -> str:
     scope = task.checkpoint.state_data.get("_agent_task_scope")
     if scope is None:
         return ""
-    if (not isinstance(scope, Mapping) or set(scope) != {"version", "repo_root"}
-            or type(scope.get("version")) is not int or scope.get("version") != 2):
+    if (
+        not isinstance(scope, Mapping)
+        or set(scope) != {"version", "project_id", "worktree_id", "repo_root"}
+        or type(scope.get("version")) is not int
+        or scope.get("version") != 3
+        or not isinstance(scope.get("project_id"), str)
+        or not isinstance(scope.get("worktree_id"), str)
+    ):
         raise RuntimeError("retired task scope contract requires explicit offline conversion")
     try:
         return _canonical_repository_root(scope["repo_root"])
@@ -573,10 +580,18 @@ def _task_scope_root(task: TaskState) -> str:
 def _task_matches_scope(task: TaskState, repo_root: str, task_id: str | None = None) -> bool:
     if task_id and task.task_id != task_id:
         return False
-    root = _task_scope_root(task)
-    if not root:
-        return False
     try:
-        return Path(root).samefile(repo_root)
+        scope = task.checkpoint.state_data.get("_agent_task_scope")
+        if not isinstance(scope, Mapping) or scope.get("version") != 3:
+            return False
+        canonical_root = _canonical_repository_root(repo_root)
+        if scope.get("project_id") != project_scope_id(canonical_root):
+            return False
+        if getattr(task, "owner", "") == "canonical-git":
+            return True
+        return (
+            scope.get("worktree_id") == worktree_scope_id(canonical_root)
+            and _canonical_repository_root(scope.get("repo_root", "")) == canonical_root
+        )
     except (OSError, RuntimeError, TypeError, ValueError):
         return False

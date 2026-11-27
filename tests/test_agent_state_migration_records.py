@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from contextlib import closing
 from pathlib import Path
 import pytest
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.agent_state_migration import (
-    preview_legacy_canonical_task_batch,
-    preview_legacy_memory_batch,
-    preview_legacy_incident_batch,
-    publish_legacy_record,
+    migrate_project_state_on_update,
 )
+from local_ai_hub.agent_incidents import _incident_scope_key
 from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
 
 
@@ -40,58 +39,111 @@ def _setup_migration_env(tmp_path: Path):
         con.execute("INSERT INTO agent_tasks_projection VALUES ('task-mig-1', 'completed', ?, ?, '{}', 'local-user', '', '[]', 100, 200, 0)", (contract, chk))
 
         # Seed memory
-        con.execute("INSERT INTO agent_memory_records VALUES ('mem-mig-1', 'fact', 'project', 'deploy_target', '\"cloud-run\"', 1.0, 'ci', 'internal', '', 100, 200, '', '{}', '[]', '', '', 0, 'active')")
+        provenance = json.dumps({"root": str(root)})
+        con.execute("INSERT INTO agent_memory_records VALUES ('mem-mig-1', 'fact', 'project', 'deploy_target', '\"cloud-run\"', 1.0, 'ci', 'internal', '', 100, 200, '', ?, '[]', '', '', 0, 'active')", (provenance,))
+        con.execute("INSERT INTO agent_memory_records VALUES ('mem-other-project', 'fact', 'project', 'private', '\"other-project-secret\"', 1.0, 'ci', 'internal', '', 100, 200, '', ?, '[]', '', '', 0, 'active')", (json.dumps({"root": str(root.parent / "other")}),))
 
         # Seed incident
-        con.execute("INSERT INTO agent_incidents VALUES ('inc-mig-1', 'command', 'TimeoutError', 'cafebabecafebabe', 1, 'build timeout', 'slow network', 'cached docker layers in runner', 1.0, '[\"Dockerfile\"]', 100, 200, 1, 0, '[]', '', 0, 0)")
+        repository_key = _incident_scope_key("repository", str(root))
+        con.execute("INSERT INTO agent_incidents VALUES ('inc-mig-1', 'command', 'TimeoutError', 'cafebabecafebabe', 1, 'build timeout', 'slow network', 'cached docker layers in runner', 1.0, '[\"Dockerfile\"]', 100, 200, 1, 0, '[]', ?, 0, 0)", (repository_key,))
+        other_repository_key = _incident_scope_key("repository", str(root.parent / "other"))
+        con.execute("INSERT INTO agent_incidents VALUES ('inc-other-project', 'command', 'ValueError', 'deadbeefdeadbeef', 1, 'other project', 'private', 'other-project-secret', 1.0, '[]', 100, 200, 1, 0, '[]', ?, 0, 0)", (other_repository_key,))
         con.commit()
 
     return root, store, state_dir
 
 
-def test_preview_and_publish_canonical_task(tmp_path: Path):
+def test_update_migration_publishes_portable_records_once(tmp_path: Path):
     root, store, state_dir = _setup_migration_env(tmp_path)
-    preview = preview_legacy_canonical_task_batch(state_dir, store, limit=8)
-    assert preview["success"]
-    assert len(preview["batch"]["records"]) == 1
-    assert preview["batch"]["records"][0]["record"]["id"] == "task-mig-1"
-
-    pub = publish_legacy_record(
-        state_dir, store, kind="task", record_id="task-mig-1",
-        expected_snapshot=preview["snapshot"], operation_id="publish-task-1",
-        authorize_write=lambda: True,
-    )
-    assert pub["success"]
+    first = migrate_project_state_on_update(state_dir, root)
+    assert first["status"] == "migrated"
+    assert first["records"] == {"task": 1, "memory": 1, "incident": 1}
     assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
-
-
-def test_preview_and_publish_canonical_memory(tmp_path: Path):
-    root, store, state_dir = _setup_migration_env(tmp_path)
-    preview = preview_legacy_memory_batch(state_dir, store, limit=8)
-    assert preview["success"]
-    assert len(preview["batch"]["records"]) == 1
-    assert preview["batch"]["records"][0]["record"]["id"] == "mem-mig-1"
-
-    pub = publish_legacy_record(
-        state_dir, store, kind="memory", record_id="mem-mig-1",
-        expected_snapshot=preview["snapshot"], operation_id="publish-mem-1",
-        authorize_write=lambda: True,
-    )
-    assert pub["success"]
     assert (root / ".local-ai-hub/agent-os/memory/mem-mig-1.json").is_file()
-
-
-def test_preview_and_publish_canonical_incident(tmp_path: Path):
-    root, store, state_dir = _setup_migration_env(tmp_path)
-    preview = preview_legacy_incident_batch(state_dir, store, limit=8)
-    assert preview["success"]
-    assert len(preview["batch"]["records"]) == 1
-    assert preview["batch"]["records"][0]["record"]["id"] == "inc-mig-1"
-
-    pub = publish_legacy_record(
-        state_dir, store, kind="incident", record_id="inc-mig-1",
-        expected_snapshot=preview["snapshot"], operation_id="publish-inc-1",
-        authorize_write=lambda: True,
-    )
-    assert pub["success"]
     assert (root / ".local-ai-hub/agent-os/incidents/inc-mig-1.json").is_file()
+    assert not (root / ".local-ai-hub/agent-os/memory/mem-other-project.json").exists()
+    assert not (root / ".local-ai-hub/agent-os/incidents/inc-other-project.json").exists()
+    again = migrate_project_state_on_update(state_dir, root)
+    assert again["status"] == "already_migrated"
+    assert again["records"] == 0
+
+
+def test_update_migration_resumes_after_a_late_blocker(tmp_path: Path):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("UPDATE agent_incidents SET verified_fix='password=private' WHERE incident_id='inc-mig-1'")
+        con.commit()
+
+    with pytest.raises(RepoPlanValidationError):
+        migrate_project_state_on_update(state_dir, root)
+    assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
+    assert (root / ".local-ai-hub/agent-os/memory/mem-mig-1.json").is_file()
+    assert not (state_dir / "project_state_migration_v1.json").exists()
+
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("UPDATE agent_incidents SET verified_fix='cached docker layers in runner' WHERE incident_id='inc-mig-1'")
+        con.commit()
+    resumed = migrate_project_state_on_update(state_dir, root)
+    assert resumed["status"] == "migrated"
+    assert resumed["records"] == {"task": 0, "memory": 0, "incident": 1}
+
+
+def test_update_migration_recognizes_registered_linked_worktree_roots(tmp_path: Path):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    linked = tmp_path / "linked"
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore", ".local-ai-hub/project.json"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "project identity"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "worktree", "add", "-b", "linked-test", str(linked)], check=True, capture_output=True)
+
+    db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        task_row = con.execute("SELECT checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'").fetchone()
+        checkpoint = json.loads(task_row[0])
+        checkpoint["state_data"]["_agent_task_scope"]["repo_root"] = str(linked)
+        con.execute("UPDATE agent_tasks_projection SET checkpoint=? WHERE task_id='task-mig-1'", (json.dumps(checkpoint),))
+        con.execute("UPDATE agent_memory_records SET provenance=? WHERE record_id='mem-mig-1'", (json.dumps({"root": str(linked)}),))
+        con.execute("UPDATE agent_incidents SET repository_key=? WHERE incident_id='inc-mig-1'", (_incident_scope_key("repository", str(linked)),))
+        con.commit()
+
+    result = migrate_project_state_on_update(state_dir, root)
+    assert result["records"] == {"task": 1, "memory": 1, "incident": 1}
+
+
+def test_update_migration_recognizes_existing_relocated_checkout_by_project_id(tmp_path: Path):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    old_checkout = tmp_path / "old-checkout"
+    (old_checkout / ".local-ai-hub").mkdir(parents=True)
+    (old_checkout / ".local-ai-hub/project.json").write_bytes((root / ".local-ai-hub/project.json").read_bytes())
+    db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        task_row = con.execute("SELECT checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'").fetchone()
+        checkpoint = json.loads(task_row[0])
+        checkpoint["state_data"]["_agent_task_scope"]["repo_root"] = str(old_checkout)
+        con.execute("UPDATE agent_tasks_projection SET checkpoint=? WHERE task_id='task-mig-1'", (json.dumps(checkpoint),))
+        con.execute("UPDATE agent_memory_records SET provenance=? WHERE record_id='mem-mig-1'", (json.dumps({"root": str(old_checkout)}),))
+        con.execute("UPDATE agent_incidents SET repository_key=? WHERE incident_id='inc-mig-1'", (_incident_scope_key("repository", str(old_checkout)),))
+        con.commit()
+
+    result = migrate_project_state_on_update(state_dir, root)
+    assert result["records"] == {"task": 1, "memory": 1, "incident": 1}
+
+
+def test_release_update_invokes_project_cutover_once(tmp_path: Path, monkeypatch):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
+    from tools import setup as setup_module
+
+    monkeypatch.setattr(setup_module, "SOURCE_ROOT", root)
+    monkeypatch.setattr(setup_module, "run_state_migrations", lambda *args, **kwargs: {"status": "current", "backups": []})
+    monkeypatch.setattr(setup_module, "apply_embedding_reset", lambda *args, **kwargs: {"status": "not_required"})
+    monkeypatch.setattr(setup_module, "discard_stale_migration_artifacts", lambda *args, **kwargs: [])
+
+    result = setup_module.migrate_release_state(state_dir)
+    assert result["project_state_migration"]["status"] == "migrated"
+    assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
+    assert (state_dir / "project_state_migration_v1.json").is_file()

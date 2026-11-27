@@ -353,8 +353,16 @@ def copy_install_tree(
 
 
 def migrate_release_state(state_dir: Path, *, create_backup: bool = True) -> dict[str, Any]:
-    """Run ordered state migrations and the v8 vector reset for installer paths."""
+    """Run the one-time project cutover, ordered state migrations, and v8 vector reset."""
+    project_migration: dict[str, Any] | None = None
+    project_manifest = SOURCE_ROOT / ".local-ai-hub" / "project.json"
+    if state_dir.is_dir() and project_manifest.is_file():
+        from local_ai_hub.agent_state_migration import migrate_project_state_on_update
+
+        project_migration = migrate_project_state_on_update(state_dir, SOURCE_ROOT)
     result = run_state_migrations(state_dir, create_backup=create_backup)
+    if project_migration is not None:
+        result["project_state_migration"] = project_migration
     version = tomllib.loads((SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     if version_parts(version) >= (8, 0, 0):
         needs_reset_backup = create_backup and result.get("status") != "initialize"

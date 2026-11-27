@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import shutil
 import subprocess
 import sys
 import uuid
@@ -16,6 +17,7 @@ from local_ai_hub.repo_project_incidents import build_project_incident_record
 from local_ai_hub.repo_agent_state import rebuild_agent_state_projection, ensure_agent_os_layout
 from local_ai_hub.agent_incidents import _incident_scope_key
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_tasks import TaskStore
 
 
 def test_rebuild_projection_from_canonical_git(tmp_path: Path):
@@ -89,7 +91,7 @@ def test_rebuild_projection_from_canonical_git(tmp_path: Path):
         assert i_row[1] == "Applied input sanitization before processing"
         assert con.execute(
             "SELECT repository_key FROM agent_incidents WHERE incident_id='inc-rebuild-1'"
-        ).fetchone()[0] == _incident_scope_key("repository", str(root))
+        ).fetchone()[0] == _incident_scope_key("repository", project)
 
     with closing(sqlite3.connect(state_dir / "agent_project_projection.sqlite")) as con:
         assert con.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3
@@ -348,3 +350,151 @@ def test_projection_rebuild_cli_works_for_a_clean_project(tmp_path: Path):
     payload = json.loads(result.stdout)
     assert payload["success"] is True
     assert payload["rebuilt"] == {"tasks": 0, "memory": 0, "incidents": 0}
+
+
+def test_same_project_projection_survives_checkout_relocation(tmp_path: Path):
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    original = tmp_path / "old-checkout"
+    local = original / ".local-ai-hub"
+    local.mkdir(parents=True)
+    (local / "project.json").write_text(
+        json.dumps({"schema_version": 1, "project_id": project_id, "mode": "shared"}),
+        encoding="utf-8",
+    )
+    ensure_agent_os_layout(original)
+    store = RepoKnowledgeStore(original)
+    task = build_project_task_record(store, {
+        "task_id": "task-relocated-project",
+        "status": "planned",
+        "contract": {
+            "goal": "Survive checkout relocation",
+            "description": "",
+            "acceptance_criteria": ["same project loads at a new path"],
+            "non_goals": [],
+            "constraints": [],
+            "risk_profile": "normal",
+        },
+        "checkpoint": {"phase": "planned", "next_action": "run", "blockers": [], "affected_paths": []},
+    })
+    (local / "agent-os/tasks/task-relocated-project.json").write_text(
+        json.dumps(task), encoding="utf-8"
+    )
+    memory = build_project_memory_record(store, {
+        "record_id": "memory-relocated-project",
+        "kind": "fact",
+        "scope": "project",
+        "key": "checkout_rule",
+        "value": "Canonical project records follow project_id across checkout paths",
+    })
+    (local / "agent-os/memory/memory-relocated-project.json").write_text(
+        json.dumps(memory), encoding="utf-8"
+    )
+    incident = build_project_incident_record(store, {
+        "incident_id": "incident-relocated-project",
+        "operation_class": "agent",
+        "error_class": "TimeoutError",
+        "signature_hash": "0123456789abcdef",
+        "resolved": False,
+    })
+    (local / "agent-os/incidents/incident-relocated-project.json").write_text(
+        json.dumps(incident), encoding="utf-8"
+    )
+    relocated = tmp_path / "new-checkout"
+    shutil.copytree(original, relocated)
+    state_dir = tmp_path / "shared-hub-state"
+
+    first = rebuild_agent_state_projection(original, state_dir)
+    second = rebuild_agent_state_projection(relocated, state_dir)
+
+    assert first["success"] is True
+    assert second["success"] is True, second
+    divergent = tmp_path / "divergent-checkout"
+    shutil.copytree(original, divergent)
+    divergent_task_path = divergent / ".local-ai-hub/agent-os/tasks/task-relocated-project.json"
+    divergent_task = json.loads(divergent_task_path.read_text(encoding="utf-8"))
+    divergent_task["payload"]["contract"]["goal"] = "Conflicting branch edit"
+    divergent_task_path.write_text(json.dumps(divergent_task), encoding="utf-8")
+    conflict = rebuild_agent_state_projection(divergent, state_dir)
+    assert conflict["success"] is False
+    assert "Conflicting task revision across checkouts" in conflict["error"]
+    with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as con:
+        row = con.execute(
+            "SELECT checkpoint FROM agent_tasks_projection WHERE task_id=?",
+            ("task-relocated-project",),
+        ).fetchone()
+    assert row is not None
+    scope = json.loads(row[0])["state_data"]["_agent_task_scope"]
+    assert scope["project_id"] == project_id
+    assert scope["repo_root"] == str(relocated.resolve())
+    with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM agent_memory_records WHERE record_id=?",
+            ("memory-relocated-project",),
+        ).fetchone()[0] == 1
+        assert con.execute(
+            "SELECT repository_key FROM agent_incidents WHERE incident_id=?",
+            ("incident-relocated-project",),
+        ).fetchone()[0] == _incident_scope_key("repository", project_id)
+
+    # A stale checkout cannot delete a record still owned by the relocated root.
+    (local / "agent-os/tasks/task-relocated-project.json").unlink()
+    (local / "agent-os/memory/memory-relocated-project.json").unlink()
+    (local / "agent-os/incidents/incident-relocated-project.json").unlink()
+    assert rebuild_agent_state_projection(original, state_dir)["success"] is True
+    with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM agent_tasks_projection WHERE task_id=?",
+            ("task-relocated-project",),
+        ).fetchone()[0] == 1
+        assert con.execute(
+            "SELECT COUNT(*) FROM agent_memory_records WHERE record_id=?",
+            ("memory-relocated-project",),
+        ).fetchone()[0] == 1
+        assert con.execute(
+            "SELECT COUNT(*) FROM agent_incidents WHERE incident_id=?",
+            ("incident-relocated-project",),
+        ).fetchone()[0] == 1
+
+
+def test_linked_worktree_reads_same_canonical_project_task(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+    local = repo / ".local-ai-hub"
+    local.mkdir()
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    (local / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    ensure_agent_os_layout(repo)
+    task = build_project_task_record(RepoKnowledgeStore(repo), {
+        "task_id": "task-linked-worktree",
+        "status": "planned",
+        "contract": {
+            "goal": "Use canonical project task from linked worktree",
+            "description": "",
+            "acceptance_criteria": ["both roots can read the project task"],
+            "non_goals": [],
+            "constraints": [],
+            "risk_profile": "normal",
+        },
+        "checkpoint": {"phase": "planned", "next_action": "run", "blockers": [], "affected_paths": []},
+    })
+    (local / "agent-os/tasks/task-linked-worktree.json").write_text(json.dumps(task), encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".local-ai-hub"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "add canonical task"], check=True, capture_output=True)
+    linked = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "agent-two", str(linked), "main"],
+        check=True,
+        capture_output=True,
+    )
+    state_dir = tmp_path / "hub-state"
+
+    assert rebuild_agent_state_projection(repo, state_dir)["success"] is True
+    assert rebuild_agent_state_projection(linked, state_dir)["success"] is True
+    store = TaskStore(AgentStateStore(state_dir / "agent_state.sqlite"))
+    assert [item.task_id for item in store.list_tasks(repo_root=str(repo)).tasks] == ["task-linked-worktree"]
+    assert [item.task_id for item in store.list_tasks(repo_root=str(linked)).tasks] == ["task-linked-worktree"]

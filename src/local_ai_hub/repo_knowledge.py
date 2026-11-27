@@ -38,6 +38,32 @@ _KINDS = {
 }
 
 
+def _git_checkout_generation(root: Path) -> tuple[str, str, str, str] | None:
+    if not (root / ".git").exists():
+        return None
+    base = ["git", "-C", str(root)]
+    try:
+        identity = subprocess.run(
+            [*base, "rev-parse", "--show-toplevel", "--git-common-dir"],
+            capture_output=True, text=True, timeout=2.0, env=clean_git_env(), **hidden_run_kwargs(),
+        )
+        branch = subprocess.run(
+            [*base, "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2.0, env=clean_git_env(), **hidden_run_kwargs(),
+        )
+        head = subprocess.run(
+            [*base, "rev-parse", "--verify", "HEAD"],
+            capture_output=True, text=True, timeout=2.0, env=clean_git_env(), **hidden_run_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RepoPlanValidationError("Cannot verify repository checkout generation") from exc
+    if identity.returncode != 0 or branch.returncode not in {0, 1}:
+        raise RepoPlanValidationError("Cannot verify repository checkout generation")
+    top, common = identity.stdout.splitlines()[:2]
+    revision = head.stdout.strip() if head.returncode == 0 else "unborn"
+    return top, common, revision, branch.stdout.strip()
+
+
 def _invalid() -> RepoPlanValidationError:
     return RepoPlanValidationError("Invalid or unsupported repository knowledge record")
 
@@ -234,6 +260,7 @@ class RepoKnowledgeStore:
         if settings.knowledge_dir != _DIR or settings.intents_dir != ".local-ai-hub/local/intents":
             raise RepoPlanValidationError("Custom knowledge workspace is not yet supported")
         self.storage = RepoPlanStorage(self.root, intents_dir=settings.intents_dir)
+        self._checkout_identity = _git_checkout_generation(self.root)
 
     def _read(self, rel: str) -> tuple[dict[str, Any], str]:
         raw, revision = self._read_raw(rel)
@@ -262,6 +289,8 @@ class RepoKnowledgeStore:
 
     def _require_local_journal_ignored(self) -> None:
         """A tracked or unignored transaction journal must never receive record contents."""
+        if _git_checkout_generation(self.root) != self._checkout_identity:
+            raise RepoPlanConflictError("Git checkout changed since repository knowledge store was opened")
         if not (self.root / ".git").exists():
             return
         try:

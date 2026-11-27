@@ -305,6 +305,25 @@ def test_laya_candidate_export_rejects_task_from_another_repository(
         )
 
 
+def test_runtime_task_scope_is_checkout_local_for_shared_project_identity(
+    store: TaskStore, tmp_path: Path
+):
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    roots = [tmp_path / "worktree-a", tmp_path / "worktree-b"]
+    for root in roots:
+        local = root / ".local-ai-hub"
+        local.mkdir(parents=True)
+        (local / "project.json").write_text(json.dumps({
+            "schema_version": 1, "project_id": project_id, "mode": "shared",
+        }), encoding="utf-8")
+    task = _create_task(store, roots[0], "runtime-attempt-a")
+
+    assert store.list_tasks(repo_root=str(roots[0])).tasks[0].task_id == task.task_id
+    assert store.list_tasks(repo_root=str(roots[1])).tasks == ()
+    assert _task_matches_scope(task, str(roots[0]))
+    assert not _task_matches_scope(task, str(roots[1]))
+
+
 @pytest.mark.parametrize(("category", "label"), [
     ("task_routing", "fast"),
     ("context_source", "not_a_supported_option"),

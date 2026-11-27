@@ -17,6 +17,7 @@ from .agent_incidents import _incident_scope_key
 from .repo_project_tasks import list_project_tasks
 from .repo_project_memory import list_project_memory
 from .repo_project_incidents import list_project_incidents
+from .project_identity import project_scope_id, worktree_scope_id
 
 AGENT_OS_SUBDIRS = ("tasks", "memory", "incidents", "handoffs", "verification")
 
@@ -45,7 +46,12 @@ def rebuild_agent_state_projection(
     queries against canonical tasks, memory, and incidents.
     """
     root = Path(repo_root).resolve(strict=True)
-    repository_key = _incident_scope_key("repository", str(root))
+    try:
+        project_id = project_scope_id(root)
+        worktree_id = worktree_scope_id(root)
+    except (OSError, ValueError) as exc:
+        return {"success": False, "error": f"Canonical project manifest is invalid: {exc}"}
+    repository_key = _incident_scope_key("repository", project_id)
     if not repository_key:
         return {"success": False, "error": "Repository incident scope could not be derived"}
     db_path = Path(state_dir).resolve() / "agent_state.sqlite"
@@ -81,7 +87,9 @@ def rebuild_agent_state_projection(
             checkpoint = dict(payload.get("checkpoint", {}))
             checkpoint["state_data"] = {
                 "_agent_task_scope": {
-                    "version": 2,
+                    "version": 3,
+                    "project_id": project_id,
+                    "worktree_id": worktree_id,
                     "repo_root": str(root),
                 }
             }
@@ -93,18 +101,17 @@ def rebuild_agent_state_projection(
                 status = "active"
 
             existing = con.execute(
-                "SELECT checkpoint, owner FROM agent_tasks_projection WHERE task_id=?", (task_id,)
+                "SELECT checkpoint, owner, contract FROM agent_tasks_projection WHERE task_id=?", (task_id,)
             ).fetchone()
             if existing:
                 try:
                     existing_checkpoint = json.loads(existing[0] or "{}")
-                    existing_root = (
-                        existing_checkpoint.get("state_data", {})
-                        .get("_agent_task_scope", {}).get("repo_root")
-                    )
+                    existing_scope = existing_checkpoint.get("state_data", {}).get("_agent_task_scope", {})
                 except (TypeError, ValueError):
-                    existing_root = None
-                if existing_root and existing_root != str(root):
+                    existing_scope = {}
+                existing_root = existing_scope.get("repo_root")
+                existing_project_id = existing_scope.get("project_id")
+                if existing_root and existing_root != str(root) and existing_project_id != project_id:
                     con.rollback()
                     return {"success": False, "error": f"Task ID is already projected from another repository: {task_id}"}
                 owned = con.execute(
@@ -114,6 +121,20 @@ def rebuild_agent_state_projection(
                 if not owned and existing[1] != "canonical-git":
                     con.rollback()
                     return {"success": False, "error": f"Task ID belongs to live runtime state and cannot be overwritten: {task_id}"}
+                if existing_root and existing_root != str(root):
+                    existing_checkpoint["state_data"]["_agent_task_scope"]["repo_root"] = str(root)
+                    existing_checkpoint["state_data"]["_agent_task_scope"]["worktree_id"] = worktree_id
+                    try:
+                        same_content = (
+                            existing_project_id == project_id
+                            and json.loads(existing[2] or "{}") == json.loads(contract_json)
+                            and existing_checkpoint == checkpoint
+                        )
+                    except (TypeError, ValueError):
+                        same_content = False
+                    if not same_content:
+                        con.rollback()
+                        return {"success": False, "error": f"Conflicting task revision across checkouts: {task_id}"}
             con.execute(
                 """INSERT INTO agent_tasks_projection (
                     task_id, status, contract, checkpoint, context, owner, lease_id, receipts,
@@ -156,7 +177,9 @@ def rebuild_agent_state_projection(
             runtime_sensitivity = "normal"
             provenance = json.dumps({
                 "repository_id": project_id,
-                "_agent_project_scope": {"repo_root": str(root), "project_id": project_id},
+                "_agent_project_scope": {
+                    "version": 2, "repo_root": str(root), "project_id": project_id,
+                },
             })
             existing = con.execute(
                 """SELECT kind, scope, scope_id, key, value, provenance
@@ -167,10 +190,12 @@ def rebuild_agent_state_projection(
                 try:
                     existing_scope = json.loads(existing[5] or "{}").get("_agent_project_scope", {})
                     existing_root = existing_scope.get("repo_root")
+                    existing_project_id = existing_scope.get("project_id")
                 except (TypeError, ValueError, AttributeError):
                     existing_scope = {}
                     existing_root = None
-                if existing_root and existing_root != str(root):
+                    existing_project_id = None
+                if existing_root and existing_root != str(root) and existing_project_id != project_id:
                     con.rollback()
                     return {"success": False, "error": f"Memory ID is already projected from another repository: {record_id}"}
                 owned = con.execute(
@@ -178,14 +203,13 @@ def rebuild_agent_state_projection(
                     (str(root), record_id),
                 ).fetchone()
                 matches_canonical = (
-                    existing_root == str(root)
-                    and existing_scope.get("project_id") == project_id
+                    existing_project_id == project_id
                     and existing[0] == runtime_kind
                     and existing[1] == scope
                     and existing[2] == scope_id
                     and existing[3] == payload.get("key", "")
                     and existing[4] == value_str
-                    and existing[5] == runtime_sensitivity
+                    and existing_scope.get("version") == 2
                 )
                 if not owned and not matches_canonical:
                     con.rollback()
@@ -299,8 +323,8 @@ def rebuild_agent_state_projection(
             )
             counts["incidents"] += 1
 
-        # Track only records written by this Git projection; runtime rows are
-        # retained until the explicit legacy publication workflow migrates them.
+        # Remove stale projections only after the final local checkout owner
+        # releases them; another checkout of this project may still need the row.
         task_ids = {str(row.get("payload", {}).get("task_id")) for row in tasks}
         memory_ids = {str(row.get("payload", {}).get("record_id")) for row in memory_records}
         incident_ids = {str(row.get("payload", {}).get("incident_id")) for row in incidents}
@@ -310,6 +334,17 @@ def rebuild_agent_state_projection(
             (str(root),),
         ).fetchall():
             if record_id in current_ids.get(record_kind, set()):
+                continue
+            other_owner = con.execute(
+                """SELECT 1 FROM project_projection_meta.records
+                   WHERE record_kind=? AND record_id=? AND repo_root<>? LIMIT 1""",
+                (record_kind, record_id, str(root)),
+            ).fetchone()
+            if other_owner:
+                con.execute(
+                    "DELETE FROM project_projection_meta.records WHERE repo_root=? AND record_kind=? AND record_id=?",
+                    (str(root), record_kind, record_id),
+                )
                 continue
             if record_kind == "task":
                 con.execute(
@@ -321,8 +356,8 @@ def rebuild_agent_state_projection(
                     """DELETE FROM agent_memory_records
                        WHERE record_id=?
                          AND json_valid(provenance)
-                         AND json_extract(provenance, '$._agent_project_scope.repo_root')=?""",
-                    (record_id, str(root)),
+                         AND json_extract(provenance, '$._agent_project_scope.project_id')=?""",
+                    (record_id, project_id),
                 )
             elif record_kind == "incident":
                 con.execute(

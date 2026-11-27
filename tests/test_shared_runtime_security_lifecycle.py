@@ -26,6 +26,18 @@ def _handler(headers: dict[str, str], *, method: str = "GET", path: str = "/api/
     return handler
 
 
+def _task_scope(root):
+    from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
+
+    canonical_root = str(Path(root).resolve())
+    return {
+        "version": 3,
+        "project_id": project_scope_id(canonical_root),
+        "worktree_id": worktree_scope_id(canonical_root),
+        "repo_root": canonical_root,
+    }
+
+
 def _project_state(root: Path, state_dir: Path):
     from local_ai_hub.project_config import resolve_project_context
 
@@ -822,7 +834,7 @@ def test_task_lookup_is_bound_to_repository_root(tmp_path, monkeypatch):
     task_a = SimpleNamespace(task_id="same-task", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-a",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
+        "_agent_task_scope": _task_scope(root_a),
     }))
     assert http_server.Handler._task_matches_request(task_a, str(root_a.resolve())) is True
     assert http_server.Handler._task_matches_request(task_a, str(root_b.resolve())) is False
@@ -853,7 +865,7 @@ def test_task_access_uses_default_root_policy_when_allowed_roots_empty(tmp_path,
     task = SimpleNamespace(
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-a"),
         checkpoint=SimpleNamespace(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
+            "_agent_task_scope": _task_scope(root),
         }),
     )
     rootless_task = SimpleNamespace(
@@ -878,7 +890,7 @@ def test_task_completion_rejects_missing_owner(tmp_path, monkeypatch):
         owner="",
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-test"),
         checkpoint=SimpleNamespace(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
+            "_agent_task_scope": _task_scope(root),
         }),
     )
     app = SimpleNamespace(
@@ -1083,7 +1095,7 @@ def test_memory_task_query_requires_existing_task_in_bound_root(tmp_path, monkey
     task = SimpleNamespace(task_id="known-task", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-root-a",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
+        "_agent_task_scope": _task_scope(root_a),
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {
@@ -1119,7 +1131,7 @@ def test_verification_scope_requires_existing_task_owned_by_root(tmp_path, monke
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-root-a",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
+        "_agent_task_scope": _task_scope(root_a),
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(tmp_path)],
@@ -1149,7 +1161,7 @@ def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeyp
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-root-a",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
+        "_agent_task_scope": _task_scope(root_a),
     }))
     calls = []
     app = SimpleNamespace(
@@ -1243,7 +1255,7 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
         task_id="task-1",
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-actual"),
         checkpoint=SimpleNamespace(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": canonical_root},
+            "_agent_task_scope": _task_scope(canonical_root),
         }),
     )
     app = SimpleNamespace(
@@ -1298,7 +1310,7 @@ def test_task_reaper_uses_authenticated_token_and_explicit_repository_root(tmp_p
         task_id="task-1",
         context=SimpleNamespace(repository_id=coordination_id, session_id="session-real-task"),
         checkpoint=SimpleNamespace(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": canonical_root},
+            "_agent_task_scope": _task_scope(canonical_root),
         }),
     )
     app = SimpleNamespace(
@@ -2251,7 +2263,7 @@ def test_context_compile_binds_existing_task_root_without_changing_task_id_contr
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-context-real",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
+        "_agent_task_scope": _task_scope(root),
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(root)],
@@ -2277,7 +2289,7 @@ def test_context_compile_rejects_foreign_or_unknown_task_before_compile(tmp_path
     task_a = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-a",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
+        "_agent_task_scope": _task_scope(root_a),
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(tmp_path)],
@@ -2299,7 +2311,7 @@ def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-events-real",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
+        "_agent_task_scope": _task_scope(root),
     }))
     calls = []
     app = SimpleNamespace(
@@ -2344,7 +2356,7 @@ def test_task_blackboard_access_requires_owned_task_board(tmp_path, monkeypatch)
     task = SimpleNamespace(task_id="task-a", context=SimpleNamespace(
         repository_id=coordination_id, session_id="session-board-real",
     ), checkpoint=SimpleNamespace(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
+        "_agent_task_scope": _task_scope(root),
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(root)],

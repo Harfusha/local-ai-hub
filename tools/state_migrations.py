@@ -22,6 +22,7 @@ from local_ai_hub.state_lifecycle import (
     read_state_version,
     write_state_version,
 )
+from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
 from local_ai_hub.legacy_board_archive import migrate_legacy_board_database, read_legacy_board_archive
 from local_ai_hub.endpoint_stats import ENDPOINT_CALL_IDS_TABLE_SIGNATURE, ENDPOINT_STATS_TABLE_SIGNATURE
 from local_ai_hub.telemetry_contracts import (
@@ -459,6 +460,84 @@ def _migrate_incident_placeholder_10_to_11(state: Path) -> None:
         raise RuntimeError("agent incident state failed verification after 10->11 migration")
 
 
+def _task_scopes_v12(state: Path, *, migrate: bool) -> bool:
+    database = state / "agent_state.sqlite"
+    if not database.exists():
+        return True
+    if not database.is_file() or database.is_symlink():
+        raise RuntimeError(f"agent state path is not a regular database file: {database}")
+    with closing(sqlite3.connect(database, timeout=15.0)) as con:
+        con.execute("PRAGMA busy_timeout=15000")
+        tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "agent_tasks_projection" not in tables:
+            return True
+        rows = con.execute("SELECT task_id, checkpoint FROM agent_tasks_projection").fetchall()
+        converted: list[tuple[str, str]] = []
+        for task_id, raw in rows:
+            try:
+                checkpoint = json.loads(raw or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"task checkpoint is invalid during 11->12 migration: {task_id}") from exc
+            if not isinstance(checkpoint, dict):
+                raise RuntimeError(f"task checkpoint is invalid during 11->12 migration: {task_id}")
+            state_data = checkpoint.get("state_data", {})
+            if not isinstance(state_data, dict) or "_agent_task_scope" not in state_data:
+                continue
+            scope = state_data["_agent_task_scope"]
+            if not isinstance(scope, dict):
+                raise RuntimeError(f"task scope is invalid during 11->12 migration: {task_id}")
+            if scope.get("version") == 2 and set(scope) == {"version", "repo_root"}:
+                root = Path(scope["repo_root"]).expanduser().resolve(strict=True)
+                if not root.is_dir():
+                    raise RuntimeError(f"task checkout is unavailable during 11->12 migration: {task_id}")
+                next_scope = {
+                    "version": 3,
+                    "project_id": project_scope_id(root),
+                    "worktree_id": worktree_scope_id(root),
+                    "repo_root": str(root),
+                }
+                state_data["_agent_task_scope"] = next_scope
+                converted.append((json.dumps(checkpoint, ensure_ascii=False), str(task_id)))
+            elif (
+                scope.get("version") == 3
+                and set(scope) == {"version", "project_id", "worktree_id", "repo_root"}
+            ):
+                root = Path(scope["repo_root"]).expanduser().resolve(strict=True)
+                if (
+                    scope["project_id"] != project_scope_id(root)
+                    or scope["worktree_id"] != worktree_scope_id(root)
+                ):
+                    raise RuntimeError(f"task scope identity mismatch during 11->12 migration: {task_id}")
+            else:
+                raise RuntimeError(f"unsupported task scope during 11->12 migration: {task_id}")
+        if migrate:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                for checkpoint_json, task_id in converted:
+                    changed = con.execute(
+                        "UPDATE agent_tasks_projection SET checkpoint=? WHERE task_id=?",
+                        (checkpoint_json, task_id),
+                    ).rowcount
+                    if changed != 1:
+                        raise RuntimeError(f"task changed during 11->12 migration: {task_id}")
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+        elif converted:
+            return False
+        return con.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+def _state_schema_v12(state: Path) -> bool:
+    return _state_schema_v11(state) and _task_scopes_v12(state, migrate=False)
+
+
+def _migrate_task_scopes_11_to_12(state: Path) -> None:
+    if not _task_scopes_v12(state, migrate=True):
+        raise RuntimeError("task scope migration failed verification after 11->12 conversion")
+
+
 def _migrate_agent_schema_6_to_7(state: Path) -> None:
     database = state / "agent_state.sqlite"
     if database.exists():
@@ -621,6 +700,7 @@ MIGRATIONS: tuple[StateMigration, ...] = (
     StateMigration(8, 9, _migrate_endpoint_stats_8_to_9, _state_schema_v9),
     StateMigration(9, 10, _migrate_laya_telemetry_9_to_10, _state_schema_v10),
     StateMigration(10, 11, _migrate_incident_placeholder_10_to_11, _state_schema_v11),
+    StateMigration(11, 12, _migrate_task_scopes_11_to_12, _state_schema_v12),
 )
 
 

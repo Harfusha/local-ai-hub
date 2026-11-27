@@ -21,9 +21,10 @@ from .agent_task_models import (
     TaskStatus,
     TaskWorktreeError,
     _canonical_repository_root,
-    _task_scope_root,
+    _task_matches_scope,
 )
 from .json_utils import dumps as json_dumps
+from .project_identity import project_scope_id, worktree_scope_id
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -116,7 +117,12 @@ class TaskCoreMixin:
                 ) from exc
 
         if canonical_root:
-            initial_sd["_agent_task_scope"] = {"version": 2, "repo_root": canonical_root}
+            initial_sd["_agent_task_scope"] = {
+                "version": 3,
+                "project_id": project_scope_id(canonical_root),
+                "worktree_id": worktree_scope_id(canonical_root),
+                "repo_root": canonical_root,
+            }
 
         memory_context = self._task_memory_context(
             t_id, contract, context, root_override=canonical_root or repo_root
@@ -460,9 +466,13 @@ class TaskCoreMixin:
             return TaskPage()
         self._init_projection_table()
         canonical_root: str | None = None
+        canonical_project_id: str | None = None
+        canonical_worktree_id: str | None = None
         if repo_root is not None:
             try:
                 canonical_root = _canonical_repository_root(repo_root)
+                canonical_project_id = project_scope_id(canonical_root)
+                canonical_worktree_id = worktree_scope_id(canonical_root)
             except ValueError:
                 return TaskPage()
         now = time.time()
@@ -491,10 +501,11 @@ class TaskCoreMixin:
                 if canonical_root is not None:
                     where_clauses.append(
                         "json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer' "
-                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 2 "
-                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.repo_root') = ?"
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 3 "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.project_id') = ? "
+                        "AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?)"
                     )
-                    params.append(canonical_root)
+                    params.extend((canonical_project_id, canonical_worktree_id))
                 if not query_terms and not include_stale:
                     where_clauses.append(
                         "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
@@ -569,9 +580,13 @@ class TaskCoreMixin:
             return 0
         self._init_projection_table()
         canonical_root: str | None = None
+        canonical_project_id: str | None = None
+        canonical_worktree_id: str | None = None
         if repo_root is not None:
             try:
                 canonical_root = _canonical_repository_root(repo_root)
+                canonical_project_id = project_scope_id(canonical_root)
+                canonical_worktree_id = worktree_scope_id(canonical_root)
             except ValueError:
                 return 0
         def _fetch_count() -> int:
@@ -584,10 +599,11 @@ class TaskCoreMixin:
                 if canonical_root is not None:
                     where_clauses.append(
                         "json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer' "
-                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 2 "
-                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.repo_root') = ?"
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 3 "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.project_id') = ? "
+                        "AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?)"
                     )
-                    params.append(canonical_root)
+                    params.extend((canonical_project_id, canonical_worktree_id))
                 if not include_stale:
                     where_clauses.append(
                         "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
@@ -613,7 +629,7 @@ class TaskCoreMixin:
         def _matches(task: TaskState) -> bool:
             if task.is_stale or task.is_terminal():
                 return False
-            if target_root and self._canonical_memory_root(_task_scope_root(task)) != target_root:
+            if target_root and not _task_matches_scope(task, target_root):
                 return False
             return True
 

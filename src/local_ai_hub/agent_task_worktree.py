@@ -20,6 +20,7 @@ from .agent_task_models import (
 )
 from .sqlite_support import connect_sqlite, retry_busy
 from .task_memory_wire import mcp_wire_tokens
+from .project_identity import project_scope_id, worktree_scope_id
 
 
 TaskStore = None
@@ -285,7 +286,7 @@ class TaskWorktreeMixin:
                     "WHERE status IN ('planned', 'active', 'verifying', 'waiting', 'blocked') "
                     "AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ? "
                     "AND json_type(" + document + ", '$.state_data._agent_task_scope.version') = 'integer' "
-                    "AND json_extract(" + document + ", '$.state_data._agent_task_scope.version') = 2 "
+                    "AND json_extract(" + document + ", '$.state_data._agent_task_scope.version') = 3 "
                     "AND json_type(" + document + ", '$.state_data._agent_task_scope.repo_root') = 'text' "
                     "AND json_extract(" + document + ", '$.state_data._agent_task_scope.repo_root') != '' "
                     "GROUP BY scoped_root HAVING scoped_root > ? ORDER BY scoped_root LIMIT ?",
@@ -328,6 +329,8 @@ class TaskWorktreeMixin:
                 raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
         try:
             scoped_root = _canonical_repository_root(repo_root)
+            scoped_project_id = project_scope_id(scoped_root)
+            scoped_worktree_id = worktree_scope_id(scoped_root)
         except ValueError:
             return []
         if not self._db_path_available():
@@ -337,15 +340,20 @@ class TaskWorktreeMixin:
         def _fetch_expired() -> list[str]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 task_filter = " AND task_id = ?" if task_id is not None else ""
-                parameters = (current_time, scoped_root, task_id, MAX_TASK_REAP_BATCH) if task_id is not None else (current_time, scoped_root, MAX_TASK_REAP_BATCH)
+                parameters = (
+                    (current_time, scoped_project_id, scoped_worktree_id, task_id, MAX_TASK_REAP_BATCH)
+                    if task_id is not None
+                    else (current_time, scoped_project_id, scoped_worktree_id, MAX_TASK_REAP_BATCH)
+                )
                 cur = con.execute(
                     """
                     SELECT task_id FROM agent_tasks_projection
                     WHERE status IN ('planned', 'active', 'verifying', 'waiting', 'blocked')
                       AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ?
                       AND json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer'
-                      AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 2
-                      AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.repo_root') = ?
+                      AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 3
+                      AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.project_id') = ?
+                      AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?)
                     """ + task_filter + " ORDER BY heartbeat_expires_at, task_id LIMIT ?",
                     parameters,
                 )

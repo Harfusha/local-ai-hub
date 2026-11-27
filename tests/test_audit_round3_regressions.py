@@ -16,6 +16,13 @@ from local_ai_hub.agent_semaphores import SemaphoreStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
 from local_ai_hub.source_slice import read_source_slice
 from local_ai_hub.swarm import execute_swarm_dag
+from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
+
+
+def _task_scope(root):
+    canonical_root = str(Path(root).resolve())
+    return {"version": 3, "project_id": project_scope_id(canonical_root),
+            "worktree_id": worktree_scope_id(canonical_root), "repo_root": canonical_root}
 
 
 def _acquire_semaphore_process(db_path: str, owner: str, barrier, results) -> None:
@@ -53,14 +60,14 @@ def test_t3_02_session_briefing_handles_taskstate_objects(tmp_path: Path):
     repo_a.mkdir()
     repo_b.mkdir()
     local_task = replace(task, checkpoint=TaskCheckpoint(state_data={
-        "_agent_task_scope": {"version": 2, "repo_root": str(repo_a)},
+        "_agent_task_scope": _task_scope(repo_a),
     }))
     foreign_task = replace(
         task,
         task_id="foreign_task",
         contract=GoalContract(goal="Foreign repository task", acceptance_criteria=("tested",)),
         checkpoint=TaskCheckpoint(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": str(repo_b)},
+            "_agent_task_scope": _task_scope(repo_b),
         }),
     )
     task_store.list_tasks = MagicMock(return_value=[foreign_task, task, local_task])

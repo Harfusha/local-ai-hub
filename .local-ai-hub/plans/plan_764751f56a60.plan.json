@@ -8,20 +8,20 @@
   "tasks": {
     "task_pr9_complete": {
       "acceptance_criteria": [
-        "Two project roots preserve distinct task, memory, and incident records; duplicate IDs across roots fail closed without overwriting existing records.",
-        "Task checkpoints and attempt ancestry survive canonical write/read; malformed or stale ancestry is rejected.",
-        "Shared memory supports reusable rules while session, credential, and private receipt data cannot be published.",
-        "Incident signatures remain stable; resolved records require a concrete verified fix.",
-        "A clean clone without an existing SQLite database can rebuild; repeated rebuild is idempotent; Git updates and deletions reconcile per project scope.",
-        "Offline legacy migration preview is bounded, read-only, snapshot-bound, and publishes only an explicitly reviewed record.",
-        "Projection rebuild CLI works on a clean project; HTTP/MCP acceptance and authorization boundaries pass, including non-critical MCP routing contract checks."
+        "Same project identity and canonical records work across moved clones and linked worktrees without checkout path becoming durable identity.",
+        "Repeated checkout and branch changes refresh the local projection and fence stale writers.",
+        "Same-checkout concurrent writes use revision checks, atomic publication, and explicit conflicts; independent records remain isolated.",
+        "Offline clone claims remain advisory; synchronized competing attempts trigger conflict handling and re-review; private leases and receipts never enter Git.",
+        "Updater performs bounded, restartable, idempotent, snapshot-validated one-time migration with recoverable cutover.",
+        "After cutover, no legacy runtime readers/writers, fallbacks, dual writes, manual batch operations, or compatibility shims remain.",
+        "Real Git tests cover moved checkouts, linked worktrees, independent clones, stale/disjoint concurrent writes, branch-switch fencing, migration resume/rollback, and rejection of legacy runtime paths."
       ],
-      "blocker": "Verified candidate ca1b9f6d was committed and pushed; PR9 matrix 367 passed, critical 2031 passed/14 skipped with one timing flake passing isolated rerun, and staged install/runtime healthy. Main checkout still has an active OpenCode merge. Authentic CommandBroker receipts are unavailable. Previous 17 creation-only projection restores remain documented; 575 changed-history streams remain skipped by explicit approval.",
+      "blocker": "Agent OS task has no persisted session_id, so receipt-gated completion and plan_reconcile_steering remain unavailable. Continue implementation and validation; do not claim plan completion without authentic receipts.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified work.",
+      "description": "Implement the user clarification for PR #9: stable Git project identity across relocated checkouts and linked worktrees, safe concurrent agents with local runtime state, and one idempotent updater migration followed by removal of legacy runtime behavior.",
       "kind": "code",
-      "next_action": "After the active OpenCode merge releases the main checkout, safely install/restart there and verify live projections; collect authentic task-bound receipts if an exposed CommandBroker command_id becomes available. Candidate branch is origin/codex/pr9-acceptance at ca1b9f6d.",
+      "next_action": "Implement failing tests for checkout relocation, worktree-scoped task projection, concurrent stale writes, and one-time updater migration; then repair the smallest shared ownership layer.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
@@ -40,7 +40,7 @@
         {
           "path": "docs/superpowers/specs/2026-11-26-pr9-practical-business-acceptance.md",
           "revision": {
-            "content_sha256": "7863dd41c8eb67290b86d397f86d7aa18472847d67d84dce5b7f7c7894bbd65b",
+            "content_sha256": "072e38551830a4ded95b251de1ddd91509deda6f916fc8b7619fb57f6350fc76",
             "kind": "working"
           }
         }

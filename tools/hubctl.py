@@ -298,8 +298,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover, legacy-task-batch, legacy-memory-batch, legacy-incident-batch or projection-rebuild")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "projection-rebuild"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover or projection-rebuild")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -400,54 +400,6 @@ def main() -> int:
                 result = checkout_sync_status(store.root)
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
-            if args.sub_arg == "legacy-task-batch":
-                from local_ai_hub.agent_state_migration import preview_legacy_task_batch
-                from local_ai_hub.repository_scope import authorized_repository_root
-
-                if args.apply or not 1 <= args.limit <= 16:
-                    parser.error("legacy-task-batch is read-only; use --limit 1 through 16")
-                config = load_config(_config_arg(args.config))
-                authorized_repository_root(config, str(store.root))
-                result = preview_legacy_task_batch(
-                    config["server"]["state_dir"], store, limit=args.limit,
-                    after_task_id=args.after_task_id, expected_snapshot=args.snapshot,
-                )
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                return 0 if result["inventory_complete"] and all(
-                    row["state"] in {"review_required", "already_published"} for row in result["states"]
-                ) else 1
-            if args.sub_arg == "legacy-memory-batch":
-                from local_ai_hub.agent_state_migration import preview_legacy_memory_batch
-                from local_ai_hub.repository_scope import authorized_repository_root
-
-                if args.apply or not 1 <= args.limit <= 16:
-                    parser.error("legacy-memory-batch is read-only; use --limit 1 through 16")
-                config = load_config(_config_arg(args.config))
-                authorized_repository_root(config, str(store.root))
-                result = preview_legacy_memory_batch(
-                    config["server"]["state_dir"], store, limit=args.limit,
-                    after_record_id=args.after_task_id, expected_snapshot=args.snapshot,
-                )
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                return 0 if result["inventory_complete"] and all(
-                    row["state"] in {"review_required", "already_published"} for row in result["states"]
-                ) else 1
-            if args.sub_arg == "legacy-incident-batch":
-                from local_ai_hub.agent_state_migration import preview_legacy_incident_batch
-                from local_ai_hub.repository_scope import authorized_repository_root
-
-                if args.apply or not 1 <= args.limit <= 16:
-                    parser.error("legacy-incident-batch is read-only; use --limit 1 through 16")
-                config = load_config(_config_arg(args.config))
-                authorized_repository_root(config, str(store.root))
-                result = preview_legacy_incident_batch(
-                    config["server"]["state_dir"], store, limit=args.limit,
-                    after_incident_id=args.after_task_id, expected_snapshot=args.snapshot,
-                )
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                return 0 if result["inventory_complete"] and all(
-                    row["state"] in {"review_required", "already_published"} for row in result["states"]
-                ) else 1
             if args.sub_arg == "projection-rebuild":
                 from local_ai_hub.repo_agent_state import rebuild_agent_state_projection
                 from local_ai_hub.repository_scope import authorized_repository_root
