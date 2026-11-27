@@ -17,9 +17,34 @@ CRITICAL = (
 REQUIRED_FUNCTIONS = (
     "src/local_ai_hub/http_server.py::Handler._require_authorized",
     "src/local_ai_hub/http_server.py::Handler._authorized",
-    "src/local_ai_hub/command_broker.py::CommandBroker.run",
+    "src/local_ai_hub/commands.py::CommandBroker.run",
     "src/local_ai_hub/agent_memory.py::MemoryStore.record",
 )
+
+
+# Historical baseline identities are intentionally retained. The command broker
+# was split into these implementation modules; sum measured branch counts,
+# rather than resetting the old threshold or accepting a forwarding shim.
+COMMAND_BROKER_IMPLEMENTATION = tuple(
+    f"src/local_ai_hub/{name}.py" for name in (
+        "command_broker", "command_authorization", "command_classification",
+        "command_cache", "command_diagnostics", "command_patch", "command_output",
+        "command_run", "command_execute", "command_repair",
+        "command_transaction_journal", "command_transaction_execute",
+        "command_verification", "command_daemon_lifecycle", "command_daemon_registry",
+    )
+)
+MODULE_RELOCATIONS = {
+    "src/local_ai_hub/commands.py": COMMAND_BROKER_IMPLEMENTATION,
+}
+FUNCTION_RELOCATIONS = {
+    "src/local_ai_hub/http_server.py::Handler._require_authorized":
+        "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._require_authorized",
+    "src/local_ai_hub/http_server.py::Handler._authorized":
+        "src/local_ai_hub/http_api_auth.py::HttpAuthorizationMixin._authorized",
+    "src/local_ai_hub/commands.py::CommandBroker.run":
+        "src/local_ai_hub/command_run.py::CommandRunMixin.run",
+}
 
 
 def critical_module_paths():
@@ -53,19 +78,29 @@ def _validated_counts(covered, total, label):
 
 def _counts(report, path):
     normalized = _files(report)
-    item = normalized.get(path)
-    if not isinstance(item, dict) or not isinstance(item.get("summary"), dict):
-        raise ValueError(f"critical module missing: {path}")
-    summary = item["summary"]
-    covered, total = summary.get("covered_branches"), summary.get("num_branches")
-    return _validated_counts(covered, total, path)
+    paths = MODULE_RELOCATIONS.get(path, (path,))
+    covered_total = branch_total = 0
+    for actual in paths:
+        item = normalized.get(actual)
+        if not isinstance(item, dict) or not isinstance(item.get("summary"), dict):
+            raise ValueError(f"critical module missing: {actual} (baseline {path})")
+        summary = item["summary"]
+        covered, total = summary.get("covered_branches"), summary.get("num_branches")
+        # Some extracted helper modules may have no conditional branches.
+        # They must still be present in the measured report.
+        if type(covered) is not int or type(total) is not int or not 0 <= covered <= total:
+            raise ValueError(f"invalid branch counts: {actual}")
+        covered_total += covered
+        branch_total += total
+    return _validated_counts(covered_total, branch_total, path)
 
 
 def _function_counts(report, identifier):
     meta = report.get("meta") if isinstance(report, dict) else None
     if not isinstance(meta, dict) or type(meta.get("format")) is not int or meta["format"] != 3:
         raise ValueError("coverage format 3 is required for function branch counts")
-    path, separator, name = identifier.partition("::") if isinstance(identifier, str) else ("", "", "")
+    actual = FUNCTION_RELOCATIONS.get(identifier, identifier) if isinstance(identifier, str) else ""
+    path, separator, name = actual.partition("::")
     if not separator or not path or not name:
         raise ValueError(f"invalid required function identifier: {identifier}")
     item = _files(report).get(path)
