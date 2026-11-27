@@ -93,13 +93,25 @@ def change_resources(root: str, base_revision: str = "") -> list[str]:
 
 def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
     if inventory.get("scope") != "changes":
-        if "include_mapped_tests" in inventory or "policy_sha256" in inventory:
-            raise ValueError("mapped tests require Git changes scope")
+        if "include_mapped_tests" in inventory or "policy_sha256" in inventory or "include_python_imports" in inventory:
+            raise ValueError("impact expansion requires Git changes scope")
         return repository_resources(root)
     resources = change_resources(root, inventory.get("base_revision", ""))
     mapped = inventory.get("include_mapped_tests", False)
     if type(mapped) is not bool or ("policy_sha256" in inventory and not mapped):
         raise ValueError("invalid mapped test inventory policy")
+    python_imports = inventory.get("include_python_imports", False)
+    if type(python_imports) is not bool:
+        raise ValueError("invalid Python import impact policy")
+    all_paths = repository_resources(root) if python_imports else None
+    deadline = time.monotonic() + 5.0
+    reverse: dict[str, set[str]] = {}
+    if python_imports:
+        from .execution_imports import expand_import_dependents, python_import_dependents
+
+        assert all_paths is not None
+        reverse = python_import_dependents(root, all_paths, resources, deadline=deadline)
+        resources = sorted(expand_import_dependents(resources, reverse))
     if not mapped:
         return resources
 
@@ -118,7 +130,6 @@ def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
     pending = set(rules)
     impacted = set(resources)
     allowed: list[str] | None = None
-    deadline = time.monotonic() + 5.0
     while pending:
         if time.monotonic() >= deadline:
             raise ValueError("project impact expansion exceeded deadline")
@@ -128,7 +139,7 @@ def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
             break
         if allowed is None:
             allowed = [
-                path for path in repository_resources(root)
+                path for path in (all_paths if all_paths is not None else repository_resources(root))
                 if path_is_allowed(root, path, policy.settings, phase="test")
             ]
         pending.difference_update(active)
@@ -140,6 +151,10 @@ def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
                 if not matched:
                     raise ValueError("configured affected test pattern has no allowed inventory match")
                 impacted.update(matched)
+                if python_imports:
+                    from .execution_imports import expand_import_dependents
+
+                    impacted = expand_import_dependents(impacted, reverse)
                 if len(impacted) > MAX_REPOSITORY_RESOURCES:
                     raise ValueError("Git impact inventory exceeds resource limit")
     if time.monotonic() >= deadline:
