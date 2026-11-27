@@ -37,7 +37,7 @@ def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Pa
         (home / ".codex" / "skills", "plan-led-work"),
         (home / ".cursor" / "skills", "ponytail-audit"),
         (home / ".codeium" / "windsurf" / "skills", "ponytail-review"),
-        (home / "AppData" / "Roaming" / "devin" / "skills", "local-ai-orchestrator"),
+        (setup.devin_config_dir() / "skills", "local-ai-orchestrator"),
         (home / ".copilot" / "skills", "token-economizer"),
         (profile_home / ".gemini" / "config" / "skills", "using-superpowers"),
         (home / ".gemini" / "skills", "former-managed-skill"),
@@ -85,7 +85,7 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
-        "AppData/Roaming/devin/mcp_config.json": "mcpServers",
+        setup.devin_mcp_config_path().relative_to(home).as_posix(): "mcpServers",
         ".copilot/mcp-config.json": "mcpServers",
         ".local-ai/generic-mcp.json": "mcpServers",
         ".local-ai/vscode-mcp.json": "servers",
@@ -126,6 +126,7 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     }
     components["agent_antigravity_hooks"] = True
 
+    (install / "defaults.toml").write_bytes((ROOT / "defaults.toml").read_bytes())
     setup.configure_agents(install, Path(sys.executable), None, cfg, include_companion=False, agent_components=components)
     manifest = uninstall.read_install_manifest(install)
     owned_paths = {
