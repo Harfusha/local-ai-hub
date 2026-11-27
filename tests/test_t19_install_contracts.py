@@ -147,17 +147,10 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
     assert project["tool"]["setuptools"]["package-data"]["local_ai_hub"] == [
         "defaults.toml",
         "automation_browser.js",
-        "ui_static/*",
+        "grammars/*.gbnf",
         "data/*.json",
     ]
-    for asset in ("app.css", "app.js", "index.html"):
-        source_asset = ROOT / "src" / "local_ai_hub" / "ui_static" / asset
-        installed_asset = install_dir / "src" / "local_ai_hub" / "ui_static" / asset
-        if source_asset.is_file():
-            assert installed_asset.read_bytes() == source_asset.read_bytes()
-        else:
-            # /dashboard/next was cancelled; do not restore retired assets.
-            assert not installed_asset.exists()
+    assert not (install_dir / "src" / "local_ai_hub" / "ui_static").exists()
     assert (install_dir / "src" / "local_ai_hub" / "automation_browser.js").read_bytes() == (
         ROOT / "src" / "local_ai_hub" / "automation_browser.js"
     ).read_bytes()
