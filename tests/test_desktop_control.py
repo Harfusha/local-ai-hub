@@ -1054,3 +1054,77 @@ def test_model_delete_checks_fresh_exact_inventory_and_receipt():
         assert result["deleted"] == "qwen:7b"
         post.assert_called_once_with(control, "/api/models/manage",
                                      {"action": "delete", "model": "qwen:7b"}, timeout=30.0)
+
+
+def _instruction_fixture(tmp_path):
+    from local_ai_hub.caveman_instructions import stage_instruction
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    source = root / "AGENTS.md"
+    original = "# Rules\nValidate before committing. Validate before committing.\n"
+    candidate = "# Rules\nValidate before committing.\n"
+    source.write_bytes(original.encode("utf-8"))
+    state = tmp_path / "state"
+    stage = state / "caveman-staging"
+    staged = stage_instruction(source, stage, lambda _text: candidate,
+                               lambda _a, _b: {"equivalent": True, "missing": [],
+                                               "weakened": [], "changed": [], "uncertain": []})
+    assert staged.candidate is not None
+    return root, source, state, staged, original, candidate
+
+
+def test_instruction_manifest_review_apply_restore_is_exact_and_no_inference(tmp_path):
+    from local_ai_hub import caveman_instructions
+    root, source, state, staged, original, candidate = _instruction_fixture(tmp_path)
+    assert staged.candidate is not None
+    manifest = staged.candidate.parent / "manifest.json"
+    control = MagicMock()
+    args = {"root": str(root), "manifest": str(manifest)}
+    with patch("local_ai_hub.config.load_config", return_value={"server": {"state_dir": str(state)}}), \
+         patch.object(caveman_instructions, "compress_with_caveman") as compress, \
+         patch.object(caveman_instructions, "review_instruction_semantics") as review:
+        inspected = desktop.dispatch(control, {"op": "instruction_manifest", "args": args})
+        assert inspected["original"] == original and inspected["candidate"] == candidate
+        assert inspected["status"] == "staged"
+        digest = inspected["manifest_sha256"]
+        assert source.read_bytes() == original.encode("utf-8")
+        with pytest.raises(ValueError, match="confirmation"):
+            desktop.dispatch(control, {"op": "instruction_manifest", "args": {**args, "action": "apply"}})
+        with pytest.raises(ValueError, match="digest changed"):
+            desktop.dispatch(control, {"op": "instruction_manifest", "args": {
+                **args, "action": "apply", "manifest_sha256": "0" * 64, "confirmed": True}})
+        applied = desktop.dispatch(control, {"op": "instruction_manifest", "args": {
+            **args, "action": "apply", "manifest_sha256": digest, "confirmed": True}})
+        assert applied["status"] == "applied" and source.read_bytes() == candidate.encode("utf-8")
+        assert "candidate" not in applied
+        restored = desktop.dispatch(control, {"op": "instruction_manifest", "args": {
+            **args, "action": "restore", "manifest_sha256": digest, "confirmed": True}})
+        assert restored["status"] == "staged" and source.read_bytes() == original.encode("utf-8")
+        compress.assert_not_called()
+        review.assert_not_called()
+        control._client.assert_not_called()
+
+
+def test_instruction_manifest_rejects_foreign_scope_and_modified_candidate(tmp_path):
+    from local_ai_hub.caveman_instructions import reviewed_instruction_manifest
+    root, source, state, staged, original, _candidate = _instruction_fixture(tmp_path)
+    assert staged.candidate is not None
+    manifest = staged.candidate.parent / "manifest.json"
+    stage = state / "caveman-staging"
+    inspected = reviewed_instruction_manifest(manifest, repository_root=root, stage_root=stage)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    with pytest.raises(ValueError, match="authorized repository"):
+        reviewed_instruction_manifest(manifest, repository_root=foreign, stage_root=stage)
+    source.write_bytes(b"Edited by another process")
+    changed = reviewed_instruction_manifest(manifest, repository_root=root, stage_root=stage)
+    assert changed["status"] == "source_changed"
+    with pytest.raises(ValueError, match="source changed"):
+        reviewed_instruction_manifest(manifest, repository_root=root, stage_root=stage,
+                                      action="apply", expected_digest=inspected["manifest_sha256"])
+    source.write_bytes(original.encode("utf-8"))
+    staged.candidate.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="contents changed"):
+        reviewed_instruction_manifest(manifest, repository_root=root, stage_root=stage)
+    assert source.read_bytes() == original.encode("utf-8")
