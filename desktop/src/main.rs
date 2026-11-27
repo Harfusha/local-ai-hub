@@ -1,9 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod records;
-mod trace;
-mod summary;
 mod settings;
+mod summary;
+mod trace;
 
 use eframe::egui;
 use serde_json::{json, Value};
@@ -18,20 +18,93 @@ use std::{
 
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
-    ("Requests", &["Requests", "Active requests", "Scheduler queue", "Scheduler running", "Async jobs", "Work orders", "Trace index", "Endpoint analytics", "Telemetry history"]),
-    ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review", "Run history"]),
-    ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees", "Session briefing"]),
+    (
+        "Requests",
+        &[
+            "Requests",
+            "Active requests",
+            "Scheduler queue",
+            "Scheduler running",
+            "Async jobs",
+            "Work orders",
+            "Trace index",
+            "Endpoint analytics",
+            "Telemetry history",
+        ],
+    ),
+    (
+        "Tasks",
+        &[
+            "Tasks",
+            "Memory",
+            "Incidents",
+            "Vision review",
+            "Run history",
+        ],
+    ),
+    (
+        "Coordination",
+        &[
+            "Plans",
+            "Plan board",
+            "Semaphores",
+            "File leases",
+            "Worktrees",
+            "Session briefing",
+        ],
+    ),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
-    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Ollama management", "Benchmark", "Telemetry report", "Model statistics", "Execution profiles", "Cache layers", "Agent statistics", "Execution routes", "Laya", "Laya capture"]),
-    ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Recovery journal", "Diagnostics", "Audit"]),
-    ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools", "Instruction compression"]),
+    (
+        "Models & search",
+        &[
+            "Models & search",
+            "Search workspaces",
+            "Model inventory",
+            "Resident inventory",
+            "Ollama management",
+            "Benchmark",
+            "Telemetry report",
+            "Model statistics",
+            "Execution profiles",
+            "Cache layers",
+            "Agent statistics",
+            "Execution routes",
+            "Laya",
+            "Laya capture",
+        ],
+    ),
+    (
+        "Service health",
+        &[
+            "Runtime health",
+            "Service health",
+            "Process sessions",
+            "Recent errors",
+            "Recovery journal",
+            "Diagnostics",
+            "Audit",
+        ],
+    ),
+    (
+        "Settings",
+        &[
+            "Settings",
+            "Settings — activity mode",
+            "Updates",
+            "Operator tools",
+            "Instruction compression",
+        ],
+    ),
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Project and diagnostics archives"]),
 ];
 const MAINTENANCE: &[&str] = &[
-    "Optimize databases", "Purge expired cache (7 days)", "Cleanup stale agent state",
-    "Purge detailed traces", "Reset all statistics",
+    "Optimize databases",
+    "Purge expired cache (7 days)",
+    "Cleanup stale agent state",
+    "Purge detailed traces",
+    "Reset all statistics",
 ];
 const MAX_ROWS: usize = 12_000;
 const MAX_ADAPTER_RESPONSE: usize = 8_100_000;
@@ -41,11 +114,11 @@ const MAX_ADAPTER_RESPONSE: usize = 8_100_000;
 fn adapter_timeout(request: &Value) -> Duration {
     let seconds = match request["op"].as_str().unwrap_or("") {
         "probe" => 15,
-        "read" | "log_tail" | "timeline_page" | "trace_page" | "task_page" |
-        "event_page" | "event_stream" | "operator_catalog" | "vision_inspect" => 60,
+        "read" | "log_tail" | "timeline_page" | "trace_page" | "task_page" | "event_page"
+        | "event_stream" | "operator_catalog" | "vision_inspect" => 60,
         "vision_review" => 450,
-        "lifecycle" | "operator_run" | "compare" | "bundle_import" |
-        "bundle_export" | "diagnostics_export" | "model_manage" => 900,
+        "lifecycle" | "operator_run" | "compare" | "bundle_import" | "bundle_export"
+        | "diagnostics_export" | "model_manage" => 900,
         // Some scoped mutations perform two sequential 120-second requests.
         _ => 300,
     };
@@ -72,10 +145,18 @@ fn read_bounded(mut reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, boo
     Ok((data, overflow))
 }
 
-fn adapter_exchange(command: &mut Command, bytes: Vec<u8>, timeout: Duration)
-    -> Result<(std::process::ExitStatus, Vec<u8>, bool), String> {
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("Cannot launch Hub adapter: {e}"))?;
+fn adapter_exchange(
+    command: &mut Command,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>, bool), String> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Cannot launch Hub adapter: {e}"))?;
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
@@ -88,7 +169,9 @@ fn adapter_exchange(command: &mut Command, bytes: Vec<u8>, timeout: Duration)
     };
     let deadline = Instant::now() + timeout;
     let (read_tx, read_rx) = mpsc::channel();
-    thread::spawn(move || { let _ = read_tx.send(read_bounded(stdout, MAX_ADAPTER_RESPONSE)); });
+    thread::spawn(move || {
+        let _ = read_tx.send(read_bounded(stdout, MAX_ADAPTER_RESPONSE));
+    });
     let (write_tx, write_rx) = mpsc::channel();
     thread::spawn(move || {
         let result = stdin.write_all(&bytes);
@@ -128,19 +211,31 @@ fn adapter_exchange(command: &mut Command, bytes: Vec<u8>, timeout: Duration)
             // its detached supervisor. An already sent operation may finish.
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Adapter deadline exceeded; operation outcome unknown. Reload before retrying.".into());
+            return Err(
+                "Adapter deadline exceeded; operation outcome unknown. Reload before retrying."
+                    .into(),
+            );
         }
         thread::sleep(remaining.min(Duration::from_millis(50)));
     };
     if !write_complete {
-        write_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(5)))
+        write_rx
+            .recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(5)),
+            )
             .map_err(|_| "Adapter input receipt unavailable; outcome unknown".to_string())?
             .map_err(|e| format!("Adapter input failed: {e}; outcome unknown"))?;
     }
     // A descendant can inherit a pipe handle. Do not wait indefinitely
     // for EOF after the actual adapter process has already exited.
-    let (stdout, overflow) = read_rx.recv_timeout(
-        deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(5)))
+    let (stdout, overflow) = read_rx
+        .recv_timeout(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_secs(5)),
+        )
         .map_err(|_| "Adapter output did not close; outcome unknown".to_string())?
         .map_err(|e| format!("Cannot read adapter response: {e}"))?;
     Ok((status, stdout, overflow))
@@ -154,23 +249,52 @@ struct Install {
 }
 impl Install {
     fn from_env() -> Self {
-        let root = std::env::var_os("LOCAL_AI_HUB_ROOT").map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok()).unwrap_or_default();
-        let venv = root.join(if cfg!(windows) { ".venv/Scripts/python.exe" } else { ".venv/bin/python" });
-        let python = std::env::var_os("LOCAL_AI_DESKTOP_PYTHON").map(PathBuf::from)
-            .unwrap_or_else(|| if venv.is_file() { venv } else { PathBuf::from(if cfg!(windows) { "python.exe" } else { "python3" }) });
-        Self { root, python, config: std::env::var_os("LOCAL_AI_CONFIG").map(PathBuf::from) }
+        let root = std::env::var_os("LOCAL_AI_HUB_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let venv = root.join(if cfg!(windows) {
+            ".venv/Scripts/python.exe"
+        } else {
+            ".venv/bin/python"
+        });
+        let python = std::env::var_os("LOCAL_AI_DESKTOP_PYTHON")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                if venv.is_file() {
+                    venv
+                } else {
+                    PathBuf::from(if cfg!(windows) {
+                        "python.exe"
+                    } else {
+                        "python3"
+                    })
+                }
+            });
+        Self {
+            root,
+            python,
+            config: std::env::var_os("LOCAL_AI_CONFIG").map(PathBuf::from),
+        }
     }
 
     fn call(&self, request: &Value) -> Result<Value, String> {
-        let root = self.root.canonicalize().map_err(|e| format!("Hub installation: {e}"))?;
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|e| format!("Hub installation: {e}"))?;
         let adapter = root.join("tools/desktop.py");
         if !adapter.is_file() || !root.join("tools/hubctl.py").is_file() {
             return Err("Select a trusted Local AI Hub source checkout containing tools/desktop.py and tools/hubctl.py.".into());
         }
         let mut command = Command::new(&self.python);
-        command.arg(&adapter).arg("--bridge").current_dir(root)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command
+            .arg(&adapter)
+            .arg("--bridge")
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         if let Some(config) = &self.config {
             command.arg("--config").arg(config);
         }
@@ -180,72 +304,163 @@ impl Install {
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-        if bytes.len() > 65_536 { return Err("Request too large".into()); }
-        let (status, stdout, overflow) = adapter_exchange(&mut command, bytes, adapter_timeout(request))?;
-        if !status.success() { return Err(format!("Adapter exited: {status}")); }
-        if overflow { return Err("Adapter response exceeds limit".into()); }
-        let envelope: Value = serde_json::from_slice(&stdout)
-            .map_err(|_| "Invalid adapter response; check Python installation and Hub dependencies.".to_string())?;
+        if bytes.len() > 65_536 {
+            return Err("Request too large".into());
+        }
+        let (status, stdout, overflow) =
+            adapter_exchange(&mut command, bytes, adapter_timeout(request))?;
+        if !status.success() {
+            return Err(format!("Adapter exited: {status}"));
+        }
+        if overflow {
+            return Err("Adapter response exceeds limit".into());
+        }
+        let envelope: Value = serde_json::from_slice(&stdout).map_err(|_| {
+            "Invalid adapter response; check Python installation and Hub dependencies.".to_string()
+        })?;
         if envelope["ok"].as_bool() != Some(true) {
-            return Err(envelope["error"].as_str().unwrap_or("Unknown adapter failure").to_owned());
+            return Err(envelope["error"]
+                .as_str()
+                .unwrap_or("Unknown adapter failure")
+                .to_owned());
         }
         Ok(envelope["result"].clone())
     }
 }
 
 #[derive(Clone)]
-struct Row { path: String, value: String }
+struct Row {
+    path: String,
+    value: String,
+}
 fn flatten(value: &Value, path: &str, depth: usize, rows: &mut Vec<Row>) {
-    if rows.len() >= MAX_ROWS { return; }
+    if rows.len() >= MAX_ROWS {
+        return;
+    }
     if depth >= 16 {
-        rows.push(Row { path: path.into(), value: "[Nested data omitted]".into() });
+        rows.push(Row {
+            path: path.into(),
+            value: "[Nested data omitted]".into(),
+        });
         return;
     }
     match value {
         Value::Object(items) if !items.is_empty() => {
             for (key, item) in items {
-                let next = if path.is_empty() { key.clone() } else { format!("{path}.{key}") };
+                let next = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
                 flatten(item, &next, depth + 1, rows);
-                if rows.len() >= MAX_ROWS { break; }
+                if rows.len() >= MAX_ROWS {
+                    break;
+                }
             }
         }
         Value::Array(items) if !items.is_empty() => {
             for (index, item) in items.iter().enumerate() {
                 flatten(item, &format!("{path}[{index}]"), depth + 1, rows);
-                if rows.len() >= MAX_ROWS { break; }
+                if rows.len() >= MAX_ROWS {
+                    break;
+                }
             }
         }
         _ => {
-            let value = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
-            rows.push(Row { path: path.into(), value });
+            let value = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            rows.push(Row {
+                path: path.into(),
+                value,
+            });
         }
     }
 }
-fn request(op: &str, args: Value) -> Value { json!({"op": op, "args": args}) }
+fn request(op: &str, args: Value) -> Value {
+    json!({"op": op, "args": args})
+}
 
 // The confirmation shows the exact target and reviewed mutation fields.
 // Never dump an arbitrary request (e.g. image bytes, archive passwords).
 fn confirmation_items(payload: &Value) -> Vec<(String, String)> {
     let args = &payload["args"];
     [
-        "root", "id", "task_id", "execution_id", "action", "file", "revision", "version", "manifest", "manifest_sha256", "image_sha256",
-        "key", "status", "scope", "kind", "name", "model", "mode", "stream", "session_id",
-        "record_id", "owner", "clone_id", "worktree_id", "branch", "global", "purge", "capacity",
-        "title", "description", "criteria", "next_action", "accountable_role", "blocker",
-        "lifecycle", "default_target_ref", "work_phase", "order", "depends_on_json",
-        "goal", "risk", "reason", "non_goals", "constraints", "slo",
-        "resolution", "message", "root_cause", "fix", "feature", "enabled",
-    ].iter().filter_map(|key| {
+        "root",
+        "id",
+        "task_id",
+        "execution_id",
+        "action",
+        "file",
+        "revision",
+        "version",
+        "manifest",
+        "manifest_sha256",
+        "image_sha256",
+        "key",
+        "status",
+        "scope",
+        "kind",
+        "name",
+        "model",
+        "mode",
+        "stream",
+        "session_id",
+        "record_id",
+        "owner",
+        "clone_id",
+        "worktree_id",
+        "branch",
+        "global",
+        "purge",
+        "capacity",
+        "title",
+        "description",
+        "criteria",
+        "next_action",
+        "accountable_role",
+        "blocker",
+        "lifecycle",
+        "default_target_ref",
+        "work_phase",
+        "order",
+        "depends_on_json",
+        "goal",
+        "risk",
+        "reason",
+        "non_goals",
+        "constraints",
+        "slo",
+        "resolution",
+        "message",
+        "root_cause",
+        "fix",
+        "feature",
+        "enabled",
+    ]
+    .iter()
+    .filter_map(|key| {
         let value = args.get(*key)?;
-        if value.is_null() { return None; }
-        let text = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+        if value.is_null() {
+            return None;
+        }
+        let text = value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string());
         Some(((*key).to_owned(), text))
-    }).collect()
+    })
+    .collect()
 }
 fn view_request(view: &str, root: &str, id: &str) -> Value {
     let op = match view {
-        "Plans" => "plans", "Plan board" => "plan_board", "Semaphores" => "semaphores",
-        "Worktrees" => "worktrees", "Project config" => "project_config", _ => "read",
+        "Plans" => "plans",
+        "Plan board" => "plan_board",
+        "Semaphores" => "semaphores",
+        "Worktrees" => "worktrees",
+        "Project config" => "project_config",
+        _ => "read",
     };
     request(op, json!({"view": view, "root": root, "id": id}))
 }
@@ -254,13 +469,22 @@ fn view_request(view: &str, root: &str, id: &str) -> Value {
 fn filtered_log_lines<'a>(response: &'a Value, filter: &str) -> Option<Vec<&'a str>> {
     let lines = response.get("lines")?.as_array()?;
     let needle = filter.trim().to_lowercase();
-    Some(lines.iter().filter_map(Value::as_str)
-        .filter(|line| needle.is_empty() || line.to_lowercase().contains(&needle)).collect())
+    Some(
+        lines
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|line| needle.is_empty() || line.to_lowercase().contains(&needle))
+            .collect(),
+    )
 }
 fn linked_trace(record: &Value) -> Option<&str> {
-    record.get("trace_id").and_then(Value::as_str).filter(|id|
-        !id.is_empty() && id.len() <= 200 &&
-        id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'))
+    record.get("trace_id").and_then(Value::as_str).filter(|id| {
+        !id.is_empty()
+            && id.len() <= 200
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    })
 }
 // Plan edits are based on the complete server document, not the potentially
 // truncated Kanban projection. An omitted field is never silently overwritten.
@@ -277,9 +501,15 @@ impl PlanDraft {
             return None;
         }
         let revision = response["file_revision"].as_str()?.to_owned();
-        if revision.is_empty() { return None; }
+        if revision.is_empty() {
+            return None;
+        }
         let plan = &response["plan"];
-        let source = if task_id.is_empty() { plan } else { plan.get("tasks")?.get(task_id)? };
+        let source = if task_id.is_empty() {
+            plan
+        } else {
+            plan.get("tasks")?.get(task_id)?
+        };
         let mut original = serde_json::Map::new();
         for key in ["title", "description"] {
             original.insert(key.into(), json!(source.get(key)?.as_str()?));
@@ -328,50 +558,94 @@ impl PlanDraft {
             // Multiline criteria cannot round-trip through the one-per-line editor.
             // Keep such criteria untouched instead of flattening them.
             if let Some(items) = source.get("acceptance_criteria").and_then(Value::as_array) {
-                let lines: Option<Vec<&str>> = items.iter().map(|item| {
-                    item.as_str().filter(|line| !line.contains(['\n', '\r']) && line.trim() == *line && !line.is_empty())
-                }).collect();
-                if let Some(lines) = lines { original.insert("criteria".into(), json!(lines.join("\n"))); }
+                let lines: Option<Vec<&str>> = items
+                    .iter()
+                    .map(|item| {
+                        item.as_str().filter(|line| {
+                            !line.contains(['\n', '\r']) && line.trim() == *line && !line.is_empty()
+                        })
+                    })
+                    .collect();
+                if let Some(lines) = lines {
+                    original.insert("criteria".into(), json!(lines.join("\n")));
+                }
             }
         }
-        Some(Self { plan_id: plan_id.into(), task_id: task_id.into(), revision,
-                    edited: original.clone(), original })
+        Some(Self {
+            plan_id: plan_id.into(),
+            task_id: task_id.into(),
+            revision,
+            edited: original.clone(),
+            original,
+        })
     }
     fn matches(&self, plan_id: &str, task_id: &str, revision: &str) -> bool {
         self.plan_id == plan_id && self.task_id == task_id && self.revision == revision
     }
     fn patch(&self) -> serde_json::Map<String, Value> {
-        self.edited.iter().filter(|(key, value)| self.original.get(*key) != Some(*value))
-            .map(|(key, value)| (key.clone(), value.clone())).collect()
+        self.edited
+            .iter()
+            .filter(|(key, value)| self.original.get(*key) != Some(*value))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
     }
     fn render(&mut self, ui: &mut egui::Ui) {
         for (key, label, multiline) in [
-            ("title", "Title", false), ("description", "Description", true),
+            ("title", "Title", false),
+            ("description", "Description", true),
             ("criteria", "Acceptance criteria (one per line)", true),
-            ("next_action", "Next action", true), ("accountable_role", "Accountable role", false),
+            ("next_action", "Next action", true),
+            ("accountable_role", "Accountable role", false),
             ("blocker", "Blocker", true),
-            ("default_target_ref", "Default target ref (refs/heads/…; blank = none)", false),
+            (
+                "default_target_ref",
+                "Default target ref (refs/heads/…; blank = none)",
+                false,
+            ),
             ("order", "Task order (0–1000000000)", false),
-            ("depends_on_json", "Dependencies (JSON array of plan_id / task_id objects)", true),
+            (
+                "depends_on_json",
+                "Dependencies (JSON array of plan_id / task_id objects)",
+                true,
+            ),
         ] {
             if let Some(Value::String(text)) = self.edited.get_mut(key) {
                 ui.label(label);
-                if multiline { ui.text_edit_multiline(text); }
-                else { ui.text_edit_singleline(text); }
+                if multiline {
+                    ui.text_edit_multiline(text);
+                } else {
+                    ui.text_edit_singleline(text);
+                }
             } else if !self.task_id.is_empty() && key == "criteria" {
                 ui.small("Criteria unavailable for lossless line editing; preserved unchanged.");
             }
         }
         for (key, label, choices) in [
-            ("lifecycle", "Plan lifecycle", &["draft", "active", "paused", "cancelled"][..]),
-            ("kind", "Task kind", &["code", "documentation", "analysis", "operation"][..]),
-            ("work_phase", "Work phase", &["discovery", "implementation", "verification", "integration"][..]),
+            (
+                "lifecycle",
+                "Plan lifecycle",
+                &["draft", "active", "paused", "cancelled"][..],
+            ),
+            (
+                "kind",
+                "Task kind",
+                &["code", "documentation", "analysis", "operation"][..],
+            ),
+            (
+                "work_phase",
+                "Work phase",
+                &["discovery", "implementation", "verification", "integration"][..],
+            ),
         ] {
             if let Some(Value::String(value)) = self.edited.get_mut(key) {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(label);
                     egui::ComboBox::from_id_salt(("draft_choice", key))
-                        .selected_text(if value.is_empty() { "Not specified" } else { value.as_str() })
+                        .selected_text(if value.is_empty() {
+                            "Not specified"
+                        } else {
+                            value.as_str()
+                        })
                         .show_ui(ui, |ui| {
                             for choice in choices {
                                 ui.selectable_value(value, (*choice).to_owned(), *choice);
@@ -383,8 +657,16 @@ impl PlanDraft {
         ui.small("Only changed fields are sent. Completion and source delivery still require the canonical verification workflow.");
     }
 }
-struct Pending { label: String, payload: Value }
-struct Completed { label: String, result: Result<Value, String>, probe: bool, live: bool }
+struct Pending {
+    label: String,
+    payload: Value,
+}
+struct Completed {
+    label: String,
+    result: Result<Value, String>,
+    probe: bool,
+    live: bool,
+}
 struct Desktop {
     install: Install,
     page: usize,
@@ -502,21 +784,131 @@ impl Desktop {
         Self {
             root_input: install.root.to_string_lossy().into_owned(),
             python_input: install.python.to_string_lossy().into_owned(),
-            config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
-            install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_non_goals: String::new(), task_constraints: String::new(), task_slo: String::new(), task_session: String::new(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), incident_cause: String::new(), incident_fix: String::new(), incident_status: String::new(), incident_query: String::new(), incident_limit: 100, plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_execution_id: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
-            rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
-            receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
-            service: None, last_probe: Instant::now() - Duration::from_secs(30),
-            auto_probe: true, installation_open: false,
+            config_input: install
+                .config
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            install,
+            page: 0,
+            view: 0,
+            repo: String::new(),
+            entity: String::new(),
+            reason: String::new(),
+            prompt: String::new(),
+            mode: "active".into(),
+            settings_draft: settings::Draft::default(),
+            metrics_period: "process".into(),
+            log_lines: 250,
+            auto_log: false,
+            last_log: Instant::now(),
+            goal: String::new(),
+            criteria: String::new(),
+            memory_key: String::new(),
+            memory_value: String::new(),
+            memory_scope: "repository".into(),
+            memory_kind: "fact".into(),
+            memory_scope_id: String::new(),
+            memory_record_id: String::new(),
+            memory_query: String::new(),
+            memory_search_key: String::new(),
+            memory_status: String::new(),
+            memory_limit: 100,
+            lease_owner: String::new(),
+            task_scope: "task".into(),
+            task_non_goals: String::new(),
+            task_constraints: String::new(),
+            task_slo: String::new(),
+            task_session: String::new(),
+            task_risk: "normal".into(),
+            incident_kind: String::new(),
+            incident_message: String::new(),
+            incident_cause: String::new(),
+            incident_fix: String::new(),
+            incident_status: String::new(),
+            incident_query: String::new(),
+            incident_limit: 100,
+            plan_title: String::new(),
+            revision: String::new(),
+            plan_task: String::new(),
+            plan_execution_id: String::new(),
+            plan_draft: None,
+            description: String::new(),
+            archive_path: String::new(),
+            semaphore: String::new(),
+            capacity: 1,
+            trace_cursor: 0,
+            trace_offset: 0,
+            trace_kind: String::new(),
+            trace_state: String::new(),
+            trace_action: String::new(),
+            trace_min_ms: 0,
+            request_status: "all".into(),
+            request_action: String::new(),
+            request_sort: "created_at".into(),
+            request_desc: true,
+            trace_before: 0,
+            trace_content_field: "request".into(),
+            trace_content_offset: 0,
+            task_offset: 0,
+            task_back: Vec::new(),
+            task_limit: 100,
+            task_status: String::new(),
+            task_query: String::new(),
+            task_target: "active".into(),
+            history_cursor: 0,
+            telemetry_before: 0,
+            telemetry_limit: 100,
+            endpoint_scope: "all".into(),
+            endpoint_sort: "calls".into(),
+            endpoint_desc: true,
+            stream_id: String::new(),
+            event_cursor: 0,
+            live_events: Vec::new(),
+            auto_live: false,
+            last_live: Instant::now(),
+            update_version: String::new(),
+            update_revision: String::new(),
+            plan_status: "planned".into(),
+            plan_query: String::new(),
+            plan_lifecycle: String::new(),
+            plan_limit: 100,
+            board_plan_filter: String::new(),
+            vision_path: String::new(),
+            filter: String::new(),
+            operator_catalog: Vec::new(),
+            operator_name: String::new(),
+            operator_fields: serde_json::Map::new(),
+            rows: Vec::new(),
+            snapshot: None,
+            snapshot_view: String::new(),
+            raw_view: false,
+            reveal_trace: false,
+            record_detail: None,
+            visible: Vec::new(),
+            detail: None,
+            pending: None,
+            busy: None,
+            receiver: None,
+            status: "Desktop ready. Check the Hub installation and service.".into(),
+            service: None,
+            last_probe: Instant::now() - Duration::from_secs(30),
+            auto_probe: true,
+            installation_open: false,
         }
     }
-    fn current(&self) -> &'static str { PAGES[self.page].1[self.view] }
+    fn current(&self) -> &'static str {
+        PAGES[self.page].1[self.view]
+    }
     fn submit(&mut self, ctx: &egui::Context, label: String, payload: Value) {
-        if !self.can_edit_context() { return; }
+        if !self.can_edit_context() {
+            return;
+        }
         let probe = payload["op"] == "probe";
         let live = payload["op"] == "event_stream";
-        if payload["op"] == "lifecycle" { self.last_probe = Instant::now() - Duration::from_secs(30); }
+        if payload["op"] == "lifecycle" {
+            self.last_probe = Instant::now() - Duration::from_secs(30);
+        }
         self.busy = Some(label.clone());
         let install = self.install.clone();
         let (tx, rx) = mpsc::channel();
@@ -524,20 +916,37 @@ impl Desktop {
         let ctx = ctx.clone();
         thread::spawn(move || {
             let result = install.call(&payload);
-            let _ = tx.send(Completed { label, result, probe, live });
+            let _ = tx.send(Completed {
+                label,
+                result,
+                probe,
+                live,
+            });
             ctx.request_repaint();
         });
     }
     fn confirm(&mut self, label: &str, payload: Value) {
-        if !self.can_edit_context() { return; }
-        self.pending = Some(Pending { label: label.to_owned(), payload });
+        if !self.can_edit_context() {
+            return;
+        }
+        self.pending = Some(Pending {
+            label: label.to_owned(),
+            payload,
+        });
     }
     fn refilter(&mut self) {
         let needle = self.filter.to_lowercase();
-        self.visible = self.rows.iter().enumerate().filter_map(|(i, row)| {
-            (needle.is_empty() || row.path.to_lowercase().contains(&needle) ||
-             row.value.to_lowercase().contains(&needle)).then_some(i)
-        }).collect();
+        self.visible = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                (needle.is_empty()
+                    || row.path.to_lowercase().contains(&needle)
+                    || row.value.to_lowercase().contains(&needle))
+                .then_some(i)
+            })
+            .collect();
     }
     fn receive(&mut self) {
         let result = self.receiver.as_ref().map(|rx| rx.try_recv());
@@ -556,11 +965,19 @@ impl Desktop {
                         self.last_probe = Instant::now();
                     }
                     Ok(mut value) => {
-                        if done.label == "Service health" { self.last_log = Instant::now(); }
+                        if done.label == "Service health" {
+                            self.last_log = Instant::now();
+                        }
                         if done.live {
                             self.last_live = Instant::now();
-                            if value["controls"].as_array().is_some_and(|controls| controls.iter().any(|c|
-                                matches!(c["kind"].as_str(), Some("cursor_reset" | "replay_cursor_reset")))) {
+                            if value["controls"].as_array().is_some_and(|controls| {
+                                controls.iter().any(|c| {
+                                    matches!(
+                                        c["kind"].as_str(),
+                                        Some("cursor_reset" | "replay_cursor_reset")
+                                    )
+                                })
+                            }) {
                                 self.live_events.clear();
                             }
                             if let Some(events) = value["events"].as_array() {
@@ -574,30 +991,62 @@ impl Desktop {
                         self.detail = None;
                         self.record_detail = None;
                         if done.label == "Instruction review" {
-                            let valid = value["success"] == true && value["action"] == "inspect"
-                                && value["manifest_sha256"].as_str().is_some_and(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+                            let valid = value["success"] == true
+                                && value["action"] == "inspect"
+                                && value["manifest_sha256"].as_str().is_some_and(|d| {
+                                    d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit())
+                                })
                                 && value["manifest"].as_str().is_some_and(|p| !p.is_empty());
                             if valid {
                                 self.entity = value["manifest"].as_str().unwrap().to_owned();
-                                self.revision = value["manifest_sha256"].as_str().unwrap().to_owned();
-                            } else { self.revision.clear(); }
+                                self.revision =
+                                    value["manifest_sha256"].as_str().unwrap().to_owned();
+                            } else {
+                                self.revision.clear();
+                            }
                         }
-                        if matches!(done.label.as_str(), "Apply reviewed instructions" | "Restore original instructions") {
+                        if matches!(
+                            done.label.as_str(),
+                            "Apply reviewed instructions" | "Restore original instructions"
+                        ) {
                             self.revision.clear();
                         }
                         if done.label == "Plan detail" {
-                            self.plan_draft = PlanDraft::from_response(&value, &self.entity, &self.plan_task);
-                            self.revision = if value["plan"]["id"].as_str() == Some(self.entity.as_str()) && value["success"] == true {
+                            self.plan_draft =
+                                PlanDraft::from_response(&value, &self.entity, &self.plan_task);
+                            self.revision = if value["plan"]["id"].as_str()
+                                == Some(self.entity.as_str())
+                                && value["success"] == true
+                            {
                                 value["file_revision"].as_str().unwrap_or("").to_owned()
-                            } else { String::new() };
+                            } else {
+                                String::new()
+                            };
                         }
-                        if matches!(done.label.as_str(), "Update plan" | "Edit plan task" | "Add plan task" | "Delete plan task" | "Move plan task" | "Archive plan" | "Bind execution task") {
+                        if matches!(
+                            done.label.as_str(),
+                            "Update plan"
+                                | "Edit plan task"
+                                | "Add plan task"
+                                | "Delete plan task"
+                                | "Move plan task"
+                                | "Archive plan"
+                                | "Bind execution task"
+                        ) {
                             self.plan_draft = None;
                             self.revision.clear();
                         }
-                        if done.label == "Settings" { self.settings_draft = settings::Draft::from_response(&value); }
-                        if done.label == "Save settings" || done.label == "Reset configuration overrides" { self.settings_draft = settings::Draft::default(); }
-                        if matches!(done.label.as_str(), "Run events" | "Trace index") { value = trace::sanitize(&value); }
+                        if done.label == "Settings" {
+                            self.settings_draft = settings::Draft::from_response(&value);
+                        }
+                        if done.label == "Save settings"
+                            || done.label == "Reset configuration overrides"
+                        {
+                            self.settings_draft = settings::Draft::default();
+                        }
+                        if matches!(done.label.as_str(), "Run events" | "Trace index") {
+                            value = trace::sanitize(&value);
+                        }
                         if done.label == "Trace content" {
                             // Do not flatten arbitrary stored text into searchable or copyable rows.
                             self.rows.clear();
@@ -605,30 +1054,62 @@ impl Desktop {
                             // Keep the password only in the explicit receipt, never
                             // in the generic search/filter/copy field projection.
                             let mut receipt = value.clone();
-                            if let Some(fields) = receipt.as_object_mut() { fields.remove("archive_password"); }
+                            if let Some(fields) = receipt.as_object_mut() {
+                                fields.remove("archive_password");
+                            }
                             flatten(&receipt, "", 0, &mut self.rows);
-                        } else if done.label == "Trace detail" || done.label == "Trace index" || done.label == "Trace metrics" {
+                        } else if done.label == "Trace detail"
+                            || done.label == "Trace index"
+                            || done.label == "Trace metrics"
+                        {
                             flatten(&trace::sanitize(&value), "", 0, &mut self.rows);
                         } else {
                             flatten(&value, "", 0, &mut self.rows);
                         }
                         if done.label == "Operator catalog" {
-                            self.operator_catalog = value["operations"].as_array().cloned().unwrap_or_default();
+                            self.operator_catalog =
+                                value["operations"].as_array().cloned().unwrap_or_default();
                             self.operator_name.clear();
                             self.operator_fields.clear();
                         }
                         if done.label == "Updates" {
-                            self.update_version = value.pointer("/check/target_version").and_then(Value::as_str).unwrap_or("").into();
-                            self.update_revision = value.pointer("/check/revision").and_then(Value::as_str).unwrap_or("").into();
+                            self.update_version = value
+                                .pointer("/check/target_version")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .into();
+                            self.update_revision = value
+                                .pointer("/check/revision")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .into();
                         }
                         if done.label == "Agent event stream" {
-                            if let Some(cursor) = value["next_seq"].as_i64() { self.event_cursor = cursor; }
+                            if let Some(cursor) = value["next_seq"].as_i64() {
+                                self.event_cursor = cursor;
+                            }
                         }
                         self.snapshot = Some(value);
                         self.snapshot_view = done.label.clone();
                         self.refilter();
-                        self.status = format!("{}: {}{}", done.label, if self.snapshot.as_ref().is_some_and(|v| v["success"] == false) { "operation failed — inspect details" } else { "response received" },
-                            if self.rows.len() >= MAX_ROWS { " (display capped)" } else { "" });
+                        self.status = format!(
+                            "{}: {}{}",
+                            done.label,
+                            if self
+                                .snapshot
+                                .as_ref()
+                                .is_some_and(|v| v["success"] == false)
+                            {
+                                "operation failed — inspect details"
+                            } else {
+                                "response received"
+                            },
+                            if self.rows.len() >= MAX_ROWS {
+                                " (display capped)"
+                            } else {
+                                ""
+                            }
+                        );
                     }
                     Err(error) => {
                         // A failed load/mutation must not leave a previously
@@ -640,33 +1121,49 @@ impl Desktop {
                         self.settings_draft = settings::Draft::default();
                         self.update_version.clear();
                         self.update_revision.clear();
-                        if done.live { self.last_live = Instant::now(); }
-                        self.status = format!("{}: {error} — reload to obtain fresh state", done.label);
+                        if done.live {
+                            self.last_live = Instant::now();
+                        }
+                        self.status =
+                            format!("{}: {error} — reload to obtain fresh state", done.label);
                     }
                 }
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                self.busy = None; self.receiver = None;
+                self.busy = None;
+                self.receiver = None;
                 self.clear_response();
                 self.plan_draft = None;
                 self.revision.clear();
                 self.settings_draft = settings::Draft::default();
                 self.update_version.clear();
                 self.update_revision.clear();
-                self.status = "Operation worker disconnected; outcome unknown. Reload before retrying.".into();
+                self.status =
+                    "Operation worker disconnected; outcome unknown. Reload before retrying."
+                        .into();
             }
             _ => {}
         }
     }
     fn lifecycle(&mut self, ctx: &egui::Context, action: &str) {
         let data = request("lifecycle", json!({"action": action, "confirmed": true}));
-        if action == "start" { self.submit(ctx, "Start Hub".into(), data); }
-        else { self.confirm(&format!("{action} Hub (may interrupt active work)"), data); }
+        if action == "start" {
+            self.submit(ctx, "Start Hub".into(), data);
+        } else {
+            self.confirm(&format!("{action} Hub (may interrupt active work)"), data);
+        }
     }
     fn clear_response(&mut self) {
-        self.rows.clear(); self.visible.clear(); self.detail = None; self.record_detail = None;
-        self.snapshot = None; self.snapshot_view.clear(); self.reveal_trace = false;
-        self.live_events.clear(); self.auto_live = false; self.auto_log = false;
+        self.rows.clear();
+        self.visible.clear();
+        self.detail = None;
+        self.record_detail = None;
+        self.snapshot = None;
+        self.snapshot_view.clear();
+        self.reveal_trace = false;
+        self.live_events.clear();
+        self.auto_live = false;
+        self.auto_log = false;
     }
     // A root or installation switch invalidates all scope-bound selection and
     // continuation state, not just the visible rows.
@@ -729,33 +1226,53 @@ impl Desktop {
     // A view change must not reuse a different view's selection, edit draft,
     // history cursor, or mutation fields. Keep only installation-wide preferences.
     fn navigate(&mut self, page: usize, view: usize) {
-        if !self.can_edit_context() || (self.page == page && self.view == view) { return; }
+        if !self.can_edit_context() || (self.page == page && self.view == view) {
+            return;
+        }
         self.reset_scope();
         self.settings_draft = settings::Draft::default();
         self.page = page;
         self.view = view;
     }
     fn open_project(&mut self, ctx: &egui::Context, root: String) {
-        if !self.can_edit_context() { return; }
+        if !self.can_edit_context() {
+            return;
+        }
         self.reset_scope();
         self.repo = root;
         self.page = 4;
-        self.view = PAGES[4].1.iter().position(|view| *view == "Project config").expect("Project config view");
+        self.view = PAGES[4]
+            .1
+            .iter()
+            .position(|view| *view == "Project config")
+            .expect("Project config view");
         self.refresh(ctx);
     }
     fn open_linked_trace(&mut self, ctx: &egui::Context, id: String) {
-        if !self.can_edit_context() { return; }
+        if !self.can_edit_context() {
+            return;
+        }
         self.reset_scope();
         self.page = 1;
-        self.view = PAGES[1].1.iter().position(|view| *view == "Trace index").expect("Trace index view");
+        self.view = PAGES[1]
+            .1
+            .iter()
+            .position(|view| *view == "Trace index")
+            .expect("Trace index view");
         self.entity = id;
         self.trace_cursor = 0;
         self.trace_before = 0;
         self.trace_content_offset = 0;
         self.trace_offset = 0;
         self.filter.clear();
-        self.submit(ctx, "Trace detail".into(), request("trace_detail",
-            json!({"id": self.entity, "after": 0, "before": 0})));
+        self.submit(
+            ctx,
+            "Trace detail".into(),
+            request(
+                "trace_detail",
+                json!({"id": self.entity, "after": 0, "before": 0}),
+            ),
+        );
     }
     fn can_edit_context(&self) -> bool {
         self.busy.is_none() && self.pending.is_none() && !self.installation_open
@@ -763,11 +1280,16 @@ impl Desktop {
     fn memory_args(&self, op: &str) -> Value {
         let mut args = json!({"root": self.repo, "scope": self.memory_scope});
         let field = match self.memory_scope.as_str() {
-            "task" => Some("task_id"), "session" => Some("session_id"),
-            "clone" => Some("clone_id"), "worktree" => Some("worktree_id"),
-            "branch" => Some("branch"), _ => None,
+            "task" => Some("task_id"),
+            "session" => Some("session_id"),
+            "clone" => Some("clone_id"),
+            "worktree" => Some("worktree_id"),
+            "branch" => Some("branch"),
+            _ => None,
         };
-        if let Some(field) = field { args[field] = json!(self.memory_scope_id); }
+        if let Some(field) = field {
+            args[field] = json!(self.memory_scope_id);
+        }
         match op {
             "memory_find" => {
                 args["query"] = json!(self.memory_query);
@@ -803,25 +1325,72 @@ impl Desktop {
             "Service health" => request("log_tail", json!({"lines": self.log_lines})),
             "Diagnostics" => request("doctor", json!({})),
             "Memory" => request("memory_find", self.memory_args("memory_find")),
-            "Incidents" => request("incident_list", json!({"root": self.repo, "status": self.incident_status, "limit": self.incident_limit})),
-            "Plans" => request("plans", json!({"root": self.repo, "query": self.plan_query, "lifecycle": self.plan_lifecycle, "limit": self.plan_limit})),
-            "Plan board" => request("plan_board", json!({"root": self.repo, "id": self.board_plan_filter, "query": self.plan_query})),
+            "Incidents" => request(
+                "incident_list",
+                json!({"root": self.repo, "status": self.incident_status, "limit": self.incident_limit}),
+            ),
+            "Plans" => request(
+                "plans",
+                json!({"root": self.repo, "query": self.plan_query, "lifecycle": self.plan_lifecycle, "limit": self.plan_limit}),
+            ),
+            "Plan board" => request(
+                "plan_board",
+                json!({"root": self.repo, "id": self.board_plan_filter, "query": self.plan_query}),
+            ),
             "Session briefing" => request("session_briefing", json!({"root": self.repo})),
-            "Project and diagnostics archives" => { self.status = "Select an archive operation below.".into(); return; }
-            "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
-            "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
-            "Instruction compression" => {
-                if self.entity.trim().is_empty() { self.status = "Select a staged manifest first.".into(); return; }
-                self.revision.clear();
-                self.submit(ctx, "Instruction review".into(), request("instruction_manifest",
-                    json!({"root":self.repo, "manifest":self.entity, "action":"inspect"})));
+            "Project and diagnostics archives" => {
+                self.status = "Select an archive operation below.".into();
                 return;
             }
-            "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
-            "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "limit": self.task_limit, "status": self.task_status, "query": self.task_query})),
-            "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
-            "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
-            _ => { let mut payload = view_request(view, &self.repo, &self.entity); payload["args"]["period"] = json!(self.metrics_period); payload },
+            "Telemetry history" => request(
+                "timeline_page",
+                json!({"before": self.telemetry_before, "limit": self.telemetry_limit}),
+            ),
+            "Operator tools" => {
+                self.submit(
+                    ctx,
+                    "Operator catalog".into(),
+                    request("operator_catalog", json!({})),
+                );
+                return;
+            }
+            "Instruction compression" => {
+                if self.entity.trim().is_empty() {
+                    self.status = "Select a staged manifest first.".into();
+                    return;
+                }
+                self.revision.clear();
+                self.submit(
+                    ctx,
+                    "Instruction review".into(),
+                    request(
+                        "instruction_manifest",
+                        json!({"root":self.repo, "manifest":self.entity, "action":"inspect"}),
+                    ),
+                );
+                return;
+            }
+            "Trace index" => request(
+                "trace_page",
+                json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms}),
+            ),
+            "Tasks" | "Run history" => request(
+                "task_page",
+                json!({"root": self.repo, "offset": self.task_offset, "limit": self.task_limit, "status": self.task_status, "query": self.task_query}),
+            ),
+            "Agent event stream" => request(
+                "event_page",
+                json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor}),
+            ),
+            "Vision review" => {
+                self.status = "Choose an image and enter a prompt first.".into();
+                return;
+            }
+            _ => {
+                let mut payload = view_request(view, &self.repo, &self.entity);
+                payload["args"]["period"] = json!(self.metrics_period);
+                payload
+            }
         };
         self.submit(ctx, view.into(), data);
     }
@@ -833,22 +1402,38 @@ impl Desktop {
                     ui.horizontal_wrapped(|ui| {
                         let previous = self.telemetry_limit;
                         egui::ComboBox::from_id_salt("telemetry_page_size")
-                            .selected_text(format!("{} rows", self.telemetry_limit)).show_ui(ui, |ui| {
+                            .selected_text(format!("{} rows", self.telemetry_limit))
+                            .show_ui(ui, |ui| {
                                 for limit in [50, 100, 250] {
-                                    ui.selectable_value(&mut self.telemetry_limit, limit, format!("{limit} rows"));
+                                    ui.selectable_value(
+                                        &mut self.telemetry_limit,
+                                        limit,
+                                        format!("{limit} rows"),
+                                    );
                                 }
                             });
-                        let next = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Telemetry history")
+                        let next = self
+                            .snapshot
+                            .as_ref()
+                            .filter(|_| self.snapshot_view == "Telemetry history")
                             .filter(|v| v["has_more"] == true)
                             .and_then(|v| v["next_cursor"].as_i64())
-                            .filter(|next| *next > 0 && (self.telemetry_before == 0 || *next < self.telemetry_before));
+                            .filter(|next| {
+                                *next > 0
+                                    && (self.telemetry_before == 0 || *next < self.telemetry_before)
+                            });
                         let newest = ui.button("Newest page").clicked();
-                        let older = ui.add_enabled(next.is_some(), egui::Button::new("Older page")).clicked();
+                        let older = ui
+                            .add_enabled(next.is_some(), egui::Button::new("Older page"))
+                            .clicked();
                         if newest || previous != self.telemetry_limit {
-                            self.telemetry_before = 0; self.clear_response(); self.refresh(ctx);
+                            self.telemetry_before = 0;
+                            self.clear_response();
+                            self.refresh(ctx);
                         } else if older {
                             self.telemetry_before = next.expect("enabled only with cursor");
-                            self.clear_response(); self.refresh(ctx);
+                            self.clear_response();
+                            self.refresh(ctx);
                         }
                     });
                     return;
@@ -856,9 +1441,16 @@ impl Desktop {
                 if matches!(self.current(), "Async jobs" | "Work orders") {
                     let async_job = self.current() == "Async jobs";
                     let op = if async_job { "async_job" } else { "work_order" };
-                    ui.label(if async_job { "Async job ID" } else { "Work order ID" });
+                    ui.label(if async_job {
+                        "Async job ID"
+                    } else {
+                        "Work order ID"
+                    });
                     ui.text_edit_singleline(&mut self.entity);
-                    if !async_job { ui.label("Answer for continuation"); ui.text_edit_multiline(&mut self.reason); }
+                    if !async_job {
+                        ui.label("Answer for continuation");
+                        ui.text_edit_multiline(&mut self.reason);
+                    }
                     ui.horizontal_wrapped(|ui| {
                         let actions: &[(&str, &str)] = if async_job { &[("Status", "status"), ("Result", "result"), ("Cancel", "cancel")] }
                             else { &[("Status", "status"), ("Result", "get"), ("Cancel", "cancel"), ("Continue", "continue")] };
@@ -874,56 +1466,158 @@ impl Desktop {
                 }
                 if self.current() == "Requests" {
                     ui.horizontal_wrapped(|ui| {
-                        egui::ComboBox::from_id_salt("request_status").selected_text(&self.request_status).show_ui(ui, |ui| {
-                            for status in ["all", "failed", "2xx", "4xx", "5xx"] { ui.selectable_value(&mut self.request_status, status.into(), status); }
-                        });
+                        egui::ComboBox::from_id_salt("request_status")
+                            .selected_text(&self.request_status)
+                            .show_ui(ui, |ui| {
+                                for status in ["all", "failed", "2xx", "4xx", "5xx"] {
+                                    ui.selectable_value(
+                                        &mut self.request_status,
+                                        status.into(),
+                                        status,
+                                    );
+                                }
+                            });
                         ui.label("Exact action");
                         ui.text_edit_singleline(&mut self.request_action);
-                        egui::ComboBox::from_id_salt("request_sort").selected_text(&self.request_sort).show_ui(ui, |ui| {
-                            for key in ["created_at", "duration_ms", "status_code", "action"] { ui.selectable_value(&mut self.request_sort, key.into(), key); }
-                        });
+                        egui::ComboBox::from_id_salt("request_sort")
+                            .selected_text(&self.request_sort)
+                            .show_ui(ui, |ui| {
+                                for key in ["created_at", "duration_ms", "status_code", "action"] {
+                                    ui.selectable_value(&mut self.request_sort, key.into(), key);
+                                }
+                            });
                         ui.checkbox(&mut self.request_desc, "Descending");
                     });
                 }
                 if self.current() == "Endpoint analytics" {
                     ui.horizontal_wrapped(|ui| {
-                        egui::ComboBox::from_id_salt("endpoint_scope").selected_text(&self.endpoint_scope).show_ui(ui, |ui| {
-                            for scope in ["all", "active", "unused"] { ui.selectable_value(&mut self.endpoint_scope, scope.into(), scope); }
-                        });
-                        egui::ComboBox::from_id_salt("endpoint_sort").selected_text(&self.endpoint_sort).show_ui(ui, |ui| {
-                            for key in ["name", "type", "calls", "success_rate", "p50_ms", "p95_ms", "p99_ms"] {
-                                ui.selectable_value(&mut self.endpoint_sort, key.into(), key);
-                            }
-                        });
+                        egui::ComboBox::from_id_salt("endpoint_scope")
+                            .selected_text(&self.endpoint_scope)
+                            .show_ui(ui, |ui| {
+                                for scope in ["all", "active", "unused"] {
+                                    ui.selectable_value(
+                                        &mut self.endpoint_scope,
+                                        scope.into(),
+                                        scope,
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("endpoint_sort")
+                            .selected_text(&self.endpoint_sort)
+                            .show_ui(ui, |ui| {
+                                for key in [
+                                    "name",
+                                    "type",
+                                    "calls",
+                                    "success_rate",
+                                    "p50_ms",
+                                    "p95_ms",
+                                    "p99_ms",
+                                ] {
+                                    ui.selectable_value(&mut self.endpoint_sort, key.into(), key);
+                                }
+                            });
                         ui.checkbox(&mut self.endpoint_desc, "Descending");
                         if ui.button("Reset selected statistics").clicked() {
                             let global = self.repo.trim().is_empty();
-                            let label = if global { "Reset ALL project statistics and retained telemetry" } else { "Reset statistics for selected repository" };
-                            self.confirm(label, request("endpoint_reset", json!({"root": self.repo, "global": global, "confirmed": true})));
+                            let label = if global {
+                                "Reset ALL project statistics and retained telemetry"
+                            } else {
+                                "Reset statistics for selected repository"
+                            };
+                            self.confirm(
+                                label,
+                                request(
+                                    "endpoint_reset",
+                                    json!({"root": self.repo, "global": global, "confirmed": true}),
+                                ),
+                            );
                         }
                     });
                 }
                 if self.current() == "Trace index" {
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Kind");
-                        egui::ComboBox::from_id_salt("trace_kind").selected_text(if self.trace_kind.is_empty() { "All" } else { &self.trace_kind }).show_ui(ui, |ui| {
-                            for kind in ["", "api_request", "async_job"] { ui.selectable_value(&mut self.trace_kind, kind.into(), if kind.is_empty() { "All" } else { kind }); }
-                        });
+                        egui::ComboBox::from_id_salt("trace_kind")
+                            .selected_text(if self.trace_kind.is_empty() {
+                                "All"
+                            } else {
+                                &self.trace_kind
+                            })
+                            .show_ui(ui, |ui| {
+                                for kind in ["", "api_request", "async_job"] {
+                                    ui.selectable_value(
+                                        &mut self.trace_kind,
+                                        kind.into(),
+                                        if kind.is_empty() { "All" } else { kind },
+                                    );
+                                }
+                            });
                         ui.label("State");
-                        egui::ComboBox::from_id_salt("trace_state").selected_text(if self.trace_state.is_empty() { "All" } else { &self.trace_state }).show_ui(ui, |ui| {
-                            for state in ["", "running", "queued", "completed", "failed", "interrupted"] { ui.selectable_value(&mut self.trace_state, state.into(), if state.is_empty() { "All" } else { state }); }
-                        });
+                        egui::ComboBox::from_id_salt("trace_state")
+                            .selected_text(if self.trace_state.is_empty() {
+                                "All"
+                            } else {
+                                &self.trace_state
+                            })
+                            .show_ui(ui, |ui| {
+                                for state in [
+                                    "",
+                                    "running",
+                                    "queued",
+                                    "completed",
+                                    "failed",
+                                    "interrupted",
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.trace_state,
+                                        state.into(),
+                                        if state.is_empty() { "All" } else { state },
+                                    );
+                                }
+                            });
                         ui.label("Action");
                         ui.text_edit_singleline(&mut self.trace_action);
                         ui.label("Minimum ms");
                         ui.add(egui::DragValue::new(&mut self.trace_min_ms).range(0..=86400000));
-                        if ui.button("Apply trace filters").clicked() { self.trace_offset = 0; self.refresh(ctx); }
+                        if ui.button("Apply trace filters").clicked() {
+                            self.trace_offset = 0;
+                            self.refresh(ctx);
+                        }
                     });
                     ui.horizontal_wrapped(|ui| {
-                        let total = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Trace index").and_then(|v| v["total"].as_i64());
-                        if ui.add_enabled(self.trace_offset > 0, egui::Button::new("Previous trace page")).clicked() { self.trace_offset = (self.trace_offset - 100).max(0); self.refresh(ctx); }
-                        if ui.add_enabled(total.is_some_and(|n| self.trace_offset + 100 < n), egui::Button::new("Next trace page")).clicked() { self.trace_offset += 100; self.refresh(ctx); }
-                        ui.label(format!("Offset {} / {}", self.trace_offset, total.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into())));
+                        let total = self
+                            .snapshot
+                            .as_ref()
+                            .filter(|_| self.snapshot_view == "Trace index")
+                            .and_then(|v| v["total"].as_i64());
+                        if ui
+                            .add_enabled(
+                                self.trace_offset > 0,
+                                egui::Button::new("Previous trace page"),
+                            )
+                            .clicked()
+                        {
+                            self.trace_offset = (self.trace_offset - 100).max(0);
+                            self.refresh(ctx);
+                        }
+                        if ui
+                            .add_enabled(
+                                total.is_some_and(|n| self.trace_offset + 100 < n),
+                                egui::Button::new("Next trace page"),
+                            )
+                            .clicked()
+                        {
+                            self.trace_offset += 100;
+                            self.refresh(ctx);
+                        }
+                        ui.label(format!(
+                            "Offset {} / {}",
+                            self.trace_offset,
+                            total
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "unknown".into())
+                        ));
                     });
                     ui.small("Full inputs and outputs are captured only when detailed telemetry is enabled. Stored details appear as recorded; local access only; separate local retention policy.");
                     ui.horizontal_wrapped(|ui| {
@@ -968,14 +1662,28 @@ impl Desktop {
                     ui.text_edit_singleline(&mut self.vision_path);
                     ui.label("Review prompt");
                     ui.text_edit_multiline(&mut self.prompt);
-                    if ui.add_enabled(!self.vision_path.trim().is_empty(), egui::Button::new("Inspect image locally")).clicked() {
+                    if ui
+                        .add_enabled(
+                            !self.vision_path.trim().is_empty(),
+                            egui::Button::new("Inspect image locally"),
+                        )
+                        .clicked()
+                    {
                         self.clear_response();
-                        self.submit(ctx, "Image inspection".into(), request("vision_inspect",
-                            json!({"file": self.vision_path})));
+                        self.submit(
+                            ctx,
+                            "Image inspection".into(),
+                            request("vision_inspect", json!({"file": self.vision_path})),
+                        );
                     }
-                    let digest = self.snapshot.as_ref()
-                        .filter(|v| self.snapshot_view == "Image inspection" && v["success"] == true
-                            && v["file"].as_str() == Some(self.vision_path.trim()))
+                    let digest = self
+                        .snapshot
+                        .as_ref()
+                        .filter(|v| {
+                            self.snapshot_view == "Image inspection"
+                                && v["success"] == true
+                                && v["file"].as_str() == Some(self.vision_path.trim())
+                        })
                         .and_then(|v| v["image_sha256"].as_str())
                         .filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
                         .map(str::to_owned);
@@ -984,12 +1692,22 @@ impl Desktop {
                     } else {
                         ui.small("Inspect the selected file before authorizing transmission.");
                     }
-                    if ui.add_enabled(digest.is_some() && !self.prompt.trim().is_empty(),
-                        egui::Button::new("Run vision review")).clicked() {
+                    if ui
+                        .add_enabled(
+                            digest.is_some() && !self.prompt.trim().is_empty(),
+                            egui::Button::new("Run vision review"),
+                        )
+                        .clicked()
+                    {
                         if let Some(digest) = digest {
-                            self.confirm("Send inspected image to configured vision route", request("vision_review",
-                                json!({"file": self.vision_path, "image_sha256": digest,
-                                    "prompt": self.prompt, "confirmed": true})));
+                            self.confirm(
+                                "Send inspected image to configured vision route",
+                                request(
+                                    "vision_review",
+                                    json!({"file": self.vision_path, "image_sha256": digest,
+                                    "prompt": self.prompt, "confirmed": true}),
+                                ),
+                            );
                         }
                     }
                     return;
@@ -997,99 +1715,255 @@ impl Desktop {
                 if self.view == 1 {
                     let previous_scope = self.memory_scope.clone();
                     ui.horizontal_wrapped(|ui| {
-                        egui::ComboBox::from_id_salt("memory_scope").selected_text(&self.memory_scope).show_ui(ui, |ui| {
-                            for scope in ["global", "repository", "clone", "worktree", "branch", "task", "session"] {
-                                ui.selectable_value(&mut self.memory_scope, scope.into(), scope);
-                            }
-                        });
-                        egui::ComboBox::from_id_salt("memory_kind").selected_text(&self.memory_kind).show_ui(ui, |ui| {
-                            for kind in ["fact", "decision", "convention", "gotcha", "hypothesis", "assumption", "playbook",
-                                "capability_observation", "environment_capsule", "finding", "reusable_candidate", "contract_mapping",
-                                "rejected_approach", "unknown", "validation"] {
-                                ui.selectable_value(&mut self.memory_kind, kind.into(), kind);
-                            }
-                        });
+                        egui::ComboBox::from_id_salt("memory_scope")
+                            .selected_text(&self.memory_scope)
+                            .show_ui(ui, |ui| {
+                                for scope in [
+                                    "global",
+                                    "repository",
+                                    "clone",
+                                    "worktree",
+                                    "branch",
+                                    "task",
+                                    "session",
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.memory_scope,
+                                        scope.into(),
+                                        scope,
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("memory_kind")
+                            .selected_text(&self.memory_kind)
+                            .show_ui(ui, |ui| {
+                                for kind in [
+                                    "fact",
+                                    "decision",
+                                    "convention",
+                                    "gotcha",
+                                    "hypothesis",
+                                    "assumption",
+                                    "playbook",
+                                    "capability_observation",
+                                    "environment_capsule",
+                                    "finding",
+                                    "reusable_candidate",
+                                    "contract_mapping",
+                                    "rejected_approach",
+                                    "unknown",
+                                    "validation",
+                                ] {
+                                    ui.selectable_value(&mut self.memory_kind, kind.into(), kind);
+                                }
+                            });
                     });
                     if previous_scope != self.memory_scope {
-                        self.memory_scope_id.clear(); self.memory_record_id.clear(); self.memory_key.clear();
-                        self.memory_value.clear(); self.reason.clear(); self.clear_response();
+                        self.memory_scope_id.clear();
+                        self.memory_record_id.clear();
+                        self.memory_key.clear();
+                        self.memory_value.clear();
+                        self.reason.clear();
+                        self.clear_response();
                     }
-                    if matches!(self.memory_scope.as_str(), "task" | "session" | "clone" | "worktree" | "branch") {
+                    if matches!(
+                        self.memory_scope.as_str(),
+                        "task" | "session" | "clone" | "worktree" | "branch"
+                    ) {
                         ui.label(format!("Exact {} identity", self.memory_scope));
                         if ui.text_edit_singleline(&mut self.memory_scope_id).changed() {
-                            self.memory_record_id.clear(); self.memory_key.clear(); self.memory_value.clear(); self.reason.clear(); self.clear_response();
+                            self.memory_record_id.clear();
+                            self.memory_key.clear();
+                            self.memory_value.clear();
+                            self.reason.clear();
+                            self.clear_response();
                         }
                     }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Server search");
-                        let query_changed = ui.text_edit_singleline(&mut self.memory_query).changed();
+                        let query_changed =
+                            ui.text_edit_singleline(&mut self.memory_query).changed();
                         ui.label("Exact key");
-                        let key_changed = ui.text_edit_singleline(&mut self.memory_search_key).changed();
+                        let key_changed = ui
+                            .text_edit_singleline(&mut self.memory_search_key)
+                            .changed();
                         let previous_status = self.memory_status.clone();
                         let previous_limit = self.memory_limit;
-                        egui::ComboBox::from_id_salt("memory_status").selected_text(if self.memory_status.is_empty() { "Any status" } else { &self.memory_status }).show_ui(ui, |ui| {
-                            for status in ["", "candidate", "active", "confirmed", "quarantined", "superseded", "rejected", "stale"] {
-                                ui.selectable_value(&mut self.memory_status, status.into(), if status.is_empty() { "Any status" } else { status });
-                            }
-                        });
-                        egui::ComboBox::from_id_salt("memory_limit").selected_text(format!("Up to {}", self.memory_limit)).show_ui(ui, |ui| {
-                            for limit in [25, 50, 100] { ui.selectable_value(&mut self.memory_limit, limit, format!("Up to {limit}")); }
-                        });
-                        if query_changed || key_changed || previous_status != self.memory_status || previous_limit != self.memory_limit {
-                            self.memory_record_id.clear(); self.reason.clear(); self.clear_response();
+                        egui::ComboBox::from_id_salt("memory_status")
+                            .selected_text(if self.memory_status.is_empty() {
+                                "Any status"
+                            } else {
+                                &self.memory_status
+                            })
+                            .show_ui(ui, |ui| {
+                                for status in [
+                                    "",
+                                    "candidate",
+                                    "active",
+                                    "confirmed",
+                                    "quarantined",
+                                    "superseded",
+                                    "rejected",
+                                    "stale",
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.memory_status,
+                                        status.into(),
+                                        if status.is_empty() {
+                                            "Any status"
+                                        } else {
+                                            status
+                                        },
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("memory_limit")
+                            .selected_text(format!("Up to {}", self.memory_limit))
+                            .show_ui(ui, |ui| {
+                                for limit in [25, 50, 100] {
+                                    ui.selectable_value(
+                                        &mut self.memory_limit,
+                                        limit,
+                                        format!("Up to {limit}"),
+                                    );
+                                }
+                            });
+                        if query_changed
+                            || key_changed
+                            || previous_status != self.memory_status
+                            || previous_limit != self.memory_limit
+                        {
+                            self.memory_record_id.clear();
+                            self.reason.clear();
+                            self.clear_response();
                         }
                         if ui.button("Search memory").clicked() {
-                            self.memory_record_id.clear(); self.clear_response(); self.refresh(ctx);
+                            self.memory_record_id.clear();
+                            self.clear_response();
+                            self.refresh(ctx);
                         }
                     });
                     ui.label("New memory key and value (text or JSON)");
                     ui.text_edit_singleline(&mut self.memory_key);
                     ui.text_edit_multiline(&mut self.memory_value);
                     if ui.button("Record memory").clicked() {
-                        self.confirm("Record memory", request("memory_record", self.memory_args("memory_record")));
+                        self.confirm(
+                            "Record memory",
+                            request("memory_record", self.memory_args("memory_record")),
+                        );
                     }
                     ui.label("Exact record ID (select a row or enter the ID)");
-                    if ui.text_edit_singleline(&mut self.memory_record_id).changed() { self.reason.clear(); self.clear_response(); }
+                    if ui
+                        .text_edit_singleline(&mut self.memory_record_id)
+                        .changed()
+                    {
+                        self.reason.clear();
+                        self.clear_response();
+                    }
                     let selected = !self.memory_record_id.trim().is_empty();
-                    if ui.add_enabled(selected, egui::Button::new("Load exact memory record")).clicked() {
-                        self.submit(ctx, "Memory detail".into(), request("memory_get", self.memory_args("memory_get")));
+                    if ui
+                        .add_enabled(selected, egui::Button::new("Load exact memory record"))
+                        .clicked()
+                    {
+                        self.submit(
+                            ctx,
+                            "Memory detail".into(),
+                            request("memory_get", self.memory_args("memory_get")),
+                        );
                     }
                     ui.label("Quarantine reason");
                     ui.text_edit_multiline(&mut self.reason);
                     ui.horizontal_wrapped(|ui| {
                         let mutable = selected && self.memory_scope != "worktree";
-                        if ui.add_enabled(mutable && !self.reason.trim().is_empty(), egui::Button::new("Quarantine record")).clicked() {
-                            self.confirm("Quarantine exact scoped memory record", request("memory_quarantine", self.memory_args("memory_quarantine")));
+                        if ui
+                            .add_enabled(
+                                mutable && !self.reason.trim().is_empty(),
+                                egui::Button::new("Quarantine record"),
+                            )
+                            .clicked()
+                        {
+                            self.confirm(
+                                "Quarantine exact scoped memory record",
+                                request("memory_quarantine", self.memory_args("memory_quarantine")),
+                            );
                         }
-                        if ui.add_enabled(mutable, egui::Button::new("Delete memory record")).clicked() {
-                            self.confirm("Delete exact scoped memory record", request("memory_delete", self.memory_args("memory_delete")));
+                        if ui
+                            .add_enabled(mutable, egui::Button::new("Delete memory record"))
+                            .clicked()
+                        {
+                            self.confirm(
+                                "Delete exact scoped memory record",
+                                request("memory_delete", self.memory_args("memory_delete")),
+                            );
                         }
                     });
                     ui.small("Results are bounded, not an exhaustive inventory. Global scope is shared; select it explicitly. Compaction and global promotion are not authorized by this HTTP endpoint.");
-                    if self.memory_scope == "worktree" { ui.small("Worktree mutations require an independently verified scope and are not supported here."); }
+                    if self.memory_scope == "worktree" {
+                        ui.small("Worktree mutations require an independently verified scope and are not supported here.");
+                    }
                     return;
                 }
                 if self.view == 2 {
                     ui.horizontal_wrapped(|ui| {
                         let previous = self.incident_status.clone();
                         let previous_limit = self.incident_limit;
-                        egui::ComboBox::from_id_salt("incident_status").selected_text(if self.incident_status.is_empty() { "All states" } else { &self.incident_status }).show_ui(ui, |ui| {
-                            for status in ["", "unresolved", "resolved", "ignored"] {
-                                ui.selectable_value(&mut self.incident_status, status.into(), if status.is_empty() { "All states" } else { status });
-                            }
-                        });
-                        egui::ComboBox::from_id_salt("incident_limit").selected_text(format!("Up to {}", self.incident_limit)).show_ui(ui, |ui| {
-                            for limit in [25, 50, 100] { ui.selectable_value(&mut self.incident_limit, limit, format!("Up to {limit}")); }
-                        });
-                        if previous != self.incident_status || previous_limit != self.incident_limit { self.clear_response(); }
-                        if ui.button("List incidents").clicked() { self.refresh(ctx); }
+                        egui::ComboBox::from_id_salt("incident_status")
+                            .selected_text(if self.incident_status.is_empty() {
+                                "All states"
+                            } else {
+                                &self.incident_status
+                            })
+                            .show_ui(ui, |ui| {
+                                for status in ["", "unresolved", "resolved", "ignored"] {
+                                    ui.selectable_value(
+                                        &mut self.incident_status,
+                                        status.into(),
+                                        if status.is_empty() {
+                                            "All states"
+                                        } else {
+                                            status
+                                        },
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("incident_limit")
+                            .selected_text(format!("Up to {}", self.incident_limit))
+                            .show_ui(ui, |ui| {
+                                for limit in [25, 50, 100] {
+                                    ui.selectable_value(
+                                        &mut self.incident_limit,
+                                        limit,
+                                        format!("Up to {limit}"),
+                                    );
+                                }
+                            });
+                        if previous != self.incident_status || previous_limit != self.incident_limit
+                        {
+                            self.clear_response();
+                        }
+                        if ui.button("List incidents").clicked() {
+                            self.refresh(ctx);
+                        }
                     });
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Search prior failures and lessons");
                         ui.text_edit_singleline(&mut self.incident_query);
-                        if ui.add_enabled(!self.incident_query.trim().is_empty(), egui::Button::new("Search negative knowledge")).clicked() {
-                            self.submit(ctx, "Incidents".into(), request("incident_find", json!({"root": self.repo,
-                                "query": self.incident_query, "limit": self.incident_limit})));
+                        if ui
+                            .add_enabled(
+                                !self.incident_query.trim().is_empty(),
+                                egui::Button::new("Search negative knowledge"),
+                            )
+                            .clicked()
+                        {
+                            self.submit(
+                                ctx,
+                                "Incidents".into(),
+                                request(
+                                    "incident_find",
+                                    json!({"root": self.repo,
+                                "query": self.incident_query, "limit": self.incident_limit}),
+                                ),
+                            );
                         }
                     });
                     ui.small("Search uses a separate server operation and is not constrained by the list status filter. Both results are bounded.");
@@ -1115,41 +1989,109 @@ impl Desktop {
                     let previous_status = self.task_status.clone();
                     let previous_limit = self.task_limit;
                     egui::ComboBox::from_id_salt("task_status_filter")
-                        .selected_text(if self.task_status.is_empty() { "All states" } else { &self.task_status }).show_ui(ui, |ui| {
-                            for state in ["", "draft", "planned", "active", "verifying", "completed", "waiting", "blocked", "failed", "cancelled", "abandoned"] {
-                                ui.selectable_value(&mut self.task_status, state.into(), if state.is_empty() { "All states" } else { state });
+                        .selected_text(if self.task_status.is_empty() {
+                            "All states"
+                        } else {
+                            &self.task_status
+                        })
+                        .show_ui(ui, |ui| {
+                            for state in [
+                                "",
+                                "draft",
+                                "planned",
+                                "active",
+                                "verifying",
+                                "completed",
+                                "waiting",
+                                "blocked",
+                                "failed",
+                                "cancelled",
+                                "abandoned",
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.task_status,
+                                    state.into(),
+                                    if state.is_empty() {
+                                        "All states"
+                                    } else {
+                                        state
+                                    },
+                                );
                             }
                         });
-                    egui::ComboBox::from_id_salt("task_page_size").selected_text(format!("{} rows", self.task_limit)).show_ui(ui, |ui| {
-                        for size in [25, 50, 100, 250] { ui.selectable_value(&mut self.task_limit, size, format!("{size} rows")); }
-                    });
-                    if query_changed || previous_status != self.task_status || previous_limit != self.task_limit {
-                        self.task_offset = 0; self.task_back.clear(); self.clear_response();
+                    egui::ComboBox::from_id_salt("task_page_size")
+                        .selected_text(format!("{} rows", self.task_limit))
+                        .show_ui(ui, |ui| {
+                            for size in [25, 50, 100, 250] {
+                                ui.selectable_value(
+                                    &mut self.task_limit,
+                                    size,
+                                    format!("{size} rows"),
+                                );
+                            }
+                        });
+                    if query_changed
+                        || previous_status != self.task_status
+                        || previous_limit != self.task_limit
+                    {
+                        self.task_offset = 0;
+                        self.task_back.clear();
+                        self.clear_response();
                     }
                     if ui.button("Search tasks").clicked() {
-                        self.task_offset = 0; self.task_back.clear(); self.refresh(ctx);
+                        self.task_offset = 0;
+                        self.task_back.clear();
+                        self.refresh(ctx);
                     }
-                    let next = self.snapshot.as_ref().filter(|_| self.snapshot_view == self.current())
+                    let next = self
+                        .snapshot
+                        .as_ref()
+                        .filter(|_| self.snapshot_view == self.current())
                         .filter(|v| v["has_more"] == true)
                         .and_then(|v| v["next_offset"].as_i64())
                         .filter(|next| *next > self.task_offset);
-                    if ui.add_enabled(!self.task_back.is_empty(), egui::Button::new("Previous page")).clicked() {
+                    if ui
+                        .add_enabled(
+                            !self.task_back.is_empty(),
+                            egui::Button::new("Previous page"),
+                        )
+                        .clicked()
+                    {
                         self.task_offset = self.task_back.pop().expect("enabled only with history");
-                        self.clear_response(); self.refresh(ctx);
+                        self.clear_response();
+                        self.refresh(ctx);
                     }
-                    if ui.add_enabled(next.is_some() && self.task_back.len() < 500, egui::Button::new("Next page")).clicked() {
+                    if ui
+                        .add_enabled(
+                            next.is_some() && self.task_back.len() < 500,
+                            egui::Button::new("Next page"),
+                        )
+                        .clicked()
+                    {
                         self.task_back.push(self.task_offset);
                         self.task_offset = next.expect("enabled only with advancing server cursor");
-                        self.clear_response(); self.refresh(ctx);
+                        self.clear_response();
+                        self.refresh(ctx);
                     }
-                    if self.snapshot_view == self.current() && self.snapshot.as_ref().is_some_and(|v| v["query_truncated"] == true) {
-                        ui.colored_label(ui.visuals().warn_fg_color, "Incomplete bounded search; refine filters.");
+                    if self.snapshot_view == self.current()
+                        && self
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|v| v["query_truncated"] == true)
+                    {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "Incomplete bounded search; refine filters.",
+                        );
                     }
                     ui.label(format!("Offset {}", self.task_offset));
                 });
                 if self.current() == "Run history" {
                     ui.label("Select a task from the table or enter its ID. History stays repository-scoped.");
-                    if ui.text_edit_singleline(&mut self.entity).changed() { self.history_cursor = 0; self.clear_response(); }
+                    if ui.text_edit_singleline(&mut self.entity).changed() {
+                        self.history_cursor = 0;
+                        self.clear_response();
+                    }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("After sequence");
                         ui.add(egui::DragValue::new(&mut self.history_cursor).range(0..=i64::MAX));
@@ -1250,10 +2192,23 @@ impl Desktop {
                     ui.label("Lease ID and exact writer owner");
                     ui.text_edit_singleline(&mut self.entity);
                     ui.text_edit_singleline(&mut self.lease_owner);
-                    if ui.add_enabled(!self.repo.is_empty() && !self.entity.is_empty() && !self.lease_owner.is_empty(),
-                        egui::Button::new("Release lease")).clicked() {
-                        self.confirm("Release observed file lease", request("lease_release", json!({"root": self.repo,
-                            "id": self.entity, "owner": self.lease_owner, "confirmed": true})));
+                    if ui
+                        .add_enabled(
+                            !self.repo.is_empty()
+                                && !self.entity.is_empty()
+                                && !self.lease_owner.is_empty(),
+                            egui::Button::new("Release lease"),
+                        )
+                        .clicked()
+                    {
+                        self.confirm(
+                            "Release observed file lease",
+                            request(
+                                "lease_release",
+                                json!({"root": self.repo,
+                            "id": self.entity, "owner": self.lease_owner, "confirmed": true}),
+                            ),
+                        );
                     }
                     return;
                 }
@@ -1270,49 +2225,119 @@ impl Desktop {
                     ui.text_edit_singleline(&mut self.plan_query);
                     if self.current() == "Plans" {
                         egui::ComboBox::from_id_salt("plan_lifecycle")
-                            .selected_text(if self.plan_lifecycle.is_empty() { "All lifecycles" } else { &self.plan_lifecycle })
+                            .selected_text(if self.plan_lifecycle.is_empty() {
+                                "All lifecycles"
+                            } else {
+                                &self.plan_lifecycle
+                            })
                             .show_ui(ui, |ui| {
-                                for lifecycle in ["", "draft", "active", "paused", "completed", "archived", "cancelled"] {
-                                    ui.selectable_value(&mut self.plan_lifecycle, lifecycle.into(),
-                                        if lifecycle.is_empty() { "All lifecycles" } else { lifecycle });
+                                for lifecycle in [
+                                    "",
+                                    "draft",
+                                    "active",
+                                    "paused",
+                                    "completed",
+                                    "archived",
+                                    "cancelled",
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.plan_lifecycle,
+                                        lifecycle.into(),
+                                        if lifecycle.is_empty() {
+                                            "All lifecycles"
+                                        } else {
+                                            lifecycle
+                                        },
+                                    );
                                 }
                             });
-                        egui::ComboBox::from_id_salt("plan_limit").selected_text(format!("{} plans", self.plan_limit))
+                        egui::ComboBox::from_id_salt("plan_limit")
+                            .selected_text(format!("{} plans", self.plan_limit))
                             .show_ui(ui, |ui| {
                                 for limit in [25, 100, 250] {
-                                    ui.selectable_value(&mut self.plan_limit, limit, format!("{limit} plans"));
+                                    ui.selectable_value(
+                                        &mut self.plan_limit,
+                                        limit,
+                                        format!("{limit} plans"),
+                                    );
                                 }
                             });
                     } else {
-                        ui.label("Board plan filter (blank = all non-archived, non-cancelled plans)");
+                        ui.label(
+                            "Board plan filter (blank = all non-archived, non-cancelled plans)",
+                        );
                         ui.text_edit_singleline(&mut self.board_plan_filter);
                     }
                     if ui.button("Apply plan filters").clicked() {
-                        self.clear_response(); self.refresh(ctx);
+                        self.clear_response();
+                        self.refresh(ctx);
                     }
                 });
                 ui.label("Selected plan ID (independent of board filter)");
                 if ui.text_edit_singleline(&mut self.entity).changed() {
-                    self.revision.clear(); self.plan_draft = None; self.plan_task.clear(); self.plan_execution_id.clear();
-                    self.plan_title.clear(); self.description.clear();
+                    self.revision.clear();
+                    self.plan_draft = None;
+                    self.plan_task.clear();
+                    self.plan_execution_id.clear();
+                    self.plan_title.clear();
+                    self.description.clear();
                 }
                 ui.label("Task ID (empty for plan-level edit)");
                 if ui.text_edit_singleline(&mut self.plan_task).changed() {
-                    self.plan_draft = None; self.plan_title.clear(); self.description.clear(); self.plan_execution_id.clear();
+                    self.plan_draft = None;
+                    self.plan_title.clear();
+                    self.description.clear();
+                    self.plan_execution_id.clear();
                 }
-                ui.label(format!("Observed revision: {}", if self.revision.is_empty() { "not loaded" } else { &self.revision }));
+                ui.label(format!(
+                    "Observed revision: {}",
+                    if self.revision.is_empty() {
+                        "not loaded"
+                    } else {
+                        &self.revision
+                    }
+                ));
                 if ui.button("Load exact plan / task for editing").clicked() {
-                    self.plan_draft = None; self.revision.clear();
-                    self.submit(ctx, "Plan detail".into(), request("plan_detail",
-                        json!({"root": self.repo, "id": self.entity})));
+                    self.plan_draft = None;
+                    self.revision.clear();
+                    self.submit(
+                        ctx,
+                        "Plan detail".into(),
+                        request("plan_detail", json!({"root": self.repo, "id": self.entity})),
+                    );
                 }
                 ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(!self.entity.trim().is_empty(), egui::Button::new("Validate plan")).clicked() {
-                        self.submit(ctx, "Plan validation".into(), request("plan_validate", json!({"root": self.repo, "id": self.entity})));
+                    if ui
+                        .add_enabled(
+                            !self.entity.trim().is_empty(),
+                            egui::Button::new("Validate plan"),
+                        )
+                        .clicked()
+                    {
+                        self.submit(
+                            ctx,
+                            "Plan validation".into(),
+                            request(
+                                "plan_validate",
+                                json!({"root": self.repo, "id": self.entity}),
+                            ),
+                        );
                     }
-                    if ui.add_enabled(!self.entity.trim().is_empty() && !self.revision.is_empty(), egui::Button::new("Archive plan")).clicked() {
-                        self.confirm("Archive plan", request("plan_archive", json!({"root": self.repo,
-                            "id": self.entity, "revision": self.revision, "confirmed": true})));
+                    if ui
+                        .add_enabled(
+                            !self.entity.trim().is_empty() && !self.revision.is_empty(),
+                            egui::Button::new("Archive plan"),
+                        )
+                        .clicked()
+                    {
+                        self.confirm(
+                            "Archive plan",
+                            request(
+                                "plan_archive",
+                                json!({"root": self.repo,
+                            "id": self.entity, "revision": self.revision, "confirmed": true}),
+                            ),
+                        );
                     }
                 });
                 ui.collapsing("Bind existing execution task", |ui| {
@@ -1328,14 +2353,28 @@ impl Desktop {
                     }
                 });
                 let mut edit_request = None;
-                if let Some(draft) = self.plan_draft.as_mut().filter(|d|
-                    d.matches(&self.entity, &self.plan_task, &self.revision)) {
+                if let Some(draft) = self
+                    .plan_draft
+                    .as_mut()
+                    .filter(|d| d.matches(&self.entity, &self.plan_task, &self.revision))
+                {
                     ui.collapsing("Edit observed plan fields", |ui| {
                         draft.render(ui);
                         let changes = draft.patch();
-                        let title = if draft.task_id.is_empty() { "Update plan" } else { "Edit plan task" };
-                        if ui.add_enabled(!changes.is_empty(), egui::Button::new(title)).clicked() {
-                            let op = if draft.task_id.is_empty() { "plan_update" } else { "plan_task_edit" };
+                        let title = if draft.task_id.is_empty() {
+                            "Update plan"
+                        } else {
+                            "Edit plan task"
+                        };
+                        if ui
+                            .add_enabled(!changes.is_empty(), egui::Button::new(title))
+                            .clicked()
+                        {
+                            let op = if draft.task_id.is_empty() {
+                                "plan_update"
+                            } else {
+                                "plan_task_edit"
+                            };
                             let mut args = changes;
                             args.insert("root".into(), json!(self.repo));
                             args.insert("id".into(), json!(draft.plan_id));
@@ -1346,7 +2385,9 @@ impl Desktop {
                         }
                     });
                 }
-                if let Some((title, payload)) = edit_request { self.confirm(title, payload); }
+                if let Some((title, payload)) = edit_request {
+                    self.confirm(title, payload);
+                }
                 ui.collapsing("Create new plan or task", |ui| {
                     ui.label("New title and description");
                     ui.text_edit_singleline(&mut self.plan_title);
@@ -1363,7 +2404,13 @@ impl Desktop {
                         }
                     });
                 });
-                if ui.add_enabled(!self.plan_task.is_empty() && !self.revision.is_empty(), egui::Button::new("Delete plan task")).clicked() {
+                if ui
+                    .add_enabled(
+                        !self.plan_task.is_empty() && !self.revision.is_empty(),
+                        egui::Button::new("Delete plan task"),
+                    )
+                    .clicked()
+                {
                     self.confirm("Delete plan task", request("plan_task_delete", json!({"root": self.repo,
                         "id": self.entity, "revision": self.revision, "task_id": self.plan_task, "confirmed": true})));
                 }
@@ -1379,15 +2426,25 @@ impl Desktop {
                             "revision": self.revision, "status": self.plan_status, "confirmed": true})));
                     }
                 });
-
             }
             4 => {
                 ui.horizontal_wrapped(|ui| {
-                    for (title, action) in [("Register", "register"), ("Reindex", "refresh"),
-                        ("Pause", "pause"), ("Resume", "resume"), ("Unregister (keep data)", "unregister")] {
+                    for (title, action) in [
+                        ("Register", "register"),
+                        ("Reindex", "refresh"),
+                        ("Pause", "pause"),
+                        ("Resume", "resume"),
+                        ("Unregister (keep data)", "unregister"),
+                    ] {
                         if ui.button(title).clicked() {
-                            self.confirm(title, request("project", json!({"root": self.repo,
-                                "action": action, "confirmed": true})));
+                            self.confirm(
+                                title,
+                                request(
+                                    "project",
+                                    json!({"root": self.repo,
+                                "action": action, "confirmed": true}),
+                                ),
+                            );
                         }
                     }
                 });
@@ -1395,74 +2452,157 @@ impl Desktop {
                     self.confirm("Unregister and permanently purge selected project data", request("project", json!({"root": self.repo, "action": "unregister", "purge_data": true, "confirmed": true})));
                 }
                 ui.horizontal_wrapped(|ui| {
-                    for (title, action) in [("Pause all", "pause"), ("Resume all", "resume"), ("Cleanup missing", "cleanup_deleted")] {
+                    for (title, action) in [
+                        ("Pause all", "pause"),
+                        ("Resume all", "resume"),
+                        ("Cleanup missing", "cleanup_deleted"),
+                    ] {
                         if ui.button(title).clicked() {
-                            self.confirm(title, request("global_preprocess", json!({"action": action, "confirmed": true})));
+                            self.confirm(
+                                title,
+                                request(
+                                    "global_preprocess",
+                                    json!({"action": action, "confirmed": true}),
+                                ),
+                            );
                         }
                     }
                 });
             }
-            5 => { if self.current() == "Worktrees" { self.worktrees(ui); } }
+            5 => {
+                if self.current() == "Worktrees" {
+                    self.worktrees(ui);
+                }
+            }
             6 => {
                 if self.current() == "Ollama management" {
                     ui.small("Ollama only. Pull downloads a model through the configured backend; it can take several minutes. Delete is restricted to a confirmed non-resident installed model.");
                     let label = ui.label("Exact model name (including tag)");
-                    ui.text_edit_singleline(&mut self.entity).labelled_by(label.id);
+                    ui.text_edit_singleline(&mut self.entity)
+                        .labelled_by(label.id);
                     let ready = !self.entity.trim().is_empty();
-                    let deletable = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Ollama management")
-                        .is_some_and(|data| data["running_status_available"] == true &&
-                            data["models"].as_array().is_some_and(|rows|
-                                rows.iter().filter(|row| row["name"].as_str() == Some(self.entity.as_str())).count() == 1 &&
-                                rows.iter().any(|row| row["name"].as_str() == Some(self.entity.as_str()) && row["running"] == false)));
+                    let deletable = self
+                        .snapshot
+                        .as_ref()
+                        .filter(|_| self.snapshot_view == "Ollama management")
+                        .is_some_and(|data| {
+                            data["running_status_available"] == true
+                                && data["models"].as_array().is_some_and(|rows| {
+                                    rows.iter()
+                                        .filter(|row| {
+                                            row["name"].as_str() == Some(self.entity.as_str())
+                                        })
+                                        .count()
+                                        == 1
+                                        && rows.iter().any(|row| {
+                                            row["name"].as_str() == Some(self.entity.as_str())
+                                                && row["running"] == false
+                                        })
+                                })
+                        });
                     ui.horizontal_wrapped(|ui| {
-                        if ui.add_enabled(ready, egui::Button::new("Pull model")).clicked() {
-                            self.confirm("Download Ollama model", request("model_manage",
-                                json!({"action":"pull", "model":self.entity, "confirmed":true})));
+                        if ui
+                            .add_enabled(ready, egui::Button::new("Pull model"))
+                            .clicked()
+                        {
+                            self.confirm(
+                                "Download Ollama model",
+                                request(
+                                    "model_manage",
+                                    json!({"action":"pull", "model":self.entity, "confirmed":true}),
+                                ),
+                            );
                         }
-                        if ui.add_enabled(deletable, egui::Button::new("Delete installed model")).clicked() {
+                        if ui
+                            .add_enabled(deletable, egui::Button::new("Delete installed model"))
+                            .clicked()
+                        {
                             self.confirm("Delete Ollama model", request("model_manage",
                                 json!({"action":"delete", "model":self.entity, "confirmed":true})));
                         }
                     });
-                    if self.snapshot.as_ref().is_some_and(|data| self.snapshot_view == "Ollama management" && data["running_status_available"] != true) {
+                    if self.snapshot.as_ref().is_some_and(|data| {
+                        self.snapshot_view == "Ollama management"
+                            && data["running_status_available"] != true
+                    }) {
                         ui.small("Resident status unavailable; deletion disabled.");
                     }
                     return;
                 }
-                if self.current() != "Benchmark" { return; }
-                ui.label("Compare automatic and high-complexity model routes (runs inference twice)");
+                if self.current() != "Benchmark" {
+                    return;
+                }
+                ui.label(
+                    "Compare automatic and high-complexity model routes (runs inference twice)",
+                );
                 ui.text_edit_multiline(&mut self.prompt);
                 if ui.button("Compare models").clicked() {
-                    self.confirm("Run two model requests", request("compare", json!({"prompt": self.prompt, "confirmed": true})));
+                    self.confirm(
+                        "Run two model requests",
+                        request("compare", json!({"prompt": self.prompt, "confirmed": true})),
+                    );
                 }
             }
             7 => {
                 ui.horizontal_wrapped(|ui| {
                     for action in MAINTENANCE {
                         if ui.button(*action).clicked() {
-                            self.confirm(action, request("maintenance", json!({"action": action, "confirmed": true})));
+                            self.confirm(
+                                action,
+                                request(
+                                    "maintenance",
+                                    json!({"action": action, "confirmed": true}),
+                                ),
+                            );
                         }
                     }
                 });
             }
             8 => {
-                if self.current() == "Operator tools" { self.operator_tools(ui, ctx); return; }
+                if self.current() == "Operator tools" {
+                    self.operator_tools(ui, ctx);
+                    return;
+                }
                 if self.current() == "Instruction compression" {
                     ui.small("Stage generates a local candidate and semantic review without replacing source files. Inspect the exact manifest before apply or restore; the reviewed digest must match.");
-                    if ui.add_enabled(!self.repo.trim().is_empty(), egui::Button::new("Stage compressed instructions")).clicked() {
+                    if ui
+                        .add_enabled(
+                            !self.repo.trim().is_empty(),
+                            egui::Button::new("Stage compressed instructions"),
+                        )
+                        .clicked()
+                    {
                         self.confirm("Stage compressed instructions", request("operator_run",
                             json!({"name":"Stage compressed instructions","root":self.repo,"fields":{},"confirmed":true})));
                     }
                     let label = ui.label("Manifest path from the staging output");
-                    if ui.text_edit_singleline(&mut self.entity).labelled_by(label.id).changed() {
-                        self.revision.clear(); self.clear_response();
+                    if ui
+                        .text_edit_singleline(&mut self.entity)
+                        .labelled_by(label.id)
+                        .changed()
+                    {
+                        self.revision.clear();
+                        self.clear_response();
                     }
-                    if ui.add_enabled(!self.repo.trim().is_empty() && !self.entity.trim().is_empty(),
-                        egui::Button::new("Review staged bytes")).clicked() { self.refresh(ctx); }
-                    let status = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Instruction review")
-                        .filter(|data| data["manifest_sha256"].as_str() == Some(self.revision.as_str()) &&
-                            data["manifest"].as_str() == Some(self.entity.as_str()))
-                        .and_then(|data| data["status"].as_str()).unwrap_or("");
+                    if ui
+                        .add_enabled(
+                            !self.repo.trim().is_empty() && !self.entity.trim().is_empty(),
+                            egui::Button::new("Review staged bytes"),
+                        )
+                        .clicked()
+                    {
+                        self.refresh(ctx);
+                    }
+                    let status = self
+                        .snapshot
+                        .as_ref()
+                        .filter(|_| self.snapshot_view == "Instruction review")
+                        .filter(|data| {
+                            data["manifest_sha256"].as_str() == Some(self.revision.as_str())
+                                && data["manifest"].as_str() == Some(self.entity.as_str())
+                        })
+                        .and_then(|data| data["status"].as_str())
+                        .unwrap_or("");
                     let staged = status == "staged";
                     let applied = status == "applied";
                     ui.horizontal_wrapped(|ui| {
@@ -1482,11 +2622,22 @@ impl Desktop {
                 if self.current() == "Updates" {
                     ui.small("Managed installations only. The Hub checks the exact release candidate again before scheduling the update and restart.");
                     if ui.button("Check for updates").clicked() {
-                        self.confirm("Updates", request("update_check", json!({"confirmed": true})));
+                        self.confirm(
+                            "Updates",
+                            request("update_check", json!({"confirmed": true})),
+                        );
                     }
-                    ui.label(format!("Candidate: {} / {}", self.update_version, self.update_revision));
-                    if ui.add_enabled(!self.update_version.is_empty() && self.update_revision.len() == 40,
-                        egui::Button::new("Install reviewed candidate")).clicked() {
+                    ui.label(format!(
+                        "Candidate: {} / {}",
+                        self.update_version, self.update_revision
+                    ));
+                    if ui
+                        .add_enabled(
+                            !self.update_version.is_empty() && self.update_revision.len() == 40,
+                            egui::Button::new("Install reviewed candidate"),
+                        )
+                        .clicked()
+                    {
                         self.confirm("Install reviewed release and restart Hub", request("update_install", json!({
                             "version": self.update_version, "revision": self.update_revision, "confirmed": true})));
                     }
@@ -1496,18 +2647,33 @@ impl Desktop {
                     if self.settings_draft.render(ui) {
                         let patch = self.settings_draft.patch();
                         if !patch.is_empty() {
-                            self.confirm("Save settings", request("settings_batch", json!({"settings": patch, "confirmed": true})));
+                            self.confirm(
+                                "Save settings",
+                                request(
+                                    "settings_batch",
+                                    json!({"settings": patch, "confirmed": true}),
+                                ),
+                            );
                         }
                     }
                     ui.horizontal_wrapped(|ui| {
-                        for (title, mode) in [("Telemetry off", "off"), ("Minimal telemetry", "minimal"), ("Detailed telemetry", "full")] {
+                        for (title, mode) in [
+                            ("Telemetry off", "off"),
+                            ("Minimal telemetry", "minimal"),
+                            ("Detailed telemetry", "full"),
+                        ] {
                             if ui.button(title).clicked() {
-                                self.confirm(&format!("{title} (may retain sensitive request content)"),
-                                    request("telemetry", json!({"mode": mode, "confirmed": true})));
+                                self.confirm(
+                                    &format!("{title} (may retain sensitive request content)"),
+                                    request("telemetry", json!({"mode": mode, "confirmed": true})),
+                                );
                             }
                         }
                         if ui.button("Reset configuration overrides").clicked() {
-                            self.confirm("Reset configuration overrides", request("config_reset", json!({"confirmed": true})));
+                            self.confirm(
+                                "Reset configuration overrides",
+                                request("config_reset", json!({"confirmed": true})),
+                            );
                         }
                     });
                 } else {
@@ -1517,7 +2683,10 @@ impl Desktop {
             9 => {
                 if self.current() == "Agent event stream" {
                     ui.label("Scoped agent event stream ID (repository root required)");
-                    if ui.text_edit_singleline(&mut self.stream_id).changed() { self.event_cursor = 0; self.clear_response(); }
+                    if ui.text_edit_singleline(&mut self.stream_id).changed() {
+                        self.event_cursor = 0;
+                        self.clear_response();
+                    }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Resume after sequence");
                         if ui.add(egui::DragValue::new(&mut self.event_cursor).range(0..=i64::MAX)).changed() { self.auto_live = false; self.live_events.clear(); }
@@ -1531,14 +2700,25 @@ impl Desktop {
                 }
             }
             10 => {
-                ui.label("ZIP file path (export requires a new file; import requires repository root)");
+                ui.label(
+                    "ZIP file path (export requires a new file; import requires repository root)",
+                );
                 ui.text_edit_singleline(&mut self.archive_path);
                 ui.horizontal_wrapped(|ui| {
-                    for (title, op) in [("Export project", "bundle_export"), ("Import project", "bundle_import"),
-                        ("Export encrypted diagnostics", "diagnostics_export")] {
+                    for (title, op) in [
+                        ("Export project", "bundle_export"),
+                        ("Import project", "bundle_import"),
+                        ("Export encrypted diagnostics", "diagnostics_export"),
+                    ] {
                         if ui.button(title).clicked() {
-                            self.confirm(title, request(op, json!({"file": self.archive_path,
-                                "root": self.repo, "confirmed": true})));
+                            self.confirm(
+                                title,
+                                request(
+                                    op,
+                                    json!({"file": self.archive_path,
+                                "root": self.repo, "confirmed": true}),
+                                ),
+                            );
                         }
                     }
                 });
@@ -1549,27 +2729,56 @@ impl Desktop {
     fn operator_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.small("Local CLI operations with fixed argument schemas. Offline reads do not start the Hub. Mutations require confirmation.");
         if self.operator_catalog.is_empty() {
-            if ui.button("Load operator catalog").clicked() { self.refresh(ctx); }
+            if ui.button("Load operator catalog").clicked() {
+                self.refresh(ctx);
+            }
             return;
         }
         let previous = self.operator_name.clone();
-        egui::ComboBox::from_id_salt("operator_name").selected_text(
-            if self.operator_name.is_empty() { "Choose operation" } else { &self.operator_name }
-        ).show_ui(ui, |ui| {
-            for operation in &self.operator_catalog {
-                if let Some(name) = operation["name"].as_str() {
-                    ui.selectable_value(&mut self.operator_name, name.to_owned(), name);
+        egui::ComboBox::from_id_salt("operator_name")
+            .selected_text(if self.operator_name.is_empty() {
+                "Choose operation"
+            } else {
+                &self.operator_name
+            })
+            .show_ui(ui, |ui| {
+                for operation in &self.operator_catalog {
+                    if let Some(name) = operation["name"].as_str() {
+                        ui.selectable_value(&mut self.operator_name, name.to_owned(), name);
+                    }
                 }
-            }
-        });
-        if previous != self.operator_name { self.operator_fields.clear(); }
-        let Some(operation) = self.operator_catalog.iter().find(|v| v["name"].as_str() == Some(&self.operator_name)).cloned() else { return; };
-        if operation["requires_root"] == true { ui.label(format!("Repository: {}", if self.repo.is_empty() { "(select root above)" } else { &self.repo })); }
+            });
+        if previous != self.operator_name {
+            self.operator_fields.clear();
+        }
+        let Some(operation) = self
+            .operator_catalog
+            .iter()
+            .find(|v| v["name"].as_str() == Some(&self.operator_name))
+            .cloned()
+        else {
+            return;
+        };
+        if operation["requires_root"] == true {
+            ui.label(format!(
+                "Repository: {}",
+                if self.repo.is_empty() {
+                    "(select root above)"
+                } else {
+                    &self.repo
+                }
+            ));
+        }
         if let Some(fields) = operation["fields"].as_array() {
             for field in fields {
-                let Some(name) = field["name"].as_str() else { continue; };
+                let Some(name) = field["name"].as_str() else {
+                    continue;
+                };
                 let label = field["label"].as_str().unwrap_or(name);
-                let value = self.operator_fields.entry(name.to_owned()).or_insert(Value::Null);
+                let value = self
+                    .operator_fields
+                    .entry(name.to_owned())
+                    .or_insert(Value::Null);
                 match field["kind"].as_str() {
                     Some("bool") => {
                         let mut checked = value.as_bool().unwrap_or(false);
@@ -1579,41 +2788,67 @@ impl Desktop {
                     Some("choice") => {
                         let mut selected = value.as_str().unwrap_or("").to_owned();
                         ui.label(label);
-                        egui::ComboBox::from_id_salt(("operator_field", name)).selected_text(&selected).show_ui(ui, |ui| {
-                            if field["required"] != true { ui.selectable_value(&mut selected, String::new(), "(default)"); }
-                            if let Some(choices) = field["choices"].as_array() {
-                                for choice in choices.iter().filter_map(Value::as_str) {
-                                    ui.selectable_value(&mut selected, choice.to_owned(), choice);
+                        egui::ComboBox::from_id_salt(("operator_field", name))
+                            .selected_text(&selected)
+                            .show_ui(ui, |ui| {
+                                if field["required"] != true {
+                                    ui.selectable_value(&mut selected, String::new(), "(default)");
                                 }
-                            }
-                        });
+                                if let Some(choices) = field["choices"].as_array() {
+                                    for choice in choices.iter().filter_map(Value::as_str) {
+                                        ui.selectable_value(
+                                            &mut selected,
+                                            choice.to_owned(),
+                                            choice,
+                                        );
+                                    }
+                                }
+                            });
                         *value = json!(selected);
                     }
                     _ => {
                         let mut input = value.as_str().unwrap_or("").to_owned();
                         ui.label(label);
-                        if field["kind"] == "lines" { ui.text_edit_multiline(&mut input); }
-                        else { ui.text_edit_singleline(&mut input); }
+                        if field["kind"] == "lines" {
+                            ui.text_edit_multiline(&mut input);
+                        } else {
+                            ui.text_edit_singleline(&mut input);
+                        }
                         *value = json!(input);
                     }
                 }
             }
         }
         if ui.button("Run selected operation").clicked() {
-            let payload = request("operator_run", json!({"name": self.operator_name,
-                "root": self.repo, "fields": self.operator_fields, "confirmed": true}));
+            let payload = request(
+                "operator_run",
+                json!({"name": self.operator_name,
+                "root": self.repo, "fields": self.operator_fields, "confirmed": true}),
+            );
             let name = self.operator_name.clone();
-            if operation["requires_confirmation"] == true { self.confirm(&name, payload); }
-            else { self.submit(ctx, name, payload); }
+            if operation["requires_confirmation"] == true {
+                self.confirm(&name, payload);
+            } else {
+                self.submit(ctx, name, payload);
+            }
         }
     }
     fn worktrees(&mut self, ui: &mut egui::Ui) {
         ui.label("Worktree path (release); repository root above");
         ui.text_edit_singleline(&mut self.entity);
         ui.horizontal(|ui| {
-            for (title, op) in [("Prune stale worktrees", "worktree_prune"), ("Release worktree", "worktree_release")] {
+            for (title, op) in [
+                ("Prune stale worktrees", "worktree_prune"),
+                ("Release worktree", "worktree_release"),
+            ] {
                 if ui.button(title).clicked() {
-                    self.confirm(title, request(op, json!({"root": self.repo, "id": self.entity, "confirmed": true})));
+                    self.confirm(
+                        title,
+                        request(
+                            op,
+                            json!({"root": self.repo, "id": self.entity, "confirmed": true}),
+                        ),
+                    );
                 }
             }
         });
@@ -1635,30 +2870,50 @@ impl Desktop {
                 self.record_detail = None;
             }
         }
-        if self.can_edit_context() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
+        if self.can_edit_context()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5))
+        {
             self.refresh(ctx);
         }
         // Only wake for health checks while focused, never continuously repaint an idle window.
         let focused = ctx.input(|i| i.focused);
-        if self.auto_live && self.current() == "Agent event stream" && focused && self.busy.is_none()
-            && self.pending.is_none() && !self.installation_open {
+        if self.auto_live
+            && self.current() == "Agent event stream"
+            && focused
+            && self.busy.is_none()
+            && self.pending.is_none()
+            && !self.installation_open
+        {
             if self.last_live.elapsed() >= Duration::from_secs(1) {
                 self.submit(ctx, "Agent event stream".into(), request("event_stream",
                     json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})));
             } else {
-                ctx.request_repaint_after(Duration::from_secs(1).saturating_sub(self.last_live.elapsed()));
+                ctx.request_repaint_after(
+                    Duration::from_secs(1).saturating_sub(self.last_live.elapsed()),
+                );
             }
         }
-        if self.auto_probe && focused && self.busy.is_none() && self.pending.is_none() && !self.installation_open {
+        if self.auto_probe
+            && focused
+            && self.busy.is_none()
+            && self.pending.is_none()
+            && !self.installation_open
+        {
             if self.last_probe.elapsed() >= Duration::from_secs(30) {
                 self.last_probe = Instant::now();
                 self.submit(ctx, "Check service".into(), request("probe", json!({})));
             } else {
-                ctx.request_repaint_after(Duration::from_secs(30).saturating_sub(self.last_probe.elapsed()));
+                ctx.request_repaint_after(
+                    Duration::from_secs(30).saturating_sub(self.last_probe.elapsed()),
+                );
             }
         }
-        if self.auto_log && self.current() == "Service health" && !self.raw_view && focused
-            && self.can_edit_context() {
+        if self.auto_log
+            && self.current() == "Service health"
+            && !self.raw_view
+            && focused
+            && self.can_edit_context()
+        {
             let interval = Duration::from_secs(5);
             if self.last_log.elapsed() >= interval {
                 self.refresh(ctx);
@@ -1674,36 +2929,74 @@ impl Desktop {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Local AI Hub");
                 ui.separator();
-                ui.label(match self.service { Some(true) => "Service online", Some(false) => "Service unreachable — Start Hub", None => "Service status unknown" });
+                ui.label(match self.service {
+                    Some(true) => "Service online",
+                    Some(false) => "Service unreachable — Start Hub",
+                    None => "Service status unknown",
+                });
                 ui.add_enabled_ui(self.can_edit_context(), |ui| {
-                    for (title, action) in [("Start Hub", "start"), ("Stop", "stop"), ("Restart", "restart")] {
-                        if ui.button(title).clicked() { self.lifecycle(ctx, action); }
-                    }
-                    if ui.button("Check status").clicked() { self.submit(ctx, "Check service".into(), request("probe", json!({}))); }
-                    egui::ComboBox::from_id_salt("mode").selected_text(&self.mode).show_ui(ui, |ui| {
-                        for mode in ["active", "gaming", "maintenance", "preprocessing"] {
-                            ui.selectable_value(&mut self.mode, mode.to_owned(), mode);
+                    for (title, action) in [
+                        ("Start Hub", "start"),
+                        ("Stop", "stop"),
+                        ("Restart", "restart"),
+                    ] {
+                        if ui.button(title).clicked() {
+                            self.lifecycle(ctx, action);
                         }
-                    });
-                    if ui.button("Apply mode").clicked() {
-                        self.confirm("Change activity mode", request("mode", json!({"mode": self.mode, "confirmed": true})));
                     }
-                    if ui.button("Installation").clicked() { self.installation_open = true; }
+                    if ui.button("Check status").clicked() {
+                        self.submit(ctx, "Check service".into(), request("probe", json!({})));
+                    }
+                    egui::ComboBox::from_id_salt("mode")
+                        .selected_text(&self.mode)
+                        .show_ui(ui, |ui| {
+                            for mode in ["active", "gaming", "maintenance", "preprocessing"] {
+                                ui.selectable_value(&mut self.mode, mode.to_owned(), mode);
+                            }
+                        });
+                    if ui.button("Apply mode").clicked() {
+                        self.confirm(
+                            "Change activity mode",
+                            request("mode", json!({"mode": self.mode, "confirmed": true})),
+                        );
+                    }
+                    if ui.button("Installation").clicked() {
+                        self.installation_open = true;
+                    }
                 });
             });
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
-                if self.current() == "Agent event stream" { ui.checkbox(&mut self.auto_live, "Follow live SSE while focused"); }
-                if self.current() == "Service health" {
-                    if ui.checkbox(&mut self.auto_log, "Follow log tail while focused").changed() && self.auto_log {
-                        self.last_log = Instant::now() - Duration::from_secs(5);
-                        ctx.request_repaint();
-                    }
+                ui.checkbox(
+                    &mut self.auto_probe,
+                    "Check status automatically while focused",
+                );
+                if self.current() == "Agent event stream" {
+                    ui.checkbox(&mut self.auto_live, "Follow live SSE while focused");
+                }
+                if self.current() == "Service health"
+                    && ui
+                        .checkbox(&mut self.auto_log, "Follow log tail while focused")
+                        .changed()
+                    && self.auto_log
+                {
+                    self.last_log = Instant::now() - Duration::from_secs(5);
+                    ctx.request_repaint();
                 }
                 let label = ui.label("Repository root");
-                let response = ui.add_enabled(self.can_edit_context(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).labelled_by(label.id);
-                if self.can_edit_context() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L)) { response.request_focus(); }
-                if response.changed() { self.reset_scope(); }
+                let response = ui
+                    .add_enabled(
+                        self.can_edit_context(),
+                        egui::TextEdit::singleline(&mut self.repo).desired_width(400.0),
+                    )
+                    .labelled_by(label.id);
+                if self.can_edit_context()
+                    && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L))
+                {
+                    response.request_focus();
+                }
+                if response.changed() {
+                    self.reset_scope();
+                }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -1711,21 +3004,29 @@ impl Desktop {
                 ui.horizontal(|ui| {
                     // A short periodic probe must not start a continuous
                     // animation/repaint loop on otherwise idle desktops.
-                    if label != "Check service" { ui.spinner(); }
+                    if label != "Check service" {
+                        ui.spinner();
+                    }
                     ui.label(format!("{label} — running"));
                 });
+            } else {
+                ui.label(&self.status);
             }
-            else { ui.label(&self.status); }
         });
-        egui::SidePanel::left("navigation").resizable(false).default_width(170.0).show(ctx, |ui| {
-            ui.add_enabled_ui(self.can_edit_context(), |ui| {
-                for (index, (name, _)) in PAGES.iter().enumerate() {
-                    if ui.selectable_label(self.page == index, *name).clicked() && self.page != index {
-                        self.navigate(index, 0);
+        egui::SidePanel::left("navigation")
+            .resizable(false)
+            .default_width(170.0)
+            .show(ctx, |ui| {
+                ui.add_enabled_ui(self.can_edit_context(), |ui| {
+                    for (index, (name, _)) in PAGES.iter().enumerate() {
+                        if ui.selectable_label(self.page == index, *name).clicked()
+                            && self.page != index
+                        {
+                            self.navigate(index, 0);
+                        }
                     }
-                }
+                });
             });
-        });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(PAGES[self.page].0);
             ui.add_enabled_ui(self.can_edit_context(), |ui| {
@@ -2066,37 +3367,69 @@ impl Desktop {
         if let Some(record) = &self.record_detail {
             let mut open = true;
             let can_navigate = self.can_edit_context();
-            egui::Window::new("Record detail").open(&mut open).show(ctx, |ui| {
-                let text = serde_json::to_string_pretty(record).unwrap_or_default();
-                if ui.button("Copy record").clicked() { ui.ctx().copy_text(text.clone()); }
-                if self.current() == "Projects" || self.current() == "Search workspaces" {
-                    if let Some(root) = record["root"].as_str().filter(|r| !r.trim().is_empty()) {
-                        if ui.add_enabled(can_navigate, egui::Button::new("Select repository and inspect configuration")).clicked() {
-                            open_project = Some(root.to_owned());
+            egui::Window::new("Record detail")
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let text = serde_json::to_string_pretty(record).unwrap_or_default();
+                    if ui.button("Copy record").clicked() {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                    if self.current() == "Projects" || self.current() == "Search workspaces" {
+                        if let Some(root) = record["root"].as_str().filter(|r| !r.trim().is_empty())
+                        {
+                            if ui
+                                .add_enabled(
+                                    can_navigate,
+                                    egui::Button::new(
+                                        "Select repository and inspect configuration",
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                open_project = Some(root.to_owned());
+                            }
                         }
                     }
-                }
-                if let Some(id) = linked_trace(record) {
-                    if ui.add_enabled(can_navigate, egui::Button::new("Open linked trace")).clicked() {
-                        open_trace = Some(id.to_owned());
+                    if let Some(id) = linked_trace(record) {
+                        if ui
+                            .add_enabled(can_navigate, egui::Button::new("Open linked trace"))
+                            .clicked()
+                        {
+                            open_trace = Some(id.to_owned());
+                        }
                     }
-                }
-                egui::ScrollArea::both().max_height(500.0).show(ui, |ui| { ui.label(text); });
-            });
-            if !open { self.record_detail = None; }
+                    egui::ScrollArea::both().max_height(500.0).show(ui, |ui| {
+                        ui.label(text);
+                    });
+                });
+            if !open {
+                self.record_detail = None;
+            }
         }
-        if let Some(root) = open_project { self.open_project(ctx, root); }
-        else if let Some(id) = open_trace { self.open_linked_trace(ctx, id); }
+        if let Some(root) = open_project {
+            self.open_project(ctx, root);
+        } else if let Some(id) = open_trace {
+            self.open_linked_trace(ctx, id);
+        }
         if let Some(index) = self.detail {
             let mut open = true;
             if let Some(row) = self.rows.get(index) {
-                egui::Window::new("Field detail").open(&mut open).resizable(true).show(ctx, |ui| {
-                    ui.label(&row.path);
-                    if ui.button("Copy value").clicked() { ui.ctx().copy_text(row.value.clone()); }
-                    egui::ScrollArea::both().show(ui, |ui| { ui.label(&row.value); });
-                });
+                egui::Window::new("Field detail")
+                    .open(&mut open)
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        ui.label(&row.path);
+                        if ui.button("Copy value").clicked() {
+                            ui.ctx().copy_text(row.value.clone());
+                        }
+                        egui::ScrollArea::both().show(ui, |ui| {
+                            ui.label(&row.value);
+                        });
+                    });
             }
-            if !open { self.detail = None; }
+            if !open {
+                self.detail = None;
+            }
         }
         if self.pending.is_some() {
             let mut decision = None;
@@ -2127,7 +3460,9 @@ impl Desktop {
             });
             if let Some(accepted) = decision {
                 if let Some(pending) = self.pending.take() {
-                    if accepted { self.submit(ctx, pending.label, pending.payload); }
+                    if accepted {
+                        self.submit(ctx, pending.label, pending.payload);
+                    }
                 }
             }
         }
@@ -2145,10 +3480,17 @@ impl Desktop {
                 if ui.button("Apply for this session").clicked() { apply = true; }
             });
             if apply {
-                self.install = Install { root: PathBuf::from(&self.root_input),
+                self.install = Install {
+                    root: PathBuf::from(&self.root_input),
                     python: PathBuf::from(&self.python_input),
-                    config: (!self.config_input.trim().is_empty()).then(|| PathBuf::from(&self.config_input)) };
-                self.service = None; self.settings_draft = settings::Draft::default(); self.reset_scope(); self.operator_catalog.clear(); self.repo.clear();
+                    config: (!self.config_input.trim().is_empty())
+                        .then(|| PathBuf::from(&self.config_input)),
+                };
+                self.service = None;
+                self.settings_draft = settings::Draft::default();
+                self.reset_scope();
+                self.operator_catalog.clear();
+                self.repo.clear();
                 self.last_probe = Instant::now() - Duration::from_secs(30);
                 open = false;
             }
@@ -2165,11 +3507,17 @@ impl eframe::App for Desktop {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 760.0]).with_min_inner_size([800.0, 500.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1200.0, 760.0])
+            .with_min_inner_size([800.0, 500.0]),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
-    eframe::run_native("Local AI Hub", options, Box::new(|_cc| Ok(Box::new(Desktop::new()))))
+    eframe::run_native(
+        "Local AI Hub",
+        options,
+        Box::new(|_cc| Ok(Box::new(Desktop::new()))),
+    )
 }
 
 #[cfg(test)]
@@ -2177,8 +3525,10 @@ mod tests {
     use super::*;
     #[test]
     fn scoped_views_are_named_operations() {
-        assert_eq!(view_request("Plan board", "/repo", "plan_1"),
-            json!({"op":"plan_board","args":{"view":"Plan board","root":"/repo","id":"plan_1"}}));
+        assert_eq!(
+            view_request("Plan board", "/repo", "plan_1"),
+            json!({"op":"plan_board","args":{"view":"Plan board","root":"/repo","id":"plan_1"}})
+        );
     }
     #[test]
     fn rows_are_bounded() {
@@ -2203,29 +3553,54 @@ mod tests {
         app.trace_offset = 100;
         app.trace_content_offset = 200;
         app.task_offset = 100;
-        app.operator_fields.insert("task-id".into(), json!("old-task"));
+        app.operator_fields
+            .insert("task-id".into(), json!("old-task"));
         app.snapshot = Some(json!({"old": true}));
-        app.pending = Some(Pending { label: "old operation".into(), payload: json!({}) });
+        app.pending = Some(Pending {
+            label: "old operation".into(),
+            payload: json!({}),
+        });
         assert!(!app.can_edit_context());
         app.reset_scope();
         assert!(app.can_edit_context());
         assert!(app.pending.is_none() && app.snapshot.is_none());
         assert!(app.entity.is_empty() && app.plan_task.is_empty() && app.revision.is_empty());
         assert!(app.memory_scope_id.is_empty() && app.stream_id.is_empty());
-        assert!(app.goal.is_empty() && app.prompt.is_empty() && app.incident_message.is_empty() && app.archive_path.is_empty());
-        assert_eq!((app.history_cursor, app.event_cursor, app.trace_offset, app.trace_content_offset, app.task_offset), (0, 0, 0, 0, 0));
+        assert!(
+            app.goal.is_empty()
+                && app.prompt.is_empty()
+                && app.incident_message.is_empty()
+                && app.archive_path.is_empty()
+        );
+        assert_eq!(
+            (
+                app.history_cursor,
+                app.event_cursor,
+                app.trace_offset,
+                app.trace_content_offset,
+                app.task_offset
+            ),
+            (0, 0, 0, 0, 0)
+        );
         assert!(app.operator_fields.is_empty());
         app.installation_open = true;
         assert!(!app.can_edit_context());
     }
     #[test]
     fn confirmation_includes_exact_mutation_identity_and_excludes_binary_or_secrets() {
-        let payload = request("model_manage", json!({"model":"fixture:7b", "action":"delete",
+        let payload = request(
+            "model_manage",
+            json!({"model":"fixture:7b", "action":"delete",
             "execution_id":"task_a","revision":"rev_1","depends_on_json":"[]",
-            "archive_password":"secret","image":"large-bytes"}));
-        let items: std::collections::BTreeMap<_,_> = confirmation_items(&payload).into_iter().collect();
+            "archive_password":"secret","image":"large-bytes"}),
+        );
+        let items: std::collections::BTreeMap<_, _> =
+            confirmation_items(&payload).into_iter().collect();
         assert_eq!(items.get("model").map(String::as_str), Some("fixture:7b"));
-        assert_eq!(items.get("execution_id").map(String::as_str), Some("task_a"));
+        assert_eq!(
+            items.get("execution_id").map(String::as_str),
+            Some("task_a")
+        );
         assert_eq!(items.get("revision").map(String::as_str), Some("rev_1"));
         assert_eq!(items.get("depends_on_json").map(String::as_str), Some("[]"));
         assert!(!items.contains_key("archive_password") && !items.contains_key("image"));
@@ -2241,12 +3616,18 @@ mod tests {
             for (view, name) in views.iter().enumerate() {
                 app.navigate(page, view);
                 let input = egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 500.0))),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 500.0),
+                    )),
                     ..Default::default()
                 };
                 let output = ctx.run(input, |ctx| app.render(ctx));
                 assert!(!output.shapes.is_empty(), "No shapes rendered for {name}");
-                assert!(app.busy.is_none() && app.receiver.is_none(), "Unexpected adapter for {name}");
+                assert!(
+                    app.busy.is_none() && app.receiver.is_none(),
+                    "Unexpected adapter for {name}"
+                );
                 assert!(app.pending.is_none(), "Unexpected confirmation for {name}");
             }
         }
@@ -2265,7 +3646,13 @@ mod tests {
         app.busy = Some("Service health".into());
         let (tx, rx) = mpsc::channel();
         app.receiver = Some(rx);
-        tx.send(Completed { label: "Service health".into(), result: Err("offline".into()), probe: false, live: false }).unwrap();
+        tx.send(Completed {
+            label: "Service health".into(),
+            result: Err("offline".into()),
+            probe: false,
+            live: false,
+        })
+        .unwrap();
         app.receive();
         assert!(!app.auto_log);
         assert!(app.status.contains("offline"));
@@ -2282,8 +3669,14 @@ mod tests {
             probe: false, live: false,
         }).unwrap();
         app.receive();
-        assert!(app.rows.iter().all(|row| !row.path.contains("password") && !row.value.contains("fixture-secret")));
-        assert_eq!(app.snapshot.as_ref().unwrap()["archive_password"], "fixture-secret");
+        assert!(app
+            .rows
+            .iter()
+            .all(|row| !row.path.contains("password") && !row.value.contains("fixture-secret")));
+        assert_eq!(
+            app.snapshot.as_ref().unwrap()["archive_password"],
+            "fixture-secret"
+        );
         assert!(!app.reveal_trace);
         app.navigate(10, 0);
         assert!(app.snapshot.is_none());
@@ -2296,7 +3689,13 @@ mod tests {
         app.busy = Some("Edit plan task".into());
         let (tx, rx) = mpsc::channel();
         app.receiver = Some(rx);
-        tx.send(Completed { label: "Edit plan task".into(), result: Err("conflict".into()), probe: false, live: false }).unwrap();
+        tx.send(Completed {
+            label: "Edit plan task".into(),
+            result: Err("conflict".into()),
+            probe: false,
+            live: false,
+        })
+        .unwrap();
         app.receive();
         assert!(app.snapshot.is_none() && app.revision.is_empty());
         assert!(app.busy.is_none() && app.receiver.is_none());
@@ -2318,14 +3717,20 @@ mod tests {
         assert!(app.entity.is_empty() && app.memory_record_id.is_empty());
         assert!(app.lease_owner.is_empty() && app.reason.is_empty());
         assert_eq!((app.event_cursor, app.task_offset), (0, 0));
-        app.pending = Some(Pending { label: "pending".into(), payload: json!({}) });
+        app.pending = Some(Pending {
+            label: "pending".into(),
+            payload: json!({}),
+        });
         app.navigate(3, 0);
         assert_eq!(app.current(), "Memory");
         assert!(app.pending.is_some());
     }
     #[test]
     fn trace_links_use_only_explicit_valid_trace_ids() {
-        assert_eq!(linked_trace(&json!({"trace_id":"trace_1-2","request_id":"different"})), Some("trace_1-2"));
+        assert_eq!(
+            linked_trace(&json!({"trace_id":"trace_1-2","request_id":"different"})),
+            Some("trace_1-2")
+        );
         assert_eq!(linked_trace(&json!({"request_id":"req_1"})), None);
         for id in ["", "../config", "a/b", "a?b", "a b", "č"] {
             assert_eq!(linked_trace(&json!({"trace_id":id})), None);
@@ -2335,7 +3740,10 @@ mod tests {
     #[test]
     fn operational_log_filter_is_case_insensitive_and_missing_is_unknown() {
         let response = json!({"lines": ["INFO ready", "ERROR timeout", "error retry"]});
-        assert_eq!(filtered_log_lines(&response, " ERROR ").unwrap(), vec!["ERROR timeout", "error retry"]);
+        assert_eq!(
+            filtered_log_lines(&response, " ERROR ").unwrap(),
+            vec!["ERROR timeout", "error retry"]
+        );
         assert_eq!(filtered_log_lines(&response, "").unwrap().len(), 3);
         assert!(filtered_log_lines(&json!({}), "").is_none());
         assert!(filtered_log_lines(&response, "absent").unwrap().is_empty());
@@ -2352,7 +3760,10 @@ mod tests {
         assert!(!draft.matches("plan_a", "task_a", "rev2"));
         assert!(draft.patch().is_empty());
         draft.edited.insert("next_action".into(), json!("review"));
-        assert_eq!(Value::Object(draft.patch()), json!({"next_action":"review"}));
+        assert_eq!(
+            Value::Object(draft.patch()),
+            json!({"next_action":"review"})
+        );
         assert!(PlanDraft::from_response(&response, "other", "task_a").is_none());
         assert!(PlanDraft::from_response(&response, "plan_a", "missing").is_none());
     }
@@ -2373,16 +3784,21 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod bounded_adapter_tests {
     use super::*;
 
     #[test]
     fn adapter_deadlines_cover_longest_allowed_operations_without_unbounded_probes() {
-        assert_eq!(adapter_timeout(&request("probe", json!({}))), Duration::from_secs(15));
+        assert_eq!(
+            adapter_timeout(&request("probe", json!({}))),
+            Duration::from_secs(15)
+        );
         for op in ["lifecycle", "operator_run", "compare", "bundle_export"] {
-            assert_eq!(adapter_timeout(&request(op, json!({}))), Duration::from_secs(900));
+            assert_eq!(
+                adapter_timeout(&request(op, json!({}))),
+                Duration::from_secs(900)
+            );
         }
         assert!(adapter_timeout(&request("plan_bind_task", json!({}))) > Duration::from_secs(240));
     }
@@ -2399,13 +3815,21 @@ mod bounded_adapter_tests {
     #[test]
     fn adapter_deadline_reaps_unresponsive_child_even_if_stdin_is_blocked() {
         let mut command = Command::new(std::env::current_exe().unwrap());
-        command.args(["--exact", "bounded_adapter_tests::adapter_fixture_child", "--nocapture"])
+        command
+            .args([
+                "--exact",
+                "bounded_adapter_tests::adapter_fixture_child",
+                "--nocapture",
+            ])
             .env("LAH_TEST_HUNG_ADAPTER", "1");
         let started = Instant::now();
         let error = adapter_exchange(&mut command, vec![b'x'; 65_536], Duration::from_millis(250))
             .expect_err("unresponsive child must not succeed");
         assert!(error.contains("deadline exceeded"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(5), "watchdog did not return promptly");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "watchdog did not return promptly"
+        );
     }
 
     #[test]
@@ -2420,7 +3844,10 @@ mod bounded_adapter_tests {
 
     #[test]
     fn exact_limit_and_empty_response_are_not_overflow() {
-        assert_eq!(read_bounded(&b"abc"[..], 3).unwrap(), (b"abc".to_vec(), false));
+        assert_eq!(
+            read_bounded(&b"abc"[..], 3).unwrap(),
+            (b"abc".to_vec(), false)
+        );
         assert_eq!(read_bounded(&b""[..], 0).unwrap(), (Vec::new(), false));
         assert_eq!(read_bounded(&b"x"[..], 0).unwrap(), (Vec::new(), true));
     }

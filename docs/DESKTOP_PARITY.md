@@ -1,8 +1,28 @@
 # Native desktop migration — evidence and parity register
 
 Status: **draft cutover; runtime web UI disconnected, legacy frontend sources and build removed; full desktop parity and verification incomplete. Do not merge as a replacement release.** This is the
-requested feature/verification matrix, not a second project plan. The repository
-plan tool was unavailable in this environment; no plan files were modified.
+requested feature/verification matrix, not a second project plan. The authoritative
+work plan is `.local-ai-hub/plans/plan_pr10_native_desktop.plan.json` and is
+maintained through the Local AI Hub planner API.
+
+## Current local audit — 2026-11-27
+
+- `feat/native-desktop-hub` now contains `origin/master` at `8fa0dbf3` via merge
+  commit `eda8fca1`. The remote PR branch remains at `552b0ab2`; local changes
+  are not pushed yet.
+- Removed the obsolete `hubctl dashboard` alias and the launcher fallback to an
+  unversioned `bin/local-ai-hub-desktop` binary. New installations use the
+  versioned path; development builds use `desktop/target/release`.
+- Versioned installation now requires an explicit version and performs a
+  one-time cleanup of the retired unversioned executable after install.
+- Focused desktop CLI/controller/installer checks: 192 passed. HTTP/IPC and
+  service-update checks: 12 passed, 1 skipped (detached-supervisor acceptance
+  runs only in its explicit Linux CI job). Rust formatting passed; 39 locked
+  Rust unit tests and Clippy with warnings denied passed on Windows x64. The
+  desktop cutover source guard and `git diff --check` passed at this revision.
+- The PR remains a draft. Full dashboard/CLI parity, complete CI, cross-platform
+  interactive runtime, installer/update migration, security/performance review,
+  and release acceptance remain open. No merge-readiness claim is made.
 
 ## Architecture (Rust revision)
 
@@ -14,7 +34,7 @@ dependency license/security review remain release gates.
 
 Build from a trusted Hub checkout with Rust stable and platform OpenGL
 libraries: `cargo build --manifest-path desktop/Cargo.toml --release`.
-Run `python tools/hubctl.py desktop` (the legacy `dashboard` CLI alias opens the same native binary), or run `desktop/target/release/local-ai-hub-desktop` directly from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
+Run `python tools/hubctl.py desktop`, or run `desktop/target/release/local-ai-hub-desktop` directly from the Hub root. Set LOCAL_AI_HUB_ROOT, LOCAL_AI_DESKTOP_PYTHON,
 LOCAL_AI_CONFIG or choose the installation in the UI. Python is still
 required by the existing Hub; it is not used for GUI rendering. The desktop
 executes a fixed adapter script with JSON stdin/stdout and named operations.
@@ -71,7 +91,7 @@ surface or the required future surface, not a completed implementation.
 | `stop` | Stop Hub | Controller present; run focused tests and real CLI/API integration |
 | `restart` | Restart Hub | Controller present; run focused tests and real CLI/API integration |
 | `watch` | Focus-only health and event polling; terminal watch remains CLI-only | Implemented surface (not all flags); real integration and acceptance pending |
-| `desktop` / legacy `dashboard` | Native launcher | No HTTP URL; verify launch and missing binary error |
+| `desktop` | Native launcher | Current entry point; `dashboard` alias removed; verify launch and missing binary error |
 | `service-status` | Operator tools: supervisor status | Implemented surface (not all flags); real integration and acceptance pending |
 | `agent-state` | Tasks/Memory/Incidents plus storage inventory | Implemented surface (not all flags); real integration and acceptance pending |
 | `cleanup` | Maintenance and Operator tools: cleanup, ports, offline database optimization | Implemented surface (not all flags); real integration and acceptance pending |

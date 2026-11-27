@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 def install(binary: Path, root: Path, expected_sha256: str, *, version: str | None = None) -> Path:
     from tools.update_transaction import _has_link_component
+    if version is None:
+        raise ValueError("A version is required for every desktop installation")
     if _has_link_component(root):
         raise ValueError("Installation root contains a link or junction")
     root = root.resolve(strict=True)
@@ -36,11 +38,9 @@ def install(binary: Path, root: Path, expected_sha256: str, *, version: str | No
     name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
     if binary.name != name or not binary.is_file():
         raise ValueError(f"Choose the built {name} for this operating system")
-    destination_dir = root / "bin"
-    if version is not None:
-        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
-            raise ValueError("Invalid installed release version")
-        destination_dir = destination_dir / "desktop" / version
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("Invalid installed release version")
+    destination_dir = root / "bin" / "desktop" / version
     if _has_link_component(destination_dir):
         raise ValueError("Desktop directory contains a link or junction")
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +65,16 @@ def install(binary: Path, root: Path, expected_sha256: str, *, version: str | No
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
+    retired = root / "bin" / name
+    if retired != target and (retired.is_file() or retired.is_symlink()):
+        try:
+            retired.unlink()
+        except PermissionError as exc:
+            print(
+                "Update installed the versioned desktop, but the retired binary is still in use; "
+                f"close it and rerun the update to finish migration: {exc}",
+                file=sys.stderr,
+            )
     return target
 
 
@@ -173,8 +183,8 @@ def main() -> int:
                 parser.error("Official release install requires --version and --revision, without binary or SHA argument")
             target = install_release(args.root, args.version, args.revision)
         else:
-            if args.binary is None or not args.sha256 or args.revision:
-                parser.error("Local install requires binary and --sha256")
+            if args.binary is None or not args.sha256 or not args.version or args.revision:
+                parser.error("Local install requires binary, --sha256 and --version")
             target = install(args.binary, args.root, args.sha256, version=args.version)
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as exc:
         parser.exit(1, f"Desktop installation failed: {exc}\n")

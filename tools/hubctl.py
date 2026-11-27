@@ -282,7 +282,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
@@ -983,12 +983,11 @@ def main() -> int:
         return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
-    if args.action in {"desktop", "dashboard"}:
-        # Compatibility alias opens the native application, never an HTTP UI.
+    if args.action == "desktop":
         name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
         import tomllib
         version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-        candidates = (ROOT / "bin" / "desktop" / version / name, ROOT / "desktop" / "target" / "release" / name, ROOT / "bin" / name)
+        candidates = (ROOT / "bin" / "desktop" / version / name, ROOT / "desktop" / "target" / "release" / name)
         binary = next((path for path in candidates if path.is_file()), None)
         if binary is None:
             print("Desktop binary missing. Build: cargo build --manifest-path desktop/Cargo.toml --release", file=sys.stderr)

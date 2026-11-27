@@ -3,22 +3,47 @@
 use serde_json::{Map, Value};
 
 fn sensitive(key: &str) -> bool {
-    let compact: String = key.chars().filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase).collect();
-    ["password", "passwd", "secret", "apikey", "apitoken", "accesstoken",
-     "refreshtoken", "authorization", "cookie", "privatekey", "clientsecret",
-     "sessiontoken", "credential", "bearer"].iter().any(|word| compact.contains(*word))
+    let compact: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    [
+        "password",
+        "passwd",
+        "secret",
+        "apikey",
+        "apitoken",
+        "accesstoken",
+        "refreshtoken",
+        "authorization",
+        "cookie",
+        "privatekey",
+        "clientsecret",
+        "sessiontoken",
+        "credential",
+        "bearer",
+    ]
+    .iter()
+    .any(|word| compact.contains(*word))
 }
 
 fn sanitize_text(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if lower.contains("-----begin") && (lower.contains("private key") || lower.contains("certificate")) {
+    if lower.contains("-----begin")
+        && (lower.contains("private key") || lower.contains("certificate"))
+    {
         return "[redacted PEM material]".into();
     }
-    if lower.contains("authorization:") || lower.contains("bearer ")
-        || lower.contains("cookie:") || lower.contains("set-cookie:")
-        || lower.contains("password=") || lower.contains("api_key=")
-        || lower.contains("token=") || lower.contains("secret=") {
+    if lower.contains("authorization:")
+        || lower.contains("bearer ")
+        || lower.contains("cookie:")
+        || lower.contains("set-cookie:")
+        || lower.contains("password=")
+        || lower.contains("api_key=")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+    {
         return "[redacted potential credentials]".into();
     }
     text.to_owned()
@@ -26,9 +51,21 @@ fn sanitize_text(text: &str) -> String {
 
 pub fn sanitize(value: &Value) -> Value {
     match value {
-        Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| {
-            (key.clone(), if sensitive(key) { Value::String("[redacted]".into()) } else { sanitize(value) })
-        }).collect::<Map<_, _>>()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        if sensitive(key) {
+                            Value::String("[redacted]".into())
+                        } else {
+                            sanitize(value)
+                        },
+                    )
+                })
+                .collect::<Map<_, _>>(),
+        ),
         Value::Array(items) => Value::Array(items.iter().map(sanitize).collect()),
         Value::String(text) => Value::String(sanitize_text(text)),
         _ => value.clone(),
@@ -39,7 +76,10 @@ pub fn capture_state(value: Option<&Value>, explicit: &str) -> &'static str {
     let explicit = explicit.to_ascii_lowercase();
     if explicit.contains("redact") || value.and_then(Value::as_str) == Some("<redacted>") {
         "Redacted"
-    } else if explicit.contains("not_captured") || explicit.contains("missing") || explicit.contains("unavailable") {
+    } else if explicit.contains("not_captured")
+        || explicit.contains("missing")
+        || explicit.contains("unavailable")
+    {
         "Not captured"
     } else if explicit.contains("empty") {
         "Empty"
@@ -74,17 +114,40 @@ pub struct Trace<'a> {
 
 pub fn trace(value: &Value) -> Option<Trace<'_>> {
     let session = value.get("session")?;
-    let events = value.get("events").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
-    let input = first_event_value(events, &["prompt", "messages", "input", "arguments", "query"])
-        .or_else(|| recorded(session.get("effective_payload")))
-        .or_else(|| recorded(session.get("request")))
-        .or_else(|| first_event_value(events, &["request", "request_body", "payload"]));
+    let events = value
+        .get("events")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let input = first_event_value(
+        events,
+        &["prompt", "messages", "input", "arguments", "query"],
+    )
+    .or_else(|| recorded(session.get("effective_payload")))
+    .or_else(|| recorded(session.get("request")))
+    .or_else(|| first_event_value(events, &["request", "request_body", "payload"]));
     let output = recorded(session.get("output"))
         .or_else(|| recorded(session.pointer("/response/text")))
         .or_else(|| recorded(session.pointer("/response/message/content")))
         .or_else(|| recorded(session.get("response")))
-        .or_else(|| first_event_value(events, &["output", "output_text", "generated_text", "result", "response"]));
-    Some(Trace { session, events, input, output })
+        .or_else(|| {
+            first_event_value(
+                events,
+                &[
+                    "output",
+                    "output_text",
+                    "generated_text",
+                    "result",
+                    "response",
+                ],
+            )
+        });
+    Some(Trace {
+        session,
+        events,
+        input,
+        output,
+    })
 }
 
 #[cfg(test)]
@@ -115,11 +178,16 @@ mod tests {
             "events":[{"event_type":"model_request","payload":{"prompt":"review"}}]});
         let projection = trace(&raw).unwrap();
         assert_eq!(projection.input, Some(&json!("review")));
-        assert_eq!(projection.output.unwrap()["findings"][0]["severity"], "high");
+        assert_eq!(
+            projection.output.unwrap()["findings"][0]["severity"],
+            "high"
+        );
         assert_eq!(projection.events.len(), 1);
     }
     #[test]
     fn embedded_credential_headers_are_not_primary_text() {
-        assert!(!sanitize(&json!("Authorization: Bearer example-secret")).to_string().contains("example-secret"));
+        assert!(!sanitize(&json!("Authorization: Bearer example-secret"))
+            .to_string()
+            .contains("example-secret"));
     }
 }

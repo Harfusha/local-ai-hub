@@ -21,8 +21,8 @@ def files(tmp_path):
 
 def test_install_verifies_and_places_native_binary(files):
     root, binary = files
-    target = install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest())
-    assert target == root / "bin" / binary.name
+    target = install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest(), version="8.2.1")
+    assert target == root / "bin" / "desktop" / "8.2.1" / binary.name
     assert target.read_bytes() == binary.read_bytes()
     if os.name != "nt":
         assert os.access(target, os.X_OK)
@@ -30,10 +30,10 @@ def test_install_verifies_and_places_native_binary(files):
 
 def test_digest_failure_preserves_existing_binary(files):
     root, binary = files
-    target = install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest())
+    target = install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest(), version="8.2.1")
     binary.write_bytes(b"changed")
     with pytest.raises(ValueError, match="verification"):
-        install(binary, root, "0" * 64)
+        install(binary, root, "0" * 64, version="8.2.1")
     assert target.read_bytes() == b"desktop artifact"
     assert list(target.parent.iterdir()) == [target]
 
@@ -46,6 +46,25 @@ def test_versioned_install_does_not_overwrite_previous_running_binary(files):
     new = install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest(), version="8.2.2")
     assert old.read_bytes() == b"desktop artifact"
     assert new.read_bytes() == b"new release"
+
+
+def test_unversioned_install_is_rejected(files):
+    root, binary = files
+    with pytest.raises(ValueError, match="version"):
+        install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest())
+
+
+def test_first_versioned_install_removes_unversioned_binary(files):
+    root, binary = files
+    name = binary.name
+    retired = root / "bin" / name
+    retired.parent.mkdir()
+    retired.write_bytes(b"old desktop")
+
+    installed = install(binary, root, hashlib.sha256(binary.read_bytes()).hexdigest(), version="8.2.2")
+
+    assert installed == root / "bin" / "desktop" / "8.2.2" / name
+    assert not retired.exists()
 
 
 def test_archive_receipt_binds_platform_and_revision():
