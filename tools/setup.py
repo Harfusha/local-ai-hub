@@ -1947,6 +1947,8 @@ def generate_provider_plugin_skills() -> None:
         bundle = SOURCE_ROOT / "plugins" / provider / "local-ai-hub" / "skills"
         for skill in skills:
             source = SOURCE_ROOT / "skills" / skill
+            if not source.is_dir() and skill == "local-ai-orchestrator":
+                source = SOURCE_ROOT / "plugins" / "codex" / "local-ai-hub" / "skills" / skill
             target = bundle / skill
             if not source.is_dir():
                 raise RuntimeError(f"Required provider plugin skill is missing: {source}")
