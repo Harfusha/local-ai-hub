@@ -33,6 +33,9 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
     if execution["progress"]["status"].as_str() == Some("no_recent_verified_evidence") {
         ui.label("No recent verified evidence. Check for blocked or repetitive work.");
     }
+    if execution["progress"]["status"].as_str() == Some("repeated_checkpoint_pattern") {
+        ui.label("Repeated checkpoint pattern without a new receipt; diagnose the loop or hand off.");
+    }
     if execution["progress"]["status"].as_str() == Some("repeated_failed_verification") {
         ui.label("Repeated failed verification. Diagnose the failure before retrying.");
     }
