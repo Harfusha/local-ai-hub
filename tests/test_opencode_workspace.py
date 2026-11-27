@@ -152,17 +152,30 @@ def test_snapshot_rolls_back_prior_file_when_a_later_replace_fails(tmp_path: Pat
     (stage / "a.txt").write_text("agent-a", encoding="utf-8")
     (stage / "b.txt").write_text("agent-b", encoding="utf-8")
 
-    replace = workspace.os.replace
     calls = 0
 
-    def fail_second_replace(source, destination):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("injected second-file failure")
-        replace(source, destination)
+    if os.name == "nt":
+        rename = workspace._rename_handle_relative
 
-    monkeypatch.setattr(workspace.os, "replace", fail_second_replace)
+        def fail_second_rename(file_handle, parent_handle, name):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected second-file failure")
+            rename(file_handle, parent_handle, name)
+
+        monkeypatch.setattr(workspace, "_rename_handle_relative", fail_second_rename)
+    else:
+        replace = workspace.os.replace
+
+        def fail_second_replace(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected second-file failure")
+            replace(source, destination)
+
+        monkeypatch.setattr(workspace.os, "replace", fail_second_replace)
     with pytest.raises(WorkspaceTransferError, match="rolled back"):
         apply_workspace_changes(snapshot)
 
@@ -184,17 +197,30 @@ def test_snapshot_retains_recovery_backup_if_rollback_fails(tmp_path: Path, monk
     (stage / "a.txt").write_text("agent-a", encoding="utf-8")
     (stage / "b.txt").write_text("agent-b", encoding="utf-8")
 
-    replace = workspace.os.replace
     calls = 0
 
-    def fail_commit_and_rollback(source, destination):
-        nonlocal calls
-        calls += 1
-        if calls in {2, 3}:
-            raise OSError("injected commit/rollback failure")
-        replace(source, destination)
+    if os.name == "nt":
+        rename = workspace._rename_handle_relative
 
-    monkeypatch.setattr(workspace.os, "replace", fail_commit_and_rollback)
+        def fail_commit_and_rollback(file_handle, parent_handle, name):
+            nonlocal calls
+            calls += 1
+            if calls in {2, 3}:
+                raise OSError("injected commit/rollback failure")
+            rename(file_handle, parent_handle, name)
+
+        monkeypatch.setattr(workspace, "_rename_handle_relative", fail_commit_and_rollback)
+    else:
+        replace = workspace.os.replace
+
+        def fail_commit_and_rollback(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls in {2, 3}:
+                raise OSError("injected commit/rollback failure")
+            replace(source, destination)
+
+        monkeypatch.setattr(workspace.os, "replace", fail_commit_and_rollback)
     with pytest.raises(WorkspaceTransferError, match="rollback could not be confirmed") as error:
         apply_workspace_changes(snapshot)
 
@@ -382,6 +408,107 @@ def test_workspace_rename_uses_parent_handle_and_never_replaces_existing_entry(t
     assert renamed.read_text(encoding="utf-8") == "source"
     assert occupied.read_text(encoding="utf-8") == "keep"
     assert contender.read_text(encoding="utf-8") == "contender"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative copyback only")
+def test_workspace_copyback_uses_handle_relative_rename_for_edits_additions_and_deletions(
+    tmp_path: Path, monkeypatch,
+):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "edit.txt").write_text("before", encoding="utf-8")
+    (project / "remove.txt").write_text("remove", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "edit.txt").write_text("after", encoding="utf-8")
+    (stage / "remove.txt").unlink()
+    (stage / "new.txt").write_text("new", encoding="utf-8")
+
+    rename = workspace._rename_handle_relative
+    renamed: list[str] = []
+
+    def record_rename(file_handle, parent_handle, name):
+        renamed.append(name)
+        return rename(file_handle, parent_handle, name)
+
+    monkeypatch.setattr(workspace, "_rename_handle_relative", record_rename)
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ("edit.txt", "new.txt", "remove.txt")
+    assert "edit.txt" in renamed and "new.txt" in renamed
+    assert "remove.txt" not in renamed
+    assert (project / "edit.txt").read_text(encoding="utf-8") == "after"
+    assert (project / "new.txt").read_text(encoding="utf-8") == "new"
+    assert not (project / "remove.txt").exists()
+    assert not any(path.name.startswith((".lah-transfer-", ".lah-backup-", ".lah-displaced-"))
+                   for path in project.iterdir())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative copyback only")
+def test_workspace_copyback_preserves_file_created_at_destination_during_commit(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "edit.txt").write_text("before", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "edit.txt").write_text("after", encoding="utf-8")
+    (stage / "new.txt").write_text("agent", encoding="utf-8")
+
+    rename = workspace._rename_handle_relative
+
+    def race_new_destination(file_handle, parent_handle, name):
+        if name == "new.txt":
+            (project / "new.txt").write_text("external", encoding="utf-8")
+        return rename(file_handle, parent_handle, name)
+
+    monkeypatch.setattr(workspace, "_rename_handle_relative", race_new_destination)
+    with pytest.raises(WorkspaceTransferError, match="rolled back"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "edit.txt").read_text(encoding="utf-8") == "before"
+    assert (project / "new.txt").read_text(encoding="utf-8") == "external"
+    assert not any(path.name.startswith((".lah-transfer-", ".lah-backup-", ".lah-displaced-"))
+                   for path in project.iterdir())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative copyback only")
+def test_workspace_copyback_rolls_back_when_old_file_disposition_fails(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "a.txt").write_text("before-a", encoding="utf-8")
+    (project / "b.txt").write_text("before-b", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "a.txt").write_text("after-a", encoding="utf-8")
+    (stage / "b.txt").write_text("after-b", encoding="utf-8")
+
+    set_disposition = workspace._windows_set_delete_disposition
+    calls = 0
+
+    def fail_second_delete(file_handle, delete):
+        nonlocal calls
+        if delete:
+            calls += 1
+            if calls == 2:
+                raise OSError("injected disposition failure")
+        return set_disposition(file_handle, delete)
+
+    monkeypatch.setattr(workspace, "_windows_set_delete_disposition", fail_second_delete)
+    with pytest.raises(WorkspaceTransferError, match="rolled back"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "a.txt").read_text(encoding="utf-8") == "before-a"
+    assert (project / "b.txt").read_text(encoding="utf-8") == "before-b"
+    assert sorted(path.name for path in project.iterdir()) == ["a.txt", "b.txt"]
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")

@@ -62,6 +62,221 @@ class _PreparedChange:
     expected: FileFingerprint | None
 
 
+def _windows_set_delete_disposition(file_handle, delete: bool) -> None:
+    class _Disposition(ctypes.Structure):
+        _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    ntdll = ctypes.WinDLL("ntdll")
+    set_info = ntdll.NtSetInformationFile
+    set_info.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
+        wintypes.DWORD, ctypes.c_int,
+    )
+    set_info.restype = ctypes.c_long
+    status_to_error = ntdll.RtlNtStatusToDosError
+    status_to_error.argtypes = (ctypes.c_long,)
+    status_to_error.restype = wintypes.ULONG
+    info = _Disposition(bool(delete))
+    io_status = _IoStatusBlock()
+    handle = getattr(file_handle, "handle", file_handle)
+    status = set_info(handle, ctypes.byref(io_status), ctypes.byref(info), ctypes.sizeof(info), 13)
+    if status < 0:
+        raise ctypes.WinError(status_to_error(status))
+
+
+def _windows_fingerprint_handle(file_handle) -> FileFingerprint:
+    import win32con
+    import win32file
+
+    win32file.SetFilePointer(file_handle, 0, win32con.FILE_BEGIN)
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        data = win32file.ReadFile(file_handle, 1024 * 1024)[1]
+        if not data:
+            break
+        digest.update(data)
+        size += len(data)
+    return FileFingerprint(size, digest.hexdigest())
+
+
+def _windows_open_regular_file(path: Path):
+    import win32api
+    import win32con
+    import win32file
+
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        observed = None
+    if observed is not None and (_is_reparse(path, observed) or not stat.S_ISREG(observed.st_mode)):
+        raise UnsafeWorkspacePathError(f"workspace file changed type during copyback: {path}")
+    try:
+        handle = win32file.CreateFile(
+            str(path), 0x80000000 | 0x00010000,  # GENERIC_READ | DELETE
+            win32con.FILE_SHARE_READ, None, win32con.OPEN_EXISTING,
+            0x00200000, None,  # OPEN_REPARSE_POINT
+        )
+    except Exception as exc:
+        error_code = getattr(exc, "winerror", None)
+        if error_code is None and exc.args:
+            error_code = exc.args[0]
+        if error_code in {2, 3}:
+            return None
+        raise
+    try:
+        native = win32file.GetFileInformationByHandle(handle)
+        attrs = int(native[0])
+        index = (int(native[8]) << 32) | int(native[9])
+        if (attrs & _REPARSE_POINT or attrs & 0x10
+                or observed is None or index != int(observed.st_ino)):
+            raise UnsafeWorkspacePathError(f"workspace file changed while opening for copyback: {path}")
+        return handle
+    except Exception:
+        win32api.CloseHandle(handle)
+        raise
+
+
+def _windows_open_parent_directory(path: Path):
+    import win32api
+    import win32con
+    import win32file
+
+    observed = path.lstat()
+    handle = win32file.CreateFile(
+        str(path), 0x80 | 0x2,  # FILE_READ_ATTRIBUTES | FILE_ADD_FILE
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+        None, win32con.OPEN_EXISTING, 0x02000000 | 0x00200000, None,
+    )
+    try:
+        native = win32file.GetFileInformationByHandle(handle)
+        attrs = int(native[0])
+        index = (int(native[8]) << 32) | int(native[9])
+        if (_is_reparse(path, observed) or not stat.S_ISDIR(observed.st_mode)
+                or attrs & _REPARSE_POINT or not attrs & 0x10
+                or index != int(observed.st_ino)):
+            raise UnsafeWorkspacePathError(f"workspace parent changed while opening for copyback: {path}")
+        return handle
+    except Exception:
+        win32api.CloseHandle(handle)
+        raise
+
+
+def _apply_windows_prepared_changes(
+    prepared: list[_PreparedChange],
+    staged_hashes: Mapping[str, FileFingerprint],
+    preserve_recovery: set[Path],
+) -> WorkspaceTransferResult:
+    """Commit copyback with pinned file handles and no-replace renames."""
+    import win32api
+
+    states: dict[int, dict[str, object]] = {}
+    changed_paths: list[str] = []
+    committed: list[_PreparedChange] = []
+
+    def close_state_handle(state: dict[str, object], key: str) -> None:
+        handle = state.get(key)
+        if handle is not None:
+            win32api.CloseHandle(handle)
+            state[key] = None
+
+    try:
+        for change in prepared:
+            state: dict[str, object] = {
+                "parent": None, "source": None, "content": None,
+                "source_moved": False, "content_moved": False,
+                "displaced": None, "delete_marked": False,
+            }
+            states[id(change)] = state
+            state["parent"] = _windows_open_parent_directory(change.destination.parent)
+            state["source"] = _windows_open_regular_file(change.destination)
+            if (state["source"] is None) != (change.expected is None):
+                return WorkspaceTransferResult((), (change.relative,))
+            if state["source"] is not None:
+                if _windows_fingerprint_handle(state["source"]) != change.expected:
+                    return WorkspaceTransferResult((), (change.relative,))
+            if change.content_temp is not None:
+                state["content"] = _windows_open_regular_file(change.content_temp)
+                if (state["content"] is None
+                        or _windows_fingerprint_handle(state["content"]) != staged_hashes[change.relative]):
+                    raise UnsafeWorkspacePathError(f"staged file changed during transfer: {change.relative}")
+
+        try:
+            for change in prepared:
+                state = states[id(change)]
+                parent = state["parent"]
+                source_handle = state["source"]
+                content_handle = state["content"]
+                if source_handle is not None:
+                    displaced = change.destination.parent / f".lah-displaced-{uuid.uuid4().hex}.tmp"
+                    state["displaced"] = displaced
+                    _rename_handle_relative(source_handle, parent, displaced.name)
+                    state["source_moved"] = True
+                    committed.append(change)
+                if content_handle is not None:
+                    _rename_handle_relative(content_handle, parent, change.destination.name)
+                    state["content_moved"] = True
+                    if change not in committed:
+                        committed.append(change)
+
+            for change in prepared:
+                state = states[id(change)]
+                if state["source_moved"]:
+                    _windows_set_delete_disposition(state["source"], True)
+                    state["delete_marked"] = True
+        except Exception as exc:
+            recovery_paths: list[str] = []
+            for state in states.values():
+                if state["delete_marked"]:
+                    try:
+                        _windows_set_delete_disposition(state["source"], False)
+                        state["delete_marked"] = False
+                    except Exception:
+                        change = next(item for item in prepared if states[id(item)] is state)
+                        recovery_paths.extend(
+                            str(path) for path in (state["displaced"], change.backup) if path is not None
+                        )
+            for change in reversed(committed):
+                state = states[id(change)]
+                try:
+                    if state["content_moved"]:
+                        _windows_set_delete_disposition(state["content"], True)
+                        close_state_handle(state, "content")
+                        state["content_moved"] = False
+                    if state["source_moved"]:
+                        _rename_handle_relative(state["source"], state["parent"], change.destination.name)
+                        state["source_moved"] = False
+                except Exception:
+                    recovery_paths.extend(
+                        str(path) for path in (state["displaced"] or change.destination, change.backup)
+                        if path is not None
+                    )
+            if recovery_paths:
+                preserve_recovery.update(Path(path) for path in recovery_paths if path)
+                raise WorkspaceTransferError(
+                    "workspace transfer failed and rollback could not be confirmed",
+                    recovery_paths=tuple(dict.fromkeys(recovery_paths)),
+                ) from exc
+            raise WorkspaceTransferError("workspace transfer failed; committed files were rolled back") from exc
+
+        for change in prepared:
+            state = states[id(change)]
+            if state["source_moved"]:
+                close_state_handle(state, "source")
+            changed_paths.append(change.relative)
+        return WorkspaceTransferResult(tuple(sorted(changed_paths, key=str.casefold)), ())
+    finally:
+        for state in states.values():
+            for key in ("content", "source", "parent"):
+                try:
+                    close_state_handle(state, key)
+                except Exception:
+                    pass
+
+
 _REPARSE_POINT = 0x400
 _DEFAULT_MAX_FILES = 100_000
 _DEFAULT_MAX_BYTES = 4 * 1024 * 1024 * 1024
@@ -516,10 +731,10 @@ def _apply_workspace_changes_unlocked(
     if conflicts:
         return WorkspaceTransferResult((), tuple(conflicts))
 
-    # Recheck all affected source paths immediately before mutation. This does
-    # not certify a production-grade Windows path-race boundary; the caller
-    # must retain the AppContainer launch gate until handle-relative access is
-    # verified on the target OS.
+    # This path-based pass rejects ordinary conflicts before preparing writes.
+    # The Windows commit path repeats the check under pinned file handles and
+    # uses handle-relative no-replace renames. The launcher remains gated until
+    # the separate AppContainer, pipe, and token-cleanup path passes E2E.
     for relative in changed:
         current_path = _relative_confined(source, relative)
         staged_path = _relative_confined(stage, relative)
@@ -583,6 +798,9 @@ def _apply_workspace_changes_unlocked(
             current = _fingerprint(change.destination) if info is not None else None
             if current != change.expected:
                 return WorkspaceTransferResult((), (change.relative,))
+
+        if os.name == "nt":
+            return _apply_windows_prepared_changes(prepared, staged_hashes, preserve_recovery)
 
         try:
             for change in prepared:
