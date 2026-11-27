@@ -18,7 +18,7 @@ use std::{
 
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
-    ("Requests", &["Requests", "Active requests", "Scheduler queue", "Scheduler running", "Async jobs", "Work orders", "Trace index", "Endpoint analytics"]),
+    ("Requests", &["Requests", "Active requests", "Scheduler queue", "Scheduler running", "Async jobs", "Work orders", "Trace index", "Endpoint analytics", "Telemetry history"]),
     ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review", "Run history"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
@@ -255,6 +255,8 @@ struct Desktop {
     task_query: String,
     task_target: String,
     history_cursor: i64,
+    telemetry_before: i64,
+    telemetry_limit: i64,
     endpoint_scope: String,
     endpoint_sort: String,
     endpoint_desc: bool,
@@ -299,7 +301,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -442,6 +444,7 @@ impl Desktop {
         self.task_offset = 0;
         self.task_query.clear();
         self.history_cursor = 0;
+        self.telemetry_before = 0;
         self.event_cursor = 0;
         self.trace_cursor = 0;
         self.trace_before = 0;
@@ -452,6 +455,14 @@ impl Desktop {
         self.operator_name.clear();
         self.operator_fields.clear();
         self.filter.clear();
+    }
+    fn open_project(&mut self, ctx: &egui::Context, root: String) {
+        if !self.can_edit_context() { return; }
+        self.reset_scope();
+        self.repo = root;
+        self.page = 4;
+        self.view = PAGES[4].1.iter().position(|view| *view == "Project config").expect("Project config view");
+        self.refresh(ctx);
     }
     fn open_linked_trace(&mut self, ctx: &egui::Context, id: String) {
         if !self.can_edit_context() { return; }
@@ -475,6 +486,8 @@ impl Desktop {
         let data = match view {
             "Updates" => request("update_status", json!({})),
             "Service health" => request("log_tail", json!({"lines": self.log_lines})),
+            "Diagnostics" => request("doctor", json!({})),
+            "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
             "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
             "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
@@ -487,6 +500,31 @@ impl Desktop {
     fn operations(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.page {
             1 => {
+                if self.current() == "Telemetry history" {
+                    ui.small("Installation-wide retained diagnostic events. The search applies to the loaded page only.");
+                    ui.horizontal_wrapped(|ui| {
+                        let previous = self.telemetry_limit;
+                        egui::ComboBox::from_id_salt("telemetry_page_size")
+                            .selected_text(format!("{} rows", self.telemetry_limit)).show_ui(ui, |ui| {
+                                for limit in [50, 100, 250] {
+                                    ui.selectable_value(&mut self.telemetry_limit, limit, format!("{limit} rows"));
+                                }
+                            });
+                        let next = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Telemetry history")
+                            .filter(|v| v["has_more"] == true)
+                            .and_then(|v| v["next_cursor"].as_i64())
+                            .filter(|next| *next > 0 && (self.telemetry_before == 0 || *next < self.telemetry_before));
+                        let newest = ui.button("Newest page").clicked();
+                        let older = ui.add_enabled(next.is_some(), egui::Button::new("Older page")).clicked();
+                        if newest || previous != self.telemetry_limit {
+                            self.telemetry_before = 0; self.clear_response(); self.refresh(ctx);
+                        } else if older {
+                            self.telemetry_before = next.expect("enabled only with cursor");
+                            self.clear_response(); self.refresh(ctx);
+                        }
+                    });
+                    return;
+                }
                 if matches!(self.current(), "Async jobs" | "Work orders") {
                     let async_job = self.current() == "Async jobs";
                     let op = if async_job { "async_job" } else { "work_order" };
@@ -1346,12 +1384,20 @@ impl eframe::App for Desktop {
             });
         });
         let mut open_trace = None;
+        let mut open_project = None;
         if let Some(record) = &self.record_detail {
             let mut open = true;
             let can_navigate = self.can_edit_context();
             egui::Window::new("Record detail").open(&mut open).show(ctx, |ui| {
                 let text = serde_json::to_string_pretty(record).unwrap_or_default();
                 if ui.button("Copy record").clicked() { ui.ctx().copy_text(text.clone()); }
+                if self.current() == "Projects" || self.current() == "Search workspaces" {
+                    if let Some(root) = record["root"].as_str().filter(|r| !r.trim().is_empty()) {
+                        if ui.add_enabled(can_navigate, egui::Button::new("Select repository and inspect configuration")).clicked() {
+                            open_project = Some(root.to_owned());
+                        }
+                    }
+                }
                 if let Some(id) = linked_trace(record) {
                     if ui.add_enabled(can_navigate, egui::Button::new("Open linked trace")).clicked() {
                         open_trace = Some(id.to_owned());
@@ -1361,7 +1407,8 @@ impl eframe::App for Desktop {
             });
             if !open { self.record_detail = None; }
         }
-        if let Some(id) = open_trace { self.open_linked_trace(ctx, id); }
+        if let Some(root) = open_project { self.open_project(ctx, root); }
+        else if let Some(id) = open_trace { self.open_linked_trace(ctx, id); }
         if let Some(index) = self.detail {
             let mut open = true;
             if let Some(row) = self.rows.get(index) {
