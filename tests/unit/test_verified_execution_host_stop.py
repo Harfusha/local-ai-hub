@@ -41,7 +41,7 @@ def test_verified_execution_host_stop_continues_once_for_exact_session(tmp_path,
     transport.close.assert_called_once()
 
 
-@pytest.mark.parametrize("case", ["other_session", "opt_out", "blocked", "scope", "stagnation", "offline", "background"])
+@pytest.mark.parametrize("case", ["other_session", "opt_out", "blocked", "scope", "stagnation", "repeated_failure", "offline", "background"])
 def test_verified_execution_host_stop_does_not_prevent_exit(tmp_path, monkeypatch, case):
     transport, task, execution, payload = _fixture(tmp_path, monkeypatch)
     if case == "other_session":
@@ -54,6 +54,8 @@ def test_verified_execution_host_stop_does_not_prevent_exit(tmp_path, monkeypatc
         execution["scope_check"] = {"complete": False}
     elif case == "stagnation":
         execution["progress"] = {"status": "no_recent_verified_evidence"}
+    elif case == "repeated_failure":
+        execution["progress"] = {"status": "repeated_failed_verification"}
     elif case == "offline":
         transport._online.return_value = False
     elif case == "background":
