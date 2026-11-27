@@ -2351,3 +2351,28 @@ def test_verified_execution_disposition_checkpoint_requires_owner_and_survives_r
     assert result.complete
     assert result.execution["problems"]["rejected_verified"] == 1
     assert task_store.complete(task.task_id, actor="reviewer").status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_checkpoint_loop_is_persisted_and_server_managed(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="review", acceptance_criteria=("a", "b"),
+                     slo_profile={"verified_execution": {}}),
+        ScopeContext(task_id="checkpoint-loop"), task_id="checkpoint-loop",
+    )
+    task_store.claim(task.task_id, "agent", actor="agent")
+    for index in range(8):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(
+            phase="review", next_action="first" if index % 2 else "second",
+        ))
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.execution["progress"]["status"] == "repeated_checkpoint_pattern"
+    with pytest.raises(ValueError, match="progress is server-managed"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+            "_verified_execution_progress": {},
+        }))
+    verifier.record(receipt_for(task.task_id, "a", artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.execution["progress"]["status"] != "repeated_checkpoint_pattern"
