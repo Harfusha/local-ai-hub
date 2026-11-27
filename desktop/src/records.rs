@@ -20,7 +20,7 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Tasks" => (&["/tasks", "/items"], &["task_id", "goal", "status", "updated_at", "root"]),
         "Memory" => (&["/records", "/memory", "/items"], &["key", "scope", "kind", "confidence", "provenance", "created_at", "updated_at"]),
         "Search workspaces" => (&["/workspaces"], &["root", "path", "workspace", "status", "documents", "chunks"]),
-        "Endpoint analytics" => (&["/items"], &["name", "type", "calls", ""success_rate", "p50_ms", "p95_ms", "p99_ms", "status"]),
+        "Endpoint analytics" => (&["/items"], &["name", "type", "calls", "success_rate", "p50_ms", "p95_ms", "p99_ms", "status"]),
         "Incidents" => (&["/incidents", "/items"], &["incident_id", "operation_class", "redacted_message", "status", "created_at"]),
         "Projects" => (&["/projects", "/preprocessing/projects"], &["root", "project", "phase", "phase_progress_pct", "active_detail", "waiting_reason"]),
         "Plans" => (&["/plans", "/items"], &["id", "title", "lifecycle", "file_revision"]),
