@@ -266,6 +266,17 @@ def test_conflict_removes_new_directories_after_workspace_locks_release(tmp_path
     assert not (project / "nested").exists()
 
 
+def test_windows_file_identity_includes_volume_serial():
+    import local_ai_hub.opencode_workspace as workspace
+
+    first = [0, None, None, None, 10, 0, 8, 2, 3, 4]
+    other_volume = [0, None, None, None, 11, 0, 8, 2, 3, 4]
+
+    assert workspace._windows_file_identity(first) == (10, 3, 4)
+    assert workspace._windows_file_identity(other_volume) == (11, 3, 4)
+    assert workspace._windows_file_identity(first) != workspace._windows_file_identity(other_volume)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows directory-share semantics only")
 def test_workspace_tree_lock_prevents_nested_directory_replacement(tmp_path: Path):
     import local_ai_hub.opencode_workspace as workspace
@@ -290,6 +301,41 @@ def test_workspace_tree_lock_prevents_nested_directory_replacement(tmp_path: Pat
     assert nested.is_dir()
     assert created.is_dir()
     assert not replacement.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle identity only")
+def test_workspace_tree_lock_validates_managed_root_handle(tmp_path: Path):
+    import win32api
+    import win32con
+    import win32file
+
+    from local_ai_hub.opencode_workspace import UnsafeWorkspacePathError
+    import local_ai_hub.opencode_workspace as workspace
+
+    stage = tmp_path / "stage"
+    other = tmp_path / "other"
+    stage.mkdir()
+    other.mkdir()
+
+    def open_directory(path):
+        return win32file.CreateFile(
+            str(path), 0x80,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+            None, win32con.OPEN_EXISTING,
+            0x02000000 | 0x00200000, None,
+        )
+
+    stage_handle = open_directory(stage)
+    other_handle = open_directory(other)
+    try:
+        with workspace._lock_workspace_tree(stage, root_handle=stage_handle):
+            pass
+        with pytest.raises(UnsafeWorkspacePathError, match="does not identify"):
+            with workspace._lock_workspace_tree(stage, root_handle=other_handle):
+                pass
+    finally:
+        win32api.CloseHandle(other_handle)
+        win32api.CloseHandle(stage_handle)
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")

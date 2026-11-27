@@ -86,6 +86,13 @@ def _identity(path: Path) -> tuple[int, int]:
     return int(info.st_dev), int(info.st_ino)
 
 
+def _windows_file_identity(info) -> tuple[int, int, int]:
+    """Return the Win32 volume serial and 64-bit file-index fields."""
+    if len(info) < 10:
+        raise ValueError("Win32 file information tuple is incomplete")
+    return int(info[4]), int(info[8]), int(info[9])
+
+
 @contextmanager
 def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
     """Hold each Windows ancestor/directory without delete sharing while walking."""
@@ -139,11 +146,22 @@ def _lock_workspace_tree(root: Path, *, root_handle: int | None = None):
             current = current / part
             if current == root and root_handle is not None:
                 info = current.lstat()
-                native = win32file.GetFileInformationByHandle(root_handle)
-                file_index = (int(native[8]) << 32) | int(native[9])
-                if (int(native[0]) & _REPARSE_POINT or not int(native[0]) & 0x10
-                        or file_index != int(info.st_ino)):
-                    raise UnsafeWorkspacePathError("managed stage handle does not identify the workspace root")
+                expected = win32file.GetFileInformationByHandle(root_handle)
+                path_handle = win32file.CreateFile(
+                    str(current), 0x80,
+                    win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                    None, win32con.OPEN_EXISTING,
+                    0x02000000 | 0x00200000, None,
+                )
+                try:
+                    observed = win32file.GetFileInformationByHandle(path_handle)
+                    if (_is_reparse(current, info) or not stat.S_ISDIR(info.st_mode)
+                            or int(observed[0]) & _REPARSE_POINT or not int(observed[0]) & 0x10
+                            or _windows_file_identity(observed) != _windows_file_identity(expected)
+                            or ((int(observed[8]) << 32) | int(observed[9])) != int(info.st_ino)):
+                        raise UnsafeWorkspacePathError("managed stage handle does not identify the workspace root")
+                finally:
+                    win32api.CloseHandle(path_handle)
                 locked_paths.add(os.path.normcase(os.fspath(Path(os.path.abspath(os.fspath(current))))))
             else:
                 open_directory(current, lock=current == root)
