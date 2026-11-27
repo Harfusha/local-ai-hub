@@ -250,6 +250,26 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         assert listed["result"]["desktop_list_limit"] == 25
         valid = call("plan_validate", root=str(roots[0]), id="plan_desktop")
         assert valid["ok"] and valid["result"]["valid"] is True, valid
+        # A real Agent OS task is bound only to an exact reviewed plan card
+        # with matching criteria and a persisted session. Other roots cannot
+        # bind the task even if they have a same-named plan.
+        execution = call("task_create", root=str(roots[0]), goal="Execute reviewed plan card",
+                         criteria="first\nsecond", session_id="desktop-binding-session", confirmed=True)
+        assert execution["ok"], execution
+        execution_id = execution["result"]["task"]["task_id"]
+        assert execution["result"]["task"]["context"]["session_id"] == "desktop-binding-session"
+        bind_args = dict(root=str(roots[0]), id="plan_desktop", task_id="task_desktop",
+                         execution_id=execution_id, revision=own["result"]["file_revision"])
+        assert call("plan_bind_task", **bind_args)["ok"] is False
+        assert call("plan_bind_task", **{**bind_args, "root": str(roots[1])}, confirmed=True)["ok"] is False
+        assert call("plan_bind_task", **{**bind_args, "revision": revision}, confirmed=True)["ok"] is False
+        bound = call("plan_bind_task", **bind_args, confirmed=True)
+        assert bound["ok"], bound
+        assert bound["result"]["task_id"] == execution_id
+        assert bound["result"]["plan_task_id"] == "task_desktop"
+        assert bound["result"]["session_id"] == "desktop-binding-session"
+        own = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        assert own["ok"] and own["result"]["file_revision"] == bound["result"]["file_revision"]
         # Metadata and dependencies use the canonical revision CAS, with
         # server-side dependency/cycle validation and isolation.
         initial_revision = own["result"]["file_revision"]
