@@ -472,6 +472,7 @@ def _preserve_checkpoint_memory_state(
     allow_server_memory_refresh: bool = False,
     allow_server_work_update: bool = False,
     allow_server_execution_update: bool = False,
+    allow_server_contract_update: bool = False,
 ) -> TaskCheckpoint:
     if not allow_server_memory_refresh:
         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
@@ -481,6 +482,16 @@ def _preserve_checkpoint_memory_state(
     if PROBLEM_REPORT_KEY in merged_state_data or PROBLEM_DISPOSITION_KEY in merged_state_data:
         raise ValueError("execution problem commands must use task_checkpoint")
     from .execution_progress import PROGRESS_STATE_KEY
+    from .execution_steering import GRAPH_REVISION_KEY
+
+    if GRAPH_REVISION_KEY in merged_state_data:
+        raise ValueError("graph revision must use standalone task_checkpoint")
+    if not allow_server_contract_update:
+        for key in ("contract_revision", "contract_history"):
+            if key in merged_state_data and merged_state_data[key] != current_state_data.get(key):
+                raise ValueError("contract history is server-managed")
+            if key in current_state_data:
+                merged_state_data[key] = current_state_data[key]
 
     if not allow_server_execution_update:
         for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY):
