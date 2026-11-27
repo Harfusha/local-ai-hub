@@ -95,6 +95,7 @@ jobs:
           tests/test_change_ledger.py
           tests/test_change_plan_projection.py
           tests/test_change_task_context.py
+          tests/test_mcp_wire_contract.py
       - name: Synthetic Git change context transport benchmark
         run: python tools/benchmark_git_change_context.py --files 6 --lines 40
       - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills

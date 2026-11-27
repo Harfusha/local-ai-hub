@@ -768,20 +768,31 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
             rejection = {"success": False, "error": "max_response_tokens too small",
                          "next_action": "request_larger_response_budget",
                          "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True}}
-            # JSON text alone is a supported MCP result; avoid paying twice
-            # for the mandatory recovery instruction at the 128-token floor.
-            for structured_result in (True, False):
-                for _ in range(16):
-                    returned = services_module.json_tokens(
-                        services_module._mcp_wire_view(rejection, structured=structured_result))
-                    rejection["response_budget"]["returned_tokens"] = returned
+            candidates = [rejection]
+            if source_pointer:
+                candidates.insert(0, {
+                    "success": False, "complete": False, "partial": True,
+                    "error": "compiled context requires artifact retrieval",
+                    "next_action": "read_task_context_artifact",
+                    "task_context_artifact_id": source_pointer,
+                    "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "truncated": True},
+                })
+            # Prioritize exact recoverable identity; only reject when even
+            # text-only delivery of the pointer would exceed the budget.
+            for candidate in candidates:
+                for structured_result in (True, False):
+                    for _ in range(16):
+                        returned = services_module.json_tokens(
+                            services_module._mcp_wire_view(candidate, structured=structured_result))
+                        candidate["response_budget"]["returned_tokens"] = returned
+                        if services_module.json_tokens(
+                                services_module._mcp_wire_view(candidate, structured=structured_result)) == returned:
+                            break
                     if services_module.json_tokens(
-                            services_module._mcp_wire_view(rejection, structured=structured_result)) == returned:
-                        break
-                if returned <= requested:
-                    return ([services_module.mcp_types.TextContent(
-                        type="text", text=services_module.json_dumps(rejection))],
-                            rejection if structured_result else None)
+                            services_module._mcp_wire_view(candidate, structured=structured_result)) <= requested:
+                        return ([services_module.mcp_types.TextContent(
+                            type="text", text=services_module.json_dumps(candidate))],
+                                candidate if structured_result else None)
     if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
             and isinstance(value, dict) and value.get("success") is True):
         try:
@@ -868,6 +879,9 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
                 and arguments["max_response_tokens"] > 0
                 and isinstance(structured.get("response_budget"), dict)):
             safe["response_budget"] = services_module.copy.deepcopy(structured["response_budget"])
+            for key in ("next_action", "task_context_artifact_id"):
+                if isinstance(structured.get(key), str):
+                    safe[key] = structured[key]
     if safe == structured:
         return contents, structured
     try:

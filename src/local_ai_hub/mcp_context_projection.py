@@ -182,6 +182,14 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
                 return services_module._context_input_error("response budget metadata exceeds max_response_tokens")
         pointer = safe_value.get("task_context_artifact_id")
         if isinstance(pointer, str) and final.get("task_context_artifact_id") != pointer:
+            recovery = {
+                "success": False, "complete": False, "partial": True,
+                "error": "compiled context requires artifact retrieval",
+                "next_action": "read_task_context_artifact",
+                "task_context_artifact_id": pointer,
+            }
+            if services_module.json_tokens(recovery) <= requested:
+                return recovery
             return {
                 "success": False, "error": "max_response_tokens too small",
                 "next_action": "request_larger_response_budget",
