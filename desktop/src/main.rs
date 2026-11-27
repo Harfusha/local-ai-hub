@@ -255,6 +255,9 @@ struct Desktop {
     trace_content_field: String,
     trace_content_offset: i64,
     task_offset: i64,
+    task_back: Vec<i64>,
+    task_limit: i64,
+    task_status: String,
     task_query: String,
     task_target: String,
     history_cursor: i64,
@@ -308,7 +311,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -484,6 +487,8 @@ impl Desktop {
         self.lease_owner.clear();
         self.stream_id.clear();
         self.task_offset = 0;
+        self.task_back.clear();
+        self.task_status.clear();
         self.task_query.clear();
         self.history_cursor = 0;
         self.telemetry_before = 0;
@@ -570,7 +575,7 @@ impl Desktop {
             "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
             "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
-            "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
+            "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "limit": self.task_limit, "status": self.task_status, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
             "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
             _ => { let mut payload = view_request(view, &self.repo, &self.entity); payload["args"]["period"] = json!(self.metrics_period); payload },
@@ -786,15 +791,39 @@ impl Desktop {
                 }
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Server-side task search");
-                    if ui.text_edit_singleline(&mut self.task_query).changed() { self.task_offset = 0; }
-                    if ui.button("Search tasks").clicked() { self.task_offset = 0; self.refresh(ctx); }
-                    if ui.add_enabled(self.task_offset >= 100, egui::Button::new("Previous 100")).clicked() {
-                        self.task_offset = self.task_offset.saturating_sub(100); self.refresh(ctx);
+                    let query_changed = ui.text_edit_singleline(&mut self.task_query).changed();
+                    let previous_status = self.task_status.clone();
+                    let previous_limit = self.task_limit;
+                    egui::ComboBox::from_id_salt("task_status_filter")
+                        .selected_text(if self.task_status.is_empty() { "All states" } else { &self.task_status }).show_ui(ui, |ui| {
+                            for state in ["", "draft", "planned", "active", "verifying", "completed", "waiting", "blocked", "failed", "cancelled", "abandoned"] {
+                                ui.selectable_value(&mut self.task_status, state.into(), if state.is_empty() { "All states" } else { state });
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("task_page_size").selected_text(format!("{} rows", self.task_limit)).show_ui(ui, |ui| {
+                        for size in [25, 50, 100, 250] { ui.selectable_value(&mut self.task_limit, size, format!("{size} rows")); }
+                    });
+                    if query_changed || previous_status != self.task_status || previous_limit != self.task_limit {
+                        self.task_offset = 0; self.task_back.clear(); self.clear_response();
                     }
-                    let more = self.snapshot_view == self.current() && self.snapshot.as_ref()
-                        .is_some_and(|v| v["has_more"].as_bool().unwrap_or_else(|| v["tasks"].as_array().is_some_and(|a| a.len() == 100)));
-                    if ui.add_enabled(more, egui::Button::new("Next 100")).clicked() {
-                        self.task_offset = (self.task_offset + 100).min(i32::MAX as i64); self.refresh(ctx);
+                    if ui.button("Search tasks").clicked() {
+                        self.task_offset = 0; self.task_back.clear(); self.refresh(ctx);
+                    }
+                    let next = self.snapshot.as_ref().filter(|_| self.snapshot_view == self.current())
+                        .filter(|v| v["has_more"] == true)
+                        .and_then(|v| v["next_offset"].as_i64())
+                        .filter(|next| *next > self.task_offset);
+                    if ui.add_enabled(!self.task_back.is_empty(), egui::Button::new("Previous page")).clicked() {
+                        self.task_offset = self.task_back.pop().expect("enabled only with history");
+                        self.clear_response(); self.refresh(ctx);
+                    }
+                    if ui.add_enabled(next.is_some() && self.task_back.len() < 500, egui::Button::new("Next page")).clicked() {
+                        self.task_back.push(self.task_offset);
+                        self.task_offset = next.expect("enabled only with advancing server cursor");
+                        self.clear_response(); self.refresh(ctx);
+                    }
+                    if self.snapshot_view == self.current() && self.snapshot.as_ref().is_some_and(|v| v["query_truncated"] == true) {
+                        ui.colored_label(ui.visuals().warn_fg_color, "Incomplete bounded search; refine filters.");
                     }
                     ui.label(format!("Offset {}", self.task_offset));
                 });
