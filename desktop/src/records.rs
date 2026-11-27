@@ -9,6 +9,8 @@ pub struct Records<'a> {
 pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
     let (paths, columns): (&[&str], &[&str]) = match view {
         "Requests" => (&["/observability/recent_http"], &["request_id", "project", "agent", "action", "status_code", "duration_ms", "error_type"]),
+        "Telemetry history" => (&["/timeline"], &["id", "timestamp", "event_type", "agent", "action", "duration_ms", "success", "route", "stage", "error_type"]),
+        "Diagnostics" => (&["/checks"], &["component", "status", "detail"]),
         "Active requests" => (&["/observability/active_requests"], &["request_id", "agent", "action", "project", "duration_ms", "state"]),
         "Scheduler queue" => (&["/scheduler/pending_jobs"], &["job_id", "state", "model", "source", "agent", "wait_ms", "wait_reason"]),
         "Scheduler running" => (&["/scheduler/inflight_jobs"], &["job_id", "state", "model", "source", "agent", "wait_ms", "service_ms"]),
