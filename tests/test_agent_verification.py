@@ -2278,3 +2278,35 @@ def test_verified_execution_problem_requires_separate_confirmation(stores):
     assert verifier.completion(task.task_id).complete
     assert verifier.completion(task.task_id).execution["problems"]["resolved"] == 1
     assert task_store.complete(task.task_id).status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_distinct_confirmation_after_task_adoption(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="repair and review", acceptance_criteria=("repair", "review"),
+            slo_profile={"verified_execution": {}},
+        ),
+        ScopeContext(task_id="distinct-confirmation"),
+        task_id="distinct-confirmation",
+    )
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {
+            "id": "issue", "title": "mismatch", "criterion": "repair",
+            "resolution_criterion": "review", "require_distinct_owner": True,
+        },
+    }))
+    verifier.record(receipt_for(task.task_id, "repair", artifact_store=verifier.artifact_store))
+    verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    blocked = verifier.completion(task.task_id)
+    assert not blocked.complete
+    assert blocked.execution["problems"]["open_preview"][0]["resolution_status"] == "awaiting_distinct_owner"
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    task_store.claim(task.task_id, "reviewer", actor="reviewer")
+    verifier.record(receipt_for(task.task_id, "review", owner="reviewer",
+                                artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.complete
+    assert result.execution["problems"]["resolved"] == 1
+    assert task_store.complete(task.task_id, actor="reviewer").status is TaskStatus.COMPLETED
