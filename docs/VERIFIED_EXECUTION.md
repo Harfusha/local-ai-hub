@@ -495,3 +495,18 @@ Explicit source previews now also support Git change inventories, provided the
 resource still exists in the independently checked repository source inventory
 and satisfies the existing project policy, root and regular-file fences.
 Deleted or excluded paths do not receive source previews.
+
+
+### Explicit historical problem sharing
+
+A report can include `"share_repository": true` to allow its title and exact
+criterion to appear as a historical lead in another task. The default is
+private. Request `execution_related` in context compilation to retrieve at most
+eight deduplicated leads from the latest 32 tasks. The current task and the
+source task must share the exact authorized checkout root and repository,
+clone, worktree and branch identities; task-only context never includes these
+leads. Only overlapping obligation names are selected. Artifact references,
+disposition reasons and private checkpoint data are not shared. Leads are
+explicitly marked historical and unverified and never count as receipts or
+alter the completion gate. Publication is local to the Hub state store;
+Git-backed team publication is not implemented by this mechanism.
