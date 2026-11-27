@@ -46,7 +46,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux system libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils xauth libgl1-mesa-dri libegl-mesa0
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxkbcommon-x11-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils xauth libgl1-mesa-dri libegl-mesa0
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Package verified portable desktop
