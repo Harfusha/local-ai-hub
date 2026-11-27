@@ -768,6 +768,27 @@ impl Desktop {
                 });
                 ui.collapsing("Ordered staged commit sequence", |ui| {
                     ui.small("Use the exact staged paths, revision and tree above. Preview first. Run exact-tree checks through hubctl sequence-verify, then publish here with the same manifest. Desktop never executes supplied verification commands.");
+                    if ui.button("Suggest sequence from staged changes").clicked() {
+                        self.submit(ctx, "Sequence suggestion".into(), request("change_transaction", json!({
+                            "action": "sequence-suggest", "root": self.repo
+                        })));
+                    }
+                    if ui.button("Load displayed suggestion into editor").clicked() {
+                        if let Some(value) = self.snapshot.as_ref() {
+                            if let (Some(sequence), Some(paths), Some(revision), Some(tree)) = (
+                                value["sequence"].as_array(), value["selected_paths"].as_array(),
+                                value["observed_change_set_id"].as_str(), value["tree_oid"].as_str()
+                            ) {
+                                if let Ok(record) = serde_json::to_string_pretty(sequence) {
+                                    self.change_sequence = record;
+                                    self.change_paths = paths.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+                                    self.change_revision = revision.into();
+                                    self.change_tree = tree.into();
+                                    self.change_preview_digest.clear();
+                                }
+                            }
+                        }
+                    }
                     ui.label("Ordered sequence JSON (array of paths and message objects)");
                     if ui.text_edit_multiline(&mut self.change_sequence).changed() {
                         self.change_preview_digest.clear();
