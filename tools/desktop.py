@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 from contextlib import closing
 import json
 import http.client
@@ -620,14 +621,20 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             if connection is not None:
                 connection.close()
             client.close()
-    if op == "vision_review":
-        if args.get("confirmed") is not True:
+    if op in {"vision_inspect", "vision_review"}:
+        if op == "vision_review" and args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
-        prompt = text_field(args, "prompt", 12000)
-        file = Path(text_field(args, "file", 4096)).expanduser()
-        if not file.is_file() or file.stat().st_size > 8 * 1024 * 1024:
+        selected = text_field(args, "file", 4096)
+        file = Path(selected).expanduser()
+        if not file.is_file():
             raise ValueError("Choose an existing PNG or JPEG of at most 8 MiB")
-        with file.open("rb") as source:
+        # Check the opened descriptor, not only the path. Nonblocking open on
+        # POSIX avoids hanging if a regular file is replaced by a FIFO.
+        fd = os.open(file, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
+                raise ValueError("Choose an existing PNG or JPEG of at most 8 MiB")
             raw = source.read(8 * 1024 * 1024 + 1)
         if len(raw) > 8 * 1024 * 1024:
             raise ValueError("Image exceeds 8 MiB")
@@ -635,6 +642,14 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "")
         if not mime:
             raise ValueError("Unsupported image format; choose PNG or JPEG")
+        digest = hashlib.sha256(raw).hexdigest()
+        if op == "vision_inspect":
+            # Local-only receipt: no image bytes or inference.
+            return {"success": True, "file": selected, "image_sha256": digest,
+                    "mime": mime, "size_bytes": len(raw)}
+        prompt = text_field(args, "prompt", 12000)
+        if args.get("image_sha256") != digest:
+            raise ValueError("Image changed or was not inspected; inspect the file again")
         image = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
         return checked_post(control, "/api/vision/review", {"prompt": prompt, "source": "upload",
                             "image": image}, timeout=360.0)

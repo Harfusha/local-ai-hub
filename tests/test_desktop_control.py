@@ -1128,3 +1128,47 @@ def test_instruction_manifest_rejects_foreign_scope_and_modified_candidate(tmp_p
     with pytest.raises(ValueError, match="contents changed"):
         reviewed_instruction_manifest(manifest, repository_root=root, stage_root=stage)
     assert source.read_bytes() == original.encode("utf-8")
+
+
+def test_vision_inspection_is_local_and_binds_exact_uploaded_bytes(tmp_path):
+    import hashlib
+    import base64
+
+    image = tmp_path / "image.png"
+    raw = b"\x89PNG\r\n\x1a\nfixture"
+    image.write_bytes(raw)
+    control = MagicMock()
+    args = {"file": str(image), "prompt": "Describe"}
+    with patch.object(desktop, "checked_post") as post:
+        receipt = desktop.dispatch(control, {"op": "vision_inspect", "args": args})
+        assert receipt == {"success": True, "file": str(image),
+                           "image_sha256": hashlib.sha256(raw).hexdigest(),
+                           "mime": "image/png", "size_bytes": len(raw)}
+        post.assert_not_called()
+        with pytest.raises(ValueError, match="confirmation"):
+            desktop.dispatch(control, {"op": "vision_review", "args": {
+                **args, "image_sha256": receipt["image_sha256"]}})
+        with pytest.raises(ValueError, match="not inspected"):
+            desktop.dispatch(control, {"op": "vision_review", "args": {
+                **args, "confirmed": True}})
+        image.write_bytes(raw + b"changed")
+        with pytest.raises(ValueError, match="Image changed"):
+            desktop.dispatch(control, {"op": "vision_review", "args": {
+                **args, "image_sha256": receipt["image_sha256"], "confirmed": True}})
+        post.assert_not_called()
+        image.write_bytes(raw)
+        desktop.dispatch(control, {"op": "vision_review", "args": {
+            **args, "image_sha256": receipt["image_sha256"], "confirmed": True}})
+        post.assert_called_once_with(control, "/api/vision/review", {
+            "prompt": "Describe", "source": "upload",
+            "image": "data:image/png;base64," + base64.b64encode(raw).decode("ascii")}, timeout=360.0)
+
+
+def test_vision_inspection_rejects_large_file_without_contacting_hub(tmp_path):
+    image = tmp_path / "large.png"
+    with image.open("wb") as target:
+        target.truncate(8 * 1024 * 1024 + 1)
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="8 MiB"):
+            desktop.dispatch(MagicMock(), {"op": "vision_inspect", "args": {"file": str(image)}})
+        post.assert_not_called()

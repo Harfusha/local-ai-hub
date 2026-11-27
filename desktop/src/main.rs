@@ -42,7 +42,7 @@ fn adapter_timeout(request: &Value) -> Duration {
     let seconds = match request["op"].as_str().unwrap_or("") {
         "probe" => 15,
         "read" | "log_tail" | "timeline_page" | "trace_page" | "task_page" |
-        "event_page" | "event_stream" | "operator_catalog" => 60,
+        "event_page" | "event_stream" | "operator_catalog" | "vision_inspect" => 60,
         "vision_review" => 450,
         "lifecycle" | "operator_run" | "compare" | "bundle_import" |
         "bundle_export" | "diagnostics_export" | "model_manage" => 900,
@@ -228,7 +228,7 @@ fn request(op: &str, args: Value) -> Value { json!({"op": op, "args": args}) }
 fn confirmation_items(payload: &Value) -> Vec<(String, String)> {
     let args = &payload["args"];
     [
-        "root", "id", "task_id", "execution_id", "action", "file", "revision", "version", "manifest", "manifest_sha256",
+        "root", "id", "task_id", "execution_id", "action", "file", "revision", "version", "manifest", "manifest_sha256", "image_sha256",
         "key", "status", "scope", "kind", "name", "model", "mode", "stream", "session_id",
         "record_id", "owner", "clone_id", "worktree_id", "branch", "global", "purge", "capacity",
         "title", "description", "criteria", "next_action", "accountable_role", "blocker",
@@ -968,9 +968,29 @@ impl Desktop {
                     ui.text_edit_singleline(&mut self.vision_path);
                     ui.label("Review prompt");
                     ui.text_edit_multiline(&mut self.prompt);
-                    if ui.button("Run vision review").clicked() {
-                        self.confirm("Run vision review", request("vision_review",
-                            json!({"file": self.vision_path, "prompt": self.prompt, "confirmed": true})));
+                    if ui.add_enabled(!self.vision_path.trim().is_empty(), egui::Button::new("Inspect image locally")).clicked() {
+                        self.clear_response();
+                        self.submit(ctx, "Image inspection".into(), request("vision_inspect",
+                            json!({"file": self.vision_path})));
+                    }
+                    let digest = self.snapshot.as_ref()
+                        .filter(|v| self.snapshot_view == "Image inspection" && v["success"] == true
+                            && v["file"].as_str() == Some(self.vision_path.trim()))
+                        .and_then(|v| v["image_sha256"].as_str())
+                        .filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .map(str::to_owned);
+                    if let Some(ref value) = digest {
+                        ui.small(format!("Reviewed SHA-256: {value}"));
+                    } else {
+                        ui.small("Inspect the selected file before authorizing transmission.");
+                    }
+                    if ui.add_enabled(digest.is_some() && !self.prompt.trim().is_empty(),
+                        egui::Button::new("Run vision review")).clicked() {
+                        if let Some(digest) = digest {
+                            self.confirm("Send inspected image to configured vision route", request("vision_review",
+                                json!({"file": self.vision_path, "image_sha256": digest,
+                                    "prompt": self.prompt, "confirmed": true})));
+                        }
                     }
                     return;
                 }
