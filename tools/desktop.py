@@ -454,15 +454,30 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         query = args.get("query", "")
         if not isinstance(query, str) or len(query) > 4096:
             raise ValueError("Invalid task query")
+        from local_ai_hub.agent_tasks import TaskStatus
+        status = args.get("status", "")
+        if type(status) is not str or (status and status not in {item.value for item in TaskStatus}):
+            raise ValueError("Invalid task status filter")
+        limit = args.get("limit", 100)
+        if type(limit) is not int or limit not in (25, 50, 100, 250):
+            raise ValueError("Invalid task page size")
         client = control._client()
         try:
             if not client._online(timeout=2.0):
                 raise RuntimeError("Hub is not reachable.")
             result = client.get("/api/agent-state/tasks?" + urlencode({
-                "root": root, "limit": 100, "offset": offset, "include_stale": "true", "query": query
+                "root": root, "limit": limit, "offset": offset, "include_stale": "true", "query": query,
+                **({"status": status} if status else {}),
             }), timeout=15.0, requires_heavy_work=False)
             if result.get("success") is not True:
                 raise RuntimeError(str(result.get("error") or "Task page unavailable"))
+            rows, more, next_offset = result.get("tasks"), result.get("has_more"), result.get("next_offset")
+            if (not isinstance(rows, list) or len(rows) > limit or type(more) is not bool
+                    or type(next_offset) is not int or not offset <= next_offset <= (1 << 31) - 1
+                    or result.get("offset") != offset or result.get("limit") != limit):
+                raise RuntimeError("Malformed task page")
+            # Incomplete bounded scans can report has_more but make no progress.
+            # Preserve that evidence without looping or guessing an offset.
             return result
         finally:
             client.close()
