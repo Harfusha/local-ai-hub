@@ -102,6 +102,7 @@ def summarize_facts(
             continue
         changes.append({"symbol": key[1], "types": [change], "fact_kind": key[0]})
     imports, imports_truncated = import_candidates(path, after)
+    imports_before, before_truncated = import_candidates(path, before)
     declarations = sorted({name for kind, name in new if kind in {"php_class", "php_trait", "php_interface", "php_enum"}})
     return {
         "status": "observed", "method": "source_fact_delta_v1",
@@ -112,6 +113,7 @@ def summarize_facts(
         "fact_coverage_partial": old_truncated or new_truncated or bool(ambiguous),
         "ambiguous_fact_identities": ambiguous,
         "imports_after": imports, "imports_truncated": imports_truncated,
+        "imports_before": imports_before, "imports_before_truncated": before_truncated,
         "declarations_after": declarations[:32], "declarations_truncated": len(declarations) > 32,
         "behavior_equivalence_proven": False,
     }
