@@ -87,3 +87,35 @@ def test_reject_cycles_across_multiple_confirmation_reports():
                            criteria=("a", "b"), receipt_ids={}, reporter="agent", now=10)
     with pytest.raises(ValueError, match="prerequisite"):
         validate_resolution_order({"criterion": "b", "resolution_criterion": "a"}, {}, state)
+
+
+def test_distinct_owner_confirmation_is_optional_and_requires_valid_receipts():
+    report = {"id": "issue", "title": "mismatch", "criterion": "repair",
+              "resolution_criterion": "verify", "require_distinct_owner": True}
+    state = record_problem({}, report, criteria=("repair", "verify"), receipt_ids={},
+                           reporter="implementer", now=10)
+    repair = SimpleNamespace(receipt_id="repair", evidence_id="repair-proof",
+                             observed_at=12, owner="implementer")
+    for owner in ("", "implementer"):
+        confirmation = SimpleNamespace(receipt_id="verify", evidence_id="verify-proof",
+                                       observed_at=13, owner=owner)
+        result = project_problems(state, satisfied=("repair", "verify"),
+                                  receipts={"repair": repair, "verify": confirmation})
+        assert result["blocking_open"] == 1
+        assert result["open_preview"][0]["resolution_status"] == "awaiting_distinct_owner"
+    confirmation = SimpleNamespace(receipt_id="verify", evidence_id="verify-proof",
+                                   observed_at=13, owner="reviewer")
+    assert project_problems(state, satisfied=("repair", "verify"),
+                            receipts={"repair": repair, "verify": confirmation})["resolved"] == 1
+    assert project_problems(state, satisfied=("repair",),
+                            receipts={"repair": repair, "verify": confirmation})["blocking_open"] == 1
+
+
+@pytest.mark.parametrize("fields", [
+    {"require_distinct_owner": True},
+    {"require_distinct_owner": "true", "resolution_criterion": "verify"},
+])
+def test_invalid_distinct_owner_confirmation(fields):
+    with pytest.raises(ValueError, match="distinct owner"):
+        record_problem({}, {"id": "issue", "title": "issue", "criterion": "repair", **fields},
+                       criteria=("repair", "verify"), receipt_ids={}, reporter="agent", now=10)
