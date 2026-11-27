@@ -17,7 +17,7 @@ MAX_PROBLEMS = 64
 
 
 def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
-    if type(raw) is not dict or set(raw) - {"id", "title", "criterion", "blocking", "evidence_ids", "resolution_criterion"}:
+    if type(raw) is not dict or set(raw) - {"id", "title", "criterion", "blocking", "evidence_ids", "resolution_criterion", "require_distinct_owner"}:
         raise ValueError("invalid execution problem report")
     problem_id = _canonical(raw.get("id"), "problem id", 80)
     title = _canonical(raw.get("title"), "problem title", 240)
@@ -32,6 +32,9 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
             (type(resolution) is not str or not resolution or not criterion
              or resolution == criterion or resolution not in criteria)):
         raise ValueError("resolution criterion must be a distinct current acceptance criterion")
+    distinct_owner = raw.get("require_distinct_owner", False)
+    if type(distinct_owner) is not bool or (distinct_owner and not resolution):
+        raise ValueError("distinct owner confirmation requires a resolution criterion")
     evidence_ids = raw.get("evidence_ids", [])
     if type(evidence_ids) is not list or len(evidence_ids) > 8:
         raise ValueError("problem evidence references must be a bounded list")
@@ -43,6 +46,7 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
         "id": problem_id, "title": title, "criterion": criterion,
         "blocking": blocking, "evidence_ids": list(evidence_ids),
         **({"resolution_criterion": resolution} if resolution else {}),
+        **({"require_distinct_owner": True} if distinct_owner else {}),
     }
 
 
@@ -174,7 +178,13 @@ def project_problems(
             and primary_evidence and confirmation_evidence and confirmation_evidence != primary_evidence
             and getattr(confirmation, "observed_at", 0.0) >= max(observation, record["reported_at"])
         )
-        closed = primary_closed and confirmed
+        distinct_owner = report.get("require_distinct_owner", False)
+        repair_owner = getattr(receipt, "owner", "")
+        review_owner = getattr(confirmation, "owner", "")
+        owner_confirmed = not distinct_owner or bool(
+            repair_owner and review_owner and review_owner != repair_owner
+        )
+        closed = primary_closed and confirmed and owner_confirmed
         if closed:
             resolved += 1
         else:
@@ -188,8 +198,11 @@ def project_problems(
                 preview.append({"id": report["id"], "title": report["title"],
                                 "criterion": criterion, "blocking": report["blocking"],
                                 **({"resolution_criterion": resolution,
-                                    "resolution_status": "awaiting_confirmation" if primary_closed else "awaiting_primary"}
-                                   if resolution else {})})
+                                    "resolution_status": ("awaiting_primary" if not primary_closed else
+                                                          "awaiting_distinct_owner" if confirmed and not owner_confirmed else
+                                                          "awaiting_confirmation")}
+                                   if resolution else {}),
+                                **({"require_distinct_owner": True} if distinct_owner else {})})
     return {
         "total": len(records), "open": open_count, "resolved": resolved,
         "blocking_open": blocking, "blocking_criteria": sorted(blocking_criteria),
