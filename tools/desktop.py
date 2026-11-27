@@ -883,6 +883,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             raise ValueError("Explicit confirmation required")
         return checked_post(control, "/api/config/update", {"action": "reset"})
     if op == "compare":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required before running two inference requests")
         prompt = text_field(args, "prompt", 12000)
         results = {}
         for tier in ("auto", "high"):
