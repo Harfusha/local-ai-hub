@@ -52,7 +52,7 @@ def problem_confirmation_dependencies(raw: Any) -> dict[str, list[str]]:
     for record in _validated_records(raw).values():
         report = record["report"]
         resolution = report.get("resolution_criterion")
-        if resolution:
+        if resolution and report["blocking"]:
             predecessors = result.setdefault(resolution, [])
             if report["criterion"] not in predecessors:
                 predecessors.append(report["criterion"])
