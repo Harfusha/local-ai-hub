@@ -130,6 +130,11 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         for component in ("mcp", "skills", "instructions")
     }
     components["agent_antigravity_hooks"] = True
+    # This roundtrip exercises standalone MCP and hooks, not the native
+    # Antigravity plugin route (which intentionally avoids duplicate entries).
+    components["agent_antigravity_plugin"] = False
+    monkeypatch.setattr(setup, "gemini_cli_extension_active", lambda *_args: False)
+    monkeypatch.setattr(setup, "ensure_gemini_cli_extension", lambda *_args, **_kwargs: None)
 
     setup.configure_agents(install, Path(sys.executable), None, cfg, include_companion=False, agent_components=components)
     manifest = uninstall.read_install_manifest(install)
