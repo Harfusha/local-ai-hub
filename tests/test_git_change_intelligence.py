@@ -335,3 +335,43 @@ def test_dependency_unit_preflight_refuses_partial_cycle_but_accepts_joint_selec
     joint = commit_preflight(plan, ["a.py", "b.py"], "1" * 64)
     assert joint["staging_preview_available"], joint
     assert not joint["commit_ready"]
+
+
+def test_dependency_removal_orders_consumer_before_deleted_provider():
+    from local_ai_hub.change_dependencies import annotate_dependencies
+
+    groups = [
+        {"group_key": "provider", "files": ["provider.py"], "risks": [],
+         "changes": [{"path": "provider.py", "status": "D ", "atoms": []}]},
+        {"group_key": "consumer", "files": ["consumer.py"], "risks": [],
+         "changes": [{"path": "consumer.py", "status": "M ", "atoms": [{
+             "semantic": {"status": "observed", "imports_before": ["provider"], "imports_after": [],
+                          "imports_before_truncated": False, "imports_truncated": False}
+         }]}]},
+    ]
+    graph = annotate_dependencies(groups)
+    assert graph["candidate_order"] == ["consumer", "provider"]
+    assert graph["removed_import_ordering_edges"] == 1
+    assert groups[0]["dependency_group_candidates"] == ["consumer"]
+    assert groups[0]["dependency_evidence"] == [
+        {"source": "provider.py", "target": "consumer.py", "kind": "import_removal_candidate"}
+    ]
+    assert not graph["dependencies_verified"]
+
+
+def test_remaining_import_to_deleted_provider_is_reported():
+    from local_ai_hub.change_dependencies import annotate_dependencies
+
+    groups = [
+        {"group_key": "provider", "files": ["provider.py"], "risks": [],
+         "changes": [{"path": "provider.py", "status": "D", "atoms": []}]},
+        {"group_key": "consumer", "files": ["consumer.py"], "risks": [],
+         "changes": [{"path": "consumer.py", "status": "M", "atoms": [{
+             "semantic": {"status": "observed", "imports_before": ["provider"], "imports_after": ["provider"],
+                          "imports_before_truncated": False, "imports_truncated": False}
+         }]}]},
+    ]
+    graph = annotate_dependencies(groups)
+    assert graph["unresolved_removed_import_count"] == 1
+    assert "import_candidate_points_to_removed_path" in groups[1]["risks"]
+    assert not graph["dependencies_verified"]
