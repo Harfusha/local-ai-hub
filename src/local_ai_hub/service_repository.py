@@ -923,7 +923,7 @@ class ServiceRepositoryMixin:
         if base is None and (mode != "full" or task_id):
             attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
         if base is None and mode not in {"artifact", "full"} and result.get("git_visible_observation_complete") is True:
-            from .change_ledger import ChangeLedger
+            from .change_ledger import ChangeLedger, attach_watcher_candidates
             from .state_paths import configured_state_dir
             import sqlite3
 
@@ -934,6 +934,11 @@ class ServiceRepositoryMixin:
                 ledger.attach(result)
             except (OSError, ValueError, sqlite3.Error):
                 result["local_ledger"] = {"status": "unavailable", "authoritative_ownership_proven": False}
+            try:
+                attach_watcher_candidates(result, getattr(self, "preprocessor", None))
+            except (OSError, ValueError, AttributeError, sqlite3.Error):
+                result["watcher_context"] = {"status": "unavailable", "coverage_complete": False,
+                                             "authorship_proven": False, "verification_reuse_authorized": False}
         from .change_plan_delta import change_delta, remember_baseline
 
         cache = getattr(self.deterministic, "_change_summary_cache", None)
