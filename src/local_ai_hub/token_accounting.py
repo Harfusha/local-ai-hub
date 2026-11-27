@@ -25,13 +25,14 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+from importlib import import_module
 
 from .budget import estimate_tokens
 
 try:
-    import orjson as _orjson
+    _orjson: Any = import_module("orjson")
 except ImportError:  # pragma: no cover
-    _orjson = None  # type: ignore[assignment]
+    _orjson = None
 
 
 _PRIVATE_KEY = "_token_accounting"
@@ -186,7 +187,7 @@ def _orjson_matches_canonical(value: Any, *, max_depth: int = 128) -> bool:
             return True
         if kind is float:
             try:
-                return _orjson.dumps(current) == repr(current).encode("ascii")
+                return bool(_orjson.dumps(current) == repr(current).encode("ascii"))
             except (TypeError, ValueError, OverflowError):
                 return False
         if kind not in (dict, list, tuple):

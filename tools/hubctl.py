@@ -267,6 +267,8 @@ def main() -> int:
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory or knowledge search query")
     parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
+    parser.add_argument("--expected-tree", default="", help="Exact reviewed staged Git tree ID")
+    parser.add_argument("--commit-message", default="", help="Explicit message for a reviewed staged commit")
     parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
@@ -298,8 +300,13 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact"} or args.apply or args.root is None:
-            parser.error("changes requires --root, optional summary/details/semantic/preflight/pr/release/artifact, and is read-only")
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "commit-staged"} or args.root is None:
+            parser.error("changes requires --root and a supported subcommand")
+        if args.sub_arg == "commit-staged":
+            if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
+                parser.error("commit-staged requires --apply, --expected-revision, --expected-tree, --commit-message and exact --changed-path values")
+        elif args.apply:
+            parser.error("only commit-staged accepts --apply")
         requested_mode = None
     elif args.action == "knowledge":
         if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
@@ -358,6 +365,21 @@ def main() -> int:
         requested_mode = None
 
     if args.action == "changes":
+        if args.sub_arg == "commit-staged":
+            from local_ai_hub.change_commit_execution import execute_staged_commit
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.leases import ScopeLeaseStore
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            result = execute_staged_commit(
+                config, DeterministicEngine(config), ScopeLeaseStore(configured_state_dir(config)),
+                root=str(args.root.resolve()), paths=args.changed_path,
+                expected_revision=args.expected_revision, expected_tree=args.expected_tree,
+                message=args.commit_message, approved=args.apply,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
         payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary"}
         if args.expected_revision is not None:
             payload["expected_revision"] = args.expected_revision

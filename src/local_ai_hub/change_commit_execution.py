@@ -1,0 +1,180 @@
+"""Explicit local-only commit of an already reviewed, exact staged index.
+
+No automatic staging, push, hook bypass or assertion of verification. The
+branch update is a Git compare-and-swap; the real index is never rewritten.
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Any
+
+from .change_commit_preflight import commit_preflight
+from .process_utils import clean_git_env, run_hidden
+from .repository_scope import authorized_repository_root, _is_redirecting_link
+
+_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+_MAX_INDEX = 16 * 1024 * 1024
+
+
+def execute_staged_commit(
+    config: dict[str, Any], engine: Any, lease_store: Any, *,
+    root: str, paths: list[str], expected_revision: str, expected_tree: str,
+    message: str, approved: bool,
+) -> dict[str, Any]:
+    """Commit a reviewed stage-zero tree only, under a root lease and index lock."""
+    if approved is not True or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
+        return {"success": False, "error": "Explicit approval and exact tree ID required"}
+    if (
+        not isinstance(message, str) or not message.strip() or len(message) > 4096
+        or any(ord(c) < 32 and c not in "\n\t" for c in message)
+    ):
+        return {"success": False, "error": "Invalid commit message"}
+    owner = "git-commit-" + uuid.uuid4().hex
+    lease_id = ""
+    candidate = ""
+    branch = ""
+    update_attempted = False
+    lock_fd: int | None = None
+    lock_path: Path | None = None
+    outcome: dict[str, Any] = {"success": False, "commit_ready": False}
+
+    def git(*args: str, extra: dict[str, str] | None = None, allow_missing: bool = False) -> bytes:
+        cp = run_hidden(
+            ["git", "--no-pager", "-c", "core.fsmonitor=false", *args],
+            cwd=root, capture_output=True, check=False, stdin=subprocess.DEVNULL,
+            env=clean_git_env(extra_env={
+                "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+                "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C",
+                **(extra or {}),
+            }),
+            timeout=20.0, max_output_bytes=4 * 1024 * 1024,
+        )
+        if getattr(cp, "stdout_truncated", False) or getattr(cp, "stderr_truncated", False):
+            raise ValueError("Git output budget exceeded")
+        if allow_missing and cp.returncode == 1 and not cp.stdout and not cp.stderr:
+            return b""
+        if cp.returncode:
+            raise ValueError("Git operation refused: " + args[0])
+        return cp.stdout
+
+    def oid(*args: str, extra: dict[str, str] | None = None) -> str:
+        value = git(*args, extra=extra).strip().decode("ascii")
+        if not _OID.fullmatch(value):
+            raise ValueError("Invalid Git object identity")
+        return value
+
+    def require_supported_state(git_dir: Path) -> None:
+        # This plumbing transaction does not run commit hooks. Refuse any
+        # custom hook configuration or installed hook, rather than skip it.
+        hooks_path = git("config", "--get-all", "core.hooksPath", allow_missing=True)
+        if hooks_path:
+            raise ValueError("Custom hooks require the normal Git commit workflow")
+        hooks = git_dir / "hooks"
+        if _is_redirecting_link(hooks) or (hooks.exists() and any(not p.name.endswith(".sample") for p in hooks.iterdir())):
+            raise ValueError("Installed hooks require the normal Git commit workflow")
+        signing = git("config", "--type=bool", "--get-all", "commit.gpgsign", allow_missing=True)
+        if signing and signing.strip().splitlines() != [b"false"]:
+            raise ValueError("Configured signing requires the normal Git commit workflow")
+        if any((git_dir / name).exists() for name in (
+            "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
+            "rebase-merge", "rebase-apply", "sequencer", "BISECT_START",
+        )):
+            raise ValueError("Repository operation in progress")
+
+    try:
+        root = authorized_repository_root(config, root)
+        git_dir = Path(root) / ".git"
+        if not git_dir.is_dir() or _is_redirecting_link(git_dir):
+            raise ValueError("Only a primary worktree with a local .git directory is supported")
+        if Path(os.fsdecode(git("rev-parse", "--show-toplevel").rstrip(b"\r\n"))).resolve() != Path(root):
+            raise ValueError("Expected exact worktree root")
+        if Path(os.fsdecode(git("rev-parse", "--absolute-git-dir").rstrip(b"\r\n"))).resolve() != git_dir:
+            raise ValueError("Unexpected Git metadata location")
+        claimed = lease_store.claim(owner=owner, root=root, paths=["."], ttl_seconds=600,
+                                    purpose="explicit staged commit")
+        if claimed.get("success") is not True or not claimed.get("lease_id"):
+            raise ValueError("Repository write lease unavailable")
+        lease_id = claimed["lease_id"]
+        index = git_dir / "index"
+        lock_path = git_dir / "index.lock"
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        require_supported_state(git_dir)
+        branch = git("symbolic-ref", "--quiet", "HEAD").strip().decode("utf-8")
+        if not branch.startswith("refs/heads/") or "\n" in branch:
+            raise ValueError("Attached local branch required")
+        parent = oid("rev-parse", "--verify", "HEAD^{commit}")
+        plan = engine.split_changes(root, None)
+        preflight = commit_preflight(plan, paths, expected_revision)
+        if (
+            preflight.get("success") is not True or preflight.get("index_scope_matches_selection") is not True
+            or preflight.get("prospective_index_tree_oid") != expected_tree
+            or plan.get("git_snapshot_metadata", {}).get("head") != parent
+        ):
+            raise ValueError("Reviewed staged scope, parent or tree changed; refresh preflight")
+        if _is_redirecting_link(index) or not index.is_file() or index.stat().st_size > _MAX_INDEX:
+            raise ValueError("Unsupported or oversized index")
+        with index.open("rb") as stream:
+            original = stream.read(_MAX_INDEX + 1)
+        if len(original) > _MAX_INDEX:
+            raise ValueError("Index exceeds budget")
+        with tempfile.TemporaryDirectory(prefix="hub-commit-", dir=git_dir) as temp:
+            temporary_index = Path(temp) / "index"
+            temporary_index.write_bytes(original)
+            actual_tree = oid("write-tree", extra={"GIT_INDEX_FILE": str(temporary_index)})
+            if actual_tree != expected_tree:
+                raise ValueError("Materialized Git tree does not match approved tree")
+            # Candidate object creation does not publish a commit or alter the
+            # index. An unsuccessful CAS may leave a normal unreachable object.
+            candidate = oid("commit-tree", actual_tree, "-p", parent, "-m", message)
+        if index.stat().st_size != len(original) or index.read_bytes() != original:
+            raise ValueError("Index changed while locked")
+        require_supported_state(git_dir)
+        if git("symbolic-ref", "--quiet", "HEAD").strip().decode("utf-8") != branch:
+            raise ValueError("Branch changed during transaction")
+        renewed = lease_store.renew(owner=owner, lease_id=lease_id, ttl_seconds=600)
+        if renewed.get("success") is not True:
+            raise ValueError("Repository lease expired")
+        update_attempted = True
+        git("update-ref", "--no-deref", "-m", "Local AI Hub: approved staged commit", branch, candidate, parent)
+        outcome = {
+            "success": True, "commit_oid": candidate, "parent_oid": parent, "tree_oid": actual_tree,
+            "branch": branch, "index_rewritten": False, "pushed": False,
+            "verification_status": "not_assessed", "explicit_user_approval": True,
+        }
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        outcome = {"success": False, "error": str(exc), "commit_ready": False,
+                   "outcome_unknown": update_attempted, "retryable": False}
+        if candidate:
+            outcome.update(candidate_commit_oid=candidate, branch=branch)
+        if update_attempted:
+            outcome["recovery"] = "Inspect the branch and candidate commit before retrying; never retry blindly."
+    finally:
+        if lock_fd is not None and lock_path is not None:
+            try:
+                held = os.fstat(lock_fd)
+                current = lock_path.lstat()
+                same = (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+                os.close(lock_fd)
+                lock_fd = None
+                if same:
+                    lock_path.unlink()
+                else:
+                    outcome["cleanup_unconfirmed"] = True
+            except OSError:
+                outcome["cleanup_unconfirmed"] = True
+            finally:
+                if lock_fd is not None:
+                    os.close(lock_fd)
+        if lease_id:
+            try:
+                released = lease_store.release(owner=owner, lease_id=lease_id)
+                if released.get("success") is not True:
+                    outcome["cleanup_unconfirmed"] = True
+            except Exception:
+                outcome["cleanup_unconfirmed"] = True
+    return outcome
