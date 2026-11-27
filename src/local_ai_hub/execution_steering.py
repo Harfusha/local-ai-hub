@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+import math
 from typing import Any
 
 from .execution_problems import problem_confirmation_dependencies
@@ -76,3 +77,25 @@ def revise_graph(contract: Any, patch: Any, *, problems: Any) -> tuple[Any, set[
         if previous_deps != current_deps or retired.intersection(combined[name].get("depends_on", [])):
             retired.add(name)
     return candidate, retired
+
+
+def revision_proof_cutoffs(history: Any) -> dict[str, float]:
+    """Derive persistent freshness floors; replayed retired receipts cannot count."""
+    if type(history) is not list or len(history) > 100:
+        raise ValueError("invalid graph revision history")
+    result: dict[str, float] = {}
+    for revision in history:
+        if type(revision) is not dict:
+            raise ValueError("invalid graph revision record")
+        if "retired_criteria" not in revision:
+            continue
+        names = revision["retired_criteria"]
+        observed = revision.get("recorded_at")
+        if (type(names) is not list or len(names) > 512
+                or any(type(name) is not str or not name for name in names)
+                or type(observed) not in (int, float) or not math.isfinite(observed)
+                or observed < 0):
+            raise ValueError("invalid graph revision freshness floor")
+        for name in names:
+            result[name] = max(result.get(name, 0.0), float(observed))
+    return result
