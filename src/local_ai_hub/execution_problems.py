@@ -146,6 +146,7 @@ def project_problems(
     *,
     satisfied: Sequence[str],
     receipts: Mapping[str, Any],
+    current_owner: str = "",
 ) -> dict[str, Any]:
     """Resolve only via a new, fresh receipt and optional separate confirmation.
 
@@ -156,6 +157,7 @@ def project_problems(
     valid = set(satisfied)
     open_count = blocking = resolved = 0
     blocking_criteria: set[str] = set()
+    handoff_criteria: set[str] = set()
     preview: list[dict[str, Any]] = []
     for record in records.values():
         report = record["report"]
@@ -185,6 +187,8 @@ def project_problems(
             repair_owner and review_owner and review_owner != repair_owner
         )
         closed = primary_closed and confirmed and owner_confirmed
+        needs_handoff = bool(primary_closed and distinct_owner and not closed
+                             and current_owner and current_owner == repair_owner)
         if closed:
             resolved += 1
         else:
@@ -194,18 +198,21 @@ def project_problems(
                 # Do not block a freshly verified primary while waiting for its
                 # confirmation, which may itself depend on the primary.
                 blocking_criteria.add(criterion if not primary_closed else resolution)
+                if needs_handoff:
+                    handoff_criteria.add(resolution)
             if len(preview) < 12:
                 preview.append({"id": report["id"], "title": report["title"],
                                 "criterion": criterion, "blocking": report["blocking"],
                                 **({"resolution_criterion": resolution,
                                     "resolution_status": ("awaiting_primary" if not primary_closed else
-                                                          "awaiting_distinct_owner" if confirmed and not owner_confirmed else
+                                                          "awaiting_distinct_owner" if needs_handoff or (confirmed and not owner_confirmed) else
                                                           "awaiting_confirmation")}
                                    if resolution else {}),
                                 **({"require_distinct_owner": True} if distinct_owner else {})})
     return {
         "total": len(records), "open": open_count, "resolved": resolved,
         "blocking_open": blocking, "blocking_criteria": sorted(blocking_criteria),
+        **({"owner_handoff_criteria": sorted(handoff_criteria)} if handoff_criteria else {}),
         "open_preview": preview,
         "preview_truncated": open_count > len(preview),
     }
