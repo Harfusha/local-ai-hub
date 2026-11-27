@@ -1101,12 +1101,16 @@ class TaskLifecycleMixin:
         else:
             validate_criteria_revision(current.contract, criteria)
             contract = replace(current.contract, acceptance_criteria=criteria)
+        revised_at = time.time()
+        if execution_patch is not None:
+            history[-1]["retired_criteria"] = sorted(retired)
+            history[-1]["recorded_at"] = revised_at
         state_data["contract_history"] = history
         state_data["contract_revision"] = revision + 1
         checkpoint = replace(current.checkpoint, state_data=state_data)
         status = TaskStatus.VERIFYING if current.status == TaskStatus.COMPLETED else current.status
         updated = replace(current, contract=contract, checkpoint=checkpoint,
-                          verification_receipts=retained, status=status, updated_at=time.time())
+                          verification_receipts=retained, status=status, updated_at=revised_at)
         self._preflight_response_budget(updated, response_budget_tokens)
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",
@@ -1115,7 +1119,7 @@ class TaskLifecycleMixin:
                      "acceptance_criteria": list(contract.acceptance_criteria),
                      "reason": reason.strip(),
                      **({"contract": contract.to_dict(), "retired_criteria": sorted(retired),
-                         "retained_receipt_ids": retained} if execution_patch is not None else {})},
+                         "retained_receipt_ids": retained, "revised_at": revised_at} if execution_patch is not None else {})},
             idempotency_key=f"contract_revision_{task_id}_{revision + 1}",
             actor=actor,
         )
