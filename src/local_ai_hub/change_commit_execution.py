@@ -27,6 +27,7 @@ def execute_staged_commit(
     root: str, paths: list[str], expected_revision: str, expected_tree: str,
     message: str, approved: bool, journal: Any | None = None, allow_mixed_staged: bool = False,
     sequence: list[dict[str, Any]] | None = None, preview_only: bool = False, preview_digest: str = "",
+    verification_manifest: Any | None = None,
 ) -> dict[str, Any]:
     """Commit a reviewed stage-zero tree only, under a root lease and index lock."""
     if (approved is not True and not (preview_only is True and sequence is not None)) or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
@@ -126,6 +127,7 @@ def execute_staged_commit(
         if len(original) > _MAX_INDEX:
             raise ValueError("Index exceeds budget")
         sequence_plan = None
+        verification_receipts: list[str] = []
         if sequence is not None:
             from .change_commit_sequence import plan_sequence
 
@@ -138,6 +140,12 @@ def execute_staged_commit(
                 return outcome
             if preview_digest != sequence_plan["preview_digest"]:
                 raise ValueError("Sequence differs from approved preview")
+            if verification_manifest is not None:
+                from .change_tree_verification import require_sequence_receipts
+
+                if journal is None:
+                    raise ValueError("Verification receipt journal unavailable")
+                verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
         candidates: list[str] = []
         with tempfile.TemporaryDirectory(prefix="hub-commit-", dir=git_dir) as temp:
             temporary_index = Path(temp) / "index"
@@ -196,12 +204,15 @@ def execute_staged_commit(
         if journal is not None:
             journal.prepare(operation_id=operation_id, root=root, branch=branch, parent=parent,
                             tree=actual_tree, candidate=candidate)
+        if sequence_plan is not None and verification_manifest is not None:
+            verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
         update_attempted = True
         git("update-ref", "--no-deref", "-m", "Local AI Hub: approved staged commit", branch, candidate, parent)
         outcome = {
             "success": True, "commit_oid": candidate, "parent_oid": parent, "tree_oid": actual_tree,
             "branch": branch, "index_rewritten": False, "pushed": False,
-            "verification_status": "not_assessed", "explicit_user_approval": True,
+            "verification_status": "configured_commands_passed" if verification_receipts else "not_assessed",
+            "tree_check_receipt_ids": verification_receipts, "explicit_user_approval": True,
             "operation_id": operation_id, "commit_oids": candidates,
         }
         if journal is not None:

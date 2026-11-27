@@ -147,3 +147,37 @@ def test_sequence_preview_and_publish_two_commits_atomically(tmp_path):
     assert _git(tmp_path, "show", "HEAD^:b") == "old"
     assert _git(tmp_path, "show", "HEAD:b") == "unrelated"
     assert _git(tmp_path, "rev-parse", "HEAD^{tree}") == tree
+
+
+def test_exact_tree_receipts_bind_sequence_and_environment(tmp_path):
+    import sys
+    from local_ai_hub.change_commit_journal import CommitJournal
+    from local_ai_hub.change_tree_verification import verify_sequence
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    engine, leases, parent, _ = _fixture(repo)
+    _git(repo, "add", "b")
+    tree = _git(repo, "write-tree")
+    plan = engine.split_changes.return_value
+    plan["git_snapshot_metadata"]["index_tree_oid"] = tree
+    plan["clusters"][1]["changes"][0]["status"] = "M "
+    sequence = [{"paths": ["a"], "message": "chore: a"}, {"paths": ["b"], "message": "chore: b"}]
+    journal = CommitJournal(tmp_path / "state")
+    kwargs = dict(root=str(repo.resolve()), paths=["a", "b"], expected_revision="a" * 64,
+                  expected_tree=tree, message="", sequence=sequence, journal=journal)
+    preview = execute_staged_commit({}, engine, leases, **kwargs, approved=False, preview_only=True)
+    assert preview["success"], preview
+    manifest = {"environment_id": "c" * 64, "commands": [[sys.executable, "-c",
+                "from pathlib import Path; assert Path('a').read_text() == 'new'; assert not Path('.git').exists()"]]}
+    result = verify_sequence(str(repo.resolve()), preview, manifest, journal)
+    assert result["success"], result
+    assert len(result["verified_steps"]) == 2
+    denied = execute_staged_commit({}, engine, leases, **kwargs, approved=True,
+                                  preview_digest=preview["preview_digest"],
+                                  verification_manifest={**manifest, "environment_id": "d" * 64})
+    assert not denied["success"]
+    applied = execute_staged_commit({}, engine, leases, **kwargs, approved=True,
+                                   preview_digest=preview["preview_digest"], verification_manifest=manifest)
+    assert applied["success"], applied
+    assert len(applied["tree_check_receipt_ids"]) == 2

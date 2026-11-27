@@ -1,9 +1,12 @@
 """Durable local commit intent log; inspection never retries a mutation."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import sqlite3
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -26,7 +29,53 @@ class CommitJournal:
                 parent TEXT NOT NULL, tree TEXT NOT NULL, candidate TEXT NOT NULL,
                 state TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL
             )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS git_tree_checks_v1 (
+                id TEXT PRIMARY KEY, root TEXT NOT NULL, tree TEXT NOT NULL,
+                command_id TEXT NOT NULL, environment_id TEXT NOT NULL,
+                checks TEXT NOT NULL, digest TEXT NOT NULL, observed REAL NOT NULL, expires REAL NOT NULL
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS git_tree_checks_lookup ON git_tree_checks_v1(root,tree,command_id,environment_id,expires)")
             db.commit()
+
+    def record_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str,
+                           checks: list[dict[str, Any]], ttl: int) -> str:
+        if (not _OID.fullmatch(tree) or not re.fullmatch(r"[0-9a-f]{64}", command_id)
+                or not re.fullmatch(r"[0-9a-f]{64}", environment_id) or not 1 <= ttl <= 3600
+                or not 1 <= len(checks) <= 4 or any(c.get("exit_code") != 0 or c.get("output_complete") is not True for c in checks)):
+            raise ValueError("Invalid exact-tree check record")
+        receipt = uuid.uuid4().hex
+        now = time.time()
+        serialized = json.dumps(checks, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(json.dumps([receipt, root, tree, command_id, environment_id, serialized, now, now + ttl],
+                                           ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+        with closing(self._connect()) as db, db:
+            db.execute("INSERT INTO git_tree_checks_v1 VALUES (?,?,?,?,?,?,?,?,?)",
+                       (receipt, root, tree, command_id, environment_id, serialized, digest, now, now + ttl))
+            db.execute("DELETE FROM git_tree_checks_v1 WHERE expires < ?", (now - 86400,))
+        return receipt
+
+    def current_tree_checks(self, *, root: str, tree: str, command_id: str, environment_id: str) -> str | None:
+        now = time.time()
+        with closing(self._connect()) as db:
+            row = db.execute("""SELECT * FROM git_tree_checks_v1 WHERE root=? AND tree=? AND command_id=?
+                              AND environment_id=? AND observed<=? AND expires>? ORDER BY observed DESC LIMIT 1""",
+                             (root, tree, command_id, environment_id, now, now)).fetchone()
+        if row is None:
+            return None
+        digest = hashlib.sha256(json.dumps([row["id"], root, tree, command_id, environment_id, row["checks"],
+                                           row["observed"], row["expires"]], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+        if row["digest"] != digest or not 0 < row["expires"] - row["observed"] <= 3600:
+            return None
+        try:
+            checks = json.loads(row["checks"])
+            if not isinstance(checks, list) or not 1 <= len(checks) <= 4 or any(
+                not isinstance(c, dict) or type(c.get("exit_code")) is not int or c["exit_code"] != 0
+                or c.get("output_complete") is not True for c in checks
+            ):
+                return None
+        except (TypeError, ValueError):
+            return None
+        return row["id"]
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=5.0)
