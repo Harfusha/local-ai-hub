@@ -152,6 +152,24 @@ path inventory, not semantic dependency analysis; add affected consumers
 as explicit criteria. Ignored untracked paths and changes inside submodules
 are not expanded; submodule entries are obligations at their own path.
 
+### Explicit scope exclusions
+
+Server-checked repository and changes inventories accept an optional
+`"exclusions": [{"path": "generated/example.py", "reason": "Generated fixture; reviewed generator separately"}]`
+in the inventory object. Every entry must be an exact current inventory path
+with a nonempty rationale. Globs, directory prefixes, duplicate paths, absent
+paths and exclusions that remove the entire inventory are rejected. Exclusions
+are persisted in the goal contract; verification reports their count and a
+bounded preview. The original inventory must still be available and complete
+before exclusions are applied. If an excluded path disappears, the scope
+recheck fails rather than silently treating the exception as obsolete.
+Partition coverage never combines different exclusion lists or rationales.
+
+These are explicit task-scope choices, not independent approval of the
+rationale. Review them when agreeing the goal contract. Completion attests
+only to included resources, not to excluded resources or default inventory
+ignores. Existing tasks cannot remove obligations by ordinary criteria steering.
+
 ### Git-managed impact policy
 
 For changes scope, set `include_mapped_tests: true`. Hub resolves the existing
@@ -259,7 +277,7 @@ blocking for audit completion.
 ## Scope and follow-up
 
 Implemented: bounded repository and Git change inventories, configured affected
-test mapping (bound to policy digest), partition manifests, per-resource check
+test mapping (bound to policy digest), explicit reasoned scope exclusions, partition manifests, per-resource check
 dependencies, explicit evidence types, receipt-derived coverage, deterministic
 next action, durable problem reports, additive steering, compact context recovery,
 CLI, native Work Center and bounded plan previews. Opt-in Codex and Claude Stop
@@ -268,8 +286,7 @@ evidence age is advisory. The web dashboard is retired.
 
 Remaining acceptance work (not claimed complete):
 
-1. Semantic dependency expansion beyond explicit affected-test rules, exclusion
-   policy and hierarchical plan aggregation beyond current bounds.
+1. Semantic dependency expansion beyond explicit affected-test rules, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds.
 2. Authorized rejection/defer dispositions, independent resolution verification
    and cross-task/Git knowledge sharing for problem reports.
 3. Full graph metadata steering and replay beyond additive criteria.
