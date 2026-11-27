@@ -317,3 +317,32 @@ def test_verified_execution_seeded_graph_benchmark():
     assert baseline["false_negative"] > 0
     assert result["compact_resume_estimated_tokens"] < result["full_contract_estimated_tokens"]
     assert result["graph_projection_seconds"] >= 0
+
+
+def test_verified_execution_checkpoint_pattern_is_bounded_and_resets_on_evidence():
+    from types import SimpleNamespace
+    from local_ai_hub.execution_progress import (
+        PROGRESS_STATE_KEY, observe_checkpoint, repeated_checkpoint_count,
+    )
+    from local_ai_hub.verified_execution import evidence_progress
+
+    task = SimpleNamespace(owner="agent", verification_receipts={},
+                           checkpoint=SimpleNamespace(state_data={"contract_revision": 1}))
+    checkpoint = SimpleNamespace(phase="review", next_action="a", affected_paths=("a.py",),
+                                 evidence_ids=(), blockers=())
+    for i in range(8):
+        checkpoint.next_action = "a" if i % 2 else "b"
+        task.checkpoint.state_data[PROGRESS_STATE_KEY] = observe_checkpoint(
+            task, checkpoint, now=100 + i, idempotency_key=str(i),
+        )
+    assert repeated_checkpoint_count(task, now=108) == 4
+    assert evidence_progress(created_at=100, now=108, active=True, complete=False,
+                             observed_receipt_times=[], repeated_checkpoint_count=4)["status"] == "repeated_checkpoint_pattern"
+    replay = observe_checkpoint(task, checkpoint, now=109, idempotency_key="7")
+    assert len(replay["samples"]) == 8
+    assert replay == task.checkpoint.state_data[PROGRESS_STATE_KEY]
+    assert repeated_checkpoint_count(task, now=2000) == 0
+    task.verification_receipts["a"] = "new-receipt"
+    assert repeated_checkpoint_count(task, now=109) == 0
+    new_epoch = observe_checkpoint(task, checkpoint, now=110)
+    assert len(new_epoch["samples"]) == 1
