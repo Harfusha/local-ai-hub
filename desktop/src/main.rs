@@ -238,6 +238,11 @@ struct Desktop {
     task_risk: String,
     incident_kind: String,
     incident_message: String,
+    incident_cause: String,
+    incident_fix: String,
+    incident_status: String,
+    incident_query: String,
+    incident_limit: i64,
     plan_title: String,
     revision: String,
     plan_task: String,
@@ -316,7 +321,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), incident_cause: String::new(), incident_fix: String::new(), incident_status: String::new(), incident_query: String::new(), incident_limit: 100, plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -489,6 +494,10 @@ impl Desktop {
         self.prompt.clear();
         self.incident_kind.clear();
         self.incident_message.clear();
+        self.incident_cause.clear();
+        self.incident_fix.clear();
+        self.incident_status.clear();
+        self.incident_query.clear();
         self.vision_path.clear();
         self.archive_path.clear();
         self.semaphore.clear();
@@ -588,6 +597,7 @@ impl Desktop {
             "Service health" => request("log_tail", json!({"lines": self.log_lines})),
             "Diagnostics" => request("doctor", json!({})),
             "Memory" => request("memory_find", self.memory_args("memory_find")),
+            "Incidents" => request("incident_list", json!({"root": self.repo, "status": self.incident_status, "limit": self.incident_limit})),
             "Plans" => request("plans", json!({"root": self.repo, "query": self.plan_query, "lifecycle": self.plan_lifecycle, "limit": self.plan_limit})),
             "Plan board" => request("plan_board", json!({"root": self.repo, "id": self.board_plan_filter, "query": self.plan_query})),
             "Session briefing" => request("session_briefing", json!({"root": self.repo})),
@@ -827,13 +837,43 @@ impl Desktop {
                     return;
                 }
                 if self.view == 2 {
-                    ui.label("Incident operation class and message");
-                    ui.text_edit_singleline(&mut self.incident_kind);
-                    ui.text_edit_multiline(&mut self.incident_message);
-                    if ui.button("Record incident").clicked() {
-                        self.confirm("Record incident", request("incident", json!({"root": self.repo,
-                            "kind": self.incident_kind, "message": self.incident_message, "confirmed": true})));
-                    }
+                    ui.horizontal_wrapped(|ui| {
+                        let previous = self.incident_status.clone();
+                        let previous_limit = self.incident_limit;
+                        egui::ComboBox::from_id_salt("incident_status").selected_text(if self.incident_status.is_empty() { "All states" } else { &self.incident_status }).show_ui(ui, |ui| {
+                            for status in ["", "unresolved", "resolved", "ignored"] {
+                                ui.selectable_value(&mut self.incident_status, status.into(), if status.is_empty() { "All states" } else { status });
+                            }
+                        });
+                        egui::ComboBox::from_id_salt("incident_limit").selected_text(format!("Up to {}", self.incident_limit)).show_ui(ui, |ui| {
+                            for limit in [25, 50, 100] { ui.selectable_value(&mut self.incident_limit, limit, format!("Up to {limit}")); }
+                        });
+                        if previous != self.incident_status || previous_limit != self.incident_limit { self.clear_response(); }
+                        if ui.button("List incidents").clicked() { self.refresh(ctx); }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Search prior failures and lessons");
+                        ui.text_edit_singleline(&mut self.incident_query);
+                        if ui.add_enabled(!self.incident_query.trim().is_empty(), egui::Button::new("Search negative knowledge")).clicked() {
+                            self.submit(ctx, "Incidents".into(), request("incident_find", json!({"root": self.repo,
+                                "query": self.incident_query, "limit": self.incident_limit})));
+                        }
+                    });
+                    ui.small("Search uses a separate server operation and is not constrained by the list status filter. Both results are bounded.");
+                    ui.collapsing("Record incident or verified lesson", |ui| {
+                        ui.label("Incident operation class and message");
+                        ui.text_edit_singleline(&mut self.incident_kind);
+                        ui.text_edit_multiline(&mut self.incident_message);
+                        ui.label("Root cause (optional)");
+                        ui.text_edit_multiline(&mut self.incident_cause);
+                        ui.label("Verified fix (optional; leave empty if unverified)");
+                        ui.text_edit_multiline(&mut self.incident_fix);
+                        if ui.add_enabled(!self.incident_kind.trim().is_empty() && !self.incident_message.trim().is_empty(), egui::Button::new("Record incident")).clicked() {
+                            self.confirm("Record incident", request("incident", json!({"root": self.repo,
+                                "kind": self.incident_kind, "message": self.incident_message,
+                                "cause": self.incident_cause, "fix": self.incident_fix, "confirmed": true})));
+                        }
+                    });
                     return;
                 }
                 ui.horizontal_wrapped(|ui| {
@@ -1613,7 +1653,9 @@ impl Desktop {
                                 self.entity = id.to_owned();
                             }
                             if self.current() == "Memory" {
-                                self.memory_record_id = item["record_id"].as_str().filter(|_| item["scope"].as_str() == Some(self.memory_scope.as_str())).unwrap_or("").to_owned();
+                                let id = item["record_id"].as_str().filter(|_| item["scope"].as_str() == Some(self.memory_scope.as_str())).unwrap_or("");
+                                if self.memory_record_id != id { self.reason.clear(); }
+                                self.memory_record_id = id.to_owned();
                             }
                             if self.current() == "File leases" {
                                 self.lease_owner = item["owner"].as_str().unwrap_or("").to_owned();
