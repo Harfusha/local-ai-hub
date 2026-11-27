@@ -603,6 +603,11 @@ def _verified_execution_stop(root: Path, payload: dict[str, Any]) -> dict[str, A
         scope = execution.get("scope_check")
         if scope and (not isinstance(scope, dict) or scope.get("complete") is not True):
             return {}
+        knowledge = execution.get("knowledge_check")
+        if config.get("knowledge_guard") is True and (
+            not isinstance(knowledge, dict) or knowledge.get("complete") is not True
+        ):
+            return {}
         if execution.get("progress", {}).get("status") in {"no_recent_verified_evidence", "repeated_failed_verification", "repeated_checkpoint_pattern"}:
             return {}
         next_obligation = execution.get("next_obligation")
