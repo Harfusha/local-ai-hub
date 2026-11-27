@@ -1373,7 +1373,14 @@ impl Desktop {
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            if let Some(label) = &self.busy { ui.horizontal(|ui| { ui.spinner(); ui.label(format!("{label} — running")); }); }
+            if let Some(label) = &self.busy {
+                ui.horizontal(|ui| {
+                    // A short periodic probe must not start a continuous
+                    // animation/repaint loop on otherwise idle desktops.
+                    if label != "Check service" { ui.spinner(); }
+                    ui.label(format!("{label} — running"));
+                });
+            }
             else { ui.label(&self.status); }
         });
         egui::SidePanel::left("navigation").resizable(false).default_width(170.0).show(ctx, |ui| {
