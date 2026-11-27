@@ -397,7 +397,8 @@ def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path, m
     before = git(origin, "status", "--porcelain")
     store = RepoKnowledgeStore(origin)
     task = {"task_id": "task-1", "repo_root": str(origin), "status": "blocked",
-            "contract": {"goal": "Fix order"}, "checkpoint": {"affected_paths": ["order.py"]}}
+            "contract": {"goal": "Fix order", "acceptance_criteria": ["Correct order state"]},
+            "checkpoint": {"affected_paths": ["order.py"]}}
     legacy = build_task_handoff(store, task)
     assert inspect_handoff_dependencies(store, legacy)["resume_allowed"] is False
     record = attach_source_dependencies(store, legacy)
@@ -459,6 +460,30 @@ def test_handoff_detects_uncommitted_changes_missing_in_second_clone(tmp_path, m
     assert responses[0][1]["operation_not_started"] is True
     assert not created
     assert not (clone / ".local-ai-hub/local").exists()
+
+    (clone / "order.py").write_bytes(b"paid = True\n")
+    reallowed = manage_repository_knowledge({}, request, authorize_operator_write=lambda: False)
+    assert reallowed["resume_allowed"] is True
+    creation["contract"] = reallowed["contract"]
+    creation["handoff_resume"]["preview_digest"] = reallowed["preview_digest"]
+
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_task_models import GoalContract
+    from local_ai_hub.agent_tasks import TaskStore
+
+    resumed = TaskStore(AgentStateStore(tmp_path / "resume-state" / "agent_state.sqlite")).create(
+        GoalContract.from_dict(allowed["contract"]),
+        ScopeContext(repository_id=record["project_id"], task_id="task-new"),
+        task_id="task-new", repo_root=str(clone),
+        _handoff_resume=creation["handoff_resume"],
+    )
+    canonical_attempt = RepoKnowledgeStore(clone).get("task", "task-new", verify_sources=False)["record"]
+    assert canonical_attempt["payload"]["previous_attempt"] == {
+        "attempt_id": record["payload"]["origin_task_id"], "parent_revision": allowed["revision"],
+    }
+    assert "repo_root" not in json.dumps(canonical_attempt)
+    assert resumed.task_id == "task-new"
     assert "paid = True" not in str(record)
     bad = {**record, "payload": {**record["payload"], "source_dependencies": []}}
     with pytest.raises(RepoPlanValidationError):

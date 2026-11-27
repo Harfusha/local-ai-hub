@@ -59,12 +59,21 @@ class TaskCoreMixin:
         manifest, _ = store.manifest()
         if manifest["mode"] != "shared":
             return None
-        record = build_project_task_record(store, {
+        task_payload: dict[str, Any] = {
             "task_id": state.task_id,
             "status": state.status.value,
             "contract": state.contract.to_dict(),
             "checkpoint": state.checkpoint.to_dict(),
-        }, provenance={
+        }
+        lineage = state.checkpoint.state_data.get("_portable_attempt")
+        if lineage is not None:
+            if not isinstance(lineage, Mapping):
+                raise ValueError("Portable task ancestry must be an object")
+            task_payload["previous_attempt"] = {
+                "attempt_id": lineage.get("origin_task_id"),
+                "parent_revision": lineage.get("handoff_revision"),
+            }
+        record = build_project_task_record(store, task_payload, provenance={
             "origin_kind": "model" if actor.casefold() not in {"human", "user", "local-operator"} else "manual",
         })
         try:
