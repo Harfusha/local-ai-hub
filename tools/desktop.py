@@ -294,6 +294,25 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         return control._cli(argv, timeout=spec.timeout, structured=True)
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "log_tail":
+        lines = args.get("lines", 250)
+        if type(lines) is not int or lines not in {100, 250, 500}:
+            raise ValueError("Log tail requires 100, 250 or 500 lines")
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            result = client.get("/api/logs/tail?" + urlencode({"lines": lines}),
+                                timeout=15.0, requires_heavy_work=False)
+            if result.get("success") is not True or result.get("outcome_unknown"):
+                raise RuntimeError(str(result.get("error") or "Log tail unavailable"))
+            entries = result.get("lines")
+            if (not isinstance(entries, list) or len(entries) > lines
+                    or any(not isinstance(line, str) for line in entries)):
+                raise RuntimeError("Invalid log tail response")
+            return result
+        finally:
+            client.close()
     if op == "trace_page":
         offset = args.get("offset", 0)
         minimum = args.get("min_duration_ms", 0)
