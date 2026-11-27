@@ -2311,3 +2311,43 @@ def test_verified_execution_distinct_confirmation_after_task_adoption(stores):
     assert result.complete
     assert result.execution["problems"]["resolved"] == 1
     assert task_store.complete(task.task_id, actor="reviewer").status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_disposition_checkpoint_requires_owner_and_survives_recovery(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="review", acceptance_criteria=("review",),
+                     slo_profile={"verified_execution": {}}),
+        ScopeContext(task_id="disposition-test"), task_id="disposition-test",
+    )
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {"id": "issue", "title": "mismatch", "criterion": "review"},
+    }))
+    command = {"id": "issue", "decision_id": "defer", "action": "defer", "reason": "needs evidence"}
+    with pytest.raises(ValueError, match="owned nonterminal"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+            "execution_problem_disposition": command,
+        }), actor="foreign")
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_disposition": command,
+    }))
+    assert verifier.completion(task.task_id).execution["problems"]["deferred_open"] == 1
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test"})
+    task_store.checkpoint(task.task_id, TaskCheckpoint(phase="other work"))
+    assert verifier.completion(task.task_id).execution["problems"]["deferred_open"] == 1
+    task_store.claim(task.task_id, "reviewer", actor="reviewer")
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_disposition": {
+            **command, "decision_id": "reject", "action": "reject", "reason": "false positive",
+        },
+    }), actor="reviewer")
+    pending = verifier.completion(task.task_id)
+    assert not pending.complete
+    assert pending.execution["problems"]["rejection_pending_evidence"] == 1
+    verifier.record(receipt_for(task.task_id, "review", owner="reviewer",
+                                artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.complete
+    assert result.execution["problems"]["rejected_verified"] == 1
+    assert task_store.complete(task.task_id, actor="reviewer").status is TaskStatus.COMPLETED
