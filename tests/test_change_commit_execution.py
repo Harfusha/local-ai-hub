@@ -124,3 +124,26 @@ def test_explicit_mixed_scope_commit_preserves_unstaged_hunks(tmp_path):
     assert result["success"], result
     assert _git(tmp_path, "show", "HEAD:a") == "new"
     assert (tmp_path / "a").read_text() == "additional unstaged content"
+
+
+def test_sequence_preview_and_publish_two_commits_atomically(tmp_path):
+    engine, leases, parent, _ = _fixture(tmp_path)
+    _git(tmp_path, "add", "b")
+    tree = _git(tmp_path, "write-tree")
+    plan = engine.split_changes.return_value
+    plan["git_snapshot_metadata"]["index_tree_oid"] = tree
+    plan["clusters"][1]["changes"][0]["status"] = "M "
+    sequence = [{"paths": ["a"], "message": "chore: a"}, {"paths": ["b"], "message": "chore: b"}]
+    kwargs = dict(root=str(tmp_path.resolve()), paths=["a", "b"], expected_revision="a" * 64,
+                  expected_tree=tree, message="", sequence=sequence)
+    preview = execute_staged_commit({}, engine, leases, **kwargs, approved=False, preview_only=True)
+    assert preview["success"], preview
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
+    assert not execute_staged_commit({}, engine, leases, **kwargs, approved=True, preview_digest="wrong")["success"]
+    result = execute_staged_commit({}, engine, leases, **kwargs, approved=True, preview_digest=preview["preview_digest"])
+    assert result["success"], result
+    assert len(result["commit_oids"]) == 2
+    assert _git(tmp_path, "rev-parse", "HEAD^^") == parent
+    assert _git(tmp_path, "show", "HEAD^:b") == "old"
+    assert _git(tmp_path, "show", "HEAD:b") == "unrelated"
+    assert _git(tmp_path, "rev-parse", "HEAD^{tree}") == tree

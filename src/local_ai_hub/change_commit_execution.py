@@ -26,11 +26,12 @@ def execute_staged_commit(
     config: dict[str, Any], engine: Any, lease_store: Any, *,
     root: str, paths: list[str], expected_revision: str, expected_tree: str,
     message: str, approved: bool, journal: Any | None = None, allow_mixed_staged: bool = False,
+    sequence: list[dict[str, Any]] | None = None, preview_only: bool = False, preview_digest: str = "",
 ) -> dict[str, Any]:
     """Commit a reviewed stage-zero tree only, under a root lease and index lock."""
-    if approved is not True or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
+    if (approved is not True and not (preview_only is True and sequence is not None)) or not isinstance(expected_tree, str) or not _OID.fullmatch(expected_tree):
         return {"success": False, "error": "Explicit approval and exact tree ID required"}
-    if (
+    if sequence is None and (
         not isinstance(message, str) or not message.strip() or len(message) > 4096
         or any(ord(c) < 32 and c not in "\n\t" for c in message)
     ):
@@ -124,6 +125,20 @@ def execute_staged_commit(
             original = stream.read(_MAX_INDEX + 1)
         if len(original) > _MAX_INDEX:
             raise ValueError("Index exceeds budget")
+        sequence_plan = None
+        if sequence is not None:
+            from .change_commit_sequence import plan_sequence
+
+            sequence_plan = plan_sequence(
+                git("ls-tree", "-r", "-z", parent), git("ls-files", "--stage", "-z"),
+                parent, expected_tree, sequence, plan["clusters"], expected_revision,
+            )
+            if preview_only is True:
+                outcome = {"success": True, "applied": False, **sequence_plan}
+                return outcome
+            if preview_digest != sequence_plan["preview_digest"]:
+                raise ValueError("Sequence differs from approved preview")
+        candidates: list[str] = []
         with tempfile.TemporaryDirectory(prefix="hub-commit-", dir=git_dir) as temp:
             temporary_index = Path(temp) / "index"
             temporary_index.write_bytes(original)
@@ -136,7 +151,36 @@ def execute_staged_commit(
                 raise ValueError("Exact tree diff does not match the reviewed path selection")
             # Candidate object creation does not publish a commit or alter the
             # index. An unsuccessful CAS may leave a normal unreachable object.
-            candidate = oid("commit-tree", actual_tree, "-p", parent, "-m", message)
+            if sequence_plan is None:
+                candidate = oid("commit-tree", actual_tree, "-p", parent, "-m", message)
+                candidates.append(candidate)
+            else:
+                from .change_commit_sequence import _entries
+
+                target = _entries(git("ls-files", "--stage", "-z"), staged=True)
+                sequence_index = Path(temp) / "sequence-index"
+                extra = {"GIT_INDEX_FILE": str(sequence_index)}
+                git("read-tree", parent, extra=extra)
+                current_parent = parent
+                for step in sequence_plan["steps"]:
+                    for path in step["paths"]:
+                        if os.fsencode(path) not in target:
+                            git("--literal-pathspecs", "update-index", "--force-remove", "--", path, extra=extra)
+                    for path in step["paths"]:
+                        entry = target.get(os.fsencode(path))
+                        if entry is not None:
+                            mode, blob = (value.decode("ascii") for value in entry)
+                            git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}", extra=extra)
+                    step_tree = oid("write-tree", extra=extra)
+                    if step_tree != step["tree_oid"]:
+                        raise ValueError("Intermediate tree differs from approved plan")
+                    step_paths = git("diff-tree", "--no-commit-id", "--name-only", "-z", "-r",
+                                     "--no-renames", current_parent, step_tree, "--")
+                    if not step_paths.endswith(b"\0") or set(step_paths.split(b"\0")[:-1]) != {os.fsencode(p) for p in step["paths"]}:
+                        raise ValueError("Intermediate tree diff differs from approved scope")
+                    candidate = oid("commit-tree", step_tree, "-p", current_parent, "-m", step["message"])
+                    candidates.append(candidate)
+                    current_parent = candidate
         if _is_redirecting_link(index) or index.stat().st_size != len(original):
             raise ValueError("Index changed while locked")
         with index.open("rb") as stream:
@@ -158,7 +202,7 @@ def execute_staged_commit(
             "success": True, "commit_oid": candidate, "parent_oid": parent, "tree_oid": actual_tree,
             "branch": branch, "index_rewritten": False, "pushed": False,
             "verification_status": "not_assessed", "explicit_user_approval": True,
-            "operation_id": operation_id,
+            "operation_id": operation_id, "commit_oids": candidates,
         }
         if journal is not None:
             try:
