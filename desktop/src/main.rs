@@ -20,14 +20,14 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
     ("Requests", &["Requests", "Active requests", "Scheduler queue", "Scheduler running", "Async jobs", "Work orders", "Trace index", "Endpoint analytics", "Telemetry history"]),
     ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review", "Run history"]),
-    ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
+    ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees", "Session briefing"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
     ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Laya"]),
     ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Recovery journal", "Diagnostics", "Audit"]),
     ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
     ("Activity", &["Activity", "Agent event stream"]),
-    ("Transfers", &["Search workspaces"]),
+    ("Transfers", &["Project and diagnostics archives"]),
 ];
 const MAINTENANCE: &[&str] = &[
     "Optimize databases", "Purge expired cache (7 days)", "Cleanup stale agent state",
@@ -226,6 +226,9 @@ struct Desktop {
     memory_scope: String,
     memory_kind: String,
     memory_scope_id: String,
+    memory_record_id: String,
+    memory_query: String,
+    lease_owner: String,
     task_scope: String,
     task_risk: String,
     incident_kind: String,
@@ -301,7 +304,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -440,6 +443,11 @@ impl Desktop {
         self.plan_title.clear();
         self.description.clear();
         self.memory_scope_id.clear();
+        self.memory_record_id.clear();
+        self.memory_key.clear();
+        self.memory_value.clear();
+        self.memory_query.clear();
+        self.lease_owner.clear();
         self.stream_id.clear();
         self.task_offset = 0;
         self.task_query.clear();
@@ -481,12 +489,23 @@ impl Desktop {
     fn can_edit_context(&self) -> bool {
         self.busy.is_none() && self.pending.is_none() && !self.installation_open
     }
+    fn memory_args(&self) -> Value {
+        json!({"root": self.repo, "scope": self.memory_scope, "query": self.memory_query,
+            "record_id": self.memory_record_id, "key": self.memory_key,
+            "value": self.memory_value, "kind": self.memory_kind,
+            "task_id": self.memory_scope_id, "session_id": self.memory_scope_id,
+            "clone_id": self.memory_scope_id, "worktree_id": self.memory_scope_id,
+            "branch": self.memory_scope_id, "confirmed": true})
+    }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
         let data = match view {
             "Updates" => request("update_status", json!({})),
             "Service health" => request("log_tail", json!({"lines": self.log_lines})),
             "Diagnostics" => request("doctor", json!({})),
+            "Memory" => request("memory_find", self.memory_args()),
+            "Session briefing" => request("session_briefing", json!({"root": self.repo})),
+            "Project and diagnostics archives" => { self.status = "Select an archive operation below.".into(); return; }
             "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
             "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
@@ -647,6 +666,7 @@ impl Desktop {
                     return;
                 }
                 if self.view == 1 {
+                    let previous_scope = self.memory_scope.clone();
                     ui.horizontal_wrapped(|ui| {
                         egui::ComboBox::from_id_salt("memory_scope").selected_text(&self.memory_scope).show_ui(ui, |ui| {
                             for scope in ["global", "repository", "clone", "worktree", "branch", "task", "session"] {
@@ -661,22 +681,36 @@ impl Desktop {
                             }
                         });
                     });
-                    if matches!(self.memory_scope.as_str(), "task" | "session") {
-                        ui.label("Task or session identity");
-                        ui.text_edit_singleline(&mut self.memory_scope_id);
+                    if previous_scope != self.memory_scope {
+                        self.memory_scope_id.clear(); self.memory_record_id.clear(); self.memory_key.clear();
+                        self.memory_value.clear(); self.clear_response();
                     }
-                    ui.label("Memory key and value (text or JSON)");
-                    ui.text_edit_singleline(&mut self.memory_key);
-                    ui.text_edit_multiline(&mut self.memory_value);
-                    ui.horizontal(|ui| {
-                        for (title, op) in [("Record fact", "memory_record"), ("Delete fact", "memory_delete")] {
-                            if ui.button(title).clicked() {
-                                self.confirm(title, request(op, json!({"root": self.repo, "key": self.memory_key,
-                                    "value": self.memory_value, "scope": self.memory_scope, "kind": self.memory_kind,
-                                    "task_id": self.memory_scope_id, "session_id": self.memory_scope_id, "confirmed": true})));
-                            }
+                    if matches!(self.memory_scope.as_str(), "task" | "session" | "clone" | "worktree" | "branch") {
+                        ui.label(format!("Exact {} identity", self.memory_scope));
+                        if ui.text_edit_singleline(&mut self.memory_scope_id).changed() {
+                            self.memory_record_id.clear(); self.clear_response();
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Server search");
+                        ui.text_edit_singleline(&mut self.memory_query);
+                        if ui.button("Search memory").clicked() {
+                            self.memory_record_id.clear(); self.clear_response(); self.refresh(ctx);
                         }
                     });
+                    ui.label("New memory key and value (text or JSON)");
+                    ui.text_edit_singleline(&mut self.memory_key);
+                    ui.text_edit_multiline(&mut self.memory_value);
+                    if ui.button("Record memory").clicked() {
+                        self.confirm("Record memory", request("memory_record", self.memory_args()));
+                    }
+                    ui.label("Delete exact record ID (select a row or enter the ID)");
+                    ui.text_edit_singleline(&mut self.memory_record_id);
+                    if ui.add_enabled(!self.memory_record_id.trim().is_empty() && self.memory_scope != "worktree",
+                        egui::Button::new("Delete memory record")).clicked() {
+                        self.confirm("Delete exact scoped memory record", request("memory_delete", self.memory_args()));
+                    }
+                    if self.memory_scope == "worktree" { ui.small("Worktree deletion requires an independently verified scope and is not supported here."); }
                     return;
                 }
                 if self.view == 2 {
@@ -768,30 +802,41 @@ impl Desktop {
             }
             3 => {
                 if self.current() == "Semaphores" {
-                    ui.label("Semaphore name; owner ID (acquire) or lease ID (release)");
+                    ui.label("Semaphore name");
                     ui.text_edit_singleline(&mut self.semaphore);
+                    ui.label("Exact owner ID");
+                    ui.text_edit_singleline(&mut self.lease_owner);
+                    ui.label("Lease ID (release only)");
                     ui.text_edit_singleline(&mut self.entity);
                     ui.add(egui::DragValue::new(&mut self.capacity).range(1..=100));
                     ui.horizontal(|ui| {
                         for (title, op) in [("Acquire", "semaphore_acquire"), ("Release", "semaphore_release")] {
                             if ui.button(title).clicked() {
                                 self.confirm(title, request(op, json!({"name": self.semaphore,
-                                    "id": self.entity, "capacity": self.capacity, "confirmed": true})));
+                                    "id": if op == "semaphore_acquire" { &self.lease_owner } else { &self.entity },
+                                    "owner": self.lease_owner, "capacity": self.capacity, "confirmed": true})));
                             }
                         }
                     });
                     return;
                 }
                 if self.current() == "File leases" {
-                    ui.label("Lease ID");
+                    ui.label("Lease ID and exact writer owner");
                     ui.text_edit_singleline(&mut self.entity);
-                    if ui.button("Release lease").clicked() {
-                        self.confirm("Release file lease", request("lease_release", json!({"id": self.entity, "confirmed": true})));
+                    ui.text_edit_singleline(&mut self.lease_owner);
+                    if ui.add_enabled(!self.repo.is_empty() && !self.entity.is_empty() && !self.lease_owner.is_empty(),
+                        egui::Button::new("Release lease")).clicked() {
+                        self.confirm("Release observed file lease", request("lease_release", json!({"root": self.repo,
+                            "id": self.entity, "owner": self.lease_owner, "confirmed": true})));
                     }
                     return;
                 }
                 if self.current() == "Worktrees" {
                     self.worktrees(ui);
+                    return;
+                }
+                if self.current() == "Session briefing" {
+                    ui.small("Repository-scoped summary of plans, board and active tasks. Use Load / refresh.");
                     return;
                 }
                 ui.label("Plan ID");
@@ -861,14 +906,7 @@ impl Desktop {
                             "revision": self.revision, "status": self.plan_status, "confirmed": true})));
                     }
                 });
-                ui.collapsing("Session briefing", |ui| {
-                    ui.label("Agent ID");
-                    ui.text_edit_singleline(&mut self.reason);
-                    if ui.button("Load briefing").clicked() {
-                        self.submit(ctx, "Session briefing".into(), request("session_briefing",
-                            json!({"id": self.reason, "confirmed": true})));
-                    }
-                });
+
             }
             4 => {
                 ui.horizontal_wrapped(|ui| {
@@ -1357,7 +1395,21 @@ impl eframe::App for Desktop {
                             });
                         });
                         if let Some(item) = selected {
-                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { if self.entity != id { self.history_cursor = 0; self.trace_cursor = 0; self.trace_before = 0; self.trace_content_offset = 0; } self.entity = id.to_owned(); }
+                            if let Some(id) = records::selection_id(self.current(), &item) {
+                                if self.entity != id { self.history_cursor = 0; self.trace_cursor = 0; self.trace_before = 0; self.trace_content_offset = 0; }
+                                self.entity = id.to_owned();
+                            }
+                            if self.current() == "Memory" {
+                                self.memory_record_id = item["record_id"].as_str().filter(|_| item["scope"].as_str() == Some(self.memory_scope.as_str())).unwrap_or("").to_owned();
+                            }
+                            if self.current() == "File leases" {
+                                self.lease_owner = item["owner"].as_str().unwrap_or("").to_owned();
+                            }
+                            if self.current() == "Semaphores" {
+                                self.semaphore = item["name"].as_str().unwrap_or("").to_owned();
+                                self.lease_owner.clear();
+                                self.entity.clear();
+                            }
                             if self.current() == "Plans" {
                                 self.revision = item["file_revision"].as_str().unwrap_or("").to_owned();
                                 self.plan_task.clear(); self.plan_draft = None;
@@ -1426,7 +1478,7 @@ impl eframe::App for Desktop {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name", "mode", "stream", "session_id"] {
+                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name", "mode", "stream", "session_id", "record_id", "owner", "clone_id", "worktree_id", "branch"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
                 }
                 for key in ["global", "purge", "confirmed", "capacity"] {
