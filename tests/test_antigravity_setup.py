@@ -539,7 +539,7 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     else:
         assert 'case "${1-}" in' in runner_text
         assert "PreToolUse)" in runner_text
-        assert "echo '{}'" in runner_text
+        assert "printf '{}\\n'" in runner_text
     hub_hook = data["local-ai-hub"]
     assert hub_hook["enabled"] is True
     assert "PreInvocation" not in hub_hook
@@ -690,24 +690,26 @@ def test_sync_antigravity_hooks_json_migrates_only_recognized_unowned_runner(
 def test_remove_duplicate_antigravity_hooks_removes_only_exact_generated_group(tmp_path):
     import json
 
+    import os
+    runner = "local-ai-hook.cmd" if os.name == "nt" else "./local-ai-hook.sh"
     hooks_file = tmp_path / "hooks.json"
     hooks_file.write_text(json.dumps({
         "custom": {"enabled": True, "PreInvocation": []},
         "local-ai-hub": {
             "enabled": True,
             "SessionStart": [{
-                "type": "command", "command": "local-ai-hook.cmd SessionStart", "timeout": 10,
+                "type": "command", "command": f"{runner} SessionStart", "timeout": 10,
             }],
             "PreToolUse": [{
                 "matcher": "read_file|run_command",
                 "hooks": [{
-                    "type": "command", "command": "local-ai-hook.cmd PreToolUse", "timeout": 15,
+                    "type": "command", "command": f"{runner} PreToolUse", "timeout": 15,
                 }],
             }],
             "PostToolUse": [{
                 "matcher": "edit_file|write_file",
                 "hooks": [{
-                    "type": "command", "command": "local-ai-hook.cmd PostToolUse", "timeout": 15,
+                    "type": "command", "command": f"{runner} PostToolUse", "timeout": 15,
                 }],
             }],
         },
