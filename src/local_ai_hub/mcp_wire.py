@@ -539,33 +539,6 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
             if finalized > requested:
                 outer_metadata["returned_tokens"] = 0
 
-    # At the minimum supported budget, diagnostic-off compaction can discard
-    # the recovery instruction while retaining the generic rejection message.
-    # Fit this protocol decision before generic clipping, using the actual wire.
-    if (action in {"context", "context_compile"} and isinstance(value, dict)
-            and value.get("success") is False
-            and value.get("error") == "max_response_tokens too small"):
-        decision = {
-            "success": False, "error": "max_response_tokens too small",
-            "next_action": "request_larger_response_budget",
-        }
-        detail = services_module.agent_diagnostics_enabled(services_module.CFG, arguments)
-        if detail:
-            decision["response_budget"] = {
-                "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
-            }
-        content = [services_module.mcp_types.TextContent(type="text", text="Increase max_response_tokens.")]
-        wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content],
-                "structuredContent": decision, "isError": False}
-        for _ in range(16):
-            returned = services_module.json_tokens(wire)
-            if detail:
-                decision["response_budget"]["returned_tokens"] = returned
-            if services_module.json_tokens(wire) == returned:
-                break
-        if services_module.json_tokens(wire) <= requested:
-            return content, decision
-
     if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
         pack = value.get("adaptive_context_pack")
         evidence = pack.get("evidence") if isinstance(pack, dict) else None
@@ -766,6 +739,42 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         if recovery is not None:
             return recovery
     contents, structured = services_module._build_mcp_budget_payload(name, arguments, value)
+    # The generic compactor can create a minimum-budget rejection even from
+    # a successful context. Retain the actionable protocol decision at the
+    # final boundary, after all compaction, without relying on diagnostics.
+    if (arguments.get("action") in {"context", "context_compile"}
+            and isinstance(structured, dict)
+            and structured.get("success") is False
+            and structured.get("error") == "max_response_tokens too small"
+            and not structured.get("task_context_artifact_id")
+            and not (isinstance(structured.get("task_context"), dict)
+                     and structured["task_context"].get("artifact_id"))):
+        requested, _, _, enabled = services_module._response_budget(str(arguments["action"]), {
+            "max_response_tokens": arguments.get("max_response_tokens", 0),
+            "response_profile": arguments.get("response_profile", ""),
+            "reuse_key": arguments.get("reuse_key", ""), "tool": name,
+        })
+        if enabled:
+            decision = {
+                "success": False, "error": "max_response_tokens too small",
+                "next_action": "request_larger_response_budget",
+            }
+            detail = services_module.agent_diagnostics_enabled(services_module.CFG, arguments)
+            if detail:
+                decision["response_budget"] = {
+                    "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
+                }
+            text_content = [services_module.mcp_types.TextContent(type="text", text="Increase max_response_tokens.")]
+            wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in text_content],
+                    "structuredContent": decision, "isError": False}
+            for _ in range(16):
+                returned = services_module.json_tokens(wire)
+                if detail:
+                    decision["response_budget"]["returned_tokens"] = returned
+                if services_module.json_tokens(wire) == returned:
+                    break
+            if services_module.json_tokens(wire) <= requested:
+                return text_content, decision
     if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
             and isinstance(value, dict) and value.get("success") is True):
         try:
