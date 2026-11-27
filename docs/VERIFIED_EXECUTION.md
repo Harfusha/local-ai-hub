@@ -117,6 +117,11 @@ pending deliveries and missing or duplicate partitions of each manifest/check
 matrix. A changed snapshot, missing binding, ambiguous attempt, or scan limit
 prevents an all-complete claim. The preview is bounded to 64 tasks and a
 15-second scan budget; it does not mutate plan or task state.
+Partition presence and verified completion are reported separately. The
+`obligation_coverage` projection sums the observed canonical task coverage
+and dimensions; `partial` is true if any task lacks coverage, the scan is
+truncated, or the snapshot changed. Do not extrapolate partial coverage to
+the entire plan. Counts describe task obligations, not unique source files.
 
 Structured contract steering is additive: existing mandatory obligations
 cannot disappear in an ordinary criteria revision. This is deliberately
