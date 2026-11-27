@@ -25,6 +25,12 @@ from .process_utils import (
     terminate_job_object,
     wait_job_object_empty,
 )
+from .opencode_workspace import (
+    WorkspaceSnapshot,
+    WorkspaceTransferResult,
+    apply_workspace_changes,
+    create_workspace_snapshot,
+)
 
 
 _ENVIRONMENT_KEYS = frozenset({
@@ -372,18 +378,26 @@ class ManagedAppContainerProcessSession:
     """Own one AppContainer profile and its Job-fenced child lifecycle.
 
     The session creates its stage inside its private AppContainer profile path.
-    It grants only that directory and never changes checkout ACLs. Pipe/listener
-    and GPU ownership remain separate gates before this can launch OpenCode.
+    Optional workspace snapshots copy files into that stage and transfer changes
+    back only after successful process exit and a confirmed empty Job Object. It
+    grants only that directory and never changes checkout ACLs. Pipe/listener and
+    GPU ownership remain separate gates before this can launch OpenCode.
     """
 
     def __init__(self, profile: AppContainerProfile, stage: Path, package_sid: str,
-                 stage_handle: Any, job_handle: int, windows_session_id: int) -> None:
+                 stage_handle: Any, job_handle: int, windows_session_id: int,
+                 workspace_snapshot: WorkspaceSnapshot | None = None) -> None:
         self.profile = profile
         self.stage = Path(stage)
         self.package_sid = package_sid
         self.stage_handle = stage_handle
         self.job_handle = job_handle
         self.windows_session_id = windows_session_id
+        self.workspace_snapshot = workspace_snapshot
+        self.workspace_owner_pid: int | None = None
+        self.process_exit_codes: dict[int, int] = {}
+        self.workspace_transfer_result: WorkspaceTransferResult | None = None
+        self.workspace_finalized = False
         self.session_id = uuid.uuid4().hex
         self.secret = os.urandom(32)
         self.process: SuspendedAppContainerProcess | None = None
@@ -395,11 +409,12 @@ class ManagedAppContainerProcessSession:
         self.state = "created"
 
     @classmethod
-    def create(cls) -> "ManagedAppContainerProcessSession":
+    def create(cls, project_root: str | os.PathLike[str] | None = None) -> "ManagedAppContainerProcessSession":
         profile = AppContainerProfile.create()
         sid_text = wintypes.LPWSTR()
         stage_handle = None
         job_handle = None
+        workspace_snapshot = None
         try:
             advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
             advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
@@ -411,10 +426,17 @@ class ManagedAppContainerProcessSession:
             stage = package_temp / ("workspace-" + uuid.uuid4().hex)
             stage.mkdir()
             stage_path, stage_handle = grant_staged_workspace_access(stage, sid_text.value, retain_handle=True)
+            if project_root is not None:
+                workspace_snapshot = create_workspace_snapshot(
+                    project_root, stage_path, staging_handle=stage_handle
+                )
             job_handle = create_job_object_kill_on_close()
             if not job_handle:
                 raise OSError("could not create the session kill-on-close Job Object")
-            return cls(profile, stage_path, sid_text.value, stage_handle, job_handle, _current_windows_session_id())
+            return cls(
+                profile, stage_path, sid_text.value, stage_handle, job_handle,
+                _current_windows_session_id(), workspace_snapshot,
+            )
         except Exception:
             if job_handle:
                 close_job_object(job_handle)
@@ -428,7 +450,9 @@ class ManagedAppContainerProcessSession:
                 ctypes.windll.kernel32.LocalFree(ctypes.cast(sid_text, wintypes.HLOCAL))
 
     def launch(self, application: str, arguments: Sequence[str], environment: Mapping[str, str]) -> int:
-        return self._launch(application, arguments, environment, bridge_client=False)
+        pid = self._launch(application, arguments, environment, bridge_client=False)
+        self.workspace_owner_pid = pid
+        return pid
 
     def launch_bridge(self, application: str, arguments: Sequence[str], environment: Mapping[str, str]) -> int:
         if self.pipe_listener is None:
@@ -591,9 +615,9 @@ class ManagedAppContainerProcessSession:
             exit_code = child.wait(timeout_ms)
             child.close()
             self.processes.remove(child)
+            self.process_exit_codes[pid] = exit_code
             self.process = self.processes[-1] if self.processes else None
             self.state = "running" if self.processes else "exited"
-            return exit_code
         except TimeoutError:
             try:
                 self.cancel()
@@ -603,6 +627,32 @@ class ManagedAppContainerProcessSession:
         except Exception:
             self.state = "cleanup_failed"
             raise
+        self._complete_workspace_if_ready()
+        return exit_code
+
+    def _complete_workspace_if_ready(self) -> WorkspaceTransferResult | None:
+        """Copy back only after the main child and every session child exited cleanly."""
+        snapshot = self.workspace_snapshot
+        owner_pid = self.workspace_owner_pid
+        if self.workspace_finalized:
+            return self.workspace_transfer_result
+        if snapshot is None or owner_pid is None or self.state != "exited" or self.processes:
+            return None
+        if owner_pid not in self.process_exit_codes:
+            return None
+        self.workspace_finalized = True
+        if any(code != 0 for code in self.process_exit_codes.values()):
+            return None
+        if not wait_job_object_empty(self.job_handle, timeout_ms=5000):
+            self.state = "cleanup_failed"
+            raise AppContainerCleanupError("workspace copyback blocked because session Job is not empty")
+        try:
+            result = apply_workspace_changes(snapshot, staging_handle=self.stage_handle)
+        except Exception:
+            self.state = "cleanup_failed"
+            raise
+        self.workspace_transfer_result = result
+        return result
 
     def wait(self, timeout_ms: int = 20_000) -> int:
         if len(self.processes) != 1:

@@ -170,7 +170,7 @@
         "Focused tests cover changed config, routing, lifecycle/recovery, receipts, GPU fencing and sandbox behavior; final acceptance separately records a real local-model and GPU run, live client handshake, installation state, and sandbox evidence."
       ],
       "accountable_role": "primary_agent",
-      "blocker": "A bounded snapshot/copyback helper now detects conflicting edits, rejects static symlinks/reparse points, checks source/stage root identity, and excludes .git writes; it is unintegrated and does not close Windows nested-path race or multi-file recovery requirements. tools/opencode_local.py remains fail-closed. No atomic OpenCode GPU reservation, live MCP/task receipt flow, or Gemma acceptance is verified.",
+      "blocker": "Workspace snapshot/copyback helper is integrated into the managed AppContainer session and targeted checks pass. Production launcher remains fail-closed: Windows path-race hardening, real AppContainer/pipe/token cleanup, GPU admission, live MCP/task receipts, and Gemma 4 12B acceptance remain unverified.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -191,7 +191,7 @@
       "depends_on": [],
       "description": "Dodat úplnou, nativní a bezpečnostně ověřenou integraci OpenCode s Local AI Hubem podle Superpowers specifikace a plánu; cílový model Gemma 4 12B Q4_K_M, runtime context 128k a Q4 KV pouze při živém potvrzení.",
       "kind": "code",
-      "next_action": "Review and harden handle-relative Windows source/stage traversal and transfer rollback; integrate only into the managed AppContainer session, add adversarial path-race tests, and keep launch disabled until real internal transport, cleanup, GPU admission, and E2E pass.",
+      "next_action": "Add adversarial Windows path-race coverage and close source/stage traversal gaps; then verify managed AppContainer launch, pipe/token cleanup, GPU admission, live Codex/Antigravity routing, and Gemma 4 12B before changing the fail-closed launcher.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-opencode-max-integration.md",
