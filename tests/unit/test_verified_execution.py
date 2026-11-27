@@ -381,3 +381,28 @@ def test_verified_execution_graph_steering_rejects_weakening_and_confirmation_cy
         {"recorded_at": 20, "retired_criteria": ["a", "c"]},
         {"recorded_at": 30},
     ]) == {"a": 20.0, "b": 10.0, "c": 20.0}
+
+
+def test_ci_provider_assets_cleanup_rejects_changed_or_added_assets(tmp_path):
+    from tools.ci_provider_assets import cleanup, snapshot
+
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    (generated / ".gitkeep").touch()
+    asset = generated / "instructions.md"
+    asset.write_text("expected", encoding="utf-8")
+    baseline = snapshot(tmp_path)
+    asset.write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed during tests"):
+        cleanup(tmp_path, baseline)
+    assert asset.exists()
+    asset.write_text("expected", encoding="utf-8")
+    extra = generated / "unexpected.json"
+    extra.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed during tests"):
+        cleanup(tmp_path, baseline)
+    assert extra.exists() and asset.exists()
+    extra.unlink()
+    cleanup(tmp_path, baseline)
+    assert not asset.exists()
+    assert (generated / ".gitkeep").exists()
