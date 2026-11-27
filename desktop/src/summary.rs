@@ -67,6 +67,18 @@ pub fn count(value: Option<&Value>) -> Option<u64> {
     value.and_then(Value::as_u64)
 }
 
+fn workload_count(snapshot: &Value, total_key: &str, rows_key: &str) -> Option<(u64, bool)> {
+    let scheduler = snapshot.get("scheduler")?;
+    if let Some(total) = count(scheduler.get(total_key)) {
+        return Some((total, true));
+    }
+    scheduler
+        .get(rows_key)
+        .and_then(Value::as_array)
+        .and_then(|rows| u64::try_from(rows.len()).ok())
+        .map(|rows| (rows, false))
+}
+
 pub fn project_progress(project: &Value) -> Option<f32> {
     project["overall_progress_pct"]
         .as_f64()
@@ -173,6 +185,24 @@ pub fn render(ui: &mut egui::Ui, view: &str, snapshot: &Value) {
                     .map(|n| n.to_string())
                     .unwrap_or("Unavailable".into())
             ));
+            for (label, total_key, rows_key) in [
+                ("Queued jobs", "pending_jobs_total", "pending_jobs"),
+                ("Running jobs", "inflight_jobs_total", "inflight_jobs"),
+            ] {
+                let value = workload_count(snapshot, total_key, rows_key)
+                    .map(|(count, total)| {
+                        format!(
+                            "{}: {count}",
+                            if total {
+                                format!("{label} (server total)")
+                            } else {
+                                format!("{label} rows returned")
+                            }
+                        )
+                    })
+                    .unwrap_or_else(|| format!("{label}: Unavailable"));
+                ui.label(value);
+            }
         });
         ui.collapsing("Recent request durations (ms)", |ui| {
             let samples = recent_durations(snapshot);
@@ -549,6 +579,29 @@ mod tests {
         );
         assert_eq!(count(Some(&json!(0))), Some(0));
         assert_eq!(count(None), None);
+    }
+    #[test]
+    fn workload_totals_preserve_unknown_and_prefer_server_totals() {
+        assert_eq!(
+            workload_count(&json!({}), "pending_jobs_total", "pending_jobs"),
+            None
+        );
+        assert_eq!(
+            workload_count(
+                &json!({"scheduler":{"pending_jobs_total":12,"pending_jobs":[{},{}]}}),
+                "pending_jobs_total",
+                "pending_jobs"
+            ),
+            Some((12, true))
+        );
+        assert_eq!(
+            workload_count(
+                &json!({"scheduler":{"pending_jobs":[{},{}]}}),
+                "pending_jobs_total",
+                "pending_jobs"
+            ),
+            Some((2, false))
+        );
     }
     #[test]
     fn inventory_does_not_invent_empty_or_loaded() {
