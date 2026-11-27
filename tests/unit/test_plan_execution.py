@@ -30,3 +30,12 @@ def test_partitions_never_combine_different_exclusion_reasons():
     groups = partition_coverage([first, second, third])
     assert len(groups) == 2
     assert not any(group["complete"] for group in groups)
+
+
+def test_partitions_never_combine_different_static_import_policies():
+    first, second, third = config(0), config(1), config(2)
+    first["inventory"]["include_python_imports"] = True
+    second["inventory"]["include_python_imports"] = True
+    groups = partition_coverage([first, second, third])
+    assert len(groups) == 2
+    assert not any(group["complete"] for group in groups)
