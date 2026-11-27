@@ -219,6 +219,8 @@ struct Desktop {
     settings_draft: settings::Draft,
     metrics_period: String,
     log_lines: i64,
+    auto_log: bool,
+    last_log: Instant,
     goal: String,
     criteria: String,
     memory_key: String,
@@ -311,7 +313,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -323,6 +325,7 @@ impl Desktop {
         if self.busy.is_some() { return; }
         let probe = payload["op"] == "probe";
         let live = payload["op"] == "event_stream";
+        if payload["op"] == "lifecycle" { self.last_probe = Instant::now() - Duration::from_secs(30); }
         self.busy = Some(label.clone());
         let install = self.install.clone();
         let (tx, rx) = mpsc::channel();
@@ -362,6 +365,7 @@ impl Desktop {
                         self.last_probe = Instant::now();
                     }
                     Ok(mut value) => {
+                        if done.label == "Service health" { self.last_log = Instant::now(); }
                         if done.live {
                             self.last_live = Instant::now();
                             if value["controls"].as_array().is_some_and(|controls| controls.iter().any(|c|
@@ -422,7 +426,6 @@ impl Desktop {
                         self.refilter();
                         self.status = format!("{}: {}{}", done.label, if self.snapshot.as_ref().is_some_and(|v| v["success"] == false) { "operation failed — inspect details" } else { "response received" },
                             if self.rows.len() >= MAX_ROWS { " (display capped)" } else { "" });
-                        self.last_probe = Instant::now() - Duration::from_secs(30);
                     }
                     Err(error) => {
                         // A failed load/mutation must not leave a previously
@@ -454,7 +457,7 @@ impl Desktop {
     fn clear_response(&mut self) {
         self.rows.clear(); self.visible.clear(); self.detail = None; self.record_detail = None;
         self.snapshot = None; self.snapshot_view.clear(); self.reveal_trace = false;
-        self.live_events.clear(); self.auto_live = false;
+        self.live_events.clear(); self.auto_live = false; self.auto_log = false;
     }
     // A root or installation switch invalidates all scope-bound selection and
     // continuation state, not just the visible rows.
@@ -1238,6 +1241,15 @@ impl Desktop {
                 ctx.request_repaint_after(Duration::from_secs(30).saturating_sub(self.last_probe.elapsed()));
             }
         }
+        if self.auto_log && self.current() == "Service health" && !self.raw_view && focused
+            && self.can_edit_context() {
+            let interval = Duration::from_secs(5);
+            if self.last_log.elapsed() >= interval {
+                self.refresh(ctx);
+            } else {
+                ctx.request_repaint_after(interval.saturating_sub(self.last_log.elapsed()));
+            }
+        }
         if self.busy.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status = "An operation is in progress. Finish it before closing.".into();
@@ -1266,6 +1278,12 @@ impl Desktop {
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
                 if self.current() == "Agent event stream" { ui.checkbox(&mut self.auto_live, "Follow live SSE while focused"); }
+                if self.current() == "Service health" {
+                    if ui.checkbox(&mut self.auto_log, "Follow log tail while focused").changed() && self.auto_log {
+                        self.last_log = Instant::now() - Duration::from_secs(5);
+                        ctx.request_repaint();
+                    }
+                }
                 ui.label("Repository root");
                 if ui.add_enabled(self.can_edit_context(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.reset_scope(); }
             });
@@ -1329,7 +1347,7 @@ impl Desktop {
                         });
                     });
                     if self.log_lines != before { self.refresh(ctx); }
-                    ui.small("Search response filters log lines. Logs may contain sensitive data.");
+                    ui.small("Search response filters the latest bounded tail. Follow refreshes every five seconds while focused; it is not a gap-free event stream. Logs may contain sensitive data.");
                 });
                 if let Some(snapshot) = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Service health") {
                     if let Some(lines) = filtered_log_lines(snapshot, &self.filter) {
@@ -1341,7 +1359,7 @@ impl Desktop {
                         });
                         if lines.is_empty() { ui.label("No log lines match this filter."); }
                         let height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
-                        egui::ScrollArea::both().id_salt("operational_logs")
+                        egui::ScrollArea::both().id_salt("operational_logs").stick_to_bottom(self.auto_log)
                             .show_rows(ui, height, lines.len(), |ui, range| {
                                 for index in range { ui.add(egui::Label::new(egui::RichText::new(lines[index]).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
                             });
@@ -1765,6 +1783,25 @@ mod tests {
                 assert!(app.pending.is_none(), "Unexpected confirmation for {name}");
             }
         }
+    }
+    #[test]
+    fn log_follow_is_opt_in_and_stops_on_navigation_or_failed_read() {
+        let mut app = Desktop::new();
+        assert!(!app.auto_log);
+        app.navigate(7, 1);
+        assert_eq!(app.current(), "Service health");
+        app.auto_log = true;
+        app.navigate(7, 0);
+        assert!(!app.auto_log);
+        app.navigate(7, 1);
+        app.auto_log = true;
+        app.busy = Some("Service health".into());
+        let (tx, rx) = mpsc::channel();
+        app.receiver = Some(rx);
+        tx.send(Completed { label: "Service health".into(), result: Err("offline".into()), probe: false, live: false }).unwrap();
+        app.receive();
+        assert!(!app.auto_log);
+        assert!(app.status.contains("offline"));
     }
     #[test]
     fn support_archive_password_is_not_indexed_by_generic_search() {
