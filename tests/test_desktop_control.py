@@ -958,3 +958,37 @@ def test_task_dependency_patch_is_exact_and_bounded():
                          ("order", "1000000001"), ("accountable_role", "")):
         with pytest.raises(ValueError):
             desktop.plan_text_patch({field: value}, task=True)
+
+
+def test_plan_binding_uses_exact_persisted_session_and_revision(tmp_path):
+    args = {"root": str(tmp_path), "id": "plan_1", "task_id": "task_card",
+            "execution_id": "task_execution", "revision": "reviewed-rev", "confirmed": True}
+    root = str(tmp_path.resolve())
+    task = {"success": True, "task": {"task_id": "task_execution", "context": {"session_id": "session-1"}}}
+    receipt = {"success": True, "task_id": "task_execution", "plan_id": "plan_1",
+               "plan_task_id": "task_card", "session_id": "session-1", "file_revision": "next-rev"}
+    with patch.object(desktop, "checked_post", side_effect=[task, receipt]) as post:
+        assert desktop.dispatch(MagicMock(), {"op": "plan_bind_task", "args": args}) == receipt
+        assert post.call_args_list[0].args[1:] == (
+            "/api/agent-state/tasks", {"root": root, "action": "get", "task_id": "task_execution"})
+        assert post.call_args_list[1].args[1:] == (
+            "/api/coord/plan_bind_task", {"root": root, "task_id": "task_execution", "plan_id": "plan_1",
+                                         "plan_task_id": "task_card", "expected_revision": "reviewed-rev",
+                                         "session_id": "session-1"})
+    with patch.object(desktop, "checked_post", return_value={"success": True, "task": {
+        "task_id": "task_execution", "context": {"session_id": ""}}}) as post:
+        with pytest.raises(ValueError, match="persisted session"):
+            desktop.dispatch(MagicMock(), {"op": "plan_bind_task", "args": args})
+        assert post.call_count == 1
+    with patch.object(desktop, "checked_post", side_effect=[task, {**receipt, "task_id": "other"}]):
+        with pytest.raises(RuntimeError, match="receipt incomplete"):
+            desktop.dispatch(MagicMock(), {"op": "plan_bind_task", "args": args})
+
+
+@pytest.mark.parametrize("session", [None, 1, " padded", "bad\x00id", "x" * 201])
+def test_task_create_rejects_invalid_session_before_transport(tmp_path, session):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="session ID"):
+            desktop.dispatch(MagicMock(), {"op": "task_create", "args": {
+                "root": str(tmp_path), "goal": "Task", "session_id": session, "confirmed": True}})
+        post.assert_not_called()
