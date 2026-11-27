@@ -178,6 +178,27 @@ rationale. Review them when agreeing the goal contract. Completion attests
 only to included resources, not to excluded resources or default inventory
 ignores. Existing tasks cannot remove obligations by ordinary criteria steering.
 
+### Static Python import impact
+
+For Git changes scope, set `"include_python_imports": true` to expand the
+inventory using the standard-library Python AST. The server analyzes ordinary
+absolute and relative imports in the repository root and conventional
+`src/` layout, includes deleted modules as dependency targets and walks reverse
+import edges transitively. Package initializers and ambiguous local module
+names are treated conservatively. When combined with `include_mapped_tests`,
+both import and project-declared rules are expanded to a fixed point.
+The setting is persisted, rechecked at completion and included in partition
+identity; it is never a client-supplied list of impacted files.
+
+The scan uses the existing bounded repository inventory and rejects
+unreadable, changed-during-read, oversized, lossy or syntactically invalid
+Python sources. Additional limits: 512,000 bytes per source, 32 MB overall,
+250,000 import edges and a five-second expansion deadline after inventory.
+The scanner does not import or execute project code. Dynamic imports, custom
+module roots, generated code, runtime dispatch, other languages and excluded
+files are not modeled. This is a conservative static import approximation,
+not an exhaustive semantic dependency analysis.
+
 ### Git-managed impact policy
 
 For changes scope, set `include_mapped_tests: true`. Hub resolves the existing
@@ -309,7 +330,7 @@ evidence age is advisory. The web dashboard is retired.
 
 Remaining acceptance work (not claimed complete):
 
-1. Semantic dependency expansion beyond explicit affected-test rules, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds.
+1. Semantic dependency expansion beyond explicit affected-test rules and static Python imports, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds.
 2. Authorized rejection/defer dispositions, independent reviewer identity and
    cross-task/Git knowledge sharing for problem reports (separate ordered
    confirmation evidence is implemented).
