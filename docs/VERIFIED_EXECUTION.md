@@ -347,6 +347,17 @@ file, generated summary or model opinion is not proof of correctness.
 Re-evaluate after revision/mutation changes. Audit findings are not necessarily
 blocking for audit completion.
 
+## Reproducible graph benchmark
+
+Run `python tools/benchmark_verified_execution.py --seed 17 --trials 32 --obligations 128`
+in an installed development checkout. This generates acyclic dependency graphs,
+injects missing and superseded receipt observations, and compares the graph
+projection and a receipt-only baseline with a separate reference oracle. It
+reports invalid-obligation precision/recall (parts per million), graph projection
+runtime and estimated full-contract versus compact-resume payload tokens.
+This is a deterministic synthetic graph correctness benchmark, not a test of
+LLM semantic defect detection or actual end-to-end agent token savings.
+
 ## Scope and follow-up
 
 Implemented: bounded repository and Git change inventories, configured affected
