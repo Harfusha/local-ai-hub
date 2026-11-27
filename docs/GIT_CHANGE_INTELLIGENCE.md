@@ -203,3 +203,10 @@ Run `python tools/benchmark_git_change_evaluation.py paired-results.json` after 
 ```
 
 The example counts are illustrative, not measured. Use a consistent provider definition of total input tokens including cached input. The evaluator reports input/output and uncached-input differences, completion, precision, recall and per-case additional missed findings. It rejects estimated usage and inconsistent counters and does not treat lower token counts as evidence of equal quality. Actual experiments remain to be run; no provider API calls are made by this evaluator.
+
+
+## Receipt reuse and review hints
+
+`changes sequence-verify` now checks for a current exact-tree receipt before materializing and executing commands. A valid receipt is reused only for the same root, intermediate Git tree, command identity and observed environment digest, with the same effective project policy and unexpired local journal evidence. The result identifies reused and newly executed steps separately. Use `--rerun-checks` to force fresh checks; starting a newer attempt revokes the old success. All required receipts are checked again at the end of verification and immediately before publication. The operator-supplied environment capsule must reflect external dependency changes; this mechanism does not establish external dependency immutability.
+
+Worktree details also query the existing indexed impact service for the displayed groups' paths (maximum 64 changed paths). The bounded result lists candidate consumer files and tests, with omitted counts and explicit freshness `not_checked`. These hints are not a complete dependency graph, are not used as commit prerequisites or proof of review, and never authorize verification reuse. Inspect exact source for unresolved or risky candidates. The desktop confirmation dialog displays the exact submitted Git paths, hunks, messages, sequence and local annotation record before mutation.
