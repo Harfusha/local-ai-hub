@@ -33,6 +33,9 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
     if execution["progress"]["status"].as_str() == Some("no_recent_verified_evidence") {
         ui.label("No recent verified evidence. Check for blocked or repetitive work.");
     }
+    if execution["progress"]["status"].as_str() == Some("repeated_failed_verification") {
+        ui.label("Repeated failed verification. Diagnose the failure before retrying.");
+    }
     let coverage = &execution["coverage"];
     if let Some((verified, total)) = progress(coverage) {
         ui.label(format!("{verified}/{total} verified obligations"));
@@ -106,6 +109,9 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
         for report in reports.iter().take(12) {
             ui.label(format!("{}: {}", label(report, "id"), label(report, "title")));
             if report["blocking"].as_bool() == Some(true) { ui.small("Blocking"); }
+            if let Some(criterion) = report["resolution_criterion"].as_str() {
+                ui.small(format!("Confirmation: {criterion} — {}", label(report, "resolution_status")));
+            }
         }
     }
     if problems["preview_truncated"].as_bool() == Some(true) { ui.label("Additional reports exist."); }
