@@ -141,6 +141,15 @@ def stage_selection(
                 extra.update(GIT_OBJECT_DIRECTORY=str(temporary_objects),
                              GIT_ALTERNATE_OBJECT_DIRECTORIES=str(objects))
             if hunk_ids is None:
+                # Copying an index changes its timestamp and may turn a racily
+                # clean entry into a falsely clean one. Force Git to reread
+                # selected tracked regular files, even with identical stat data.
+                for selected in preflight["unstaged_selection"]:
+                    candidate = Path(root) / selected
+                    if candidate.is_file() and not candidate.is_symlink() and git(
+                        "--literal-pathspecs", "ls-files", "-z", "--", selected, extra=extra,
+                    ):
+                        git("--literal-pathspecs", "add", "--renormalize", "--", selected, extra=extra)
                 git("--literal-pathspecs", "add", "-A", "--", *preflight["unstaged_selection"], extra=extra)
             else:
                 from .change_hunk_selection import patch_blob_pair, select_hunks
