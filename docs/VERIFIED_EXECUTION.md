@@ -131,7 +131,12 @@ The verification preview includes advisory evidence age. An active incomplete
 task without a recently validated receipt for 15 minutes is flagged
 `no_recent_verified_evidence`. This does not prove inactivity (long tests or
 research may take longer), does not block cancellation, and does not force an
-external agent to keep running.
+external agent to keep running. The next actionable obligation is also flagged
+`repeated_failed_verification` when at least three consecutive failed receipts
+exist within the last 15 minutes in the same repository revision, mutation
+generation and authorized owner lineage (bounded to the newest 128 receipts).
+A passing receipt breaks the sequence. This is advisory and may miss older
+attempts; the Stop hook permits exit rather than repeating the same failure.
 
 An inventory check or explicit unit can declare `evidence_type` as
 `source_review`, `test`, or `benchmark`. This is persisted in the contract
@@ -219,6 +224,19 @@ blocking report. Resolution is not proof
 of independent expert review: the criterion and actual evidence still
 must adequately cover the reported problem.
 
+For stronger confirmation, add a distinct mandatory acceptance criterion for
+verifying the repair, then set `resolution_criterion` to its exact name in
+the problem report. A blocking report adds a server-derived dependency from
+the primary criterion to confirmation; impossible or cyclic ordering across
+reports and the declared graph is rejected. Both receipts must be currently
+valid, and the confirmation must be recorded no earlier than the new primary
+receipt and use a different receipt ID and evidence artifact. This supports,
+for example, a source review followed by a command-backed regression test.
+Confirmation reopens if its evidence or prerequisite becomes stale. A nonblocking
+report does not add a mandatory graph edge. Different artifacts alone do not
+establish independent human or agent identity; choose appropriate criteria and
+evidence types. An operator receipt waiver still cannot bypass an open blocking report.
+
 ## Context recovery
 
 The existing Agent OS context compiler emits a compact structured execution
@@ -292,15 +310,17 @@ evidence age is advisory. The web dashboard is retired.
 Remaining acceptance work (not claimed complete):
 
 1. Semantic dependency expansion beyond explicit affected-test rules, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds.
-2. Authorized rejection/defer dispositions, independent resolution verification
-   and cross-task/Git knowledge sharing for problem reports.
+2. Authorized rejection/defer dispositions, independent reviewer identity and
+   cross-task/Git knowledge sharing for problem reports (separate ordered
+   confirmation evidence is implemented).
 3. Full graph metadata steering and replay beyond additive criteria.
 4. Dependency-selective receipt invalidation across repository mutations (prerequisite
    receipt ordering is implemented) with conservative fallback and
    obligation-specific retrieval of source context (not just exact resource identity).
 5. Semantic consistency guard, independent critic and representative seeded-defect
    evaluations. Deterministic projection regression tests do not measure model recall.
-6. Real-host acceptance of continuation hooks and richer no-progress detection.
+6. Real-host acceptance of continuation hooks and broader no-progress detection
+   beyond evidence age and repeated failed verification.
 7. Full desktop parity and green CI on every supported platform.
 8. Measure recall, precision, net tokens and runtime against a baseline.
 
