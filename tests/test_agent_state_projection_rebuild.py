@@ -537,7 +537,7 @@ def test_task_reads_rebuild_projection_after_branch_switch(tmp_path: Path):
 
     store = TaskStore(AgentStateStore(tmp_path / "state" / "agent_state.sqlite"))
     runtime_task = store.create(
-        GoalContract(goal="Branch-bound runtime work"),
+        GoalContract(goal="Branch-bound runtime work", acceptance_criteria=["Work remains scoped to the selected branch"]),
         ScopeContext(task_id="task-runtime-branch-snapshot"),
         task_id="task-runtime-branch-snapshot",
         repo_root=str(repo),
@@ -548,4 +548,6 @@ def test_task_reads_rebuild_projection_after_branch_switch(tmp_path: Path):
 
     subprocess.run(["git", "switch", "without-task"], cwd=repo, check=True, capture_output=True)
     assert store.get("task-branch-snapshot", repo_root=str(repo)) is None
-    assert store.get(runtime_task.task_id, repo_root=str(repo)) is None
+    assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None
+    subprocess.run(["git", "switch", "main"], cwd=repo, check=True, capture_output=True)
+    assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None

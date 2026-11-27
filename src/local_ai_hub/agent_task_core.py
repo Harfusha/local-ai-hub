@@ -17,6 +17,7 @@ from .agent_task_models import (
     MAX_TASK_QUERY_SCAN_ROWS,
     GoalContract,
     TaskCheckpoint,
+    TaskIdempotencyConflictError,
     TaskPage,
     TaskState,
     TaskStatus,
@@ -33,6 +34,77 @@ TaskStore = None
 
 
 class TaskCoreMixin:
+    def _publish_project_task_contract(
+        self,
+        state: TaskState,
+        *,
+        repo_root: str,
+        actor: str,
+        idempotency_key: str,
+    ) -> bool | None:
+        """Publish the portable task contract before creating its local projection."""
+        if not repo_root:
+            return True
+        from .repo_knowledge import RepoKnowledgeStore
+        from .repo_plan.schema_validation import RepoPlanConflictError
+        from .repo_project_tasks import build_project_task_record
+        project_dir = Path(repo_root) / ".local-ai-hub"
+        manifest_path = project_dir / "project.json"
+        if not project_dir.exists():
+            return None
+        if not manifest_path.is_file():
+            raise ValueError("A stable project identity must be bootstrapped before creating a project task")
+
+        store = RepoKnowledgeStore(repo_root)
+        manifest, _ = store.manifest()
+        if manifest["mode"] != "shared":
+            return None
+        record = build_project_task_record(store, {
+            "task_id": state.task_id,
+            "status": state.status.value,
+            "contract": state.contract.to_dict(),
+            "checkpoint": state.checkpoint.to_dict(),
+        }, provenance={
+            "origin_kind": "model" if actor.casefold() not in {"human", "user", "local-operator"} else "manual",
+        })
+        try:
+            existing = store.get("task", state.task_id, verify_sources=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            existing_payload = existing["record"].get("payload", {})
+            if (
+                existing["record"].get("project_id") == record["project_id"]
+                and existing_payload.get("task_id") == state.task_id
+                and existing_payload.get("contract") == record["payload"]["contract"]
+            ):
+                return False
+            raise RepoPlanConflictError("Canonical project task already exists with different contents")
+        result = store.save(
+            record, expected_revision="", owner="agent-task-create",
+            idempotency_key=idempotency_key,
+            authorize_write=lambda: True,
+        )
+        if result.get("success") is not True:
+            # Another agent may have won the create race after our read. Accept
+            # only the identical project contract; every divergent write stays
+            # an explicit conflict.
+            try:
+                concurrent = store.get("task", state.task_id, verify_sources=False)
+            except FileNotFoundError:
+                concurrent = None
+            if concurrent is not None:
+                concurrent_record = concurrent["record"]
+                concurrent_payload = concurrent_record.get("payload", {})
+                if (
+                    concurrent_record.get("project_id") == record["project_id"]
+                    and concurrent_payload.get("task_id") == state.task_id
+                    and concurrent_payload.get("contract") == record["payload"]["contract"]
+                ):
+                    return False
+            raise RepoPlanConflictError("Canonical project task publication was not confirmed")
+        return True
+
     def create(
         self,
         contract: GoalContract,
@@ -192,7 +264,28 @@ class TaskCoreMixin:
             actor=actor,
         )
         try:
-            return self._commit_create(initial_state, event)
+            project_task_created = self._publish_project_task_contract(
+                initial_state,
+                repo_root=canonical_root,
+                actor=actor,
+                idempotency_key=event.idempotency_key,
+            )
+            if canonical_root and project_task_created is False:
+                from .repo_agent_state import rebuild_agent_state_projection
+
+                rebuilt = rebuild_agent_state_projection(canonical_root, Path(self.state_store.db_path).parent)
+                if rebuilt.get("success") is not True:
+                    raise TaskIdempotencyConflictError(
+                        rebuilt.get("error", "Canonical project task projection refresh failed")
+                    )
+                existing = self.get(t_id, repo_root=canonical_root)
+                if existing is None:
+                    raise TaskIdempotencyConflictError("Canonical project task is unavailable after projection refresh")
+                return existing
+            return self._commit_create(
+                initial_state, event,
+                canonical_project_root=canonical_root if project_task_created is True else "",
+            )
         except Exception as exc:
             if worktree_plan is not None:
                 raise TaskWorktreeError(

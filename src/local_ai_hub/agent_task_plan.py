@@ -510,7 +510,9 @@ class TaskPlanSyncMixin:
                 return "reconciled"
             return "not_bound"
 
-    def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
+    def _commit_create(
+        self, state: TaskState, event: AgentEvent, *, canonical_project_root: str = "",
+    ) -> TaskState:
         """Atomically create initial projection, sequence cursor, and task event."""
         if not self.state_store.enabled:
             return state
@@ -527,6 +529,19 @@ class TaskPlanSyncMixin:
 
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
+            if canonical_project_root:
+                ownership_db = Path(self.state_store.db_path).parent / "agent_project_projection.sqlite"
+                attached = {str(row[1]) for row in con.execute("PRAGMA database_list")}
+                if "project_projection_meta" not in attached:
+                    con.execute("ATTACH DATABASE ? AS project_projection_meta", (str(ownership_db),))
+                con.execute(
+                    """CREATE TABLE IF NOT EXISTS project_projection_meta.records (
+                        repo_root TEXT NOT NULL,
+                        record_kind TEXT NOT NULL,
+                        record_id TEXT NOT NULL,
+                        PRIMARY KEY (repo_root, record_kind, record_id)
+                    )"""
+                )
             with write_transaction(
                 con, max_duration_seconds=_AGENT_TASK_WRITE_TIMEOUT_SECONDS,
                 rollback_label="Agent task create"
@@ -542,6 +557,18 @@ class TaskPlanSyncMixin:
                 if existing:
                     existing_event = AgentEvent.from_row(existing)
                     if existing_event.kind != event.kind or dict(existing_event.payload) != dict(event.payload):
+                        if canonical_project_root:
+                            current = con.execute(
+                                "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
+                                (state.task_id,),
+                            ).fetchone()
+                            owner = con.execute(
+                                "SELECT 1 FROM project_projection_meta.records "
+                                "WHERE repo_root = ? AND record_kind = 'task' AND record_id = ?",
+                                (canonical_project_root, state.task_id),
+                            ).fetchone()
+                            if current and owner and self._row_to_state(current).contract.to_dict() == state.contract.to_dict():
+                                return self._row_to_state(current), []
                         raise TaskIdempotencyConflictError(
                             "task create idempotency key conflicts with a different event"
                         )
@@ -550,6 +577,12 @@ class TaskPlanSyncMixin:
                         (state.task_id,),
                     ).fetchone()
                     if current:
+                        if canonical_project_root:
+                            con.execute(
+                                "INSERT OR IGNORE INTO project_projection_meta.records "
+                                "(repo_root, record_kind, record_id) VALUES (?, 'task', ?)",
+                                (canonical_project_root, state.task_id),
+                            )
                         return self._row_to_state(current), []
                     if str(existing_event.payload.get("task_id", "")) != state.task_id:
                         raise TaskIdempotencyConflictError(
@@ -577,6 +610,12 @@ class TaskPlanSyncMixin:
                         state.updated_at,
                     ),
                 )
+                if canonical_project_root:
+                    con.execute(
+                        "INSERT OR IGNORE INTO project_projection_meta.records "
+                        "(repo_root, record_kind, record_id) VALUES (?, 'task', ?)",
+                        (canonical_project_root, state.task_id),
+                    )
                 self._refresh_task_search_index(con, state.task_id)
                 if not existing:
                     appended = self.state_store.append_in_transaction(

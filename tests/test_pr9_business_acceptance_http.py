@@ -57,6 +57,19 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
     (control / "project.json").write_text(json.dumps({
         "schema_version": 1, "project_id": project_id, "mode": "shared",
     }), encoding="utf-8")
+    import subprocess
+
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "bootstrap"],
+                   check=True, timeout=15)
+    initial_head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True,
+        text=True, timeout=15,
+    ).stdout.strip()
     store = RepoKnowledgeStore(root)
 
     records = [
@@ -116,7 +129,48 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        import subprocess
+        ordinary_contract = {
+            "goal": "Keep billing retries idempotent", "description": "",
+            "acceptance_criteria": ["Only one charge is created per request key"],
+            "non_goals": [], "constraints": [], "risk_profile": "normal",
+        }
+        status, ordinary_task = _post(base_url, "/api/agent-state/tasks", {
+            "action": "create", "root": str(root), "repo_root": str(root),
+            "task_id": "task-ordinary-billing",
+            "context": {"session_id": "private-session-should-stay-local"},
+            "contract": ordinary_contract,
+        })
+        assert status == 200 and ordinary_task["success"] is True, ordinary_task
+        canonical_task = control / "agent-os/tasks/task-ordinary-billing.json"
+        assert canonical_task.is_file(), "ordinary task creation must publish its durable contract to Git"
+        canonical_text = canonical_task.read_text(encoding="utf-8")
+        assert "Keep billing retries idempotent" in canonical_text
+        assert '"lease_id"' not in canonical_text and '"verification_receipts"' not in canonical_text
+        assert "private-session-should-stay-local" not in canonical_text and str(root) not in canonical_text
+        status, replayed_task = _post(base_url, "/api/agent-state/tasks", {
+            "action": "create", "root": str(root), "repo_root": str(root),
+            "task_id": "task-ordinary-billing", "contract": ordinary_contract,
+        })
+        assert status == 200 and replayed_task["success"] is True, replayed_task
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        concurrent_create = {
+            "action": "create", "root": str(root), "repo_root": str(root),
+            "task_id": "task-concurrent-billing", "contract": ordinary_contract,
+        }
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            concurrent_results = list(executor.map(
+                lambda _: _post(base_url, "/api/agent-state/tasks", concurrent_create),
+                range(2),
+            ))
+        assert all(status == 200 and result["success"] is True for status, result in concurrent_results), concurrent_results
+        assert (control / "agent-os/tasks/task-concurrent-billing.json").is_file()
+        assert subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True,
+            text=True, timeout=15,
+        ).stdout.strip() == initial_head
+        assert subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet"], timeout=15).returncode == 0
 
         old_root = tmp_path / "pre-v4-checkout"
         old_control = old_root / ".local-ai-hub"
@@ -141,6 +195,54 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
         status, retried_bootstrap = _post(base_url, "/api/repo/knowledge/manage", bootstrap, dashboard=True)
         assert status == 200 and retried_bootstrap["success"] is True
 
+        uninitialized_root = tmp_path / "uninitialized-project"
+        uninitialized_control = uninitialized_root / ".local-ai-hub"
+        uninitialized_control.mkdir(parents=True)
+        (uninitialized_control / ".gitignore").write_text("local/\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(uninitialized_root), "init", "--quiet"], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(uninitialized_root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(uninitialized_root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "uninitialized"],
+                       check=True, timeout=15)
+        status, uninitialized_task = _post(base_url, "/api/agent-state/tasks", {
+            "action": "create", "root": str(uninitialized_root), "repo_root": str(uninitialized_root),
+            "task_id": "task-uninitialized-project", "contract": {
+                "goal": "No project task before stable identity", "description": "",
+                "acceptance_criteria": ["No SQLite-only project task"],
+                "non_goals": [], "constraints": [], "risk_profile": "normal",
+            },
+        })
+        assert status == 400 and uninitialized_task["success"] is False
+        assert "stable project identity" in uninitialized_task["error"]
+        assert not app.agent_tasks.has_task("task-uninitialized-project")
+
+        readonly_root = tmp_path / "readonly-project"
+        readonly_control = readonly_root / ".local-ai-hub"
+        readonly_control.mkdir(parents=True)
+        (readonly_control / ".gitignore").write_text("local/\n", encoding="utf-8")
+        (readonly_control / "project.json").write_text(json.dumps({
+            "schema_version": 1, "project_id": "86d64932-5af8-4541-9fa6-62a38bc8c55f",
+            "mode": "read_only",
+        }), encoding="utf-8")
+        subprocess.run(["git", "-C", str(readonly_root), "init", "--quiet"], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(readonly_root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(readonly_root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "read-only"],
+                       check=True, timeout=15)
+        status, readonly_task = _post(base_url, "/api/agent-state/tasks", {
+            "action": "create", "root": str(readonly_root), "repo_root": str(readonly_root),
+            "task_id": "task-readonly-project", "contract": {
+                "goal": "Do not publish into read-only project", "description": "",
+                "acceptance_criteria": ["Write is denied"],
+                "non_goals": [], "constraints": [], "risk_profile": "normal",
+            },
+        })
+        assert status == 200 and readonly_task["success"] is True, readonly_task
+        assert app.agent_tasks.has_task("task-readonly-project")
+        assert not (readonly_control / "agent-os/tasks/task-readonly-project.json").exists()
+
         status, preview = _post(base_url, "/api/repo/knowledge/manage", batch)
         assert status == 200 and preview["success"] is True
 
@@ -160,7 +262,7 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
             "root": str(root), "action": "rebuild_projection",
         })
         assert status == 200 and rebuilt["success"] is True
-        assert rebuilt["rebuilt"] == {"tasks": 1, "memory": 1, "incidents": 1}
+        assert rebuilt["rebuilt"] == {"tasks": 3, "memory": 1, "incidents": 1}
         assert [item.incident_id for item in app.agent_incidents.list_incidents(root=str(root))] == [
             "inc-billing-timeout",
         ]
@@ -171,6 +273,11 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
         assert status == 200 and task_result["success"] is True, task_result
         assert task_result["task"]["status"] == "active"
         assert task_result["task"]["checkpoint"]["next_action"] == "verify retry behavior"
+        status, ordinary_result = _post(base_url, "/api/agent-state/tasks", {
+            "action": "get", "root": str(root), "task_id": "task-ordinary-billing",
+        })
+        assert status == 200 and ordinary_result["success"] is True
+        assert ordinary_result["task"]["contract"]["goal"] == "Keep billing retries idempotent"
 
         status, memory_result = _get(base_url, "/api/agent-state/memory", {
             "record_id": "mem-billing-retry-rule", "scope": "repository", "root": str(root),
@@ -224,7 +331,7 @@ def test_http_projection_recovery_requires_operator_and_preserves_event_history(
     try:
         task_id = "task-http-projection-recovery"
         task = app.agent_tasks.create(
-            GoalContract(goal="Close monthly customer billing accurately"),
+            GoalContract(goal="Close monthly customer billing accurately", acceptance_criteria=["Billing state is reconciled"]),
             ScopeContext(repository_id=project_id, task_id=task_id),
             task_id=task_id,
             repo_root=str(root),
