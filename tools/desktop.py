@@ -8,6 +8,8 @@ import json
 import http.client
 import uuid
 import os
+import stat
+import zipfile
 import subprocess
 import sys
 from pathlib import Path
@@ -252,6 +254,23 @@ def scoped_read(control: HubControl, route: str, root: str) -> dict[str, Any]:
         client.close()
 
 
+class BoundedArchiveBody:
+    """Read exactly the announced bytes without retaining a whole ZIP in RAM."""
+
+    def __init__(self, stream: Any, length: int) -> None:
+        self.stream = stream
+        self.remaining = length
+
+    def read(self, size: int = 65536) -> bytes:
+        if self.remaining == 0:
+            return b""
+        chunk = self.stream.read(min(self.remaining, size if size > 0 else 65536, 65536))
+        if not chunk:
+            raise RuntimeError("Archive changed during upload; verify outcome before retrying.")
+        self.remaining -= len(chunk)
+        return chunk
+
+
 def transfer(control: HubControl, op: str, args: dict[str, Any]) -> dict[str, Any]:
     """Binary-only local API transport; no redirects, retry or arbitrary URLs."""
     if args.get("confirmed") is not True:
@@ -268,15 +287,22 @@ def transfer(control: HubControl, op: str, args: dict[str, Any]) -> dict[str, An
         if op == "bundle_import":
             root = explicit_root(args.get("root"))
             cap = min(512 * 1024 * 1024, max(1024, int(client.config.get("bundles", {}).get("max_bundle_bytes", 128 * 1024 * 1024))))
-            if not file.is_file() or file.stat().st_size > cap:
+            if not file.is_file():
                 raise ValueError("Choose an existing ZIP within the configured size limit.")
             with file.open("rb") as stream:
-                body = stream.read(cap + 1)
-            if len(body) > cap or not body.startswith(b"PK"):
-                raise ValueError("Invalid or oversized ZIP.")
-            headers["Content-Type"] = "application/zip"
-            connection.request("POST", "/api/bundle/import?" + urlencode({"target_root": root}), body, headers)
-            response = connection.getresponse()
+                observed = os.fstat(stream.fileno())
+                length = observed.st_size
+                if not stat.S_ISREG(observed.st_mode) or not 22 <= length <= cap:
+                    raise ValueError("Invalid or oversized ZIP.")
+                if not zipfile.is_zipfile(stream):
+                    raise ValueError("Invalid ZIP archive.")
+                stream.seek(0)
+                body = BoundedArchiveBody(stream, length)
+                headers.update({"Content-Type": "application/zip", "Content-Length": str(length)})
+                connection.request("POST", "/api/bundle/import?" + urlencode({"target_root": root}), body, headers)
+                if body.remaining:
+                    raise RuntimeError("Incomplete archive upload; verify outcome before retrying.")
+                response = connection.getresponse()
             raw = response.read(8_000_001)
             if len(raw) > 8_000_000:
                 raise RuntimeError("Import response too large; verify outcome before retrying.")
@@ -310,6 +336,10 @@ def transfer(control: HubControl, op: str, args: dict[str, Any]) -> dict[str, An
                 stream.write(chunk)
             if received != length:
                 raise RuntimeError("Incomplete archive.")
+        # HTTP success and matching length alone cannot prove the payload is
+        # an archive; reject malformed transfers without decompressing data.
+        if not zipfile.is_zipfile(file):
+            raise RuntimeError("Server returned an invalid ZIP archive.")
         result = {"success": True, "file": str(file.resolve()), "bytes": received}
         if password:
             result["archive_password"] = password
