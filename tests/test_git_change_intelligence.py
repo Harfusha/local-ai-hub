@@ -299,3 +299,39 @@ def test_source_fact_delta_is_not_behavior_proof():
     assert result["change_counts"] == {"added": 1, "removed": 1}
     assert result["structural_equivalence_unknown"]
     assert not result["behavior_equivalence_proven"]
+
+
+def test_dependency_units_keep_cycles_together_and_order_dependents():
+    from local_ai_hub.change_dependencies import _dependency_units
+
+    edges = {"a": {"b"}, "b": {"a", "base"}, "base": set(), "consumer": {"a"}, "other": set()}
+    units = _dependency_units(edges)
+    positions = {key: index for index, unit in enumerate(units) for key in unit}
+    assert sorted(key for unit in units for key in unit) == sorted(edges)
+    assert ["a", "b"] in units
+    assert positions["base"] < positions["a"] == positions["b"] < positions["consumer"]
+    assert units == _dependency_units(dict(reversed(list(edges.items()))))
+    assert _dependency_units({}) == []
+
+
+def test_dependency_unit_preflight_refuses_partial_cycle_but_accepts_joint_selection():
+    from local_ai_hub.change_commit_preflight import commit_preflight
+    from local_ai_hub.change_dependencies import annotate_dependencies
+
+    groups = [
+        {"group_key": name, "files": [name + ".py"], "risks": [],
+         "changes": [{"path": name + ".py", "status": " M", "atoms": [
+             {"semantic": {"imports_after": [dependency]}}
+         ]}]}
+        for name, dependency in (("a", "b"), ("b", "a"))
+    ]
+    graph = annotate_dependencies(groups)
+    assert graph["candidate_commit_units"] == [["a", "b"]]
+    assert graph["cyclic_unit_count"] == 1
+    plan = {"success": True, "clusters": groups, "observed_change_set_id": "1" * 64,
+            "git_visible_observation_complete": True}
+    partial = commit_preflight(plan, ["a.py"], "1" * 64)
+    assert "partial_dependency_component" in partial["blockers"]
+    joint = commit_preflight(plan, ["a.py", "b.py"], "1" * 64)
+    assert joint["staging_preview_available"], joint
+    assert not joint["commit_ready"]
