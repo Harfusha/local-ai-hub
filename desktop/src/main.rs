@@ -391,6 +391,12 @@ impl Desktop {
                         if done.label == "Trace content" {
                             // Do not flatten arbitrary stored text into searchable or copyable rows.
                             self.rows.clear();
+                        } else if done.label == "Export encrypted diagnostics" {
+                            // Keep the password only in the explicit receipt, never
+                            // in the generic search/filter/copy field projection.
+                            let mut receipt = value.clone();
+                            if let Some(fields) = receipt.as_object_mut() { fields.remove("archive_password"); }
+                            flatten(&receipt, "", 0, &mut self.rows);
                         } else if done.label == "Trace detail" || done.label == "Trace index" || done.label == "Trace metrics" {
                             flatten(&trace::sanitize(&value), "", 0, &mut self.rows);
                         } else {
@@ -1314,6 +1320,22 @@ impl Desktop {
                 }
                 return;
             }
+            if self.snapshot_view == "Export encrypted diagnostics" {
+                if let Some(receipt) = self.snapshot.as_ref() {
+                    ui.heading("Encrypted support archive");
+                    ui.label(format!("File: {}", records::display(&receipt["file"])));
+                    ui.label(format!("Size: {} bytes", records::display(&receipt["bytes"])));
+                    ui.small("Keep the password separately from the archive. It is available only until another response or navigation replaces this receipt.");
+                    if let Some(password) = receipt["archive_password"].as_str() {
+                        ui.checkbox(&mut self.reveal_trace, "Reveal archive password");
+                        if self.reveal_trace {
+                            ui.label(egui::RichText::new(password).monospace());
+                            if ui.button("Copy archive password").clicked() { ui.ctx().copy_text(password.to_owned()); }
+                        }
+                    } else { ui.colored_label(ui.visuals().warn_fg_color, "Archive password not supplied; do not assume the archive is recoverable."); }
+                    return;
+                }
+            }
             if self.snapshot_view == "Trace content" {
                 if let Some(page) = self.snapshot.as_ref().and_then(|response| response.get("content_page")) {
                     ui.label(format!("Stored content: {} · offset {} · next {} · more {} · storage truncated {}",
@@ -1714,6 +1736,24 @@ mod tests {
                 assert!(app.pending.is_none(), "Unexpected confirmation for {name}");
             }
         }
+    }
+    #[test]
+    fn support_archive_password_is_not_indexed_by_generic_search() {
+        let mut app = Desktop::new();
+        app.busy = Some("Export encrypted diagnostics".into());
+        let (tx, rx) = mpsc::channel();
+        app.receiver = Some(rx);
+        tx.send(Completed {
+            label: "Export encrypted diagnostics".into(),
+            result: Ok(json!({"success":true,"file":"support.zip","bytes":100,"archive_password":"fixture-secret"})),
+            probe: false, live: false,
+        }).unwrap();
+        app.receive();
+        assert!(app.rows.iter().all(|row| !row.path.contains("password") && !row.value.contains("fixture-secret")));
+        assert_eq!(app.snapshot.as_ref().unwrap()["archive_password"], "fixture-secret");
+        assert!(!app.reveal_trace);
+        app.navigate(10, 0);
+        assert!(app.snapshot.is_none());
     }
     #[test]
     fn failed_worker_invalidates_previous_snapshot_and_mutation_revision() {
