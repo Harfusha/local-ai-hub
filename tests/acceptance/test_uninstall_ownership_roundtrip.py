@@ -124,6 +124,9 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         for agent in ("codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin")
         for component in ("mcp", "skills", "instructions")
     }
+    # Exercise the standalone route explicitly; the plugin route intentionally
+    # omits the global MCP entry and is covered by provider bundle tests.
+    components["agent_antigravity_plugin"] = False
     components["agent_antigravity_hooks"] = True
 
     (install / "src" / "local_ai_hub").mkdir(parents=True)
