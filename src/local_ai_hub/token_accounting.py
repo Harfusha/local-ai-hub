@@ -24,14 +24,21 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, cast
 
 from .budget import estimate_tokens
 
+class _Orjson(Protocol):
+    OPT_SORT_KEYS: int
+
+    def dumps(self, value: Any, *, option: int = 0) -> bytes: ...
+
+
 try:
-    import orjson as _orjson
+    import importlib
+    _orjson: _Orjson | None = cast(_Orjson, importlib.import_module("orjson"))
 except ImportError:  # pragma: no cover
-    _orjson = None  # type: ignore[assignment]
+    _orjson = None
 
 
 _PRIVATE_KEY = "_token_accounting"
@@ -177,6 +184,9 @@ def _has_nonfinite_float(value: Any, *, max_depth: int = 128) -> bool:
 def _orjson_matches_canonical(value: Any, *, max_depth: int = 128) -> bool:
     """Admit only built-in JSON values whose float spelling matches stdlib."""
     seen: set[int] = set()
+    serializer = _orjson
+    if serializer is None:
+        return False
 
     def _walk(current: Any, depth: int) -> bool:
         if depth >= max_depth:
@@ -186,7 +196,7 @@ def _orjson_matches_canonical(value: Any, *, max_depth: int = 128) -> bool:
             return True
         if kind is float:
             try:
-                return _orjson.dumps(current) == repr(current).encode("ascii")
+                return serializer.dumps(current) == repr(current).encode("ascii")
             except (TypeError, ValueError, OverflowError):
                 return False
         if kind not in (dict, list, tuple):

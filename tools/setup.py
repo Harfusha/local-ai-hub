@@ -4716,7 +4716,9 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         except Exception as exc:
             log(f"Provider plugin skill generation failed: {exc}")
             return 1
-        if install_dir.resolve() != SOURCE_ROOT.resolve():
+        if install_dir.resolve() != SOURCE_ROOT.resolve() and (install_dir / "defaults.toml").is_file():
+            # Generate-only must not fabricate a second installation or require
+            # an installed checkout at the configured destination.
             write_all_generated(cfg, install_dir, hub_python)
             sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):

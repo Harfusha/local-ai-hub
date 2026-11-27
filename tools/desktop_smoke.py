@@ -28,6 +28,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="lah-desktop-smoke-") as temp:
         env = os.environ.copy()
         env.pop("LOCAL_AI_CONFIG", None)
+        env.pop("WAYLAND_DISPLAY", None)
+        env.pop("LOCAL_AI_DESKTOP_PYTHON", None)
         env["LOCAL_AI_HUB_ROOT"] = temp
         started = time.monotonic()
         process = subprocess.Popen([str(binary)], env=env, cwd=temp,
@@ -45,7 +47,7 @@ def main() -> int:
                     break
                 time.sleep(0.1)
             if not observed:
-                raise RuntimeError("No Local AI Hub window observed within smoke deadline")
+                raise RuntimeError("No Local AI Hub window observed within smoke deadline; X11 tree: " + windows.stdout[-3000:])
             startup = time.monotonic() - started
             monitored = psutil.Process(process.pid)
             time.sleep(2)
