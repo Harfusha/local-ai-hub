@@ -6,9 +6,11 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 import time
+import stat
 
 MAX_SOURCE_BYTES = 512_000
 MAX_TOTAL_BYTES = 32_000_000
+MAX_EDGES = 250_000
 
 
 def _module_names(path: str) -> set[str]:
@@ -63,12 +65,13 @@ def python_import_dependents(root: str, resources: Iterable[str], changed: Itera
             modules[name].add(path)
     reverse: dict[str, set[str]] = defaultdict(set)
     total_bytes = 0
+    edges = 0
     for rel in sources:
         if time.monotonic() >= deadline:
             raise ValueError("Python import impact exceeded deadline")
         candidate = base / rel
         before = tools._resolve_inventory_path_safe_with_stat(base, candidate, resolved_base=base)
-        if before is None:
+        if before is None or not stat.S_ISREG(before[2].st_mode):
             raise ValueError("Python import impact source became unavailable")
         info = before[2]
         total_bytes += info.st_size
@@ -80,13 +83,21 @@ def python_import_dependents(root: str, resources: Iterable[str], changed: Itera
             if after is None or any(getattr(after[2], field) != getattr(info, field)
                                     for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")):
                 raise ValueError("Python import impact source changed during analysis")
-            tree = ast.parse("\n".join(lines), filename=rel)
+            source = "\n".join(lines)
+            if "\ufffd" in source:
+                raise ValueError("Python import impact source could not be decoded losslessly")
+            tree = ast.parse(source, filename=rel)
         except (OSError, SyntaxError, UnicodeError, RecursionError) as exc:
             raise ValueError("Python import impact source could not be parsed") from exc
         for name in _imports(tree, rel):
-            for target in modules.get(name, ()):
-                if target != rel:
+            if time.monotonic() >= deadline:
+                raise ValueError("Python import impact exceeded deadline")
+            for target in modules.get(name, set()):
+                if target != rel and rel not in reverse[target]:
                     reverse[target].add(rel)
+                    edges += 1
+                    if edges > MAX_EDGES:
+                        raise ValueError("Python import impact exceeded edge limit")
     if time.monotonic() >= deadline:
         raise ValueError("Python import impact exceeded deadline")
     return dict(reverse)
