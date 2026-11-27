@@ -178,3 +178,38 @@ def test_exclusions_not_supported_for_declared_inventory():
                      exclusions=[{"path": "b.py", "reason": "not in scope"}])
     with pytest.raises(ValueError, match="exclusions require"):
         GoalContract.from_dict(contract)
+
+
+def test_transitive_mapped_impact_cycles_and_missing_targets(tmp_path: Path):
+    import subprocess
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "Fixture")
+    for name in ("src.py", "test_consumer.py", "test_downstream.py"):
+        (tmp_path / name).write_text("pass", encoding="utf-8")
+    policy = tmp_path / ".local-ai.toml"
+    policy.write_text(
+        '[affected_tests_mapping]\n'
+        '"src.py" = ["test_consumer.py"]\n'
+        '"test_consumer.py" = ["test_downstream.py"]\n'
+        '"test_downstream.py" = ["test_consumer.py"]\n', encoding="utf-8",
+    )
+    git("add", ".")
+    git("commit", "-m", "fixture")
+    (tmp_path / "src.py").write_text("x = 1", encoding="utf-8")
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"].update(
+        scope="changes", include_mapped_tests=True,
+    )
+    created = GoalContract.from_dict(compile_repository_contract(contract, str(tmp_path)))
+    config = created.slo_profile["verified_execution"]
+    assert config["inventory"]["resources"] == ["src.py", "test_consumer.py", "test_downstream.py"]
+    assert check_repository_scope(config, str(tmp_path))["complete"]
+    (tmp_path / "test_downstream.py").unlink()
+    assert not check_repository_scope(config, str(tmp_path))["complete"]
+    with pytest.raises(ValueError, match="no allowed inventory match"):
+        compile_repository_contract(contract, str(tmp_path))
