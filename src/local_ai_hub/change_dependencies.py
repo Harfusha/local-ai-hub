@@ -120,8 +120,12 @@ def _dependency_units(edges: dict[str, set[str]]) -> list[list[str]]:
     return units
 
 
-def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
+def annotate_dependencies(
+    groups: list[dict[str, Any]], *, input_scope: str = "git_visible_changes",
+) -> dict[str, Any]:
     """Order candidate groups by uniquely matched import paths, never assert completeness."""
+    if input_scope not in {"git_visible_changes", "selected_paths", "committed_comparison"}:
+        raise ValueError("Unsupported dependency input scope")
     owner = {path: group["group_key"] for group in groups for path in group["files"]}
     available = set(owner)
     declarations: dict[str, set[str]] = {}
@@ -303,6 +307,17 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
         })
     return {
         "method": "observed_import_edges_v2",
+        "coverage": {
+            "complete": False,
+            "input_scope": input_scope,
+            "observed_edge_classes": ["unique_import_resolution", "unique_import_removal_resolution"],
+            "unmodeled_edge_classes": [
+                "unchanged_consumers", "symbol_and_call_graph", "task_associations",
+                "test_mappings", "database_migrations", "configuration", "build_and_package",
+                "implementation_documentation", "semantic_similarity", "project_conventions",
+            ],
+            "reason": "Current graph uses changed candidate groups and observed import facts only.",
+        },
         "hard_dependencies": [],
         "soft_dependencies": soft_dependencies,
         "uncertain_candidates": uncertain_candidates,

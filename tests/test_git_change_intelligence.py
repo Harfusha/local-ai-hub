@@ -60,7 +60,9 @@ def test_clean_invalid_and_scoped(tmp_path):
     _repo(tmp_path)
     assert _plan(tmp_path)["clusters"] == []
     (tmp_path / "cache.py").write_text("changed\n", encoding="utf-8")
-    assert _plan(tmp_path, ["cache.py"])["total_files"] == 1
+    selected = _plan(tmp_path, ["cache.py"])
+    assert selected["total_files"] == 1
+    assert selected["dependency_plan"]["coverage"]["input_scope"] == "selected_paths"
     assert not _plan(tmp_path, ["missing.py"])["success"]
 
 
@@ -521,6 +523,29 @@ def test_remaining_import_to_deleted_provider_is_reported():
     assert graph["unresolved_removed_import_count"] == 1
     assert "import_candidate_points_to_removed_path" in groups[1]["risks"]
     assert not graph["dependencies_verified"]
+
+
+def test_dependency_graph_reports_incomplete_input_scope():
+    from local_ai_hub.change_dependencies import annotate_dependencies
+
+    full = annotate_dependencies([])
+    selected = annotate_dependencies([], input_scope="selected_paths")
+    compared = annotate_dependencies([], input_scope="committed_comparison")
+
+    assert full["coverage"]["complete"] is False
+    assert full["coverage"]["input_scope"] == "git_visible_changes"
+    assert selected["coverage"]["input_scope"] == "selected_paths"
+    assert compared["coverage"]["input_scope"] == "committed_comparison"
+    assert "unchanged_consumers" in full["coverage"]["unmodeled_edge_classes"]
+    assert full["dependencies_verified"] is False
+
+
+def test_dependency_graph_rejects_unknown_input_scope():
+    import pytest
+    from local_ai_hub.change_dependencies import annotate_dependencies
+
+    with pytest.raises(ValueError, match="Unsupported dependency input scope"):
+        annotate_dependencies([], input_scope="everything_maybe")
 
 
 def test_paired_benchmark_keeps_quality_regression_visible():

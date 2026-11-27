@@ -312,7 +312,12 @@ def run_split_changes(
                     cluster["suggested_commit_message"] = f"{kind}: update {first}{suffix}"
             if any(item["path"] in cluster["files"] for item in observed["unavailable"]):
                 cluster["risks"] = sorted(set(cluster["risks"]) | {"patch_coverage_incomplete"})
-        dependency_plan = annotate_dependencies(clusters)
+        dependency_input_scope = (
+            "committed_comparison" if comparison is not None
+            else "selected_paths" if changed_files is not None
+            else "git_visible_changes"
+        )
+        dependency_plan = annotate_dependencies(clusters, input_scope=dependency_input_scope)
     except (OSError, ValueError, subprocess_module.SubprocessError):
         return {
             "success": False,
