@@ -36,6 +36,22 @@ const MAINTENANCE: &[&str] = &[
 const MAX_ROWS: usize = 12_000;
 const MAX_ADAPTER_RESPONSE: usize = 8_100_000;
 
+// Absolute IPC deadline, separate from individual HTTP/CLI timeouts. A
+// timed-out mutation is NOT replayed, and the Hub/supervisor is not killed.
+fn adapter_timeout(request: &Value) -> Duration {
+    let seconds = match request["op"].as_str().unwrap_or("") {
+        "probe" => 15,
+        "read" | "log_tail" | "timeline_page" | "trace_page" | "task_page" |
+        "event_page" | "event_stream" | "operator_catalog" => 60,
+        "vision_review" => 450,
+        "lifecycle" | "operator_run" | "compare" | "bundle_import" |
+        "bundle_export" | "diagnostics_export" => 900,
+        // Some scoped mutations perform two sequential 120-second requests.
+        _ => 300,
+    };
+    Duration::from_secs(seconds)
+}
+
 // Drain all output so an oversized response cannot deadlock the child on
 // a full pipe. Retain only a bounded prefix and never parse partial JSON.
 fn read_bounded(mut reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
@@ -97,16 +113,67 @@ impl Install {
             let _ = child.wait();
             return Err("Missing adapter stdout".into());
         };
-        let reader = thread::spawn(move || read_bounded(stdout, MAX_ADAPTER_RESPONSE));
-        let written = child.stdin.take().ok_or_else(|| "Missing adapter stdin".to_string())
-            .and_then(|mut pipe| pipe.write_all(&bytes).map_err(|e| e.to_string()));
-        if let Err(error) = written {
+        let Some(mut stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error);
+            return Err("Missing adapter stdin".into());
+        };
+        let deadline = Instant::now() + adapter_timeout(request);
+        let (read_tx, read_rx) = mpsc::channel();
+        thread::spawn(move || { let _ = read_tx.send(read_bounded(stdout, MAX_ADAPTER_RESPONSE)); });
+        let (write_tx, write_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = stdin.write_all(&bytes);
+            drop(stdin); // EOF is the JSON bridge request boundary.
+            let _ = write_tx.send(result);
+        });
+        let mut write_complete = false;
+        let status = loop {
+            if !write_complete {
+                match write_rx.try_recv() {
+                    Ok(Ok(())) => write_complete = true,
+                    Ok(Err(error)) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!("Adapter input failed: {error}; outcome unknown"));
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Adapter input worker disconnected; outcome unknown".into());
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Adapter wait failed: {error}; outcome unknown"));
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // Terminate only the short-lived bridge, never the service or
+                // its detached supervisor. An already sent operation may finish.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Adapter deadline exceeded; operation outcome unknown. Reload before retrying.".into());
+            }
+            thread::sleep(remaining.min(Duration::from_millis(50)));
+        };
+        if !write_complete {
+            write_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(5)))
+                .map_err(|_| "Adapter input receipt unavailable; outcome unknown".to_string())?
+                .map_err(|e| format!("Adapter input failed: {e}; outcome unknown"))?;
         }
-        let status = child.wait().map_err(|e| e.to_string())?;
-        let (stdout, overflow) = reader.join().map_err(|_| "Adapter output reader failed".to_string())?
+        // A descendant can inherit a pipe handle. Do not wait indefinitely
+        // for EOF after the actual adapter process has already exited.
+        let (stdout, overflow) = read_rx.recv_timeout(
+            deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(5)))
+            .map_err(|_| "Adapter output did not close; outcome unknown".to_string())?
             .map_err(|e| format!("Cannot read adapter response: {e}"))?;
         if !status.success() { return Err(format!("Adapter exited: {status}")); }
         if overflow { return Err("Adapter response exceeds limit".into()); }
@@ -2131,6 +2198,15 @@ mod tests {
 #[cfg(test)]
 mod bounded_adapter_tests {
     use super::*;
+
+    #[test]
+    fn adapter_deadlines_cover_longest_allowed_operations_without_unbounded_probes() {
+        assert_eq!(adapter_timeout(&request("probe", json!({}))), Duration::from_secs(15));
+        for op in ["lifecycle", "operator_run", "compare", "bundle_export"] {
+            assert_eq!(adapter_timeout(&request(op, json!({}))), Duration::from_secs(900));
+        }
+        assert!(adapter_timeout(&request("plan_bind_task", json!({}))) > Duration::from_secs(240));
+    }
 
     #[test]
     fn oversized_output_is_drained_with_bounded_retention() {
