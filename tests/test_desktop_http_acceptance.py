@@ -102,6 +102,21 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
             assert found["ok"], found
             ids = {item["record_id"] for item in found["result"]["records"]}
             assert saved[index] in ids and saved[1-index] not in ids, found
+        first_scope = {"root": str(roots[0]), "scope": "repository", "record_id": saved[0]}
+        wrong_scope = {**first_scope, "root": str(roots[1])}
+        detail = call("memory_get", **first_scope)
+        assert detail["ok"] and detail["result"]["record"]["value"] == "memory-0", detail
+        assert call("memory_get", **wrong_scope)["ok"] is False
+        assert call("memory_quarantine", **first_scope, reason="fixture review")["ok"] is False
+        assert call("memory_quarantine", **wrong_scope, reason="wrong root", confirmed=True)["ok"] is False
+        quarantined = call("memory_quarantine", **first_scope, reason="fixture review", confirmed=True)
+        assert quarantined["ok"] and quarantined["result"]["record"]["status"] == "quarantined", quarantined
+        found = call("memory_find", root=str(roots[0]), scope="repository",
+                     key="desktop-scope-marker", status="quarantined", limit=25)
+        assert found["ok"] and [row["record_id"] for row in found["result"]["records"]] == [saved[0]], found
+        other = call("memory_find", root=str(roots[1]), scope="repository",
+                     key="desktop-scope-marker", status="quarantined", limit=25)
+        assert other["ok"] and other["result"]["records"] == [], other
         wrong = call("memory_delete", root=str(roots[1]), scope="repository",
                      record_id=saved[0], confirmed=True)
         assert wrong["ok"] is False, wrong
