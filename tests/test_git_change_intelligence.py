@@ -313,7 +313,7 @@ def test_import_candidate_order_and_hunk_symbol_overlap(tmp_path):
     assert any("pay" in h["symbol_candidates"] for h in payment["changes"][0]["atoms"][0]["hunks"])
 
 
-def test_import_edges_are_typed_as_uncertain_candidates():
+def test_uniquely_resolved_import_edges_are_soft_dependencies():
     from local_ai_hub.change_dependencies import annotate_dependencies
 
     groups = [
@@ -329,13 +329,13 @@ def test_import_edges_are_typed_as_uncertain_candidates():
     graph = annotate_dependencies(groups)
 
     assert graph["hard_dependencies"] == []
-    assert graph["soft_dependencies"] == []
-    assert graph["uncertain_candidates"] == [{
+    assert graph["soft_dependencies"] == [{
         "source_group_key": "consumer",
         "target_group_key": "provider",
         "kind": "import_candidate",
         "evidence": [{"source": "payment.py", "target": "cache.py", "kind": "import_candidate"}],
     }]
+    assert graph["uncertain_candidates"] == []
 
 
 def test_unresolved_and_ambiguous_imports_are_explicit_candidates():
@@ -357,7 +357,7 @@ def test_unresolved_and_ambiguous_imports_are_explicit_candidates():
 
     assert graph["ambiguous_import_count"] == 1
     assert graph["unmatched_import_count"] == 1
-    assert graph["unresolved_import_candidates"] == [
+    assert graph["uncertain_candidates"] == [
         {"source_group_key": "consumer", "source": "entry.py", "import_name": "cache",
          "kind": "ambiguous_import_candidate", "candidate_group_keys": ["provider_a", "provider_b"],
          "candidate_groups_omitted": 0,
@@ -384,7 +384,7 @@ def test_unresolved_import_removal_is_explicit_and_counted():
     graph = annotate_dependencies(groups)
 
     assert graph["unresolved_removed_import_count"] == 1
-    assert graph["unresolved_import_candidates"] == [{
+    assert graph["uncertain_candidates"] == [{
         "source_group_key": "consumer", "source": "entry.py", "import_name": "missing",
         "kind": "unmatched_import_removal_candidate", "candidate_group_keys": [],
         "candidate_groups_omitted": 0, "candidate_paths": [], "candidate_paths_omitted": 0,
@@ -405,9 +405,9 @@ def test_unresolved_import_candidate_output_is_bounded_with_omitted_count():
 
     graph = annotate_dependencies(groups)
 
-    assert len(graph["unresolved_import_candidates"]) == 256
-    assert graph["unresolved_import_candidates_omitted"] == 1
-    assert graph["unresolved_import_candidates"][0]["import_name"] == "missing_000"
+    assert len(graph["uncertain_candidates"]) == 256
+    assert graph["uncertain_candidates_omitted"] == 1
+    assert graph["uncertain_candidates"][0]["import_name"] == "missing_000"
 
 def test_source_fact_delta_is_not_behavior_proof():
     from local_ai_hub.change_source_facts import summarize_facts

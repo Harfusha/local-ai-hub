@@ -136,11 +136,11 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                 annotate_hunks(atom)
     edges: dict[str, set[str]] = {group["group_key"]: set() for group in groups}
     evidence: dict[str, list[dict[str, str]]] = {key: [] for key in edges}
-    relation_evidence: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    soft_relation_evidence: dict[tuple[str, str, str], list[dict[str, str]]] = {}
 
     def record_relation(source: str, target: str, item: dict[str, str]) -> None:
         key = (source, target, item["kind"])
-        entries = relation_evidence.setdefault(key, [])
+        entries = soft_relation_evidence.setdefault(key, [])
         if item not in entries and len(entries) < 16:
             entries.append(item)
 
@@ -154,12 +154,12 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                      if change.get("status") in {"D", "D ", " D"}}
     removal_edges = 0
     unresolved_removed_imports = 0
-    unresolved_import_candidates: list[dict[str, Any]] = []
-    unresolved_import_candidates_omitted = 0
+    uncertain_candidates: list[dict[str, Any]] = []
+    uncertain_candidates_omitted = 0
 
     def record_unresolved_import(source_group: str, source_path: str, name: str,
                                 matches: set[str], *, removal: bool = False) -> None:
-        nonlocal unresolved_import_candidates_omitted, unresolved_removed_imports
+        nonlocal uncertain_candidates_omitted, unresolved_removed_imports
         if removal:
             unresolved_removed_imports += 1
         paths = sorted(matches)
@@ -176,10 +176,10 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
             "candidate_paths": paths[:16],
             "candidate_paths_omitted": max(0, len(paths) - 16),
         }
-        if len(unresolved_import_candidates) < 256:
-            unresolved_import_candidates.append(item)
+        if len(uncertain_candidates) < 256:
+            uncertain_candidates.append(item)
         else:
-            unresolved_import_candidates_omitted += 1
+            uncertain_candidates_omitted += 1
     for group in groups:
         key = group["group_key"]
         for change in group["changes"]:
@@ -280,18 +280,17 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
         group["dependency_evidence"] = evidence[key]
         if len(membership[key]) > 1:
             group["risks"] = sorted(set(group["risks"]) | {"dependency_cycle_requires_joint_commit"})
-    uncertain_candidates = [
+    soft_dependencies = [
         {"source_group_key": source, "target_group_key": target,
          "kind": kind, "evidence": items}
-        for (source, target, kind), items in sorted(relation_evidence.items())
+        for (source, target, kind), items in sorted(soft_relation_evidence.items())
     ]
     return {
-        "method": "observed_import_candidates_v1",
+        "method": "observed_import_edges_v2",
         "hard_dependencies": [],
-        "soft_dependencies": [],
+        "soft_dependencies": soft_dependencies,
         "uncertain_candidates": uncertain_candidates,
-        "unresolved_import_candidates": unresolved_import_candidates,
-        "unresolved_import_candidates_omitted": unresolved_import_candidates_omitted,
+        "uncertain_candidates_omitted": uncertain_candidates_omitted,
         "candidate_order": order,
         "blocked_group_keys": sorted(remaining),
         "candidate_commit_units": units,
