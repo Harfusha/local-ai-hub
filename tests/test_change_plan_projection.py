@@ -63,3 +63,20 @@ def test_model_partition_rejects_missing_and_duplicate_ids():
         result = project_change_plan(_result(), mode="semantic", limit=2, delegate=delegate)
         assert result["model_advice_status"] == "invalid"
         assert not result["semantic_group_proposals"]
+
+
+def test_change_plan_artifact_omits_task_candidates():
+    from local_ai_hub.change_plan_artifact import publish_change_plan
+    from unittest.mock import MagicMock
+
+    source = {"success": True, "clusters": [{"files": ["a.py"], "task_candidates": [{"goal": "private"}]}],
+              "task_context": {"linked_task_count": 1}, "commit_ready": True}
+    store = MagicMock()
+    store.put_json.return_value = "art_example"
+    output = publish_change_plan(source, store)
+    assert output["artifact_id"] == "art_example"
+    payload = store.put_json.call_args.args[0]
+    assert "task_context" not in payload
+    assert "task_candidates" not in payload["clusters"][0]
+    assert payload["commit_ready"] is False
+    assert output["commit_ready"] is False

@@ -67,3 +67,7 @@ All changes are accounted for or explicitly identified as unavailable. No unprov
 ## Native desktop integration
 
 The web dashboard cutover is incorporated from the native desktop branch. Changes & commits uses a named, scoped bridge operation and the same read-only HTTP plan, with bounded paging and expected observed revision. It does not run arbitrary Git commands or authorize mutations.
+
+## Artifact-backed detail
+
+Use `split_changes(mode="artifact")` to explicitly publish the current full metadata-only observation to the existing artifact store, then read it through `local_ai_artifact(action="slice", artifact_id=..., offset=..., max_chars=...)`. The snapshot is historical and not a lease; never treat artifact retrieval as a new observation. Oversized payloads are rejected rather than silently clipped. This opt-in path stores repository metadata (including file names, symbol names; task candidate metadata is excluded), not raw patches. It does not retain verification authority.

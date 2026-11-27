@@ -296,46 +296,6 @@ impl Desktop {
                 self.busy = None; self.receiver = None;
                 self.status = "Operation worker disconnected; outcome unknown.".into();
             }
-            11 => {
-                ui.label("Read-only commit planning; summaries are not approval or verification.");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("View");
-                    if egui::ComboBox::from_id_salt("change_mode").selected_text(&self.change_mode).show_ui(ui, |ui| {
-                        let mut changed = false;
-                        for mode in ["summary", "details", "semantic", "pr", "release"] {
-                            changed |= ui.selectable_value(&mut self.change_mode, mode.into(), mode).changed();
-                        }
-                        changed
-                    }).inner.unwrap_or(false) {
-                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
-                    }
-                    ui.label("Base (optional)");
-                    if ui.text_edit_singleline(&mut self.change_base).changed() {
-                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
-                    }
-                    ui.label("Head");
-                    if ui.text_edit_singleline(&mut self.change_head).changed() {
-                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
-                    }
-                });
-                ui.label("Optional repository-relative file (details)");
-                if ui.text_edit_singleline(&mut self.entity).changed() {
-                    self.change_offset = 0; self.change_expected.clear(); self.clear_response();
-                }
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Refresh plan").clicked() {
-                        self.change_offset = 0; self.change_expected.clear(); self.refresh(ctx);
-                    }
-                    let revision = self.snapshot.as_ref().and_then(|v| v["observed_change_set_id"].as_str()).unwrap_or("").to_owned();
-                    let next = self.snapshot.as_ref().and_then(|v| v["next_offset"].as_i64());
-                    if ui.add_enabled(next.is_some() && !revision.is_empty(), egui::Button::new("Next groups")).clicked() {
-                        if let Some(offset) = next {
-                            self.change_offset = offset; self.change_expected = revision; self.refresh(ctx);
-                        }
-                    }
-                });
-                ui.small("For PR/release choose the explicit base. Semantic mode uses local advisory messages only. Refresh after any repository edit.");
-            }
             _ => {}
         }
     }
@@ -693,6 +653,46 @@ impl Desktop {
                         }
                     }
                 });
+            }
+            11 => {
+                ui.label("Read-only commit planning; summaries are not approval or verification.");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("View");
+                    if egui::ComboBox::from_id_salt("change_mode").selected_text(&self.change_mode).show_ui(ui, |ui| {
+                        let mut changed = false;
+                        for mode in ["summary", "details", "semantic", "pr", "release"] {
+                            changed |= ui.selectable_value(&mut self.change_mode, mode.into(), mode).changed();
+                        }
+                        changed
+                    }).inner.unwrap_or(false) {
+                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                    }
+                    ui.label("Base (optional)");
+                    if ui.text_edit_singleline(&mut self.change_base).changed() {
+                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                    }
+                    ui.label("Head");
+                    if ui.text_edit_singleline(&mut self.change_head).changed() {
+                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                    }
+                });
+                ui.label("Optional repository-relative file (details)");
+                if ui.text_edit_singleline(&mut self.entity).changed() {
+                    self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Refresh plan").clicked() {
+                        self.change_offset = 0; self.change_expected.clear(); self.refresh(ctx);
+                    }
+                    let revision = self.snapshot.as_ref().and_then(|v| v["observed_change_set_id"].as_str()).unwrap_or("").to_owned();
+                    let next = self.snapshot.as_ref().and_then(|v| v["next_offset"].as_i64());
+                    if ui.add_enabled(next.is_some() && !revision.is_empty(), egui::Button::new("Next groups")).clicked() {
+                        if let Some(offset) = next {
+                            self.change_offset = offset; self.change_expected = revision; self.refresh(ctx);
+                        }
+                    }
+                });
+                ui.small("For PR/release choose the explicit base. Semantic mode uses local advisory messages only. Refresh after any repository edit.");
             }
             _ => {}
         }

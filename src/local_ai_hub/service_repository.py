@@ -886,7 +886,7 @@ class ServiceRepositoryMixin:
         from .change_commit_preflight import commit_preflight, revision_error
         from .change_plan_projection import project_change_plan
 
-        if mode not in {"full", "summary", "details", "semantic", "preflight", "pr", "release"}:
+        if mode not in {"full", "summary", "details", "semantic", "preflight", "pr", "release", "artifact"}:
             return {"success": False, "error": "invalid change plan mode"}
         if type(limit) is not int or not 1 <= limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return {"success": False, "error": "invalid change plan page"}
@@ -922,6 +922,10 @@ class ServiceRepositoryMixin:
             attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
         if mode == "full":
             return result
+        if mode == "artifact":
+            from .change_plan_artifact import publish_change_plan
+
+            return publish_change_plan(result, getattr(self, "artifacts", None))
         return project_change_plan(
             result, mode=mode, limit=limit, offset=offset,
             delegate=self.delegate if mode == "semantic" else None, root=root,

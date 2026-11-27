@@ -615,7 +615,7 @@ def _local_ai_repo_impl(
     if action == "split_changes":
         view = ("details" if path else "summary") if mode == "adaptive" else mode
         page_limit = limit if explicit_limit else 8
-        if view not in {"summary", "details", "semantic", "preflight", "pr", "release"}:
+        if view not in {"summary", "details", "semantic", "preflight", "pr", "release", "artifact"}:
             return services_module.contract_error("invalid split_changes mode")
         if path and changed_paths:
             return services_module.contract_error("specify path or changed_paths, not both")
@@ -640,7 +640,7 @@ def _local_ai_repo_impl(
                           "staging_preview_available", "stage_argv_preview", "index_scope_matches_selection",
                           "candidate_dependency_count", "requires_explicit_approval", "requires_post_stage_reinspection",
                           "draft_summary", "summary_kind", "semantic_group_proposals", "semantic_group_scope",
-                          "semantic_group_proposals_authoritative"])
+                          "semantic_group_proposals_authoritative", "artifact_id", "artifact_kind", "artifact_status", "artifact_bytes"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,
