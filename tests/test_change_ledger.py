@@ -44,3 +44,25 @@ def test_annotation_updates_at_retention_limit(tmp_path, monkeypatch):
     assert atom["local_annotations"][0]["status"] == "reviewed"
     with pytest.raises(ValueError, match="retention"):
         ledger.annotate(plan, expected_revision="1" * 64, record={**record, "actor": "other"})
+
+
+def test_watcher_correlation_is_path_scoped_and_not_authority():
+    import time
+    from unittest.mock import MagicMock
+    from local_ai_hub.change_ledger import attach_watcher_candidates
+
+    plan = _plan("/repo")
+    preprocessor = MagicMock()
+    preprocessor.recent_change_events.return_value = {
+        "a.py": {"event": "modified", "observed_at": time.time()},
+        "unrelated.py": {"event": "created", "observed_at": time.time()},
+    }
+    attach_watcher_candidates(plan, preprocessor)
+    preprocessor.recent_change_events.assert_called_once_with("/repo", ["a.py"])
+    change = plan["clusters"][0]["changes"][0]
+    assert change["watcher_candidate"]["relation"] == "recent_same_path_only"
+    assert plan["watcher_context"]["candidate_path_count"] == 1
+    assert not plan["watcher_context"]["coverage_complete"]
+    assert not plan["watcher_context"]["authorship_proven"]
+    assert not plan["watcher_context"]["verification_reuse_authorized"]
+    assert not _plan("/other").get("watcher_context")
