@@ -15,7 +15,7 @@ import subprocess
 import re
 from typing import Any
 
-from .verified_execution import EXECUTION_KEY, MAX_OBLIGATIONS, MAX_REPOSITORY_RESOURCES
+from .verified_execution import EXECUTION_KEY, MAX_OBLIGATIONS, MAX_REPOSITORY_RESOURCES, normalize_exclusions
 
 
 def repository_scope(config: Any) -> bool:
@@ -91,7 +91,7 @@ def change_resources(root: str, base_revision: str = "") -> list[str]:
     return sorted(resources)
 
 
-def _resources(inventory: dict[str, Any], root: str) -> list[str]:
+def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
     if inventory.get("scope") != "changes":
         if "include_mapped_tests" in inventory or "policy_sha256" in inventory:
             raise ValueError("mapped tests require Git changes scope")
@@ -132,6 +132,20 @@ def _resources(inventory: dict[str, Any], root: str) -> list[str]:
     if len(result) > MAX_REPOSITORY_RESOURCES:
         raise ValueError("Git impact inventory exceeds resource limit")
     return result
+
+
+def _resources(inventory: dict[str, Any], root: str) -> list[str]:
+    resources = _full_resources(inventory, root)
+    exclusions = normalize_exclusions(inventory.get("exclusions", []))
+    paths = {item["path"] for item in exclusions}
+    if paths - set(resources):
+        raise ValueError("inventory exclusion does not match the current server scope")
+    included = [path for path in resources if path not in paths]
+    if not included:
+        raise ValueError("inventory exclusions remove every resource")
+    if exclusions:
+        inventory["exclusions"] = exclusions
+    return included
 
 
 def select_partition(resources: list[str], raw: Any) -> tuple[list[str], dict[str, Any]]:
