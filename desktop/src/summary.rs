@@ -187,6 +187,35 @@ pub fn render(ui: &mut egui::Ui, view: &str, snapshot: &Value) {
             });
         }
     }
+    if view == "Session briefing" {
+        ui.group(|ui| {
+            ui.heading("Repository session briefing");
+            ui.label("Active tasks are a bounded server preview, not the complete task inventory.");
+            if snapshot["partial"] == true {
+                ui.colored_label(ui.visuals().warn_fg_color, "Server returned a partial briefing");
+            }
+            if let Some(warnings) = snapshot["warnings"].as_array() {
+                for warning in warnings.iter().take(20) { ui.label(crate::records::display(warning)); }
+            }
+            ui.collapsing("Board summary", |ui| {
+                if let Some(summary) = snapshot["board_summary"].as_object() {
+                    for (key, value) in summary.iter().take(40) {
+                        ui.label(format!("{key}: {}", crate::records::display(value)));
+                    }
+                } else { ui.label("Unavailable"); }
+            });
+            ui.collapsing("Plan preview", |ui| {
+                if let Some(plans) = snapshot["plans"].as_array() {
+                    for plan in plans.iter().take(100) {
+                        ui.label(format!("{} · {} · {}", crate::records::display(&plan["id"]),
+                            crate::records::display(&plan["title"]), crate::records::display(&plan["lifecycle"])));
+                    }
+                    if plans.len() > 100 { ui.label("Display limited to 100 plans"); }
+                    if plans.is_empty() { ui.label("No plans returned"); }
+                } else { ui.label("Unavailable"); }
+            });
+        });
+    }
     if view == "Agent event stream" {
         if let Some(controls) = snapshot["controls"].as_array() {
             for control in controls.iter().filter(|c| matches!(c["kind"].as_str(), Some("retention_gap" | "stream.gap" | "cursor_reset" | "replay_cursor_reset" | "replay_limit"))) {
