@@ -609,6 +609,19 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             if op in {"plan_task_create", "plan_task_edit"}:
                 data = plan_text_patch(args, task=True, create=op == "plan_task_create")
                 if op == "plan_task_create":
+                    # The canonical edit endpoint also supports creation. Fence
+                    # that upsert with the same reviewed revision and require a
+                    # previously absent ID so "Add" cannot reset another task.
+                    current = checked_post(control, "/api/coord/plan_get",
+                                           {"root": root, "plan_id": payload["plan_id"]})
+                    plan = current.get("plan")
+                    if (current.get("success") is not True
+                            or current.get("file_revision") != payload["expected_revision"]
+                            or not isinstance(plan, dict) or plan.get("id") != payload["plan_id"]
+                            or not isinstance(plan.get("tasks"), dict)):
+                        raise ValueError("Plan changed or unavailable; reload exact plan revision")
+                    if payload["task_id"] in plan["tasks"]:
+                        raise ValueError("Task ID already exists; load it for editing instead")
                     data.update({"kind": "code", "work_status": "planned", "depends_on": [], "clarifications": []})
                     op = "plan_task_edit"
                 payload["task_data"] = data
@@ -742,8 +755,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                 payload.update({"value": value, "kind": MemoryKind(args.get("kind", "fact")).value, "confidence": 1.0})
             return checked_post(control, "/api/agent-state/memory", payload)
         return checked_post(control, "/api/coord/plan_create", {"root": root,
-            "plan_id": text_field(args, "id", 85), "title": text_field(args, "title", 160),
-            "description": str(args.get("description", ""))[:12000], "lifecycle": "active", "owner": "desktop",
+            "plan_id": text_field(args, "id", 85), **plan_text_patch(args, task=False, create=True),
+            "lifecycle": "active", "owner": "desktop",
             "idempotency_key": "desktop-" + uuid.uuid4().hex})
     if op == "incident":
         if args.get("confirmed") is not True:
