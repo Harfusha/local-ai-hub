@@ -66,3 +66,42 @@ def test_watcher_correlation_is_path_scoped_and_not_authority():
     assert not plan["watcher_context"]["authorship_proven"]
     assert not plan["watcher_context"]["verification_reuse_authorized"]
     assert not _plan("/other").get("watcher_context")
+
+
+def test_broker_postimage_matches_current_bytes_not_patch_authorship(tmp_path):
+    from types import SimpleNamespace
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = repo / "a.py"
+    path.write_bytes(b"broker content")
+    root = str(repo.resolve())
+    ledger = ChangeLedger(tmp_path / "state")
+    snapshot = SimpleNamespace(content=path.read_bytes(), mode=path.stat().st_mode)
+    identities = dict(task_id="task", attempt_id="attempt", transaction_id="transaction")
+    assert ledger.record_broker_postimages(root, **identities, files={"a.py": snapshot}) == 1
+    plan = _plan(root)
+    ChangeLedger(tmp_path / "state").attach_broker_postimages(plan)
+    candidate = plan["clusters"][0]["changes"][0]["broker_postimage_candidate"]
+    assert candidate["relation"] == "current_bytes_match_fenced_broker_postimage"
+    assert candidate["task_id"] == "task"
+    assert not plan["broker_postimage_context"]["authorship_proven"]
+    assert not plan["broker_postimage_context"]["verification_reuse_authorized"]
+    path.write_bytes(b"native content")
+    changed = _plan(root)
+    ledger.attach_broker_postimages(changed)
+    assert changed["broker_postimage_context"]["matched_path_count"] == 0
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "a.py").write_bytes(snapshot.content)
+    outside = _plan(str(other.resolve()))
+    ledger.attach_broker_postimages(outside)
+    assert outside["broker_postimage_context"]["matched_path_count"] == 0
+    # A subsequent deletion invalidates prior evidence even if a native edit
+    # later restores identical content.
+    assert ledger.record_broker_postimages(root, **identities,
+                                          files={"a.py": SimpleNamespace(content=None, mode=None)}) == 0
+    path.write_bytes(snapshot.content)
+    recreated = _plan(root)
+    ledger.attach_broker_postimages(recreated)
+    assert recreated["broker_postimage_context"]["matched_path_count"] == 0
