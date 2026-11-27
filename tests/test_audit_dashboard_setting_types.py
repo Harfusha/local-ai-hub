@@ -14,7 +14,6 @@ BOOLEAN_SETTINGS = (
     "preprocessing.enabled",
     "code_intelligence.enabled",
     "code_intelligence.serena_enabled",
-    "monitoring.dashboard_enabled",
     "features.status",
     "features.repo",
     "features.tasks",
@@ -26,7 +25,6 @@ BOOLEAN_SETTINGS = (
     "features.preprocessing",
     "features.subagents",
     "features.agent_os",
-    "features.dashboard",
     "features.work_orchestrator",
 )
 HARDWARE_PROFILES = ("auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max")
@@ -101,6 +99,17 @@ def test_setting_persistence_error_reports_safe_stage_without_raw_details(monkey
     assert app.debug_traces.enabled is True
     assert app.config == original_config
     assert len(writes) == 1
+
+
+@pytest.mark.parametrize("setting", ("features.dashboard", "monitoring.dashboard_enabled"))
+def test_retired_dashboard_settings_are_rejected_without_publication(monkeypatch, tmp_path, setting):
+    responses, app, original_config, writes = _dispatch_settings_update(
+        monkeypatch, tmp_path, setting, True
+    )
+
+    assert responses[0][0] == 400
+    assert writes == []
+    assert app.config == original_config
 
 
 @pytest.mark.parametrize("setting", BOOLEAN_SETTINGS)

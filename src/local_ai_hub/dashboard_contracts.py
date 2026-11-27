@@ -6,9 +6,9 @@ from typing import Any
 
 
 _FEATURES = ("status", "repo", "tasks", "rag", "commands", "coord", "artifacts",
-             "code_intelligence", "preprocessing", "subagents", "agent_os", "dashboard", "work_orchestrator")
+             "code_intelligence", "preprocessing", "subagents", "agent_os", "work_orchestrator")
 _BOOLEAN_SETTINGS = frozenset({"preprocessing.enabled",
-    "code_intelligence.enabled", "code_intelligence.serena_enabled", "monitoring.dashboard_enabled",
+    "code_intelligence.enabled", "code_intelligence.serena_enabled",
     *(f"features.{name}" for name in _FEATURES)})
 _PROFILES = frozenset({"auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"})
 _TELEMETRY_MODES = frozenset({"off", "minimal", "full"})

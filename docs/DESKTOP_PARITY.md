@@ -5,7 +5,7 @@ requested feature/verification matrix, not a second project plan. The authoritat
 work plan is `.local-ai-hub/plans/plan_pr10_native_desktop.plan.json` and is
 maintained through the Local AI Hub planner API.
 
-## Current local audit — 2026-11-27, commit 6a2351f1
+## CI and runtime evidence at commit 6a2351f1
 
 - `feat/native-desktop-hub` is at `6a2351f1a75b232e74fa9c0e0f7e7e88dc73e149`,
   pushed to its origin branch. `origin/master` is `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc`
@@ -22,7 +22,8 @@ maintained through the Local AI Hub planner API.
   Windows tests, release build, and packaging passed, but the visible-window
   smoke failed before opening a window: `Wgpu(NoSuitableAdapterFound)` on
   `windows-latest`. This hosted VM currently provides no suitable WGPU adapter;
-  Windows runtime acceptance needs a GPU-capable runner. See [GitHub-hosted
+  repository Settings reports no self-hosted runners configured. Windows runtime
+  acceptance therefore needs a GPU-capable runner to be provisioned. See [GitHub-hosted
   runner options](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job).
 - The PR remains a draft. Historical UI/CLI parity, full current CI, Windows
   runtime, accessibility, security/performance audit, signed installer and
