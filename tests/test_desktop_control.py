@@ -992,3 +992,65 @@ def test_task_create_rejects_invalid_session_before_transport(tmp_path, session)
             desktop.dispatch(MagicMock(), {"op": "task_create", "args": {
                 "root": str(tmp_path), "goal": "Task", "session_id": session, "confirmed": True}})
         post.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["", "https://example.com/model", "../model", "/local/model", "a//b", "model:", "a b"])
+def test_model_management_rejects_invalid_identifier_before_transport(name):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(control, {"op": "model_manage", "args": {
+                "action": "pull", "model": name, "confirmed": True}})
+        control.read.assert_not_called()
+        post.assert_not_called()
+
+
+def test_model_pull_requires_confirmation_enabled_backend_and_exact_receipt():
+    control = MagicMock()
+    args = {"action": "pull", "model": "qwen:7b", "confirmed": True}
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="confirmation"):
+            desktop.dispatch(control, {"op": "model_manage", "args": {**args, "confirmed": False}})
+        control.read.return_value = {"config": {"ollama": {"enabled": False}}}
+        with pytest.raises(RuntimeError, match="disabled"):
+            desktop.dispatch(control, {"op": "model_manage", "args": args})
+        post.assert_not_called()
+        control.read.return_value = {"config": {"ollama": {"enabled": True}}}
+        post.return_value = {"success": True, "pulled": "qwen:7b"}
+        assert desktop.dispatch(control, {"op": "model_manage", "args": args}) == post.return_value
+        post.assert_called_once_with(control, "/api/models/manage",
+                                     {"action": "pull", "model": "qwen:7b"}, timeout=630.0)
+        post.return_value = {"success": True, "pulled": "other"}
+        with pytest.raises(RuntimeError, match="receipt incomplete"):
+            desktop.dispatch(control, {"op": "model_manage", "args": args})
+
+
+@pytest.mark.parametrize("rows,known", [
+    ([{"name": "qwen:7b-large", "running": False}], True),
+    ([{"name": "qwen:7b", "running": True}], True),
+    ([{"name": "qwen:7b", "running": None}], False),
+    ([{"name": "qwen:7b", "running": False}], False),
+    ([{"name": "qwen:7b", "running": False}] * 2, True),
+])
+def test_model_delete_fails_closed_on_missing_ambiguous_or_resident_model(rows, known):
+    control = MagicMock()
+    control.read.side_effect = [{"config": {"ollama": {"enabled": True}}},
+                               {"models": rows, "running_status_available": known}]
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(RuntimeError, match="verified non-resident"):
+            desktop.dispatch(control, {"op": "model_manage", "args": {
+                "action": "delete", "model": "qwen:7b", "confirmed": True}})
+        post.assert_not_called()
+
+
+def test_model_delete_checks_fresh_exact_inventory_and_receipt():
+    control = MagicMock()
+    control.read.side_effect = [{"config": {"ollama": {"enabled": True}}},
+                               {"models": [{"name": "qwen:7b", "running": False}],
+                                "running_status_available": True}]
+    with patch.object(desktop, "checked_post", return_value={"success": True, "deleted": "qwen:7b"}) as post:
+        result = desktop.dispatch(control, {"op": "model_manage", "args": {
+            "action": "delete", "model": "qwen:7b", "confirmed": True}})
+        assert result["deleted"] == "qwen:7b"
+        post.assert_called_once_with(control, "/api/models/manage",
+                                     {"action": "delete", "model": "qwen:7b"}, timeout=30.0)
