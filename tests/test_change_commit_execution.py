@@ -266,3 +266,33 @@ def test_historical_context_benchmark_measures_real_commit_without_mutation(tmp_
     assert _git(tmp_path, "rev-parse", "HEAD") == head
     assert (tmp_path / ".git" / "index").read_bytes() == index
     assert (tmp_path / "b").read_bytes() == before
+
+
+def test_sequence_suggestion_is_editable_and_requires_exact_preview(tmp_path):
+    from local_ai_hub.change_commit_sequence import suggest_sequence
+
+    engine, leases, parent, tree = _fixture(tmp_path)
+    plan = engine.split_changes.return_value
+    plan["inventory_scope"] = "git_visible_changes"
+    plan["dependency_plan"] = {"candidate_commit_units": [["a"], ["b"]]}
+    plan["clusters"][0]["suggested_commit_message"] = "fix: a"
+    proposal = suggest_sequence(plan, "a" * 64)
+    assert proposal["success"], proposal
+    assert proposal["selected_paths"] == ["a"]
+    assert proposal["sequence"] == [{"paths": ["a"], "message": "fix: a"}]
+    assert proposal["tree_oid"] == tree
+    assert proposal["requires_sequence_preview"] and not proposal["commit_ready"]
+    assert "preview_digest" not in proposal
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
+    preview = execute_staged_commit({}, engine, leases, root=str(tmp_path.resolve()),
+                                    paths=proposal["selected_paths"], expected_revision=proposal["observed_change_set_id"],
+                                    expected_tree=tree, message="", approved=False,
+                                    sequence=proposal["sequence"], preview_only=True)
+    assert preview["success"], preview
+    assert preview["preview_digest"]
+    assert _git(tmp_path, "rev-parse", "HEAD") == parent
+    assert not suggest_sequence(plan, "b" * 64)["success"]
+    plan["clusters"][0]["dependency_group_candidates"] = ["b"]
+    blocked = suggest_sequence(plan)
+    assert not blocked["success"]
+    assert "unselected_dependency_candidates" in blocked["blockers"]
