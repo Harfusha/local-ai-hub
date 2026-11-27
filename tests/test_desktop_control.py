@@ -167,6 +167,13 @@ def test_bridge_never_imports_tkinter():
                    for node in ast.walk(tree))
 
 
+def test_desktop_catalog_has_no_legacy_migration_preview_actions():
+    from tools.desktop_operator import catalog
+
+    names = {item["name"] for item in catalog()["operations"]}
+    assert not any(name.startswith("Legacy ") for name in names)
+
+
 @pytest.mark.parametrize("path", ["/", "/dashboard", "/dashboard/", "/favicon.ico"])
 def test_http_web_ui_route_is_retired(path):
     from local_ai_hub.http_api_get import HttpGetMixin

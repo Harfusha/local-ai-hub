@@ -42,7 +42,7 @@ def test_dashboard_requires_fresh_exact_candidate_and_pins_launcher(tmp_path, mo
     assert not started
     assert control.install(VERSION, REVISION)["status"] == "queued"
     assert started == [[str(Path(sys.executable)), "-I", "-B", str(path), "--apply",
-                        "--expect-version", VERSION, "--expect-revision", REVISION, "--dashboard"]]
+                        "--expect-version", VERSION, "--expect-revision", REVISION, "--desktop"]]
     with pytest.raises(ValueError, match="already"):
         control.install(VERSION, REVISION)
 
@@ -50,7 +50,7 @@ def test_dashboard_requires_fresh_exact_candidate_and_pins_launcher(tmp_path, mo
 def test_dashboard_reads_completion_from_previous_process(tmp_path, monkeypatch):
     control, _ = controller(tmp_path, monkeypatch)
     monkeypatch.setattr(updates, "_check_release", lambda command: {"status": "up_to_date"})
-    (tmp_path / "auto-update-dashboard.json").write_text(json.dumps({
+    (tmp_path / "auto-update-desktop.json").write_text(json.dumps({
         "success": True, "status": "installed", "target_version": VERSION,
     }), encoding="utf-8")
     assert control.status()["report"]["target_version"] == VERSION
@@ -61,7 +61,7 @@ def test_dashboard_reads_unconfirmed_update_result(tmp_path, monkeypatch):
     control, _ = controller(tmp_path, monkeypatch)
     report = {"success": False, "status": "failed", "outcome_unknown": True,
               "attempt_directory": str(tmp_path.parent / ".install.auto-update-attempt")}
-    (tmp_path / "auto-update-dashboard.json").write_text(json.dumps(report), encoding="utf-8")
+    (tmp_path / "auto-update-desktop.json").write_text(json.dumps(report), encoding="utf-8")
     assert control.status(check=False)["report"] == report
 
 

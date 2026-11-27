@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_knowledge_management import manage_repository_knowledge
@@ -33,6 +36,39 @@ def test_preview_requires_current_revision_and_explicit_authorized_save(tmp_path
     assert report["findings"][0]["type"] == "unverified_knowledge"
     assert manage_repository_knowledge({"security": {"allowed_roots": []}}, request,
                                        authorize_operator_write=lambda: True)["status_code"] == 403
+
+
+def test_legacy_record_publication_is_not_a_runtime_knowledge_action(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    result = manage_repository_knowledge({}, {
+        "action": "publish_legacy_record", "root": str(root), "kind": "task",
+        "record_id": "task-1", "expected_snapshot": "a" * 64,
+        "operation_id": "migration-1", "apply": True,
+    }, authorize_operator_write=lambda: True)
+    assert result["status_code"] == 400
+    assert result["error"] == "Invalid knowledge management action or fields"
+
+
+def test_legacy_migration_preview_commands_are_not_cli_actions(tmp_path):
+    hubctl = Path(__file__).resolve().parents[1] / "tools" / "hubctl.py"
+    for action in ("legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch"):
+        result = subprocess.run(
+            [sys.executable, str(hubctl), "knowledge", action, "--root", str(tmp_path)],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 2
+        assert "knowledge requires" in result.stderr
+
+
+def test_retired_dashboard_command_is_not_a_cli_alias():
+    hubctl = Path(__file__).resolve().parents[1] / "tools" / "hubctl.py"
+    result = subprocess.run(
+        [sys.executable, str(hubctl), "dashboard"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
 
 
 def test_handoff_inventory_includes_only_valid_project_records(tmp_path):

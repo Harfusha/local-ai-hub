@@ -667,22 +667,22 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         settings = args.get("settings")
-        from local_ai_hub.dashboard_contracts import dashboard_settings_patch
+        from local_ai_hub.dashboard_contracts import operator_settings_patch
         if not isinstance(settings, dict) or not settings or len(settings) > 20:
             raise ValueError("Choose 1–20 settings")
         if set(settings) & {"features.dashboard", "monitoring.dashboard_enabled", "telemetry.mode"}:
             raise ValueError("Retired web settings and live telemetry are not part of this batch")
-        dashboard_settings_patch(settings)
+        operator_settings_patch(settings)
         return checked_post(control, "/api/config/update", {"action": "update", "settings": settings})
     if op == "setting":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         key = text_field(args, "key", 100)
         value = args.get("value")
-        from local_ai_hub.dashboard_contracts import dashboard_settings_patch
+        from local_ai_hub.dashboard_contracts import operator_settings_patch
         if key in {"monitoring.dashboard_enabled", "features.dashboard"}:
             raise ValueError("Web UI has been retired")
-        dashboard_settings_patch({key: value})
+        operator_settings_patch({key: value})
         return checked_post(control, "/api/config/update", {"action": "update", "settings": {key: value}})
     if op in {"trace_detail", "trace_content", "trace_metrics", "trace_export"}:
         trace_id = text_field(args, "id", 200)

@@ -18,7 +18,7 @@ def _installed_hub_version() -> str | None:
 class HTTPAdminMixin:
     def _handle_post_config_update(self, payload: dict[str, Any]) -> None:
         from . import http_server as services_module
-        from .dashboard_contracts import dashboard_settings_patch
+        from .dashboard_contracts import operator_settings_patch
 
         app = services_module.APP
         action = str(payload.get("action", "update")).strip().lower()
@@ -39,7 +39,7 @@ class HTTPAdminMixin:
             self._send(400, {"success": False, "error": "settings must be an object"})
             return
         try:
-            patch = dashboard_settings_patch(requested)
+            patch = operator_settings_patch(requested)
         except ValueError as exc:
             self._send(400, {"success": False, "error": str(exc)})
             return

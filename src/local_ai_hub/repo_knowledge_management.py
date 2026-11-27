@@ -31,7 +31,6 @@ _FIELDS = {
     "save_review": {"action", "root", "finding_id", "subject_digest", "decision", "note", "expected_revision", "preview_digest", "operation_id", "apply"},
     "preview_remediation": {"action", "root", "finding_id", "subject_digest"},
     "rebuild_projection": {"action", "root"},
-    "publish_legacy_record": {"action", "root", "kind", "record_id", "expected_snapshot", "operation_id", "apply"},
 }
 
 
@@ -77,14 +76,6 @@ def manage_repository_knowledge(
             from .repo_agent_state import rebuild_agent_state_projection
 
             return rebuild_agent_state_projection(store.root, config["server"]["state_dir"])
-        if action == "publish_legacy_record":
-            from .agent_state_migration import publish_legacy_record
-
-            return publish_legacy_record(
-                config["server"]["state_dir"], store, kind=payload["kind"],
-                record_id=payload["record_id"], expected_snapshot=payload["expected_snapshot"],
-                operation_id=payload["operation_id"], authorize_write=authorize_operator_write,
-            )
         if action in {"preview_batch", "save_batch", "save_batch_recovery"}:
             from .repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
 

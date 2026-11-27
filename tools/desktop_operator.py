@@ -47,9 +47,6 @@ FINDING = Field("finding-id", "Finding ID", required=True)
 SUBJECT = Field("subject-digest", "Subject digest", required=True)
 REASON = Field("reason", "Reason", required=True)
 QUERY = Field("query", "Query")
-CURSOR = Field("after-task-id", "Continuation cursor")
-SNAPSHOT = Field("snapshot", "Expected inventory snapshot")
-MIGRATION_LIMIT = Field("limit", "Batch size (1–16)", "integer", True)
 PROJECT = Field("project-id", "Explicit project UUID")
 MODE = Field("knowledge-mode", "Knowledge mode", "choice", choices=("shared", "review_only", "read_only"))
 
@@ -87,9 +84,6 @@ OPERATIONS: dict[str, Operation] = {
     "Knowledge batch preview": Operation(("knowledge", "batch-preview"), (RECORD,), root=True),
     "Knowledge batch apply": Operation(("knowledge", "batch-apply", "--apply"), (RECORD, DIGEST, REQUIRED_OP), mutation=True, root=True),
     "Knowledge batch recovery": Operation(("knowledge", "batch-recover", "--apply"), (RECORD, DIGEST, REQUIRED_OP), mutation=True, root=True),
-    "Legacy task migration preview": Operation(("knowledge", "legacy-task-batch"), (MIGRATION_LIMIT, CURSOR, SNAPSHOT), root=True),
-    "Legacy memory migration preview": Operation(("knowledge", "legacy-memory-batch"), (MIGRATION_LIMIT, CURSOR, SNAPSHOT), root=True),
-    "Legacy incident migration preview": Operation(("knowledge", "legacy-incident-batch"), (MIGRATION_LIMIT, CURSOR, SNAPSHOT), root=True),
     "Rebuild knowledge projection": Operation(("knowledge", "projection-rebuild"), mutation=True, root=True, timeout=120),
     "List task handoffs": Operation(("knowledge", "handoff-list"), (LIMIT,), root=True),
     "Handoff preflight": Operation(("knowledge", "handoff-preflight"), (Field("limit", "Maximum tasks (1–64)", "integer", True),), root=True),

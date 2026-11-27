@@ -1,4 +1,4 @@
-"""Canonical local operator runtime override input contract (legacy module name)."""
+"""Shared contract for canonical local operator runtime override settings."""
 from __future__ import annotations
 
 from typing import Any
@@ -14,7 +14,7 @@ _PROFILES = frozenset({"auto", "cpu", "integrated", "low", "balanced", "medium",
 _TELEMETRY_MODES = frozenset({"off", "minimal", "full"})
 
 
-def dashboard_settings_patch(requested: Any) -> dict[str, Any]:
+def operator_settings_patch(requested: Any) -> dict[str, Any]:
     if not isinstance(requested, dict):
         raise ValueError("settings must be an object")
     patch: dict[str, Any] = {}

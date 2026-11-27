@@ -1,4 +1,4 @@
-"""Check for releases and hand off dashboard-confirmed updates."""
+"""Check for releases and hand off desktop-confirmed updates."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from .process_utils import hidden_run_kwargs
 _VERSION = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
 _REVISION = re.compile(r"[0-9a-f]{40}")
 _CHECK_TTL = 30 * 60
-_REPORT = "auto-update-dashboard.json"
+_REPORT = "auto-update-desktop.json"
 
 
 def _check_release(command: list[str]) -> dict:
     result = subprocess.run(
-        [*command, "--json", "--dashboard"], check=False, capture_output=True, text=True,
+        [*command, "--json", "--desktop"], check=False, capture_output=True, text=True,
         encoding="utf-8", timeout=70, **hidden_run_kwargs(),
     )
     payload = json.loads(result.stdout)
@@ -156,7 +156,7 @@ class DashboardUpdates:
                 or time.monotonic() - self._checked >= _CHECK_TTL
             ):
                 raise ValueError("Check for updates and review the current candidate before installing.")
-            command = [*self._command, "--apply", "--expect-version", version, "--expect-revision", revision, "--dashboard"]
+            command = [*self._command, "--apply", "--expect-version", version, "--expect-revision", revision, "--desktop"]
             job = "local-ai-hub-update-" + hashlib.sha256(os.fsencode(self.root)).hexdigest()[:16]
             self._queued_at = time.time()
             try:

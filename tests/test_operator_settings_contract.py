@@ -33,7 +33,7 @@ NON_BOOLEAN_JSON_VALUES = (0, 1, 1.0, None, "true", [], {})
 NON_PROFILE_JSON_VALUES = (True, False, 0, 1, 1.0, None, [], {}, "unsupported")
 
 
-def test_type_matrix_covers_the_canonical_dashboard_setting_catalog():
+def test_type_matrix_covers_the_canonical_operator_setting_catalog():
     from local_ai_hub import dashboard_contracts
 
     assert set(BOOLEAN_SETTINGS) == dashboard_contracts._BOOLEAN_SETTINGS
@@ -114,7 +114,7 @@ def test_retired_dashboard_settings_are_rejected_without_publication(monkeypatch
 
 @pytest.mark.parametrize("setting", BOOLEAN_SETTINGS)
 @pytest.mark.parametrize("value", NON_BOOLEAN_JSON_VALUES)
-def test_dashboard_boolean_settings_reject_non_boolean_json_without_publication(
+def test_operator_boolean_settings_reject_non_boolean_json_without_publication(
     monkeypatch, tmp_path, setting, value
 ):
     responses, app, original_config, writes = _dispatch_settings_update(
