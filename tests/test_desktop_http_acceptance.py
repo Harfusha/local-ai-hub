@@ -71,6 +71,46 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         assert first["ok"] and second["ok"], (first, second)
         assert recorded(first) == 0
         assert recorded(second) == 1
+
+        # Exercise actual plan storage, revision fences and scope using the
+        # same bridge process and live HTTP transport, not mocked handlers.
+        for index, root in enumerate(roots):
+            subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10,
+                           capture_output=True)
+            created = call("plan_create", root=str(root), id="plan_desktop",
+                           title=f"Plan {index}", description=f"scope-{index}", confirmed=True)
+            assert created["ok"], created
+        original = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        assert original["ok"], original
+        revision = original["result"]["file_revision"]
+        added = call("plan_task_create", root=str(roots[0]), id="plan_desktop",
+                     task_id="task_desktop", revision=revision, title="Task",
+                     description="preserve this description", criteria="first\nsecond",
+                     confirmed=True)
+        assert added["ok"], added
+        current = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        assert current["ok"], current
+        current_revision = current["result"]["file_revision"]
+        duplicate = call("plan_task_create", root=str(roots[0]), id="plan_desktop",
+                         task_id="task_desktop", revision=current_revision,
+                         title="must not replace", confirmed=True)
+        assert duplicate["ok"] is False
+        stale = call("plan_task_edit", root=str(roots[0]), id="plan_desktop",
+                     task_id="task_desktop", revision=revision, title="stale", confirmed=True)
+        assert stale["ok"] is False
+        edited = call("plan_task_edit", root=str(roots[0]), id="plan_desktop",
+                      task_id="task_desktop", revision=current_revision,
+                      next_action="verify", confirmed=True)
+        assert edited["ok"], edited
+        own = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        foreign = call("plan_detail", root=str(roots[1]), id="plan_desktop")
+        assert own["ok"] and foreign["ok"], (own, foreign)
+        task = own["result"]["plan"]["tasks"]["task_desktop"]
+        assert task["title"] == "Task" and task["description"] == "preserve this description"
+        assert task["acceptance_criteria"] == ["first", "second"]
+        assert task["next_action"] == "verify"
+        assert foreign["result"]["plan"]["description"] == "scope-1"
+        assert foreign["result"]["plan"]["tasks"] == {}
     finally:
         if thread is not None:
             server.shutdown()
