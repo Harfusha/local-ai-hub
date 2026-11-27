@@ -30,11 +30,15 @@ def expand_declared_inventory(
         return tuple(criteria), raw
     inventory = raw["inventory"]
     if (type(inventory) is not dict or not {"resources", "checks"}.issubset(inventory)
-            or set(inventory) - {"resources", "checks", "scope", "partition"}):
+            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision"}):
         raise ValueError("inventory must contain resources and checks")
     scope = inventory.get("scope", "declared")
-    if scope not in ("declared", "repository"):
+    if scope not in ("declared", "repository", "changes"):
         raise ValueError("invalid inventory scope")
+    base_revision = inventory.get("base_revision", "")
+    if "base_revision" in inventory and (scope != "changes" or type(base_revision) is not str
+            or len(base_revision) not in (40, 64) or any(c not in "0123456789abcdef" for c in base_revision)):
+        raise ValueError("base_revision requires a full Git commit ID in changes scope")
     resources = inventory["resources"]
     checks = inventory["checks"]
     if type(resources) is not list or not 1 <= len(resources) <= MAX_OBLIGATIONS:
@@ -49,7 +53,7 @@ def expand_declared_inventory(
         raise ValueError("duplicate inventory resource")
     partition = inventory.get("partition")
     if "partition" in inventory:
-        if scope != "repository" or type(partition) is not dict or set(partition) != {
+        if scope not in ("repository", "changes") or type(partition) is not dict or set(partition) != {
             "index", "size", "total", "resource_count", "manifest_sha256",
         }:
             raise ValueError("repository partition requires a server compiled manifest")
@@ -107,6 +111,7 @@ def expand_declared_inventory(
         "inventory": {
             "resources": list(resources), "checks": normalized_checks,
             **({"scope": scope} if scope != "declared" else {}),
+            **({"base_revision": base_revision} if base_revision else {}),
             **({"partition": dict(partition)} if partition is not None else {}),
         },
     }

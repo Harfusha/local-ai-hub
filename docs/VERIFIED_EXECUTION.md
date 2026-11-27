@@ -119,6 +119,18 @@ Structured contract steering is additive: existing mandatory obligations
 cannot disappear in an ordinary criteria revision. This is deliberately
 more restrictive than unstructured task steering.
 
+## Git change scope
+
+Use inventory `"scope": "changes"` to enumerate staged, unstaged, deleted
+and untracked paths in the authorized checkout. An optional `base_revision`
+must be a full commit ID and adds committed changes since that base.
+Rename detection is disabled so both deleted and added paths are included.
+The server checks the scope again at verification and completion. Empty,
+oversized, timed-out or unsupported inventories fail closed. This is a
+path inventory, not semantic dependency analysis; add affected consumers
+as explicit criteria. Ignored untracked paths and changes inside submodules
+are not expanded; submodule entries are obligations at their own path.
+
 ## Durable problem reports
 
 Report a discovered issue with the existing `task_checkpoint` operation by

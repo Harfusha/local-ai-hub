@@ -11,6 +11,8 @@ import hashlib
 import json
 from pathlib import Path
 import time
+import subprocess
+import re
 from typing import Any
 
 from .verified_execution import EXECUTION_KEY, MAX_OBLIGATIONS, MAX_REPOSITORY_RESOURCES
@@ -20,7 +22,7 @@ def repository_scope(config: Any) -> bool:
     if not isinstance(config, Mapping):
         return False
     inventory = config.get("inventory")
-    return isinstance(inventory, Mapping) and inventory.get("scope") == "repository"
+    return isinstance(inventory, Mapping) and inventory.get("scope") in {"repository", "changes"}
 
 
 def repository_resources(root: str) -> list[str]:
@@ -39,6 +41,58 @@ def repository_resources(root: str) -> list[str]:
     if not result or len(result) != len(set(result)):
         raise ValueError("repository inventory empty or ambiguous")
     return result
+
+
+def change_resources(root: str, base_revision: str = "") -> list[str]:
+    """Enumerate tracked, staged, deleted and untracked Git paths, not file contents.
+
+    Optional pinned base includes committed changes as well as the worktree.
+    No Git ref expression or caller-supplied command is accepted.
+    """
+    from .process_utils import hidden_run_kwargs
+    from .repo_state import RepoStateTracker
+
+    if not root or not Path(root).is_absolute() or not Path(root).is_dir():
+        raise ValueError("change inventory requires an existing absolute repository root")
+    base = Path(root).resolve(strict=True)
+
+    def git(*args: str) -> bytes:
+        result = subprocess.run(
+            ["git", "-C", str(base), *args], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5.0,
+            check=False, **hidden_run_kwargs(),
+        )
+        if result.returncode or len(result.stdout) > 8_000_000:
+            raise ValueError("Git change inventory unavailable or exceeds byte limit")
+        return result.stdout
+
+    actual_root = Path(git("rev-parse", "--show-toplevel").decode("utf-8").rstrip("\r\n")).resolve()
+    if actual_root != base:
+        raise ValueError("change inventory requires the Git checkout root")
+    if base_revision:
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base_revision):
+            raise ValueError("base_revision must be a full lowercase Git commit ID")
+        if git("rev-parse", "--verify", base_revision + "^{commit}").decode("ascii").strip() != base_revision:
+            raise ValueError("base_revision is not a commit")
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+    resources = set(RepoStateTracker._parse_porcelain_v1(status))
+    if base_revision:
+        resources.update(path.decode("utf-8", errors="strict") for path in
+                         git("diff", "--no-renames", "--name-only", "-z", base_revision, "HEAD", "--").split(b"\0") if path)
+    if not resources or len(resources) > MAX_REPOSITORY_RESOURCES:
+        raise ValueError("Git change inventory empty or exceeds resource limit")
+    for path in resources:
+        if (not path or path != path.strip() or len(path) > 360 or "\\" in path
+                or any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF for c in path)
+                or any(part in {"", ".", ".."} for part in path.split("/"))):
+            raise ValueError("Git change inventory contains an unsupported path")
+    return sorted(resources)
+
+
+def _resources(inventory: Mapping[str, Any], root: str) -> list[str]:
+    if inventory.get("scope") == "changes":
+        return change_resources(root, inventory.get("base_revision", ""))
+    return repository_resources(root)
 
 
 def select_partition(resources: list[str], raw: Any) -> tuple[list[str], dict[str, Any]]:
@@ -73,8 +127,8 @@ def compile_repository_contract(contract: Mapping[str, Any], root: str) -> dict[
         return dict(contract)
     if not isinstance(profile, Mapping) or not isinstance(config, Mapping):
         raise ValueError("invalid repository execution profile")
-    resources = repository_resources(root)
     inventory = dict(config["inventory"])
+    resources = _resources(inventory, root)
     if "partition" in inventory:
         resources, partition = select_partition(resources, inventory["partition"])
         inventory["partition"] = partition
@@ -98,7 +152,7 @@ def check_repository_scope(config: Any, root: str) -> dict[str, Any]:
         return {}
     expected = set(config["inventory"]["resources"])
     try:
-        resources = repository_resources(root)
+        resources = _resources(config["inventory"], root)
         partition = config["inventory"].get("partition")
         if partition is not None:
             try:
@@ -106,7 +160,7 @@ def check_repository_scope(config: Any, root: str) -> dict[str, Any]:
             except ValueError:
                 return {"complete": False, "status": "partition_manifest_changed"}
         actual = set(resources)
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
         return {"complete": False, "status": "inventory_unavailable"}
     added, removed = sorted(actual - expected), sorted(expected - actual)
     return {

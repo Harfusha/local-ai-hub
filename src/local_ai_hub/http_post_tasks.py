@@ -201,6 +201,8 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "terminal": True, "retryable": False,
             }); return
         try:
+            from subprocess import SubprocessError
+
             from .execution_inventory import compile_repository_contract, repository_scope
             from .verified_execution import EXECUTION_KEY
 
@@ -218,7 +220,7 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                         raise ValueError("repository inventory must be created in the actual review checkout")
                     payload = {**payload, "contract": compile_repository_contract(raw_contract, requested)}
             contract = services_module._task_create_contract(payload)
-        except (TypeError, ValueError, OSError, RuntimeError) as exc:
+        except (TypeError, ValueError, OSError, RuntimeError, SubprocessError) as exc:
             self._send(400, {
                 "success": False, "error": str(exc),
                 "terminal": True, "retryable": False,

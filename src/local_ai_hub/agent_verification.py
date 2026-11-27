@@ -1931,7 +1931,10 @@ class VerificationStore:
             )
             if scope_check:
                 execution["scope_check"] = scope_check
-                execution["inventory"]["authority"] = "server_checked_repository"
+                execution["inventory"]["authority"] = (
+                    "server_checked_changes" if task_state.contract.slo_profile[EXECUTION_KEY]["inventory"].get("scope") == "changes"
+                    else "server_checked_repository"
+                )
                 if not scope_check["complete"]:
                     execution["ready_for_completion_attempt"] = False
                     is_complete = False
