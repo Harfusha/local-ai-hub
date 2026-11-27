@@ -275,3 +275,32 @@ def test_dependency_receipt_order_invalidates_only_affected_chain():
         receipt_observed_at={"api": 20, "consumer": 40, "integration": 50, "docs": 5},
     )
     assert complete["ready_for_completion_attempt"]
+
+
+def test_evidence_progress_detects_repeated_failures_only_for_current_scope():
+    from types import SimpleNamespace
+
+    from local_ai_hub.verified_execution import consecutive_failed_verifications, evidence_progress
+
+    def receipt(receipt_id, observed_at, *, passed=False, criterion="review", revision="rev", generation=1, owner="agent"):
+        return SimpleNamespace(receipt_id=receipt_id, observed_at=observed_at, passed=passed,
+                               criterion=criterion, repository_revision=revision,
+                               mutation_generation=generation, owner=owner)
+
+    attempts = [receipt("other", 100, criterion="other"), receipt("foreign", 99, owner="other"),
+                receipt("three", 98), receipt("three", 98), receipt("two", 96),
+                receipt("old-revision", 95, revision="old"), receipt("one", 94),
+                receipt("passed", 93, passed=True), receipt("before-success", 92)]
+    kwargs = dict(criterion="review", now=100, repository_revision="rev",
+                  mutation_generation=1, valid_owners={"agent"})
+    count = consecutive_failed_verifications(attempts, **kwargs)
+    assert count == 3
+    assert consecutive_failed_verifications([receipt("new-success", 100, passed=True), *attempts], **kwargs) == 0
+    assert consecutive_failed_verifications(attempts, **{**kwargs, "mutation_generation": 2}) == 0
+    assert consecutive_failed_verifications(attempts, **{**kwargs, "now": 1100}) == 0
+    result = evidence_progress(created_at=90, now=100, active=True, complete=False,
+                               observed_receipt_times=[], repeated_failure_count=count)
+    assert result["status"] == "repeated_failed_verification"
+    assert result["consecutive_failed_verifications"] == 3
+    assert evidence_progress(created_at=90, now=100, active=True, complete=True,
+                             observed_receipt_times=[], repeated_failure_count=count)["status"] == "recent_or_not_active"
