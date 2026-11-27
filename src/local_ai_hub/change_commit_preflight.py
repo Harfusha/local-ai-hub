@@ -98,6 +98,8 @@ def commit_preflight(result: dict[str, Any], paths: list[str] | None, expected: 
         blockers.append("unselected_dependency_candidates")
     if any("dependency_cycle_or_blocked" in group.get("risks", []) for group in selected_groups):
         blockers.append("dependency_cycle_or_blocked")
+    if any(not set(group.get("dependency_component_keys", [])) <= group_keys for group in selected_groups):
+        blockers.append("partial_dependency_component")
     exact_index = not blockers and not to_stage and set(staged) == selection
     metadata = result.get("git_snapshot_metadata") or {}
     prospective_tree = metadata.get("index_tree_oid") if exact_index else None
