@@ -249,6 +249,11 @@ def execution_projection(
     normalized = normalize_execution(criteria, config)
     units = normalized["units"]
     declared = set(criteria)
+    inventory = normalized.get("inventory")
+    resource_checks = {
+        f"{check['name']}: {resource}": (resource, check["name"])
+        for resource in inventory["resources"] for check in inventory["checks"]
+    } if inventory is not None else {}
     extra = list(dict.fromkeys(c for c in (*unsatisfied, *stale, *satisfied) if c not in declared))
     ordered = _order(criteria, units) + extra
     verified_receipts = set(satisfied) - set(unsatisfied) - set(stale)
@@ -280,6 +285,8 @@ def execution_projection(
             "priority": metadata.get("priority", 0), "dependent_count": fanout[criterion],
             **({"evidence_type": metadata["evidence_type"]} if "evidence_type" in metadata else {}),
         }
+        if criterion in resource_checks:
+            row["resource"], row["check"] = resource_checks[criterion]
         if waiting:
             row["waiting_on"] = waiting[:MAX_PREVIEW]
             row["waiting_on_count"] = len(waiting)
@@ -291,7 +298,6 @@ def execution_projection(
             ready.append(row)
     ready.sort(key=lambda row: (-row["priority"], -row["dependent_count"], row["criterion"]))
     total = len(ordered)
-    inventory = normalized.get("inventory")
     inventory_summary = ({
         "authority": "declared", "resources": len(inventory["resources"]),
         "checks": len(inventory["checks"]),
@@ -382,6 +388,10 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
         parts.append("Repository scope changed or unavailable; reconcile the scope before completion.")
     elif isinstance(next_unit, Mapping):
         parts.append(f"Next obligation: {next_unit.get('criterion', '')}")
+        if next_unit.get("resource") and next_unit.get("check"):
+            parts.append(f"Declared resource: {next_unit['resource']}; check: {next_unit['check']}")
+        if next_unit.get("evidence_type"):
+            parts.append(f"Required evidence: {next_unit['evidence_type']}")
     elif execution.get("ready_for_completion_attempt") is True:
         parts.append("Evidence preview ready; run the authoritative completion gate.")
     else:

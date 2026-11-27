@@ -201,7 +201,8 @@ must adequately cover the reported problem.
 The existing Agent OS context compiler emits a compact structured execution
 handoff rather than repeating every criterion and old passing receipt. It
 preserves the goal, constraints and non-goals; includes counts, blockers,
-scope drift and the next obligation; and directs the agent to the existing
+scope drift and the next obligation (exact matrix resource, check and required
+evidence type when available); and directs the agent to the existing
 task_get and verify_completion actions. This snapshot is advisory because
 the request revision may be stale. The authoritative completion endpoint
 rechecks the actual revision and project rules. Both direct contract
@@ -257,23 +258,29 @@ blocking for audit completion.
 
 ## Scope and follow-up
 
-This increment implements graph and inventory compilation (declared or bounded
-server-checked repository), partition manifests, coverage, deterministic next
-action, opt-in blocker gating, durable problem reports, additive steering
-protection, context recovery, CLI and bounded plan-level previews. It does not
-prove that user intent was translated into complete criteria or that model
-review found every defect. Remaining acceptance work:
+Implemented: bounded repository and Git change inventories, configured affected
+test mapping (bound to policy digest), partition manifests, per-resource check
+dependencies, explicit evidence types, receipt-derived coverage, deterministic
+next action, durable problem reports, additive steering, compact context recovery,
+CLI, native Work Center and bounded plan previews. Opt-in Codex and Claude Stop
+hooks request one follow-up when the same active task has an actionable obligation;
+evidence age is advisory. The web dashboard is retired.
 
-1. Compile change-impact and semantic dependency information into additional
-   versioned obligations; support explicit exclusions and larger hierarchical
-   plans without the current bounded preview limit.
-2. Extend problem reports with authorized rejection/defer dispositions,
-   independent resolution verification, and cross-task/Git knowledge sharing.
-3. Extend additive criteria steering to full graph metadata revision and replay.
-4. Implement dependency-selective invalidation, conservative fallback,
-   and context retrieval for each obligation.
-5. Integrate consistency guard, independent critic and seeded-defect benchmarks.
-6. Add host lifecycle hooks and no-progress detection where supported,
-   preserving explicit cancellation. MCP cannot force an external agent to continue.
-7. Add Git policy templates and desktop Work Center through the same API.
+Remaining acceptance work (not claimed complete):
+
+1. Semantic dependency expansion beyond explicit affected-test rules, exclusion
+   policy and hierarchical plan aggregation beyond current bounds.
+2. Authorized rejection/defer dispositions, independent resolution verification
+   and cross-task/Git knowledge sharing for problem reports.
+3. Full graph metadata steering and replay beyond additive criteria.
+4. Dependency-selective receipt invalidation with conservative fallback and
+   obligation-specific retrieval of source context (not just exact resource identity).
+5. Semantic consistency guard, independent critic and representative seeded-defect
+   evaluations. Deterministic projection regression tests do not measure model recall.
+6. Real-host acceptance of continuation hooks and richer no-progress detection.
+7. Full desktop parity and green CI on every supported platform.
 8. Measure recall, precision, net tokens and runtime against a baseline.
+
+The canonical completion gate does not prove that user intent was translated
+into complete criteria or that a model found every defect. No external host
+can be forced to continue indefinitely through MCP.

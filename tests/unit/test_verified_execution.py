@@ -204,3 +204,44 @@ def test_evidence_progress_is_advisory_and_ignores_future_observations():
     assert result["advisory"] is True
     assert evidence_progress(created_at=10, now=1000, active=False, complete=False,
                              observed_receipt_times=[])["status"] == "recent_or_not_active"
+
+
+def test_inventory_projection_preserves_exact_resource_and_check_identity():
+    from local_ai_hub.verified_execution import execution_resume_summary
+
+    contract = GoalContract("review", slo_profile={"verified_execution": {
+        "inventory": {"resources": ["module: detail.py"], "checks": [
+            {"name": "inspect", "evidence_type": "source_review"},
+        ]},
+    }})
+    result = execution_projection(
+        contract.acceptance_criteria, contract.slo_profile["verified_execution"],
+        satisfied=(), unsatisfied=contract.acceptance_criteria, stale=(),
+        receipt_ids={}, receipt_gate_complete=False,
+    )
+    unit = result["next_obligation"]
+    assert unit["resource"] == "module: detail.py"
+    assert unit["check"] == "inspect"
+    assert unit["evidence_type"] == "source_review"
+    assert "Declared resource: module: detail.py; check: inspect" in execution_resume_summary(result)
+    assert "Required evidence: source_review" in execution_resume_summary(result)
+
+
+def test_seeded_missing_receipt_in_maximum_inventory_prevents_completion():
+    resources = [f"resource-{i:03d}" for i in range(256)]
+    contract = GoalContract("review collection", slo_profile={"verified_execution": {
+        "inventory": {"resources": resources, "checks": [
+            {"name": "inspect"}, {"name": "verify", "depends_on": ["inspect"]},
+        ]},
+    }})
+    missing = "inspect: resource-255"
+    result = execution_projection(
+        contract.acceptance_criteria, contract.slo_profile["verified_execution"],
+        satisfied=tuple(c for c in contract.acceptance_criteria if c != missing),
+        unsatisfied=(missing,), stale=(), receipt_ids={}, receipt_gate_complete=True,
+    )
+    assert result["coverage"]["total"] == 512
+    assert result["coverage"]["verified"] == 510
+    assert result["coverage"]["dependency_blocked"] == 1
+    assert result["next_obligation"]["criterion"] == missing
+    assert not result["ready_for_completion_attempt"]
