@@ -23,7 +23,7 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees", "Session briefing"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
-    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Model statistics", "Execution profiles", "Cache layers", "Agent statistics", "Execution routes", "Laya", "Laya capture"]),
+    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Ollama management", "Benchmark", "Telemetry report", "Model statistics", "Execution profiles", "Cache layers", "Agent statistics", "Execution routes", "Laya", "Laya capture"]),
     ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Recovery journal", "Diagnostics", "Audit"]),
     ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
     ("Activity", &["Activity", "Agent event stream"]),
@@ -45,7 +45,7 @@ fn adapter_timeout(request: &Value) -> Duration {
         "event_page" | "event_stream" | "operator_catalog" => 60,
         "vision_review" => 450,
         "lifecycle" | "operator_run" | "compare" | "bundle_import" |
-        "bundle_export" | "diagnostics_export" => 900,
+        "bundle_export" | "diagnostics_export" | "model_manage" => 900,
         // Some scoped mutations perform two sequential 120-second requests.
         _ => 300,
     };
@@ -1345,6 +1345,31 @@ impl Desktop {
             }
             5 => { if self.current() == "Worktrees" { self.worktrees(ui); } }
             6 => {
+                if self.current() == "Ollama management" {
+                    ui.small("Ollama only. Pull downloads a model through the configured backend; it can take several minutes. Delete is restricted to a confirmed non-resident installed model.");
+                    ui.label("Exact model name (including tag)");
+                    ui.text_edit_singleline(&mut self.entity);
+                    let ready = !self.entity.trim().is_empty();
+                    let deletable = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Ollama management")
+                        .is_some_and(|data| data["running_status_available"] == true &&
+                            data["models"].as_array().is_some_and(|rows|
+                                rows.iter().filter(|row| row["name"].as_str() == Some(self.entity.as_str())).count() == 1 &&
+                                rows.iter().any(|row| row["name"].as_str() == Some(self.entity.as_str()) && row["running"] == false)));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_enabled(ready, egui::Button::new("Pull model")).clicked() {
+                            self.confirm("Download Ollama model", request("model_manage",
+                                json!({"action":"pull", "model":self.entity, "confirmed":true})));
+                        }
+                        if ui.add_enabled(deletable, egui::Button::new("Delete installed model")).clicked() {
+                            self.confirm("Delete Ollama model", request("model_manage",
+                                json!({"action":"delete", "model":self.entity, "confirmed":true})));
+                        }
+                    });
+                    if self.snapshot.as_ref().is_some_and(|data| self.snapshot_view == "Ollama management" && data["running_status_available"] != true) {
+                        ui.small("Resident status unavailable; deletion disabled.");
+                    }
+                    return;
+                }
                 if self.current() != "Benchmark" { return; }
                 ui.label("Compare automatic and high-complexity model routes (runs inference twice)");
                 ui.text_edit_multiline(&mut self.prompt);
