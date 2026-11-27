@@ -11,10 +11,13 @@ from .verified_execution import EXECUTION_KEY
 MAX_PLAN_TASKS = 64
 
 
-def partition_coverage(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def partition_coverage(configs: list[dict[str, Any]], *,
+                       verified: list[bool] | None = None) -> list[dict[str, Any]]:
     """Never combine different manifests or check matrices into one coverage claim."""
-    groups: dict[tuple[str, str, int, int, str, str, str, str, bool], list[int]] = defaultdict(list)
-    for config in configs:
+    if verified is not None and len(verified) != len(configs):
+        raise ValueError("partition verification flags must match configurations")
+    groups: dict[tuple[str, str, int, int, str, str, str, str, bool], list[tuple[int, bool]]] = defaultdict(list)
+    for position, config in enumerate(configs):
         inventory = config.get("inventory", {})
         partition = inventory.get("partition")
         if not partition:
@@ -28,10 +31,12 @@ def partition_coverage(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             json.dumps(inventory.get("exclusions", []), sort_keys=True, separators=(",", ":")),
             inventory.get("include_python_imports", False),
         )
-        groups[key].append(partition["index"])
+        groups[key].append((partition["index"], verified[position] if verified is not None else False))
     result = []
-    for (digest, _checks, size, total, _scope, _base, _policy, _exclusions, _python_imports), indices in sorted(groups.items()):
+    for (digest, _checks, size, total, _scope, _base, _policy, _exclusions, _python_imports), entries in sorted(groups.items()):
+        indices = [index for index, _ in entries]
         seen = set(indices)
+        verified_indices = {index for index, passed in entries if passed}
         missing = sorted(set(range(total)) - seen)
         duplicate_count = len(indices) - len(seen)
         result.append({
@@ -40,6 +45,9 @@ def partition_coverage(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "missing_count": len(missing), "missing_preview": missing[:12],
             "duplicate_count": duplicate_count,
             "complete": not missing and not duplicate_count,
+            **({"verified_partitions": len(verified_indices),
+                "verified_complete": not missing and not duplicate_count and len(verified_indices) == total,
+                "unverified_preview": sorted(seen - verified_indices)[:12]} if verified is not None else {}),
         })
     return result
 
@@ -76,6 +84,10 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
     deadline = time.monotonic() + 15.0
     rows: list[dict[str, Any]] = []
     configs: list[dict[str, Any]] = []
+    verified_configs: list[bool] = []
+    obligation_counts: Counter[str] = Counter()
+    dimension_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    tasks_with_coverage = 0
     counts: Counter[str] = Counter()
     observed = []
     for plan_task_id, spec in tasks.items():
@@ -107,8 +119,6 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
                 observed.append((binding.task_id, task))
                 row["task_id"] = binding.task_id
                 config = task.contract.slo_profile.get(EXECUTION_KEY)
-                if isinstance(config, dict):
-                    configs.append(config)
                 result = evaluate_project_completion(
                     verifier, binding.task_id, root=root, current_revision=revision,
                     state_dir=verifier.state_store.db_path.parent,
@@ -116,6 +126,13 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
                 execution = result.execution
                 coverage = execution.get("coverage", {})
                 row["coverage"] = coverage
+                if coverage:
+                    tasks_with_coverage += 1
+                    for key in ("total", "verified", "unverified", "stale", "dependency_blocked"):
+                        obligation_counts[key] += coverage.get(key, 0)
+                    for dimension, values in execution.get("dimensions", {}).items():
+                        for key in ("total", "verified"):
+                            dimension_counts[dimension][key] += values.get(key, 0)
                 row["next_obligation"] = execution.get("next_obligation")
                 row["status"] = (
                     "verified" if result.complete and task.status.value == "completed"
@@ -123,9 +140,12 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
                     and not any(d.get("disposition") == "pending" for d in spec.get("deliveries", {}).values())
                     else "incomplete"
                 )
+                if isinstance(config, dict):
+                    configs.append(config)
+                    verified_configs.append(row["status"] == "verified")
         counts[row["status"]] += 1
         rows.append(row)
-    partitions = partition_coverage(configs)
+    partitions = partition_coverage(configs, verified=verified_configs)
     stable = (
         workspace.get_plan(plan_id)["file_revision"] == snapshot["file_revision"]
         and _revision(tracker, root) == revision
@@ -134,7 +154,7 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
     )
     exhaustive = len(rows) == len(tasks)
     complete = bool(tasks) and stable and exhaustive and counts["verified"] == len(tasks) and all(
-        group["complete"] for group in partitions
+        group["verified_complete"] for group in partitions
     )
     return {
         "complete": complete, "status": "snapshot" if stable else "snapshot_changed",
@@ -142,5 +162,9 @@ def plan_execution_preview(workspace: Any, plan_id: str, task_store: Any,
         "truncated": not exhaustive, "counts": dict(counts),
         "repository_revision": revision, "plan_revision": snapshot["file_revision"],
         "partition_groups": partitions, "tasks": rows,
+        "obligation_coverage": {"tasks_with_coverage": tasks_with_coverage,
+                                "counts": dict(obligation_counts),
+                                "dimensions": {name: dict(values) for name, values in sorted(dimension_counts.items())},
+                                "partial": not exhaustive or tasks_with_coverage != len(tasks) or not stable},
         "advisory": True,
     }
