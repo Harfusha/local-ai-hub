@@ -30,7 +30,7 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Recent errors" => (&["/observability/recent_errors"], &["component", "operation", "safe_message", "count", "recovered_count", "last_seen"]),
         "Run history" => (&["/tasks", "/items"], &["task_id", "goal", "status", "owner", "tokens_used", "updated_at"]),
         "Tasks" => (&["/tasks", "/items"], &["task_id", "goal", "status", "updated_at", "root"]),
-        "Memory" => (&["/records", "/memory", "/items"], &["record_id", "key", "scope", "kind", "status", "confidence", "created_at", "updated_at"]),
+        "Memory" => (&["/records", "/memory", "/items"], &["record_id", "key", "scope", "kind", "status", "confidence", "provenance", "created_at", "updated_at"]),
         "Search workspaces" => (&["/workspaces"], &["root", "path", "workspace", "status", "documents", "chunks"]),
         "Endpoint analytics" => (&["/items"], &["name", "type", "calls", "success_rate", "p50_ms", "p95_ms", "p99_ms", "status"]),
         "Incidents" => (&["/incidents", "/items"], &["incident_id", "operation_class", "error_class", "redacted_message", "status", "resolved", "attempts", "confidence", "updated_at"]),
