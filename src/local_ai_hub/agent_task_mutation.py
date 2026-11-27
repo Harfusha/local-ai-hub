@@ -48,6 +48,30 @@ class TaskMutationMixin:
                                          record_disposition, record_problem, validate_resolution_order)
         from .verified_execution import EXECUTION_KEY
 
+        from .execution_steering import GRAPH_REVISION_KEY
+
+        if GRAPH_REVISION_KEY in checkpoint.state_data:
+            command = checkpoint.state_data[GRAPH_REVISION_KEY]
+            if (type(command) is not dict or set(command) != {"expected_revision", "reason", "patch"}
+                    or type(command["patch"]) is not dict
+                    or checkpoint != TaskCheckpoint(state_data={GRAPH_REVISION_KEY: command})
+                    or capture_files or _allow_server_memory_refresh or idempotency_key):
+                raise ValueError("graph revision requires a standalone checkpoint command and revision CAS")
+            return self.revise_contract(
+                task_id, current.contract.acceptance_criteria, actor=actor,
+                expected_revision=command["expected_revision"], reason=command["reason"],
+                execution_patch=command["patch"], response_budget_tokens=response_budget_tokens,
+            )
+
+        if EXECUTION_KEY in current.contract.slo_profile:
+            incoming = dict(checkpoint.state_data)
+            for key in ("contract_revision", "contract_history"):
+                if key in incoming and incoming[key] != current.checkpoint.state_data.get(key):
+                    raise ValueError("execution contract history is server-managed")
+                if key in current.checkpoint.state_data:
+                    incoming[key] = current.checkpoint.state_data[key]
+            checkpoint = replace(checkpoint, state_data=incoming)
+
         has_problem_report = PROBLEM_REPORT_KEY in checkpoint.state_data
         has_disposition = PROBLEM_DISPOSITION_KEY in checkpoint.state_data
         if has_disposition and has_problem_report:
@@ -408,7 +432,7 @@ class TaskMutationMixin:
         restored_data.pop(PROBLEM_DISPOSITION_KEY, None)
         from .execution_progress import PROGRESS_STATE_KEY
 
-        for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY):
+        for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY, "contract_revision", "contract_history"):
             restored_data.pop(key, None)
             if key in current.checkpoint.state_data:
                 restored_data[key] = current.checkpoint.state_data[key]
