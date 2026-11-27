@@ -271,6 +271,10 @@ struct Desktop {
     update_version: String,
     update_revision: String,
     plan_status: String,
+    plan_query: String,
+    plan_lifecycle: String,
+    plan_limit: i64,
+    board_plan_filter: String,
     vision_path: String,
     filter: String,
     operator_catalog: Vec<Value>,
@@ -304,7 +308,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -376,7 +380,7 @@ impl Desktop {
                                 value["file_revision"].as_str().unwrap_or("").to_owned()
                             } else { String::new() };
                         }
-                        if matches!(done.label.as_str(), "Update plan" | "Edit plan task" | "Add plan task" | "Delete plan task" | "Move plan task") {
+                        if matches!(done.label.as_str(), "Update plan" | "Edit plan task" | "Add plan task" | "Delete plan task" | "Move plan task" | "Archive plan") {
                             self.plan_draft = None;
                             self.revision.clear();
                         }
@@ -441,6 +445,9 @@ impl Desktop {
         self.plan_task.clear();
         self.plan_draft = None;
         self.plan_title.clear();
+        self.plan_query.clear();
+        self.plan_lifecycle.clear();
+        self.board_plan_filter.clear();
         self.description.clear();
         self.memory_scope_id.clear();
         self.memory_record_id.clear();
@@ -520,6 +527,8 @@ impl Desktop {
             "Service health" => request("log_tail", json!({"lines": self.log_lines})),
             "Diagnostics" => request("doctor", json!({})),
             "Memory" => request("memory_find", self.memory_args("memory_find")),
+            "Plans" => request("plans", json!({"root": self.repo, "query": self.plan_query, "lifecycle": self.plan_lifecycle, "limit": self.plan_limit})),
+            "Plan board" => request("plan_board", json!({"root": self.repo, "id": self.board_plan_filter, "query": self.plan_query})),
             "Session briefing" => request("session_briefing", json!({"root": self.repo})),
             "Project and diagnostics archives" => { self.status = "Select an archive operation below.".into(); return; }
             "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
@@ -855,7 +864,33 @@ impl Desktop {
                     ui.small("Repository-scoped summary of plans, board and active tasks. Use Load / refresh.");
                     return;
                 }
-                ui.label("Plan ID");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Server-side search");
+                    ui.text_edit_singleline(&mut self.plan_query);
+                    if self.current() == "Plans" {
+                        egui::ComboBox::from_id_salt("plan_lifecycle")
+                            .selected_text(if self.plan_lifecycle.is_empty() { "All lifecycles" } else { &self.plan_lifecycle })
+                            .show_ui(ui, |ui| {
+                                for lifecycle in ["", "draft", "active", "completed", "archived", "cancelled"] {
+                                    ui.selectable_value(&mut self.plan_lifecycle, lifecycle.into(),
+                                        if lifecycle.is_empty() { "All lifecycles" } else { lifecycle });
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("plan_limit").selected_text(format!("{} plans", self.plan_limit))
+                            .show_ui(ui, |ui| {
+                                for limit in [25, 100, 250] {
+                                    ui.selectable_value(&mut self.plan_limit, limit, format!("{limit} plans"));
+                                }
+                            });
+                    } else {
+                        ui.label("Board plan filter (blank = all non-archived, non-cancelled plans)");
+                        ui.text_edit_singleline(&mut self.board_plan_filter);
+                    }
+                    if ui.button("Apply plan filters").clicked() {
+                        self.clear_response(); self.refresh(ctx);
+                    }
+                });
+                ui.label("Selected plan ID (independent of board filter)");
                 if ui.text_edit_singleline(&mut self.entity).changed() {
                     self.revision.clear(); self.plan_draft = None; self.plan_task.clear();
                     self.plan_title.clear(); self.description.clear();
@@ -870,6 +905,15 @@ impl Desktop {
                     self.submit(ctx, "Plan detail".into(), request("plan_detail",
                         json!({"root": self.repo, "id": self.entity})));
                 }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!self.entity.trim().is_empty(), egui::Button::new("Validate plan")).clicked() {
+                        self.submit(ctx, "Plan validation".into(), request("plan_validate", json!({"root": self.repo, "id": self.entity})));
+                    }
+                    if ui.add_enabled(!self.entity.trim().is_empty() && !self.revision.is_empty(), egui::Button::new("Archive plan")).clicked() {
+                        self.confirm("Archive plan", request("plan_archive", json!({"root": self.repo,
+                            "id": self.entity, "revision": self.revision, "confirmed": true})));
+                    }
+                });
                 let mut edit_request = None;
                 if let Some(draft) = self.plan_draft.as_mut().filter(|d|
                     d.matches(&self.entity, &self.plan_task, &self.revision)) {
@@ -1385,6 +1429,10 @@ impl eframe::App for Desktop {
                             records::sort_records(&mut filtered, &self.request_sort, self.request_desc);
                         }
                         ui.label(format!("{} matching records (bounded response)", filtered.len()));
+                        if self.current() == "Plans" && snapshot["count"].as_u64().zip(snapshot["desktop_list_limit"].as_u64())
+                            .is_some_and(|(count, limit)| count >= limit) {
+                            ui.colored_label(ui.visuals().warn_fg_color, "Plan list reached its bound. Narrow the server search or increase the limit.");
+                        }
                         let mut selected = None;
                         egui::ScrollArea::horizontal().id_salt("records").show(ui, |ui| {
                             ui.horizontal(|ui| {
