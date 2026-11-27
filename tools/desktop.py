@@ -1115,6 +1115,26 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         return checked_post(control, "/api/config/update", {"action": "reset"})
+    if op == "instruction_manifest":
+        from local_ai_hub.caveman_instructions import reviewed_instruction_manifest
+        from local_ai_hub.config import load_config
+
+        action = args.get("action", "inspect")
+        if action not in ("inspect", "apply", "restore"):
+            raise ValueError("Unsupported instruction manifest action")
+        if action != "inspect" and args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        root = explicit_root(args.get("root"))
+        manifest = Path(text_field(args, "manifest", 4096)).expanduser()
+        digest = args.get("manifest_sha256", "")
+        if not isinstance(digest, str):
+            raise ValueError("Invalid manifest digest")
+        config = load_config(control.config)
+        stage_root = Path(config["server"]["state_dir"]) / "caveman-staging"
+        return reviewed_instruction_manifest(
+            manifest, repository_root=Path(root), stage_root=stage_root,
+            action=action, expected_digest=digest,
+        )
     if op == "model_manage":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
