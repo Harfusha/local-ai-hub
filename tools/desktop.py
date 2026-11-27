@@ -180,6 +180,33 @@ def text_field(data: dict[str, Any], key: str, limit: int = 4096) -> str:
     return value.strip()
 
 
+def plan_text_patch(args: dict[str, Any], *, task: bool, create: bool = False) -> dict[str, Any]:
+    """Validate explicit plan fields without replacing omitted data or clipping edits."""
+    result: dict[str, Any] = {}
+    if create or "title" in args:
+        title = args.get("title")
+        if (not isinstance(title, str) or not title.strip()
+                or len(title) > (240 if task else 160)):
+            raise ValueError("Invalid plan title")
+        result["title"] = title
+    for key, limit in (("description", 12000), ("next_action", 2000),
+                       ("accountable_role", 2000), ("blocker", 2000)):
+        if key not in args or (not task and key != "description"):
+            continue
+        value = args[key]
+        if not isinstance(value, str) or len(value) > limit:
+            raise ValueError(f"Invalid plan field: {key}")
+        result[key] = (value or None) if key in {"blocker", "accountable_role"} else value
+    if task and "criteria" in args:
+        criteria = args["criteria"]
+        if not isinstance(criteria, str) or len(criteria) > 12000:
+            raise ValueError("Invalid plan acceptance criteria")
+        result["acceptance_criteria"] = [line.strip() for line in criteria.splitlines() if line.strip()]
+    if not result:
+        raise ValueError("No plan fields supplied")
+    return result
+
+
 def checked_post(control: HubControl, route: str, payload: dict[str, Any],
                  timeout: float = 120.0) -> dict[str, Any]:
     client = control._client()
@@ -576,17 +603,11 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                    "expected_revision": text_field(args, "revision", 200),
                    "owner": "desktop", "idempotency_key": "desktop-" + uuid.uuid4().hex}
         if op == "plan_update":
-            payload.update({"title": text_field(args, "title", 160), "description": str(args.get("description", ""))[:12000]})
+            payload.update(plan_text_patch(args, task=False))
         else:
             payload["task_id"] = text_field(args, "task_id", 200)
             if op in {"plan_task_create", "plan_task_edit"}:
-                data = {"title": text_field(args, "title", 240),
-                        "description": str(args.get("description", ""))[:12000]}
-                for key in ("next_action", "accountable_role", "blocker"):
-                    if key in args:
-                        data[key] = str(args[key])[:2000] or None
-                if "criteria" in args:
-                    data["acceptance_criteria"] = [line.strip() for line in str(args["criteria"])[:12000].splitlines() if line.strip()]
+                data = plan_text_patch(args, task=True, create=op == "plan_task_create")
                 if op == "plan_task_create":
                     data.update({"kind": "code", "work_status": "planned", "depends_on": [], "clarifications": []})
                     op = "plan_task_edit"
@@ -615,10 +636,13 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         return control.maintenance(text_field(args, "action", 100))
-    if op in {"plans", "plan_board", "worktrees", "project_config"}:
+    if op in {"plans", "plan_board", "plan_detail", "worktrees", "project_config"}:
         root = explicit_root(args.get("root"))
         if op == "plans":
             return checked_post(control, "/api/coord/plan_list", {"root": root})
+        if op == "plan_detail":
+            return checked_post(control, "/api/coord/plan_get",
+                                {"root": root, "plan_id": text_field(args, "id", 85)})
         if op == "plan_board":
             return checked_post(control, "/api/coord/plan_board_view",
                                 {"root": root, "plan_id": text_field(args, "id", 100)})
