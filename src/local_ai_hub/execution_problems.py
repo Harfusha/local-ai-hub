@@ -13,6 +13,8 @@ from .verified_execution import _canonical
 
 PROBLEM_STATE_KEY = "_verified_execution_problems"
 PROBLEM_REPORT_KEY = "execution_problem_report"
+PROBLEM_DISPOSITION_KEY = "execution_problem_disposition"
+MAX_DISPOSITIONS = 16
 MAX_PROBLEMS = 64
 
 
@@ -119,11 +121,45 @@ def record_problem(
     return records
 
 
+def record_disposition(
+    existing: Any, decision: Any, *, actor: str, now: float,
+) -> dict[str, Any]:
+    """Append a review decision without deleting reports or bypassing receipts."""
+    records = _validated_records(existing)
+    if type(decision) is not dict or set(decision) != {"id", "decision_id", "action", "reason"}:
+        raise ValueError("invalid execution problem disposition")
+    problem_id = _canonical(decision["id"], "problem id", 80)
+    decision_id = _canonical(decision["decision_id"], "decision id", 80)
+    action = decision["action"]
+    if action not in ("defer", "reject", "resume"):
+        raise ValueError("invalid execution problem disposition action")
+    reason = _canonical(decision["reason"], "disposition reason", 1000)
+    owner = _canonical(actor, "disposition owner", 200)
+    record = records.get(problem_id)
+    if record is None:
+        raise ValueError("execution problem not found")
+    if action == "reject" and owner == record["reporter"]:
+        raise ValueError("rejecting a report requires a different authorized task owner")
+    history = list(record.get("dispositions", []))
+    for entry in history:
+        if entry["decision_id"] == decision_id:
+            if (entry["action"], entry["reason"], entry["actor"]) != (action, reason, owner):
+                raise ValueError("disposition id already used for another decision")
+            return records
+    if len(history) >= MAX_DISPOSITIONS:
+        raise ValueError("execution problem disposition history is full")
+    history.append({"decision_id": decision_id, "action": action, "reason": reason,
+                    "actor": owner, "observed_at": float(now)})
+    records[problem_id] = {**record, "dispositions": history}
+    return _validated_records(records)
+
+
 def _validated_records(raw: Any) -> dict[str, Any]:
     if type(raw) is not dict or len(raw) > MAX_PROBLEMS:
         raise ValueError("invalid persisted execution problem registry")
     for problem_id, record in raw.items():
-        if type(record) is not dict or set(record) != {"report", "reported_at", "reporter", "baseline_receipt_id"}:
+        if (type(record) is not dict or not {"report", "reported_at", "reporter", "baseline_receipt_id"}.issubset(record)
+                or set(record) - {"report", "reported_at", "reporter", "baseline_receipt_id", "dispositions"}):
             raise ValueError("invalid persisted execution problem")
         report = record["report"]
         criterion = report.get("criterion", "") if type(report) is dict else ""
@@ -138,6 +174,25 @@ def _validated_records(raw: Any) -> dict[str, Any]:
         baseline = record["baseline_receipt_id"]
         if type(baseline) is not str or "\x00" in baseline:
             raise ValueError("invalid persisted problem baseline")
+        history = record.get("dispositions", [])
+        if type(history) is not list or len(history) > MAX_DISPOSITIONS:
+            raise ValueError("invalid persisted problem disposition history")
+        ids: set[str] = set()
+        last_time = observed
+        for entry in history:
+            if type(entry) is not dict or set(entry) != {"decision_id", "action", "reason", "actor", "observed_at"}:
+                raise ValueError("invalid persisted problem disposition")
+            decision_id = _canonical(entry["decision_id"], "decision id", 80)
+            _canonical(entry["reason"], "disposition reason", 1000)
+            actor = _canonical(entry["actor"], "disposition owner", 200)
+            timestamp = entry["observed_at"]
+            if (decision_id in ids or entry["action"] not in ("defer", "reject", "resume")
+                    or (entry["action"] == "reject" and actor == record["reporter"])
+                    or type(timestamp) not in (int, float) or not math.isfinite(timestamp)
+                    or timestamp < last_time):
+                raise ValueError("invalid persisted problem disposition sequence")
+            ids.add(decision_id)
+            last_time = timestamp
     return dict(raw)
 
 
@@ -156,6 +211,8 @@ def project_problems(
     records = _validated_records(raw)
     valid = set(satisfied)
     open_count = blocking = resolved = 0
+    deferred = rejected = pending_rejection = 0
+    disposition_preview: list[dict[str, Any]] = []
     blocking_criteria: set[str] = set()
     handoff_criteria: set[str] = set()
     preview: list[dict[str, Any]] = []
@@ -189,6 +246,18 @@ def project_problems(
         closed = primary_closed and confirmed and owner_confirmed
         needs_handoff = bool(primary_closed and distinct_owner and not closed
                              and current_owner and current_owner == repair_owner)
+        history = record.get("dispositions", [])
+        decision = history[-1] if history else None
+        disposition = decision["action"] if decision else "resume"
+        if disposition == "defer" and not closed:
+            deferred += 1
+        if disposition == "reject":
+            if closed:
+                rejected += 1
+            else:
+                pending_rejection += 1
+        if decision and len(disposition_preview) < 12:
+            disposition_preview.append({"id": report["id"], **decision, "verified": closed})
         if closed:
             resolved += 1
         else:
@@ -215,4 +284,7 @@ def project_problems(
         **({"owner_handoff_criteria": sorted(handoff_criteria)} if handoff_criteria else {}),
         "open_preview": preview,
         "preview_truncated": open_count > len(preview),
+        **({"deferred_open": deferred, "rejected_verified": rejected,
+            "rejection_pending_evidence": pending_rejection,
+            "dispositions_preview": disposition_preview} if disposition_preview else {}),
     }
