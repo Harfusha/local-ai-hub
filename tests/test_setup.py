@@ -301,6 +301,15 @@ def test_opencode_plugin_setup_detects_duplicate_standalone_hub_mcp(tmp_path):
     assert set(data["mcp"]["servers"]) == {"local-ai", "other"}
 
 
+def test_opencode_plugin_setup_detects_native_hub_server_name(tmp_path):
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"mcp": {"servers": {
+        "local-ai-hub": {"type": "local", "command": ["python", "-m", "local_ai_hub.mcp_server"]},
+    }}}), encoding="utf-8")
+
+    assert setup.opencode_direct_hub_mcp_configured(config) is True
+
+
 def test_opencode_plugin_setup_allows_plugin_without_duplicate_mcp(tmp_path):
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugins": [{"package": "local-ai-hub"}]}), encoding="utf-8")
@@ -405,6 +414,369 @@ def test_opencode_plugin_route_preserves_existing_jsonc_plugin(tmp_path, monkeyp
     assert not (tmp_path / "opencode.json").exists()
 
 
+def test_opencode_plugin_route_refreshes_existing_json_plugin(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    mcp_plugin = install / "plugins" / "opencode" / "local-ai-hub"
+    goal_plugin = install / "tools" / "opencode_goal"
+    mcp_plugin.mkdir(parents=True)
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    removed_root = tmp_path / "removed-worktree" / ".local-ai-hub"
+    stale_mcp_plugin = removed_root / "plugins" / "opencode" / "local-ai-hub"
+    stale_goal_plugin = removed_root / "tools" / "opencode_goal"
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({
+        "plugins": [
+            {"package": str(mcp_plugin.resolve()), "options": {
+                "server": {"command": ["old-python"], "nativeMcp": False},
+            }},
+            {"package": str(stale_mcp_plugin), "options": {}},
+            {"package": str(stale_goal_plugin), "options": {}},
+            "user-plugin",
+        ],
+        "providers": {"user-provider": {"name": "preserve me"}},
+        "mcp": {"servers": {"user-server": {"type": "local", "command": ["keep"]}}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(setup, "write_all_generated", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "build_codex_mcp_entries", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(setup, "opencode_config_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+    agents = {name: False for name in (
+        "codex", "claude", "gemini", "antigravity", "cursor", "windsurf", "copilot", "devin",
+    )}
+    agents.update({"opencode": True, "opencode_plugin_route": True})
+    cfg = {
+        "agents": agents,
+        "models": {"general": "gemma4:12b-128k"},
+        "server": {"bind": "127.0.0.1", "port": 11435},
+        "setup": {"backup_existing_configs": False},
+        "tool_policy": {"install_global_instructions": False},
+    }
+
+    setup._configure_agents_impl(install, Path("C:/Python/python.exe"), None, cfg)
+
+    configured = json.loads(config.read_text(encoding="utf-8"))
+    plugins = configured["plugins"]
+    managed_plugins = [entry for entry in plugins if isinstance(entry, dict)]
+    by_package = {entry["package"]: entry for entry in managed_plugins}
+    assert plugins.count("user-plugin") == 1
+    assert set(by_package) == {str(mcp_plugin.resolve()), str(goal_plugin.resolve())}
+    assert by_package[str(mcp_plugin.resolve())]["options"]["server"]["nativeMcp"] is True
+    assert configured["mcp"]["servers"]["local-ai-hub"]["codemode"] is True
+    assert configured["providers"]["user-provider"] == {"name": "preserve me"}
+    assert configured["mcp"]["servers"]["user-server"] == {"type": "local", "command": ["keep"]}
+
+    by_package[str(mcp_plugin.resolve())]["options"]["server"]["nativeMcp"] = False
+    configured["plugins"] = [
+        entry for entry in plugins
+        if not isinstance(entry, dict) or entry.get("package") != str(goal_plugin.resolve())
+    ]
+    configured["providers"].pop("local-ai-hub")
+    config.write_text(json.dumps(configured), encoding="utf-8")
+    setup._configure_agents_impl(install, Path("C:/Python/python.exe"), None, cfg)
+
+    refreshed = json.loads(config.read_text(encoding="utf-8"))
+    refreshed_by_package = {
+        entry["package"]: entry for entry in refreshed["plugins"] if isinstance(entry, dict)
+    }
+    assert refreshed_by_package[str(mcp_plugin.resolve())]["options"]["server"]["nativeMcp"] is True
+    assert str(goal_plugin.resolve()) in refreshed_by_package
+    assert "local-ai-hub" in refreshed["providers"]
+
+
+def test_opencode_plugin_sync_preserves_existing_valid_hub_copy(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    mcp_plugin = install / "plugins" / "opencode" / "local-ai-hub"
+    goal_plugin = install / "tools" / "opencode_goal"
+    mcp_plugin.mkdir(parents=True)
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    retained_mcp_plugin = tmp_path / "other-install" / "plugins" / "opencode" / "local-ai-hub"
+    retained_mcp_plugin.mkdir(parents=True)
+    retained = {"package": str(retained_mcp_plugin.resolve()), "options": {"user": "preserve"}}
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": [retained]}), encoding="utf-8")
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+    cfg = {
+        "models": {"general": "gemma4:12b-128k"},
+        "server": {"bind": "127.0.0.1", "port": 11435},
+    }
+
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), cfg, False)
+
+    configured = json.loads(config.read_text(encoding="utf-8"))
+    packages = {
+        entry["package"]: entry for entry in configured["plugins"] if isinstance(entry, dict)
+    }
+    assert packages[str(retained_mcp_plugin.resolve())] == retained
+    assert str(mcp_plugin.resolve()) in packages
+    assert str(goal_plugin.resolve()) in packages
+
+
+def test_opencode_plugin_route_installs_goal_lifecycle_plugin_and_preserves_others(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    mcp_plugin = install / "plugins" / "opencode" / "local-ai-hub"
+    goal_plugin = install / "tools" / "opencode_goal"
+    mcp_plugin.mkdir(parents=True)
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({
+        "plugins": ["existing-plugin"],
+        "agents": {"reviewer": {"mode": "subagent", "system": "preserve me"}},
+        "mcp": {"servers": {"existing-server": {"type": "local", "command": ["keep"]}}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+
+    hub_config = {"server": {"bind": "127.0.0.1", "port": 11435},
+                  "models": {"general": "gemma4:12b-128k"}}
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), hub_config, False)
+
+    written = config.read_bytes()
+    plugins = json.loads(written)["plugins"]
+    assert "-opencode.provider.ollama" in plugins
+    assert plugins[0] == "existing-plugin"
+    by_package = {entry["package"]: entry for entry in plugins if isinstance(entry, dict)}
+    assert by_package[str(mcp_plugin.resolve())]["options"]["server"]["environment"]["OPENCODE_SESSION"] == "1"
+    assert by_package[str(goal_plugin.resolve())]["options"] == {
+        "hubURL": "http://127.0.0.1:11435", "actor": "opencode-local",
+    }
+    assert json.loads(written)["providers"]["local-ai-hub"] == {
+        "name": "Local AI Hub",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {"baseURL": "http://127.0.0.1:11435/api"},
+        "headers": {"X-LocalAI-Agent": "opencode"},
+        "models": {"gemma4:12b-128k": {
+            "name": "Local AI Hub / gemma4:12b-128k", "modelID": "gemma4:12b-128k",
+            "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
+            "limit": {"context": 16384, "output": 2048},
+        }},
+    }
+    assert json.loads(written)["model"] == "local-ai-hub/gemma4:12b-128k"
+    configured = json.loads(written)
+    assert configured["default_agent"] == "local-ai-hub"
+    assert configured["agents"]["reviewer"] == {"mode": "subagent", "system": "preserve me"}
+    hub_agent = configured["agents"]["local-ai-hub"]
+    assert hub_agent["mode"] == "primary"
+    assert hub_agent["steps"] == 8
+    assert hub_agent["permissions"] == [
+        {"action": "edit", "resource": "*", "effect": "ask"},
+        {"action": "shell", "resource": "*", "effect": "ask"},
+        {"action": "external_directory", "resource": "*", "effect": "ask"},
+        {"action": "webfetch", "resource": "*", "effect": "ask"},
+        {"action": "websearch", "resource": "*", "effect": "ask"},
+    ]
+    assert "top-level `search`" in hub_agent["system"]
+    assert "structuredContent" in hub_agent["system"]
+    assert "OpenCode permissions" in hub_agent["system"]
+    managed_mcp = json.loads(written)["mcp"]["servers"]
+    assert managed_mcp["existing-server"] == {"type": "local", "command": ["keep"]}
+    assert managed_mcp["local-ai-hub"] == {
+        "type": "local",
+        "command": [str(Path("C:/Python/python.exe").resolve()), "-m", "local_ai_hub.mcp_server"],
+        "cwd": str(install.resolve()),
+        "environment": {
+            "LOCAL_AI_AGENT": "opencode", "OPENCODE_SESSION": "1",
+            "LOCAL_AI_HUB_DIR": str(install.resolve()),
+        },
+        "codemode": True,
+        "timeout": {"startup": 60000, "catalog": 60000},
+    }
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), hub_config, False)
+    assert config.read_bytes() == written
+
+
+def test_opencode_plugin_route_preserves_explicit_default_agent(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "plugins" / "opencode" / "local-ai-hub").mkdir(parents=True)
+    goal_plugin = install / "tools" / "opencode_goal"
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"default_agent": "reviewer", "agents": {
+        "reviewer": {"mode": "primary", "system": "keep selected agent"},
+    }}), encoding="utf-8")
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+    hub_config = {"server": {"bind": "127.0.0.1", "port": 11435},
+                  "models": {"general": "gemma4:12b-128k"}}
+
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), hub_config, False)
+
+    configured = json.loads(config.read_text(encoding="utf-8"))
+    assert configured["default_agent"] == "reviewer"
+    assert configured["agents"]["reviewer"] == {"mode": "primary", "system": "keep selected agent"}
+    assert configured["agents"]["local-ai-hub"]["steps"] == 8
+    assert all(rule["effect"] == "ask" for rule in configured["agents"]["local-ai-hub"]["permissions"])
+
+
+def test_opencode_plugin_route_adopts_and_exactly_rolls_back_existing_config(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "plugins" / "opencode" / "local-ai-hub").mkdir(parents=True)
+    goal_plugin = install / "tools" / "opencode_goal"
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    setup.write_install_manifest(install)
+    config = tmp_path / "opencode.json"
+    original = {
+        "plugins": ["existing-plugin"],
+        "default_agent": "reviewer",
+        "agents": {"reviewer": {"mode": "subagent", "system": "preserve me"}},
+        "providers": {"existing-provider": {"name": "preserve me"}},
+        "mcp": {"servers": {"existing-server": {"type": "local", "command": ["keep"]}}},
+    }
+    config.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+    hub_config = {"server": {"bind": "127.0.0.1", "port": 11435},
+                  "models": {"general": "gemma4:12b-128k"}}
+
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), hub_config, False)
+    installed = json.loads(config.read_text(encoding="utf-8"))
+    assert installed["plugins"][0] == "existing-plugin"
+    assert installed["default_agent"] == "reviewer"
+    assert installed["providers"]["existing-provider"] == original["providers"]["existing-provider"]
+    assert installed["mcp"]["servers"]["existing-server"] == original["mcp"]["servers"]["existing-server"]
+
+    uninstall_spec = importlib.util.spec_from_file_location("test_opencode_uninstall", ROOT / "tools" / "uninstall.py")
+    assert uninstall_spec and uninstall_spec.loader
+    uninstall = importlib.util.module_from_spec(uninstall_spec)
+    sys.modules[uninstall_spec.name] = uninstall
+    uninstall_spec.loader.exec_module(uninstall)
+    ownership = setup._install_ownership_module.read_install_manifest(install)["external_ownership"]
+    uninstall.clean_external_configurations(ownership, install)
+    assert json.loads(config.read_text(encoding="utf-8")) == original
+
+    minimal_config = tmp_path / "opencode-minimal.json"
+    minimal_original = {"plugins": ["existing-plugin"]}
+    minimal_config.write_text(json.dumps(minimal_original), encoding="utf-8")
+    assert setup.sync_opencode_plugin_config(
+        minimal_config, install, Path("C:/Python/python.exe"), hub_config, False,
+    )
+    ownership = setup._install_ownership_module.read_install_manifest(install)["external_ownership"]
+    uninstall.clean_external_configurations(ownership, install)
+    assert json.loads(minimal_config.read_text(encoding="utf-8")) == minimal_original
+
+
+def test_opencode_plugin_route_removes_new_config_on_rollback(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "plugins" / "opencode" / "local-ai-hub").mkdir(parents=True)
+    goal_plugin = install / "tools" / "opencode_goal"
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    setup.write_install_manifest(install)
+    config = tmp_path / "opencode.json"
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+    hub_config = {"server": {"bind": "127.0.0.1", "port": 11435},
+                  "models": {"general": "gemma4:12b-128k"}}
+
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), hub_config, False)
+    assert config.exists()
+    uninstall_spec = importlib.util.spec_from_file_location("test_opencode_uninstall_new_file", ROOT / "tools" / "uninstall.py")
+    assert uninstall_spec and uninstall_spec.loader
+    uninstall = importlib.util.module_from_spec(uninstall_spec)
+    sys.modules[uninstall_spec.name] = uninstall
+    uninstall_spec.loader.exec_module(uninstall)
+    ownership = setup._install_ownership_module.read_install_manifest(install)["external_ownership"]
+
+    uninstall.clean_external_configurations(ownership, install)
+
+    assert not config.exists()
+
+
+def test_opencode_goal_plugin_refuses_non_loopback_hub_endpoint(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "plugins" / "opencode" / "local-ai-hub").mkdir(parents=True)
+    goal_plugin = install / "tools" / "opencode_goal"
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    config = tmp_path / "opencode.json"
+    config.write_text("{}", encoding="utf-8")
+    original = config.read_bytes()
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {}},
+    })
+
+    assert not setup.sync_opencode_plugin_config(
+        config, install, Path("C:/Python/python.exe"),
+        {"server": {"bind": "0.0.0.0", "port": 11435}}, False,
+    )
+    assert config.read_bytes() == original
+
+
+def test_opencode_provider_uses_reasoning_model_when_general_role_is_implicit(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "plugins" / "opencode" / "local-ai-hub").mkdir(parents=True)
+    goal = install / "tools" / "opencode_goal"
+    goal.mkdir(parents=True)
+    (goal / "index.js").write_text("export default {}\n", encoding="utf-8")
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {}},
+    })
+    config = tmp_path / "opencode.json"
+
+    assert setup.sync_opencode_plugin_config(
+        config, install, Path("C:/Python/python.exe"),
+        {"server": {"bind": "127.0.0.1", "port": 11435},
+         "models": {"reasoning": "qwen3.5:9b-nvfp4"}}, False,
+    )
+    written = json.loads(config.read_text(encoding="utf-8"))
+    assert written["model"] == "local-ai-hub/qwen3.5:9b-nvfp4"
+
+
+def test_opencode_provider_prefers_explicit_opencode_model_without_changing_other_roles(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "plugins" / "opencode" / "local-ai-hub").mkdir(parents=True)
+    goal = install / "tools" / "opencode_goal"
+    goal.mkdir(parents=True)
+    (goal / "index.js").write_text("export default {}\n", encoding="utf-8")
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {}},
+    })
+    config = tmp_path / "opencode.json"
+    hub_config = {
+        "server": {"bind": "127.0.0.1", "port": 11435},
+        "models": {"general": "qwen3.5:9b-nvfp4", "opencode": "gemma4:12b-128k"},
+        "model_execution": {"opencode": {
+            "context_tokens": 16384, "large_context_tokens": 32768,
+            "max_context_tokens": 131072,
+        }},
+    }
+
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), hub_config, False)
+    written = json.loads(config.read_text(encoding="utf-8"))
+
+    assert written["model"] == "local-ai-hub/gemma4:12b-128k"
+    assert set(written["providers"]["local-ai-hub"]["models"]) == {
+        "qwen3.5:9b-nvfp4", "gemma4:12b-128k",
+    }
+    assert written["providers"]["local-ai-hub"]["models"]["gemma4:12b-128k"]["limit"]["context"] == 131072
+    assert written["providers"]["local-ai-hub"]["models"]["qwen3.5:9b-nvfp4"]["limit"]["context"] == 16384
+
+
 def test_opencode_standalone_route_keeps_existing_jsonc_plugin(tmp_path, monkeypatch):
     config = tmp_path / "opencode.jsonc"
     original = json.dumps({"plugins": [str(tmp_path / "local-ai-hub")]})
@@ -435,11 +807,20 @@ def test_opencode_setup_uses_canonical_or_explicit_config_root_only(tmp_path, mo
     monkeypatch.setattr(setup.Path, "home", lambda: tmp_path)
     monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
     monkeypatch.delenv("OPENCODE_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     assert setup.opencode_config_dirs() == [tmp_path / ".config" / "opencode"]
 
     explicit = tmp_path / "custom-opencode"
     monkeypatch.setenv("OPENCODE_HOME", str(explicit))
     assert setup.opencode_config_dirs() == [explicit]
+
+
+def test_opencode_setup_uses_xdg_config_home_for_isolated_profile(tmp_path, monkeypatch):
+    xdg_config_home = tmp_path / "isolated-xdg-config"
+    monkeypatch.setenv("OPENCODE_HOME", str(tmp_path / "inherited-opencode-home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+
+    assert setup.opencode_config_dirs() == [xdg_config_home / "opencode"]
 
 
 def test_claude_plugin_route_detects_global_mcp_and_hooks(tmp_path):
@@ -1300,7 +1681,7 @@ def test_codex_plugin_packages_skills_and_all_configured_hook_surfaces():
     }
 
 
-def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_path, monkeypatch):
+def test_setup_skip_service_does_not_restart_global_hub_without_registering_service(tmp_path, monkeypatch):
     config_source = tmp_path / "config.toml"
     config_source.write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
     install_dir = tmp_path / "install"
@@ -1359,11 +1740,11 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
     ])
 
     assert setup.main() == 0
-    assert restart_timeouts == [420]
+    assert restart_timeouts == []
     assert sum(
         command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
         for command in commands
-    ) == 1
+    ) == 0
     assert not any(command[-1:] == ["install"] and any(part.endswith("tools/service.py") or part.endswith("tools\\service.py") for part in command) for command in commands)
 
 
@@ -2173,7 +2554,7 @@ def test_v8_setup_migration_clears_active_vectors_with_backup(tmp_path: Path, mo
 
 
 
-def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):
+def test_skip_service_does_not_restart_global_hub_without_managed_service(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     install = tmp_path / "installed"
     source.mkdir()
@@ -2212,7 +2593,7 @@ def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Pat
     assert sum(
         len(command) >= 2 and Path(command[-2]).name == "hubctl.py" and command[-1] == "restart"
         for command in commands
-    ) == 1
+    ) == 0
     assert not any(
         len(command) >= 2 and Path(command[-2]).name == "service.py" and command[-1] == "install"
         for command in commands

@@ -52,6 +52,7 @@ class ClientCapabilities:
     mcp_surface:           str = "stdio"
     extra:                 dict[str, Any] = field(default_factory=dict)
     hook_events:           tuple[str, ...] = ()  # Native events wired by the Hub integration
+    compact_mcp_schemas:   bool = False         # Avoid huge per-action unions in clients with tight tool limits
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { StringDecoder } from "node:string_decoder"
+import net from "node:net"
 import path from "node:path"
 
 const MAX_LINE = 4 * 1024 * 1024
@@ -9,6 +10,11 @@ const REQUEST_TIMEOUT_MS = 60000
 const HOOK_TIMEOUT_MS = 4000
 const MAX_HOOK_OUTPUT = 65536
 const MAX_STATIC_HOOKS = 4
+const MAX_PIPE_FRAME = 65536
+const MAX_MCP_PIPE_RESPONSE = 65536
+const MAX_MCP_PIPE_WIRE = MAX_MCP_PIPE_RESPONSE + 16384
+const MAX_PIPE_CONNECT_ATTEMPTS = 40
+const MCP_STATUS_TOOL = "local_ai_status"
 const OPENCODE_EDIT_TOOLS = new Set(["edit", "write", "apply_patch", "edit_file", "write_file", "replace"])
 const CORE_HUB_TOOLS = new Set([
   "local_ai_status",
@@ -33,6 +39,211 @@ export function usesNativeMcp(server) {
   return server?.nativeMcp === true
 }
 
+export function usesManagedMcpPipe(server) {
+  return server?.transport === "managed_pipe"
+}
+
+export function selectManagedHubTools(catalogTools) {
+  if (!Array.isArray(catalogTools) || catalogTools.length !== 1 || catalogTools[0]?.name !== MCP_STATUS_TOOL) {
+    throw new Error("managed MCP pipe exposed an unexpected tool catalog")
+  }
+  return catalogTools
+}
+
+function parseMcpHttpResponse(raw, expectedId) {
+  const separator = raw.indexOf(Buffer.from("\r\n\r\n"))
+  if (separator < 0 || separator > 16384) throw new Error("invalid managed MCP response headers")
+  const lines = raw.subarray(0, separator).toString("ascii").split("\r\n")
+  const match = /^HTTP\/1\.1 (200|204) [^\r\n]+$/.exec(lines[0] ?? "")
+  if (!match) throw new Error("managed MCP bridge returned an unexpected HTTP status")
+  const headers = new Map()
+  for (const line of lines.slice(1)) {
+    const colon = line.indexOf(":")
+    if (colon <= 0) throw new Error("invalid managed MCP response header")
+    const name = line.slice(0, colon).trim().toLowerCase()
+    const value = line.slice(colon + 1).trim()
+    if (headers.has(name) || /[\r\n\0]/.test(value)) throw new Error("ambiguous managed MCP response header")
+    headers.set(name, value)
+  }
+  if (headers.has("transfer-encoding")) throw new Error("chunked managed MCP response is not supported")
+  const lengthText = headers.get("content-length")
+  if (!lengthText || !/^\d{1,8}$/.test(lengthText)) throw new Error("invalid managed MCP response length")
+  const length = Number(lengthText)
+  const body = raw.subarray(separator + 4)
+  if (length !== body.length || length > MAX_MCP_PIPE_RESPONSE) throw new Error("managed MCP response length mismatch")
+  if (match[1] === "204") {
+    if (length !== 0 || expectedId !== undefined) throw new Error("invalid managed MCP notification response")
+    return undefined
+  }
+  if (headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    throw new Error("managed MCP response content type is not allowed")
+  }
+  let message
+  try { message = JSON.parse(body.toString("utf8")) } catch { throw new Error("invalid managed MCP JSON-RPC response") }
+  if (!message || message.jsonrpc !== "2.0" || message.id !== expectedId || (!("result" in message) && !message.error)) {
+    throw new Error("managed MCP response did not match its request")
+  }
+  if (message.error) throw new Error(typeof message.error.message === "string" ? message.error.message : "managed MCP request failed")
+  return message.result
+}
+
+export function openManagedMcpPipe(server, { connectPipe = name => net.connect(name) } = {}) {
+  const environment = server?.environment
+  const pipeName = environment?.LOCAL_AI_PIPE_NAME
+  const secret = environment?.LOCAL_AI_PIPE_SECRET
+  if (!usesManagedMcpPipe(server) || !environment || Array.isArray(environment) ||
+      typeof pipeName !== "string" || !/^\\\\\.\\pipe\\lah-opencode-[a-f0-9]{32}$/.test(pipeName) ||
+      typeof secret !== "string" || !/^[a-f0-9]{64}$/.test(secret) || typeof connectPipe !== "function") {
+    throw new Error("invalid managed MCP pipe configuration")
+  }
+  let closed = false
+  let nextId = 0
+  const sockets = new Set()
+  const activeTransactions = new Set()
+
+  function transact(method, params, signal, notification = false) {
+    if (closed) return Promise.reject(new Error("managed MCP pipe is unavailable"))
+    if (signal?.aborted) return Promise.reject(new Error("MCP request cancelled"))
+    const id = notification ? undefined : ++nextId
+    const message = { jsonrpc: "2.0", method }
+    if (id !== undefined) message.id = id
+    if (params !== undefined) message.params = params
+    const body = Buffer.from(JSON.stringify(message), "utf8")
+    if (!body.length || body.length > 65536) return Promise.reject(new Error("managed MCP request exceeds limit"))
+    const request = Buffer.from(
+      `POST /mcp HTTP/1.1\r\nHost: local-ai-hub\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`,
+      "ascii",
+    )
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let timer
+      let retryTimer
+      let frameBuffer = Buffer.alloc(0)
+      let responseChunks = []
+      let responseBytes = 0
+      let terminal = false
+      let ackPending = false
+      let acknowledged = false
+      let requestSent = false
+      let connectAttempts = 0
+      let socket
+      let stopTransaction
+      const finish = (error, value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        clearTimeout(retryTimer)
+        signal?.removeEventListener("abort", abort)
+        activeTransactions.delete(stopTransaction)
+        if (socket) sockets.delete(socket)
+        if (error) reject(error)
+        else resolve(value)
+      }
+      const fail = error => {
+        if (socket && !socket.destroyed) socket.destroy()
+        finish(error instanceof Error ? error : new Error("managed MCP pipe failed"))
+      }
+      stopTransaction = () => fail(new Error("managed MCP pipe stopped"))
+      activeTransactions.add(stopTransaction)
+      const retryableConnectError = error => ["ENOENT", "EBUSY", "ERR_PIPE_BUSY", "EAGAIN", "ECONNREFUSED", "EINTR"].includes(error?.code)
+      const retryConnect = (candidate, error) => {
+        if (candidate) sockets.delete(candidate)
+        if (socket === candidate) socket = undefined
+        if (candidate && !candidate.destroyed) candidate.destroy()
+        if (settled) return
+        if (requestSent || closed || signal?.aborted || !retryableConnectError(error) || connectAttempts >= MAX_PIPE_CONNECT_ATTEMPTS) {
+          finish(new Error(`managed MCP pipe connection failed before request send: ${error?.code || "unknown"}`))
+          return
+        }
+        retryTimer = setTimeout(openSocket, Math.min(25 * connectAttempts, 250))
+      }
+      const abort = () => fail(new Error("MCP request cancelled; outcome may be unknown"))
+      timer = setTimeout(() => fail(new Error("managed MCP request timed out; outcome may be unknown")), REQUEST_TIMEOUT_MS)
+      signal?.addEventListener("abort", abort, { once: true })
+      const openSocket = () => {
+        if (settled || closed || signal?.aborted) return
+        connectAttempts += 1
+        let candidate
+        try { candidate = connectPipe(pipeName) } catch (error) { retryConnect(undefined, error); return }
+        if (!candidate || typeof candidate.on !== "function" || typeof candidate.write !== "function") {
+          finish(new Error("managed MCP pipe connection is invalid"))
+          return
+        }
+        socket = candidate
+        sockets.add(candidate)
+        candidate.on("connect", () => {
+          if (settled || socket !== candidate) return
+          requestSent = true
+          try {
+            candidate.write(Buffer.concat([Buffer.from(secret, "hex"), request, body]))
+          } catch { fail(new Error("managed MCP request could not be sent")) }
+        })
+        candidate.on("data", chunk => {
+          if (settled || socket !== candidate) return
+          if (terminal || frameBuffer.length + chunk.length > MAX_MCP_PIPE_WIRE + 8) {
+            return fail(new Error("managed MCP frame buffer exceeds limit"))
+          }
+          frameBuffer = Buffer.concat([frameBuffer, chunk])
+          while (!terminal && frameBuffer.length >= 4) {
+            const frameLength = frameBuffer.readUInt32BE(0)
+            if (frameLength > MAX_PIPE_FRAME || responseBytes + frameLength > MAX_MCP_PIPE_WIRE) {
+              return fail(new Error("managed MCP response exceeds limit"))
+            }
+            if (frameBuffer.length < frameLength + 4) return
+            const frame = frameBuffer.subarray(4, frameLength + 4)
+            frameBuffer = frameBuffer.subarray(frameLength + 4)
+            if (frameLength === 0) {
+              if (frameBuffer.length) return fail(new Error("unexpected data after managed MCP terminal frame"))
+              terminal = true
+              ackPending = true
+              candidate.write(Buffer.from([6]), error => {
+                if (error) return fail(new Error("managed MCP response acknowledgement failed"))
+                ackPending = false
+                acknowledged = true
+                try { finish(null, parseMcpHttpResponse(Buffer.concat(responseChunks, responseBytes), id)) }
+                catch (parseError) { fail(parseError) }
+                candidate.end()
+              })
+              return
+            }
+            responseBytes += frameLength
+            responseChunks.push(frame)
+          }
+        })
+        candidate.on("error", error => {
+          if (settled || socket !== candidate) return
+          if (ackPending && !closed && !signal?.aborted) return
+          if (!requestSent) retryConnect(candidate, error)
+          else fail(new Error("managed MCP pipe transport failed after request send; outcome may be unknown"))
+        })
+        candidate.on("end", () => {
+          if (settled || socket !== candidate) return
+          if (!terminal || !acknowledged) fail(new Error("managed MCP pipe ended before acknowledgement"))
+        })
+        candidate.on("close", () => {
+          if (settled || socket !== candidate) return
+          if (ackPending && !closed && !signal?.aborted) return
+          if (!terminal || !acknowledged) fail(new Error("managed MCP pipe closed before completion"))
+          else finish(null)
+        })
+      }
+      openSocket()
+    })
+  }
+  return {
+    request: (method, params, signal) => transact(method, params, signal),
+    notify: (method, params) => { void transact(method, params, undefined, true).catch(() => {}) },
+    stop: () => {
+      if (closed) return
+      closed = true
+      for (const cancel of activeTransactions) cancel()
+      activeTransactions.clear()
+      for (const socket of sockets) socket.destroy()
+      sockets.clear()
+    },
+  }
+}
+
 export function opencodeEditedPath(tool, input) {
   if (typeof tool !== "string" || !OPENCODE_EDIT_TOOLS.has(tool.toLowerCase()) || !input || typeof input !== "object") return null
   const file = input.file_path ?? input.filePath ?? input.path ?? input.target
@@ -44,6 +255,20 @@ export function opencodePermissionCommand(event) {
   if (event.resources.some(value => typeof value !== "string" || !value.trim() || Buffer.byteLength(value, "utf8") > 4096)) return null
   const command = event.resources.join("\n")
   return Buffer.byteLength(command, "utf8") <= 4096 ? command : null
+}
+
+export function opencodePreToolTarget(tool, input) {
+  if (typeof tool !== "string" || !input || typeof input !== "object") return null
+  const toolLower = tool.toLowerCase()
+  if (toolLower === "bash" || toolLower === "shell") {
+    const cmd = input.command ?? input.cmd ?? input.CommandLine
+    return typeof cmd === "string" && cmd.trim() && Buffer.byteLength(cmd, "utf8") <= 4096 ? { type: "command", target: cmd } : null
+  }
+  if (OPENCODE_EDIT_TOOLS.has(toolLower)) {
+    const file = input.file_path ?? input.filePath ?? input.path ?? input.target
+    return typeof file === "string" && path.isAbsolute(file) && Buffer.byteLength(file, "utf8") <= 4096 ? { type: "file", target: file } : null
+  }
+  return null
 }
 
 function runOpenCodePostEditCheck(server, root, event, active) {
@@ -160,12 +385,124 @@ function runOpenCodePermissionCheck(server, root, event, active) {
   })
 }
 
+function runOpenCodeProactiveContext(server, root, sessionID, active) {
+  if (typeof root !== "string" || !path.isAbsolute(root) || active.count >= MAX_STATIC_HOOKS) return Promise.resolve(null)
+  active.count += 1
+  return new Promise(resolve => {
+    let settled = false
+    let output = ""
+    let timer = null
+    const finish = value => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimeout(timer)
+      active.count = Math.max(0, active.count - 1)
+      resolve(value)
+    }
+    let child
+    try {
+      child = spawn(server.command[0], ["-m", "local_ai_hub.repo_plan.host_hooks", "--root", root,
+        "--host", "opencode", "--event", "UserPromptSubmit"], {
+        cwd: server.cwd,
+        env: { ...process.env, ...server.environment, LOCAL_AI_AGENT: "opencode", LOCAL_AI_AGENT_PROFILE: "opencode" },
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: true,
+      })
+    } catch { finish(null); return }
+    timer = setTimeout(() => { child.kill(); finish(null) }, HOOK_TIMEOUT_MS)
+    child.stdout.on("data", chunk => {
+      output += chunk.toString("utf8")
+      if (Buffer.byteLength(output, "utf8") > MAX_HOOK_OUTPUT) { child.kill(); finish(null) }
+    })
+    child.stdout.on("error", () => finish(null))
+    child.on("error", () => finish(null))
+    child.on("close", code => {
+      if (code !== 0) return finish(null)
+      try {
+        const result = JSON.parse(output)
+        finish(typeof result?.additionalContext === "string" ? result.additionalContext.slice(0, 3200) : null)
+      } catch { finish(null) }
+    })
+    child.stdin.on("error", () => finish(null))
+    try {
+      child.stdin.end(JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: typeof sessionID === "string" ? sessionID.slice(0, 200) : "",
+        cwd: root,
+      }))
+    } catch { child.kill(); finish(null) }
+  })
+}
+
+function runOpenCodePreToolCheck(server, root, event, active) {
+  if (typeof root !== "string" || !path.isAbsolute(root) || active.count >= MAX_STATIC_HOOKS) return Promise.resolve(null)
+  const target = opencodePreToolTarget(event?.tool, event?.input)
+  if (!target) return Promise.resolve(null)
+  active.count += 1
+  return new Promise(resolve => {
+    let settled = false
+    let output = ""
+    let timer = null
+    const finish = value => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimeout(timer)
+      active.count = Math.max(0, active.count - 1)
+      resolve(value)
+    }
+    let child
+    try {
+      child = spawn(server.command[0], ["-m", "local_ai_hub.repo_plan.host_hooks", "--root", root,
+        "--host", "opencode", "--event", "PreToolUse"], {
+        cwd: server.cwd,
+        env: { ...process.env, ...server.environment, LOCAL_AI_AGENT: "opencode", LOCAL_AI_AGENT_PROFILE: "opencode" },
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: true,
+      })
+    } catch { finish(null); return }
+    timer = setTimeout(() => { child.kill(); finish(null) }, HOOK_TIMEOUT_MS)
+    child.stdout.on("data", chunk => {
+      output += chunk.toString("utf8")
+      if (Buffer.byteLength(output, "utf8") > MAX_HOOK_OUTPUT) { child.kill(); finish(null) }
+    })
+    child.stdout.on("error", () => finish(null))
+    child.on("error", () => finish(null))
+    child.on("close", code => {
+      if (code !== 0) return finish(null)
+      try {
+        const result = JSON.parse(output)
+        finish(result?.decision === "deny" && typeof result.reason === "string" ? result.reason.slice(0, 1600) : null)
+      } catch { finish(null) }
+    })
+    child.stdin.on("error", () => finish(null))
+    try {
+      child.stdin.end(JSON.stringify({
+        hook_event_name: "PreToolUse",
+        session_id: typeof event.sessionID === "string" ? event.sessionID.slice(0, 200) : "",
+        cwd: root,
+        tool_name: event.tool,
+        tool_input: event.input,
+      }))
+    } catch { child.kill(); finish(null) }
+  })
+}
+
 export function appendPostEditContext(event, context) {
   if (!context || !event?.result || !Array.isArray(event.result.content)) return false
   event.result = {
     ...event.result,
     content: [...event.result.content, { type: "text", text: `Local AI Hub static check: ${context}` }],
   }
+  return true
+}
+
+export function appendProactivePlanContext(event, planContext) {
+  if (!planContext || !Array.isArray(event?.system)) return false
+  if (event.system.some(part => typeof part?.text === "string" && part.text.includes("Local AI Hub Proactive Context:"))) return false
+  event.system.push({
+    type: "text",
+    text: planContext,
+  })
   return true
 }
 
@@ -280,7 +617,8 @@ export default {
     let tools = []
     try {
       if (!usesNativeMcp(serverConfig)) {
-        mcp = openMcp(serverConfig)
+        const managedMcpPipe = usesManagedMcpPipe(serverConfig)
+        mcp = managedMcpPipe ? openManagedMcpPipe(serverConfig) : openMcp(serverConfig)
         let initialized = false
         let lastErr = null
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -310,23 +648,45 @@ export default {
           }
           names.add(tool.name)
         }
-        tools = selectHubTools(catalog.tools)
+        tools = managedMcpPipe ? selectManagedHubTools(catalog.tools) : selectHubTools(catalog.tools)
       }
 
       let postEditRegistration = null
+      let preToolRegistration = null
       let permissionRegistration = null
       let contextRegistration = null
-      if (typeof ctx.session?.hook === "function") {
+      if (!usesManagedMcpPipe(serverConfig) && typeof ctx.session?.hook === "function") {
+        const activeContextHooks = { count: 0 }
         try {
-          contextRegistration = await ctx.session.hook("context", event => {
+          contextRegistration = await ctx.session.hook("context", async event => {
             appendHubContextGuidance(event)
+            const root = ctx.location?.project?.canonical
+            if (typeof root === "string") {
+              const proactive = await runOpenCodeProactiveContext(serverConfig, root, event?.sessionID, activeContextHooks)
+              if (proactive) {
+                appendProactivePlanContext(event, proactive)
+              }
+            }
           })
         } catch (error) {
           console.error("Local AI Hub OpenCode context hook registration failed", error)
         }
       }
-      if (typeof ctx.tool?.hook === "function") {
+      if (!usesManagedMcpPipe(serverConfig) && typeof ctx.tool?.hook === "function") {
         const activeStaticHooks = { count: 0 }
+        const activePreToolHooks = { count: 0 }
+        try {
+          preToolRegistration = await ctx.tool.hook("execute.before", async event => {
+            const root = ctx.location?.project?.canonical
+            if (typeof root !== "string") return
+            const reason = await runOpenCodePreToolCheck(serverConfig, root, event, activePreToolHooks)
+            if (reason) {
+              throw new Error(`[Local AI Hub Policy] ${reason}`)
+            }
+          })
+        } catch (error) {
+          console.error("Local AI Hub OpenCode pre-tool hook registration failed", error)
+        }
         try {
           postEditRegistration = await ctx.tool.hook("execute.after", async event => {
             if (event?.status !== "completed") return
@@ -339,7 +699,7 @@ export default {
           console.error("Local AI Hub OpenCode post-edit hook registration failed", error)
         }
       }
-      if (typeof ctx.permission?.hook === "function") {
+      if (!usesManagedMcpPipe(serverConfig) && typeof ctx.permission?.hook === "function") {
         const activePermissionHooks = { count: 0 }
         try {
           permissionRegistration = await ctx.permission.hook("evaluate", async event => {
@@ -384,6 +744,7 @@ export default {
       }
       return async () => {
         try { await postEditRegistration?.dispose?.() } catch {}
+        try { await preToolRegistration?.dispose?.() } catch {}
         try { await permissionRegistration?.dispose?.() } catch {}
         try { await contextRegistration?.dispose?.() } catch {}
         mcp?.stop()

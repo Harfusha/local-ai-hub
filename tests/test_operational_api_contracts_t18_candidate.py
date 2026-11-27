@@ -1176,7 +1176,7 @@ def test_model_pull_has_total_deadline_and_closes_slow_response(monkeypatch):
 
 
 def test_telemetry_error_resolution_deadline_rolls_back(monkeypatch, tmp_path):
-    import local_ai_hub.telemetry_writer as telemetry_module
+    import local_ai_hub.telemetry_writer as telemetry_writer_module
 
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:
@@ -1186,7 +1186,7 @@ def test_telemetry_error_resolution_deadline_rolls_back(monkeypatch, tmp_path):
         with monkeypatch.context() as patcher:
             patcher.setattr(store, "flush", lambda timeout: True)
             patcher.setattr(
-                telemetry_module,
+                telemetry_writer_module,
                 "time",
                 SimpleNamespace(monotonic=lambda: next(clock_values), time=time.time),
             )

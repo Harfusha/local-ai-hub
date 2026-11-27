@@ -9,7 +9,7 @@ const inFlight = new Map()
 const locks = new Map()
 
 // State belongs to an OpenCode session, not to the plugin's load location.
-export function makeGoalController(ctx, { resolveRoot = realpath, completeTaskImpl = completeTask, createTaskImpl = createTask, getBoundTaskImpl = getBoundTask, getCompletedTaskImpl = getCompletedTask, runProjectCommandImpl = runProjectCommand, transport = {} } = {}) {
+export function makeGoalController(ctx, { resolveRoot = realpath, completeTaskImpl = completeTask, createTaskImpl = createTask, getBoundTaskImpl = getBoundTask, getCompletedTaskImpl = getCompletedTask, runProjectCommandImpl = runProjectCommand, interruptSession = (id) => ctx.client.session.interrupt({ path: { sessionID: id } }), transport = {} } = {}) {
   const knownSessions = new Set()
   const stepSnapshots = new Map()
   const completedSequences = new Map()
@@ -138,17 +138,79 @@ export function makeGoalController(ctx, { resolveRoot = realpath, completeTaskIm
       finishFlight(id, flight)
     }
   }
-  async function pause(id) {
+  async function pause(id, { sessionInterrupted = false } = {}) {
+    const initial = await read(id)
+    if (!initial) throw new Error("no goal for this session")
+    if (["DONE", "FAILED", "PAUSED"].includes(initial.status)) return initial
     const flight = inFlight.get(id)
     const uncertain = flight?.mutating === true || flight?.prompting === true
+    let interrupted = sessionInterrupted
+    if (!interrupted) {
+      try {
+        const response = await interruptSession(id)
+        interrupted = response?.data?.interrupted ?? response?.interrupted
+      } catch { /* An unconfirmed interrupt must not be reported as a pause. */ }
+    }
     flight?.controller.abort()
+    if (interrupted !== true) {
+      return locked(id, async () => {
+        const current = await read(id)
+        if (!current) throw new Error("no goal for this session")
+        if (["DONE", "FAILED", "PAUSED"].includes(current.status)) return current
+        const blocked = { ...current, status: "BLOCKED", epoch: randomUUID(), outcomeUnknown: true,
+          reason: "OpenCode did not confirm session interruption; inspect the session and Agent OS before retrying" }
+        await write(id, blocked)
+        return blocked
+      })
+    }
     return locked(id, async () => {
       const state = await read(id)
       if (!state) throw new Error("no goal for this session")
+      if (["DONE", "FAILED", "PAUSED"].includes(state.status)) return state
       const paused = { ...pauseGoal(state), epoch: randomUUID(), ...(uncertain ? { outcomeUnknown: true, reason: "request outcome is unknown; inspect the session and Agent OS before retrying" } : {}) }
       await write(id, paused)
       return paused
     })
+  }
+  async function cancel(id) {
+    const state = await read(id)
+    if (!state) throw new Error("no goal for this session")
+    if (["DONE", "FAILED", "PAUSED"].includes(state.status)) return state
+    const flight = inFlight.get(id)
+    let interrupted
+    try {
+      const response = await interruptSession(id)
+      interrupted = response?.data?.interrupted ?? response?.interrupted
+    } catch { /* An unconfirmed interrupt must not be reported as cancellation. */ }
+    flight?.controller.abort()
+    if (interrupted !== true) {
+      return locked(id, async () => {
+        const current = await read(id)
+        if (!current || ["DONE", "FAILED", "PAUSED"].includes(current.status)) return current
+        const blocked = { ...current, status: "BLOCKED", epoch: randomUUID(), outcomeUnknown: true,
+          reason: "OpenCode did not confirm session interruption; inspect the session and Agent OS before retrying" }
+        await write(id, blocked)
+        return blocked
+      })
+    }
+    return pause(id, { sessionInterrupted: true })
+  }
+  async function runVerificationRequest(state, id, alias, requestId, flight) {
+    if (typeof requestId !== "string" || !/^[a-f0-9]{32}$/.test(requestId)) return { settled: false }
+    flight.mutating = true
+    let result
+    try { result = await runProjectCommandImpl(state, id, alias, requestId, { ...transport, signal: flight.controller.signal }) }
+    catch { result = { success: false, outcome_unknown: true, error: "verification outcome is unknown" } }
+    if (!result || typeof result.success !== "boolean" || result.outcome_unknown || result.in_progress || flight.controller.signal.aborted) {
+      return { settled: false, result }
+    }
+    return { settled: true, result }
+  }
+  function validPendingVerification(record, state, id) {
+    return record?.status === "pending" && typeof record.requestId === "string" && /^[a-f0-9]{32}$/.test(record.requestId) &&
+      typeof record.alias === "string" && record.alias.length > 0 && record.alias === record.alias.trim() && record.alias.length <= 128 &&
+      record.root === state.root && record.taskId === state.taskId && record.sessionId === id &&
+      typeof record.epoch === "string" && record.epoch.length > 0
   }
   async function resume(id, delivery) {
     if (!eventStreamAvailable) throw new Error("goal event stream is unavailable")
@@ -162,6 +224,30 @@ export function makeGoalController(ctx, { resolveRoot = realpath, completeTaskIm
       if (!state) throw new Error("no goal for this session")
       if (state.status === "CONTINUE") return state
       if (await sessionRoot(id) !== state.root) throw new Error("session directory no longer matches the goal")
+      const verificationKey = `goal-verify:${id}`
+      const pendingVerification = await ctx.storage.get(verificationKey)
+      if (["BLOCKED", "PAUSED"].includes(state.status) && state.outcomeUnknown === true && !state.pendingOperation &&
+          pendingVerification?.status === "pending") {
+        if (!validPendingVerification(pendingVerification, state, id)) return await read(id)
+        const binding = await getBoundTaskImpl(state, id, { ...transport, signal: flight.controller.signal })
+        if (binding?.success !== true || flight.controller.signal.aborted) return await read(id)
+        const recovered = await runVerificationRequest(state, id, pendingVerification.alias, pendingVerification.requestId, flight)
+        if (!recovered.settled || flight.controller.signal.aborted) return await read(id)
+        return await locked(id, async () => {
+          const current = await read(id)
+          const currentVerification = await ctx.storage.get(verificationKey)
+          if (!current || !["BLOCKED", "PAUSED"].includes(current.status) || current.epoch !== state.epoch ||
+              current.outcomeUnknown !== true || current.pendingOperation || flight.controller.signal.aborted ||
+              currentVerification?.status !== "pending" || currentVerification.requestId !== pendingVerification.requestId ||
+              currentVerification.root !== state.root || currentVerification.taskId !== state.taskId ||
+              currentVerification.sessionId !== id || currentVerification.alias !== pendingVerification.alias) return current
+          await ctx.storage.set(verificationKey, { ...currentVerification, status: "settled" })
+          const { outcomeUnknown: _outcomeUnknown, ...confirmed } = current
+          const paused = { ...confirmed, status: "PAUSED", epoch: randomUUID(), reason: "verification outcome reconciled; resume to continue" }
+          await write(id, paused)
+          return paused
+        })
+      }
       if (state.status === "BLOCKED" && state.pendingOperation === "prompt_admission" && state.outcomeUnknown === true &&
           typeof state.pendingPromptId === "string" && /^msg_[a-f0-9]{32}$/.test(state.pendingPromptId)) {
         let binding, history, session
@@ -391,35 +477,43 @@ export function makeGoalController(ctx, { resolveRoot = realpath, completeTaskIm
       if (!state || state.status !== "CONTINUE" || state.outcomeUnknown) throw new Error("goal is not ready for verification")
       const verifyKey = `goal-verify:${id}`
       const previous = await ctx.storage.get(verifyKey)
-      if (previous && previous.status !== "settled") return { success: false, outcome_unknown: true, request_id: previous.requestId, error: "previous verification outcome is unknown" }
+      const pending = previous && previous.status !== "settled"
+      if (pending && (!validPendingVerification(previous, state, id) || previous.alias !== alias)) {
+        return { success: false, outcome_unknown: true, request_id: previous.requestId, error: "previous verification outcome is unknown" }
+      }
       if (await sessionRoot(id) !== state.root) throw new Error("session directory no longer matches the goal")
       const binding = await getBoundTaskImpl(state, id, { ...transport, signal: flight.controller.signal })
       if (binding?.success !== true || flight.controller.signal.aborted) throw new Error("task binding could not be verified")
-      const requestId = randomUUID().replaceAll("-", "")
-      const admitted = await locked(id, async () => {
-        const current = await read(id)
-        if (current?.status !== "CONTINUE" || current.epoch !== state.epoch || flight.controller.signal.aborted) return false
-        await ctx.storage.set(verifyKey, { status: "pending", requestId, alias, root: state.root, taskId: state.taskId, sessionId: id, epoch: state.epoch })
-        flight.mutating = true
-        return true
-      })
-      if (!admitted || flight.controller.signal.aborted) return { success: false, outcome_unknown: true, request_id: requestId }
-      let result
-      try { result = await runProjectCommandImpl(state, id, alias, requestId, { ...transport, signal: flight.controller.signal }) }
-      catch { result = { success: false, outcome_unknown: true, error: "verification outcome is unknown" } }
-      if (!result || typeof result.success !== "boolean" || result.outcome_unknown || result.in_progress || flight.controller.signal.aborted) {
+      const requestId = pending ? previous.requestId : randomUUID().replaceAll("-", "")
+      if (!pending) {
+        const admitted = await locked(id, async () => {
+          const current = await read(id)
+          if (current?.status !== "CONTINUE" || current.epoch !== state.epoch || flight.controller.signal.aborted) return false
+          await ctx.storage.set(verifyKey, { status: "pending", requestId, alias, root: state.root, taskId: state.taskId, sessionId: id, epoch: state.epoch })
+          flight.mutating = true
+          return true
+        })
+        if (!admitted || flight.controller.signal.aborted) return { success: false, outcome_unknown: true, request_id: requestId }
+      }
+      const executed = await runVerificationRequest(state, id, alias, requestId, flight)
+      if (!executed.settled || flight.controller.signal.aborted) {
         return { success: false, outcome_unknown: true, request_id: requestId, error: "verification outcome is unknown" }
       }
-      await locked(id, async () => {
+      const persisted = await locked(id, async () => {
         const current = await read(id)
-        if (current?.epoch === state.epoch && current.status === "CONTINUE" && !flight.controller.signal.aborted) {
-          await ctx.storage.set(verifyKey, { status: "settled", requestId, alias, root: state.root, taskId: state.taskId, sessionId: id, epoch: state.epoch })
-        }
+        const currentVerification = await ctx.storage.get(verifyKey)
+        if (current?.epoch !== state.epoch || current.status !== "CONTINUE" || flight.controller.signal.aborted ||
+            currentVerification?.status !== "pending" || currentVerification.requestId !== requestId ||
+            currentVerification.alias !== alias || currentVerification.root !== state.root || currentVerification.taskId !== state.taskId ||
+            currentVerification.sessionId !== id) return false
+        await ctx.storage.set(verifyKey, { ...currentVerification, status: "settled" })
+        return true
       })
-      return { ...result, request_id: requestId }
+      if (!persisted) return { success: false, outcome_unknown: true, request_id: requestId, error: "verification state changed before reconciliation" }
+      return { ...executed.result, request_id: requestId }
     } finally { signal?.removeEventListener("abort", cancel); finishFlight(id, flight) }
   }
-  return { start, pause, resume, settle, observeStep, eventStreamLost, verifyProject, status: read }
+  return { start, pause, cancel, resume, settle, observeStep, eventStreamLost, verifyProject, status: read }
 }
 
 export default {
@@ -443,10 +537,11 @@ export default {
     }))
     await ctx.command.transform((editor) => editor.add({
       name: "goal",
-      description: "Receipt-gated goal: /goal {\"goal\":\"...\",\"criteria\":[\"...\"],\"taskId\":\"optional\"}; status, pause, resume",
+      description: "Receipt-gated goal: /goal {\"goal\":\"...\",\"criteria\":[\"...\"],\"taskId\":\"optional\"}; status, pause, cancel, resume",
       execute: async ({ sessionID, prompt, delivery }) => {
         const text = String(prompt.text ?? "").replace(/^\s*\/goal\b/i, "").trim()
         if (text === "pause") { await controller.pause(sessionID); return }
+        if (text === "cancel") { await controller.cancel(sessionID); return }
         if (text === "resume") { await controller.resume(sessionID, delivery); return }
         if (!text || text === "status") {
           const state = await controller.status(sessionID)

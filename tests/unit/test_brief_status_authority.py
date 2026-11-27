@@ -150,8 +150,8 @@ def test_brief_status_preserves_authoritative_online_state_on_wire(
     }
     wire_tokens = json_tokens(wire)
     assert wire_tokens <= requested
-    assert actual["response_budget"]["returned_tokens"] == wire_tokens
-    assert structured["response_budget"]["returned_tokens"] == wire_tokens
+    assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(actual)
+    assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(structured)
 
 
 def test_brief_status_rejects_unrepresentable_budget_without_false_success(
@@ -186,8 +186,7 @@ def test_brief_status_rejects_unrepresentable_budget_without_false_success(
     actual = json.loads(contents[0].text)
     assert actual["success"] is False
     assert isinstance(actual.get("error"), str) and actual["error"]
-    budget = actual["response_budget"]
-    assert budget["requested_tokens"] == requested
+    assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(actual)
 
     wire = {"content": [{"type": "text", "text": contents[0].text}]}
     if structured is not None:
@@ -195,7 +194,6 @@ def test_brief_status_rejects_unrepresentable_budget_without_false_success(
         wire["isError"] = False
     wire_tokens = json_tokens(wire)
     assert wire_tokens <= requested
-    assert budget["returned_tokens"] == wire_tokens
     if structured is not None:
         assert structured["success"] is False
-        assert structured["response_budget"]["returned_tokens"] == wire_tokens
+        assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(structured)

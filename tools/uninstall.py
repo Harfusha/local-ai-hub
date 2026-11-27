@@ -371,12 +371,14 @@ def clean_external_configurations(entries: list[dict[str, Any]], install_dir: Pa
             by_path[identity] = (path, set())
         by_path[identity][1].add(kind)
     for path, kinds in by_path.values():
+        # Remove a byte-identical file created by the Hub before key cleanup;
+        # otherwise key cleanup would change its digest and leave an empty file.
+        if "whole_file" in kinds:
+            clean_owned_file(path, install_dir)
         if kinds & {"json_key", "json_list_item", "json_container"}:
             clean_json(path, install_dir)
         if "text_block" in kinds:
             clean_policy(path, install_dir)
-        if "whole_file" in kinds:
-            clean_owned_file(path, install_dir)
 
 
 def _owned_hub_pids(install: Path) -> list[int] | None:

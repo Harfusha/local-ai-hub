@@ -191,7 +191,7 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeou
     return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError  # noqa: F401
 from .debug_traces import DebugTraceObserver, _normalize_trace_content, redact_trace_export  # noqa: F401
-from .agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_wait_event_response, project_status_response, project_aggregate_response  # noqa: F401
+from .agent_diagnostics import detailed_diagnostics_enabled, agent_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_wait_event_response, project_status_response, project_aggregate_response  # noqa: F401
 from .agent_surface import diagnostic_http_operation, diagnostics_disabled_response  # noqa: F401
 from .response_budget import _reconcile_existing_budget  # noqa: F401
 from .trace_context import reset_context, reset_observer, set_context, set_observer  # noqa: F401
@@ -1793,6 +1793,7 @@ __all__ = [
     'deep_merge',
     'default_agent_search_mode',
     'deque',
+    'agent_diagnostics_enabled',
     'detailed_diagnostics_enabled',
     'diagnostic_http_operation',
     'diagnostics_disabled_response',

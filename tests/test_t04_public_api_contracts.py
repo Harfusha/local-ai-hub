@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import socket
+import json
 from urllib.parse import urlparse
 
 import pytest
@@ -93,14 +94,118 @@ def test_resolve_imports_get_and_post_share_auto_default(live_api, tmp_path):
     assert calls == [(str(root.resolve()), ["Thing"], "auto"), (str(root.resolve()), ["Thing"], "auto")]
 
 
-def test_unsupported_chat_completions_rejects_valid_payload(live_api):
-    _app, client = live_api
+def test_chat_completions_uses_only_configured_installed_models_through_hub(live_api, monkeypatch):
+    app, client = live_api
+    model = "gemma4:12b-q4_K_M"
+    app.config.setdefault("models", {})["general"] = model
+    monkeypatch.setattr(app.runtime, "installed_models", lambda: [model])
+    seen = []
 
-    result = client.post("/api/chat/completions", {"messages": [{"role": "user", "content": "hello"}]})
+    def proxy(endpoint, payload, *, source):
+        seen.append((endpoint, payload, source))
+        return {"done": True, "model": model, "message": {"role": "assistant", "content": "hello"},
+                "prompt_eval_count": 3, "eval_count": 1}
+
+    monkeypatch.setattr(app.services, "proxy_request", proxy)
+
+    result = client.post("/api/chat/completions", {
+        "model": model, "messages": [{"role": "user", "content": "hello"}],
+    })
+
+    assert result["object"] == "chat.completion"
+    assert result["choices"][0]["message"]["content"] == "hello"
+    assert seen[0][0] == "/api/chat"
+    assert seen[0][1]["model"] == model
+    assert seen[0][1]["stream"] is False
+    assert seen[0][2] == "proxy:opencode"
+
+
+@pytest.mark.parametrize("model", ["gemma4:12b-128k", "qwen3.5:9b-nvfp4", "qwen2.5-coder:7b"])
+def test_chat_completions_accepts_explicit_opencode_model_role(live_api, monkeypatch, model):
+    app, client = live_api
+    app.config.setdefault("models", {})["opencode"] = model
+    monkeypatch.setattr(app.runtime, "installed_models", lambda: [model])
+    seen = []
+    monkeypatch.setattr(app.services, "proxy_request", lambda endpoint, payload, *, source, repository_root=None, model_route_requested=False: (
+        seen.append((endpoint, payload, source)) or {
+            "done": True, "model": model, "message": {"role": "assistant", "content": "ok"},
+            "prompt_eval_count": 1, "eval_count": 1,
+        }
+    ))
+
+    result = client.post("/api/chat/completions", {
+        "model": model, "messages": [{"role": "user", "content": "hello"}],
+    })
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert seen[0][0] == "/api/chat"
+    assert seen[0][1]["model"] == model
+    assert "num_ctx" not in seen[0][1].get("options", {})
+    assert seen[0][2] == "proxy:opencode"
+
+
+def test_opencode_context_policy_uses_bounded_fallback_without_vram_evidence():
+    from local_ai_hub.model_policy import ModelExecutionPolicy
+
+    model = "gemma4:12b-128k"
+    policy = ModelExecutionPolicy({
+        "models": {"opencode": model},
+        "model_execution": {
+            "opencode": {
+                "context_tokens": 65536,
+                "large_context_tokens": 131072,
+                "max_context_tokens": 131072,
+            },
+        },
+    })
+
+    payload, profile = policy.apply_payload(model, {}, role="opencode", vram_free_mb=None)
+
+    assert payload["options"]["num_ctx"] == profile.num_ctx
+    assert profile.num_ctx <= 16384
+
+
+def test_chat_completions_rejects_remote_or_uninstalled_model_without_dispatch(live_api, monkeypatch):
+    app, client = live_api
+    app.config.setdefault("models", {})["general"] = "local:1b"
+    monkeypatch.setattr(app.runtime, "installed_models", lambda: ["local:1b"])
+    calls = []
+    monkeypatch.setattr(app.services, "proxy_request", lambda *a, **k: calls.append((a, k)))
+
+    result = client.post("/api/chat/completions", {
+        "model": "cloud/provider", "messages": [{"role": "user", "content": "hello"}],
+    })
 
     assert result["success"] is False
-    assert result["status_code"] == 404
-    assert "messages" not in result["error"]
+    assert result["status_code"] == 400
+    assert calls == []
+
+
+def test_chat_completions_sse_is_openai_shaped_and_still_uses_hub_queue(live_api, monkeypatch):
+    app, client = live_api
+    model = "gemma4:12b-q4_K_M"
+    app.config.setdefault("models", {})["general"] = model
+    monkeypatch.setattr(app.runtime, "installed_models", lambda: [model])
+    seen = []
+
+    def proxy(endpoint, payload, *, source):
+        seen.append((endpoint, payload, source))
+        return {"done": True, "model": model, "message": {"role": "assistant", "content": "streamed"},
+                "prompt_eval_count": 2, "eval_count": 1}
+
+    monkeypatch.setattr(app.services, "proxy_request", proxy)
+    payload = json.dumps({"model": model, "messages": [{"role": "user", "content": "hi"}], "stream": True}).encode()
+    raw = client._open("POST", "/api/chat/completions", payload, {
+        "Content-Type": "application/json", "X-LocalAI-Agent": client.agent,
+        "X-LocalAI-Request-ID": "opencode-sse-test",
+    }, 10.0)
+
+    text = raw.decode()
+    assert text.startswith("data: {")
+    assert '"object":"chat.completion.chunk"' in text
+    assert '"content":"streamed"' in text
+    assert text.rstrip().endswith("data: [DONE]")
+    assert seen[0][0] == "/api/chat" and seen[0][2] == "proxy:opencode"
 
 
 @pytest.mark.parametrize(
@@ -111,25 +216,17 @@ def test_unsupported_chat_completions_rejects_valid_payload(live_api):
         [{}] * 129,
     ],
 )
-def test_unsupported_chat_completions_returns_404_for_invalid_payloads(live_api, messages):
+def test_chat_completions_returns_400_for_invalid_payloads(live_api, messages):
     _app, client = live_api
 
     result = client.post("/api/chat/completions", {"messages": messages})
 
     assert result["success"] is False
-    assert result["status_code"] == 404
+    assert result["status_code"] == 400
 
 
-def test_unsupported_route_rejects_before_waiting_for_large_body(live_api):
+def test_chat_completions_large_body_is_bounded(live_api):
     _app, client = live_api
-    endpoint = urlparse(client.base_url)
-    with socket.create_connection((endpoint.hostname, endpoint.port), timeout=5) as conn:
-        conn.settimeout(5)
-        conn.sendall(
-            b"POST /api/chat/completions HTTP/1.1\r\n"
-            b"Host: localhost\r\nContent-Length: 1000001\r\n\r\n"
-        )
-        assert conn.recv(4096).startswith(b"HTTP/1.1 404")
 
     # A full-body client can encounter a reset while the server rejects it;
     # an unknown outcome must not be fabricated into an HTTP response.
@@ -137,17 +234,17 @@ def test_unsupported_route_rejects_before_waiting_for_large_body(live_api):
         "messages": [{"role": "user", "content": "x" * 1_000_001}]
     })
     assert result["success"] is False
-    assert result.get("status_code") == 404 or result.get("outcome_unknown") is True
+    assert result.get("status_code") in {400, 413} or result.get("outcome_unknown") is True
 
 
 @pytest.mark.parametrize("message", [None, "text"])
-def test_unsupported_chat_completions_returns_404_for_non_object_messages(live_api, message):
+def test_chat_completions_returns_400_for_non_object_messages(live_api, message):
     _app, client = live_api
 
     result = client.post("/api/chat/completions", {"messages": [message]})
 
     assert result["success"] is False
-    assert result["status_code"] == 404
+    assert result["status_code"] == 400
 
 
 def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api, tmp_path):

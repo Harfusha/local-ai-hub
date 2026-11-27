@@ -387,6 +387,7 @@ class ServiceCommandMixin:
         source: str,
         diagnostic_timeout_seconds: float | None = None,
         repository_root: str | None = None,
+        model_route_requested: bool = False,
     ) -> dict[str, Any]:
         reject_retired_tenancy_fields(payload)
         if payload.get("stream") is True:
@@ -417,7 +418,7 @@ class ServiceCommandMixin:
             # fully deterministic and never invoke Laya.
             if (
                 endpoint in {"/api/generate", "/api/chat"}
-                and not explicit_model
+                and (not explicit_model or model_route_requested)
                 and isinstance(repository_root, str)
                 and repository_root.strip()
                 and len(semantic_query) >= 8

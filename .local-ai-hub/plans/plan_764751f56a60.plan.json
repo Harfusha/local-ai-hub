@@ -16,12 +16,12 @@
         "Offline legacy migration preview is bounded, read-only, snapshot-bound, and publishes only an explicitly reviewed record.",
         "Projection rebuild CLI works on a clean project; HTTP/MCP acceptance and authorization boundaries pass, including non-critical MCP routing contract checks."
       ],
-      "blocker": "Code and route contracts are pushed through 633bf987; runtime restarted and healthy at 8.2.1 (704 tasks). Practical validation includes 209 passed/1 symlink skip, 79 route registry, 108 MCP/HTTP contracts, and 3 bounded-envelope cases. Missing 575 changed-history task streams remain skipped by explicit approval. verify_completion still lacks authentic broker receipts for the seven criteria; available native exec exposes no trusted command_id.",
+      "blocker": "Verified candidate ca1b9f6d was committed and pushed; PR9 matrix 367 passed, critical 2031 passed/14 skipped with one timing flake passing isolated rerun, and staged install/runtime healthy. Main checkout still has an active OpenCode merge. Authentic CommandBroker receipts are unavailable. Previous 17 creation-only projection restores remain documented; 575 changed-history streams remain skipped by explicit approval.",
       "clarifications": [],
       "depends_on": [],
       "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified work.",
       "kind": "code",
-      "next_action": "Acquire an exposed task-bound trusted CommandBroker session and collect authentic receipts for all seven acceptance criteria. Do not close the task until receipts exist.",
+      "next_action": "After the active OpenCode merge releases the main checkout, safely install/restart there and verify live projections; collect authentic task-bound receipts if an exposed CommandBroker command_id becomes available. Candidate branch is origin/codex/pr9-acceptance at ca1b9f6d.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",

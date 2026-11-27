@@ -111,6 +111,7 @@ from local_ai_hub.operation_contracts import (
     operation_contract,
     operation_actions,
     operation_enabled as operation_enabled,
+    operation_parameters_schema,
     operation_tool_output_schema,
     operation_tool_input_schema,
     validate_operation_arguments,  # noqa: F401
@@ -1008,6 +1009,26 @@ _client_adapter = ClientRegistry.get(agent_header=os.environ.get("LOCAL_AI_AGENT
 _client_filtered = set(_client_adapter.filter_tools(list(_ALL_REGISTERED_TOOLS.keys())))
 _adapter_disabled = set(_ALL_REGISTERED_TOOLS.keys()) - _client_filtered
 
+
+def _mcp_input_schema_for_client(tool_name: str) -> dict[str, Any]:
+    """Project a bounded client schema while keeping dispatch validation authoritative."""
+    if not _client_adapter.capabilities.compact_mcp_schemas:
+        return operation_tool_input_schema(tool_name, FEATURES)
+    contract = operation_contract(tool_name)
+    schema = operation_parameters_schema(tool_name, FEATURES)
+    if contract is None:
+        return schema
+    selector = str(contract.get("selector_field", "action"))
+    properties = schema.setdefault("properties", {})
+    selector_schema = properties.setdefault(selector, {"type": "string"})
+    selector_schema["enum"] = list(operation_actions(tool_name, FEATURES))
+    # Per-action required/forbidden fields are enforced by validate_operation_call.
+    # The MCP schema stays compact enough for OpenCode's initial tools/list handshake.
+    schema.pop("allOf", None)
+    schema["required"] = list(dict.fromkeys([*schema.get("required", []), selector]))
+    schema["additionalProperties"] = False
+    return schema
+
 for _disabled in set(FEATURES.disabled_tools) | _adapter_disabled:
     if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         mcp._tool_manager._tools.pop(_disabled, None)
@@ -1064,7 +1085,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if _registered_tool is None or not _actions:
             continue
         if hasattr(_registered_tool, "parameters"):
-            _input_schema = operation_tool_input_schema(_tool_name, FEATURES)
+            _input_schema = _mcp_input_schema_for_client(_tool_name)
             if _tool_name == "local_ai_task":
                 _input_schema.setdefault("properties", {})["request_id"] = {
                     "type": "string", "default": "",

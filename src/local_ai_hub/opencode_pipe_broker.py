@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hmac
 import http.client
+import json
+import ntpath
 import re
 import time
 import threading
+from collections.abc import Callable
 
 
 MAX_PIPE_FRAME_BYTES = 65_536
@@ -14,6 +17,37 @@ SESSION_SECRET_BYTES = 32
 MAX_HTTP_HEADER_BYTES = 16_384
 MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024
 MAX_HUB_RESPONSE_BYTES = 64 * 1024 * 1024
+MAX_MCP_REQUEST_BYTES = 65_536
+MAX_MCP_RESPONSE_BYTES = 65_536
+MCP_PROTOCOL_VERSION = "2025-03-26"
+MCP_STATUS_TOOL_NAME = "local_ai_status"
+MCP_STATUS_TOOL_SCHEMA = {
+    "name": MCP_STATUS_TOOL_NAME,
+    "description": "Read-only Hub and local-model readiness status.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "detail": {"type": "string", "enum": ["brief"], "default": "brief"},
+            "response_profile": {"type": "string", "enum": ["minimal", "compact"], "default": "minimal"},
+        },
+        "additionalProperties": False,
+    },
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+}
+
+
+def _is_local_absolute_windows_path(value: str) -> bool:
+    if not ntpath.isabs(value):
+        return False
+    drive, tail = ntpath.splitdrive(value)
+    return (
+        len(drive) == 2
+        and drive[0].isascii()
+        and drive[0].isalpha()
+        and drive[1] == ":"
+        and tail.startswith(("\\", "/"))
+        and ":" not in tail
+    )
 _APPCONTAINER_SID = re.compile(r"S-1-15-2-(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*))*\Z")
 _ANY_SID = re.compile(r"S-1-(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*))*\Z")
 _LOGON_SID = re.compile(r"S-1-5-5-(?:0|[1-9][0-9]*)-(?:0|[1-9][0-9]*)\Z")
@@ -167,11 +201,147 @@ def parse_hub_chat_request(raw: bytes) -> bytes:
     return body
 
 
+def parse_hub_mcp_request(raw: bytes) -> dict[str, Any]:
+    """Parse only a bounded MCP JSON-RPC message on the fixed `/mcp` route."""
+    if not isinstance(raw, bytes):
+        raise ValueError("MCP HTTP request must be bytes")
+    request_line, separator, remaining = raw.partition(b"\r\n")
+    if not separator or request_line != b"POST /mcp HTTP/1.1":
+        raise ValueError("HTTP route is not allowed")
+    normalized = b"POST /api/chat/completions HTTP/1.1\r\n" + remaining
+    body = parse_hub_chat_request(normalized)
+    if len(body) > MAX_MCP_REQUEST_BYTES:
+        raise ValueError("MCP request exceeds the permitted length")
+
+    def object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON property")
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(body, object_pairs_hook=object_without_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("MCP request body must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("MCP request body must be a JSON object")
+    return payload
+
+
+def dispatch_managed_mcp_request(
+    payload: dict[str, Any], status_handler: Callable[[dict[str, Any]], Any],
+    *, session_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Implement a deliberately narrow MCP surface for one managed session.
+
+    Only initialize, initialized notification, tools/list and local_ai_status are
+    reachable. All other tools and protocol methods fail closed.
+    """
+    if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0":
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}
+    if set(payload) - {"jsonrpc", "id", "method", "params"}:
+        request_id = payload.get("id")
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32600, "message": "Invalid Request"}}
+    method = payload.get("method")
+    if not isinstance(method, str) or len(method) > 128:
+        request_id = payload.get("id")
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32600, "message": "Invalid Request"}}
+    request_id = payload.get("id")
+    has_id = "id" in payload
+    if has_id and (
+        isinstance(request_id, bool)
+        or not isinstance(request_id, (str, int))
+        or (isinstance(request_id, str) and (not request_id or len(request_id) > 128))
+        or (isinstance(request_id, int) and abs(request_id) > 2**53 - 1)
+    ):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}
+    params = payload.get("params", {})
+    state = session_state if isinstance(session_state, dict) else {}
+    if not isinstance(params, dict):
+        return {"jsonrpc": "2.0", "id": request_id if has_id else None,
+                "error": {"code": -32602, "message": "Invalid params"}}
+    if not has_id:
+        if method == "notifications/initialized" and not params and state.get("initialized") is True:
+            return None
+        return None
+
+    if method == "initialize":
+        if (set(params) != {"protocolVersion", "capabilities", "clientInfo"}
+                or params.get("protocolVersion") != MCP_PROTOCOL_VERSION
+                or not isinstance(params.get("capabilities"), dict)
+                or not isinstance(params.get("clientInfo"), dict)):
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "Unsupported initialize parameters"}}
+        client_info = params["clientInfo"]
+        if (set(client_info) - {"name", "version"}
+                or not isinstance(client_info.get("name"), str) or not client_info["name"]
+                or len(client_info["name"]) > 128
+                or not isinstance(client_info.get("version"), str) or len(client_info["version"]) > 64):
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "Invalid client information"}}
+        state["initialized"] = True
+        return {"jsonrpc": "2.0", "id": request_id, "result": {
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "local-ai-hub-managed-pipe", "version": "0.1.0"},
+        }}
+
+    if method == "tools/list":
+        if state.get("initialized") is not True:
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32002, "message": "Server not initialized"}}
+        if params:
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "Pagination is not supported"}}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": [MCP_STATUS_TOOL_SCHEMA]}}
+
+    if method == "tools/call":
+        if state.get("initialized") is not True:
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32002, "message": "Server not initialized"}}
+        if set(params) != {"name", "arguments"} or params.get("name") != MCP_STATUS_TOOL_NAME:
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32601, "message": "Tool is unavailable"}}
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict) or set(arguments) - {"detail", "response_profile"}:
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "Invalid status arguments"}}
+        if (arguments.get("detail", "brief") != "brief"
+                or arguments.get("response_profile", "minimal") not in {"minimal", "compact"}):
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32602, "message": "Invalid status arguments"}}
+        safe_arguments = {
+            "detail": arguments.get("detail", "brief"),
+            "response_profile": arguments.get("response_profile", "minimal"),
+        }
+        try:
+            result = status_handler(safe_arguments)
+            if not isinstance(result, dict):
+                raise TypeError("status handler returned a non-object")
+            encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            if len(encoded.encode("utf-8")) > MAX_MCP_RESPONSE_BYTES - 512:
+                raise ValueError("status response exceeds limit")
+        except Exception:
+            return {"jsonrpc": "2.0", "id": request_id, "result": {
+                "content": [{"type": "text", "text": "local_ai_status failed"}], "isError": True,
+            }}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {
+            "content": [{"type": "text", "text": encoded}],
+            "isError": False,
+        }}
+
+    return {"jsonrpc": "2.0", "id": request_id,
+            "error": {"code": -32601, "message": "Method is unavailable"}}
+
+
 def forward_hub_chat(
     body: bytes,
     *,
     hub_port: int,
     api_token: str | None = None,
+    repository_root: str | None = None,
     timeout: float = 120.0,
 ) -> tuple[int, str, bytes]:
     """Forward JSON to the fixed loopback Hub endpoint with bounded output.
@@ -190,8 +360,29 @@ def forward_hub_chat(
         or any(ord(char) < 0x21 or ord(char) > 0x7E for char in api_token)
     ):
         raise ValueError("Hub API token is invalid")
+    if repository_root is not None and (
+        not isinstance(repository_root, str)
+        or not repository_root
+        or repository_root != repository_root.strip()
+        or "\x00" in repository_root
+        or len(repository_root) > 4096
+        or not _is_local_absolute_windows_path(repository_root)
+    ):
+        raise ValueError("managed repository root must be a local absolute Windows path")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 600:
         raise ValueError("Hub timeout must be greater than 0 and at most 600 seconds")
+
+    if repository_root is not None:
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("managed OpenCode request body must be JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("managed OpenCode request body must be a JSON object")
+        payload["root"] = repository_root
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(body) > MAX_HTTP_BODY_BYTES:
+            raise ValueError("Hub request body exceeds the permitted length")
 
     headers = {
         "Content-Type": "application/json",
@@ -340,6 +531,13 @@ def _create_windows_opencode_pipe(pipe_name: str, appcontainer_sid: str):
     )
 
 
+def _call_local_ai_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Invoke the Hub's read-only status tool; the broker never dispatches other tools."""
+    from .mcp_tools_status import local_ai_status
+
+    return local_ai_status(**arguments)
+
+
 class WindowsOpenCodePipeListener:
     """One-request Windows listener bound to an AppContainer and logon session.
 
@@ -356,7 +554,9 @@ class WindowsOpenCodePipeListener:
         secret: bytes,
         hub_port: int,
         hub_api_token: str | None = None,
+        repository_root: str | None = None,
         io_timeout: float = 120.0,
+        mcp_status_handler: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.pipe_name = build_pipe_name(session_id)
@@ -376,13 +576,25 @@ class WindowsOpenCodePipeListener:
             or any(ord(char) < 0x21 or ord(char) > 0x7E for char in hub_api_token)
         ):
             raise ValueError("Hub API token is invalid")
+        if repository_root is not None and (
+            not isinstance(repository_root, str)
+            or not repository_root
+            or repository_root != repository_root.strip()
+            or "\x00" in repository_root
+            or len(repository_root) > 4096
+            or not _is_local_absolute_windows_path(repository_root)
+        ):
+            raise ValueError("managed repository root must be a local absolute Windows path")
         self.windows_session_id = windows_session_id
         self.secret = bytes(secret)
         self.hub_port = hub_port
         self.hub_api_token = hub_api_token
+        self.repository_root = repository_root
         self.io_timeout = float(io_timeout)
+        self.mcp_status_handler = mcp_status_handler or _call_local_ai_status
         self.pipe_ready = threading.Event()
         self._stop_event = threading.Event()
+        self._mcp_session_state: dict[str, Any] = {"initialized": False}
         self._active_pipe_lock = threading.Lock()
         self._active_pipe_handle: int | None = None
         self._serve_error: BaseException | None = None
@@ -589,10 +801,27 @@ class WindowsOpenCodePipeListener:
             if not verify_session_secret(observed_secret, self.secret):
                 raise PermissionError("named-pipe session secret did not match")
             request = _read_pipe_http_request(read_some, read_exact)
-            body = parse_hub_chat_request(request)
-            status, content_type, response_body = forward_hub_chat(
-                body, hub_port=self.hub_port, api_token=self.hub_api_token, timeout=self.io_timeout
-            )
+            request_line = request.partition(b"\r\n")[0]
+            if request_line == b"POST /mcp HTTP/1.1":
+                payload = parse_hub_mcp_request(request)
+                rpc_response = dispatch_managed_mcp_request(
+                    payload, self.mcp_status_handler, session_state=self._mcp_session_state
+                )
+                if rpc_response is None:
+                    status, content_type, response_body = 204, "application/json", b""
+                else:
+                    status, content_type = 200, "application/json; charset=utf-8"
+                    response_body = json.dumps(
+                        rpc_response, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                    ).encode("utf-8")
+                    if len(response_body) > MAX_MCP_RESPONSE_BYTES:
+                        raise ValueError("MCP response exceeds the permitted length")
+            else:
+                body = parse_hub_chat_request(request)
+                status, content_type, response_body = forward_hub_chat(
+                    body, hub_port=self.hub_port, api_token=self.hub_api_token,
+                    repository_root=self.repository_root, timeout=self.io_timeout
+                )
             for frame in frame_http_response(status, content_type, response_body):
                 write_all(frame)
             if read_exact(1) != b"\x06":
@@ -631,7 +860,9 @@ def _read_pipe_http_request(read_some, read_exact) -> bytes:
     if len(content_lengths) != 1 or not content_lengths[0].isdigit():
         raise ValueError("HTTP content length is invalid")
     expected = int(content_lengths[0])
-    if not 1 <= expected <= MAX_HTTP_BODY_BYTES:
+    request_line = head.split(b"\r\n", 1)[0]
+    body_limit = MAX_MCP_REQUEST_BYTES if request_line == b"POST /mcp HTTP/1.1" else MAX_HTTP_BODY_BYTES
+    if not 1 <= expected <= body_limit:
         raise ValueError("HTTP body length exceeds the permitted length")
     total = header_end + expected
     if len(raw) > total:

@@ -106,15 +106,14 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
                     if result.structuredContent is None:
                         wire.pop("structuredContent")
                     assert json_tokens(wire) <= budget, value
-                    assert value["response_budget"]["requested_tokens"] == budget
+                    assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(value)
                     artifact_id = value.get("task_context_artifact_id")
                     if not artifact_id:
                         artifact_id = (value.get("task_context") or {}).get("artifact_id")
                     if budget == 128 and not artifact_id:
                         assert value["success"] is False
                         assert value["error"] == "max_response_tokens too small"
-                        assert value["next_action"] == "request_larger_response_budget"
-                        assert value["response_budget"]["rejected"] is True
+                        assert value.get("next_action") == "request_larger_response_budget", value
                         continue
                     if not isinstance(artifact_id, str) or not artifact_id:
                         pytest.fail(f"{profile}/{budget}: {json.dumps(value)}", pytrace=False)
