@@ -256,6 +256,12 @@ def test_operator_catalog_is_available_without_hub():
     control._client.assert_not_called()
 
 
+def test_retired_operator_names_are_rejected(tmp_path):
+    from tools.desktop_operator import build_argv
+    with pytest.raises(ValueError, match="Unsupported operator command"):
+        build_argv({"name": "Legacy knowledge query", "root": str(tmp_path)})
+
+
 def test_operator_fields_cannot_inject_cli_flags(tmp_path):
     from tools.desktop_operator import build_argv
     argv, _ = build_argv({"name": "Knowledge query", "root": str(tmp_path),
