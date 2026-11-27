@@ -191,16 +191,14 @@ def backup_instruction(source: Path, stage_root: Path) -> StagedInstruction:
     stage_root = stage_root.resolve(strict=True)
     if stage_root == source.parent or source.parent in stage_root.parents or stage_root in source.parents:
         raise ValueError("staging must be outside the source tree")
-    original = source.read_bytes()
-    if len(original) > 1024 * 1024:
-        raise ValueError("instruction file exceeds 1 MiB")
+    original = _bounded_regular_bytes(source, 1024 * 1024)
     text = original.decode("utf-8")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     folder = Path(tempfile.mkdtemp(prefix="instruction-", dir=stage_root))
     backup = folder / f"original{source.suffix.lower()}"
     backup.write_bytes(original)
     original_sha256 = _sha256(original)
-    backup_bytes = backup.read_bytes()
+    backup_bytes = _bounded_regular_bytes(backup, 1024 * 1024)
     backup_sha256 = _sha256(backup_bytes)
     if backup_sha256 != original_sha256:
         raise OSError("backup verification failed")
@@ -224,10 +222,10 @@ def compress_backed_up_instruction(
     if prepared.candidate is not None or prepared.candidate_sha256 is not None:
         raise ValueError("instruction already has a staged candidate")
     source = prepared.source
-    original = prepared.backup.read_bytes()
+    original = _bounded_regular_bytes(prepared.backup, 1024 * 1024)
     if _sha256(original) != prepared.original_sha256 or prepared.backup_sha256 != prepared.original_sha256:
         raise ValueError("verified backup changed; refusing compression")
-    if _sha256(source.read_bytes()) != prepared.original_sha256:
+    if _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != prepared.original_sha256:
         raise ValueError("source changed after backup; refusing compression")
     text = original.decode("utf-8")
     output = compressor(text)
@@ -255,11 +253,11 @@ def compress_backed_up_instruction(
             raise ValueError(f"semantic review found {key} content")
     if review.get("equivalent") is not True:
         raise ValueError("semantic review did not affirm equivalence")
-    if _sha256(source.read_bytes()) != prepared.original_sha256:
+    if _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != prepared.original_sha256:
         raise ValueError("source changed while compression ran")
     candidate = prepared.backup.parent / f"candidate{source.suffix.lower()}"
     candidate.write_bytes(candidate_bytes)
-    candidate_bytes = candidate.read_bytes()
+    candidate_bytes = _bounded_regular_bytes(candidate, 1024 * 1024)
     result = StagedInstruction(
         source=source, backup=prepared.backup, candidate=candidate,
         original_sha256=prepared.original_sha256, backup_sha256=prepared.backup_sha256,
@@ -293,16 +291,16 @@ def apply_instruction(staged: StagedInstruction) -> None:
         staged.semantic_review.get(key) != [] for key in ("missing", "weakened", "changed", "uncertain")
     ):
         raise ValueError("candidate lacks a clean semantic review")
-    if _has_reparse_ancestor(source) or _sha256(source.read_bytes()) != staged.original_sha256:
+    if _has_reparse_ancestor(source) or _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != staged.original_sha256:
         raise ValueError("source changed after staging; refusing apply")
-    backup = staged.backup.read_bytes()
-    candidate = staged.candidate.read_bytes()
+    backup = _bounded_regular_bytes(staged.backup, 1024 * 1024)
+    candidate = _bounded_regular_bytes(staged.candidate, 1024 * 1024)
     if _sha256(backup) != staged.backup_sha256 or _sha256(backup) != staged.original_sha256:
         raise ValueError("verified backup changed; refusing apply")
     if _sha256(candidate) != staged.candidate_sha256:
         raise ValueError("candidate changed after review; refusing apply")
     _safe_replace(source, candidate)
-    if _sha256(source.read_bytes()) != staged.candidate_sha256:
+    if _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != staged.candidate_sha256:
         raise OSError(f"applied candidate verification failed; verified backup retained at {staged.backup}")
 
 
@@ -312,11 +310,11 @@ def restore_instruction(staged: StagedInstruction) -> None:
         raise ValueError("source path changed to a symlink or junction; refusing restore")
     if staged.candidate is None or staged.candidate_sha256 is None:
         raise ValueError("instruction has no staged candidate")
-    if _sha256(staged.candidate.read_bytes()) != staged.candidate_sha256:
+    if _sha256(_bounded_regular_bytes(staged.candidate, 1024 * 1024)) != staged.candidate_sha256:
         raise ValueError("candidate changed; refusing restore")
-    if _sha256(staged.source.read_bytes()) != staged.candidate_sha256:
+    if _sha256(_bounded_regular_bytes(staged.source, 1024 * 1024)) != staged.candidate_sha256:
         raise ValueError("source changed after apply; refusing restore")
-    original = staged.backup.read_bytes()
+    original = _bounded_regular_bytes(staged.backup, 1024 * 1024)
     if _sha256(original) != staged.original_sha256:
         raise ValueError("verified backup changed; refusing restore")
     _safe_replace(staged.source, original)
@@ -430,7 +428,7 @@ def restore_instruction_manifest(manifest_path: Path) -> None:
     if _has_reparse_ancestor(manifest_path) or not manifest_path.is_file():
         raise ValueError("Caveman manifest must be a regular non-symlink file")
     manifest_path = manifest_path.resolve(strict=True)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads(_bounded_regular_bytes(manifest_path, 64 * 1024).decode("utf-8"))
     required = {"source", "backup", "candidate", "original_sha256", "backup_sha256", "candidate_sha256", "semantic_review"}
     if not isinstance(manifest, dict) or not required.issubset(manifest):
         raise ValueError("Caveman manifest is incomplete")
