@@ -14,7 +14,7 @@ import pytest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus, TaskStore
+from local_ai_hub.agent_tasks import CompletionGateError, ConcurrentTaskUpdateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus, TaskStore
 from local_ai_hub.agent_verification import (
     ChangeIntent,
     CompletionResult,
