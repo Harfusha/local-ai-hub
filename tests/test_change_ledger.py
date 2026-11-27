@@ -26,3 +26,21 @@ def test_declared_annotation_stales_and_does_not_cross_roots(tmp_path):
     assert other["local_ledger"]["current_annotation_atoms"] == 0
     with pytest.raises(ValueError, match="changed"):
         ledger.annotate(stale, expected_revision="1" * 64, record=record)
+
+
+def test_annotation_updates_at_retention_limit(tmp_path, monkeypatch):
+    import pytest
+    from local_ai_hub import change_ledger
+
+    monkeypatch.setattr(change_ledger, "_MAX_RETAINED", 1)
+    ledger = ChangeLedger(tmp_path / "state")
+    plan = _plan("/repo")
+    record = {"atom_ids": ["2" * 64], "actor": "agent", "task_id": "task", "status": "assigned"}
+    ledger.annotate(plan, expected_revision="1" * 64, record=record)
+    record["status"] = "reviewed"
+    ledger.annotate(plan, expected_revision="1" * 64, record=record)
+    ledger.attach(plan)
+    atom = plan["clusters"][0]["changes"][0]["atoms"][0]
+    assert atom["local_annotations"][0]["status"] == "reviewed"
+    with pytest.raises(ValueError, match="retention"):
+        ledger.annotate(plan, expected_revision="1" * 64, record={**record, "actor": "other"})
