@@ -157,3 +157,49 @@ After a private transaction successfully imports and verifies output under an ac
 `python tools/benchmark_git_change_context.py --repo /absolute/repository --base HEAD~1 --head HEAD`
 
 The historical benchmark reads a real committed range without changing HEAD, index or worktree. It compares the raw patch and all paginated summaries using the same transport estimator, independently verifies the changed-path inventory against Git, reports explicitly listed and omitted paths and patch/semantic coverage, and rejects oversized Git output. This measures transport estimates for a real workload; it is not provider billing or an LLM quality comparison. Actual provider-token/quality experiments still require a chosen cloud model, approved data and a paired independent evaluation protocol.
+
+
+## Editable staged sequence proposals
+
+`hubctl changes sequence-suggest --root /absolute/repository` observes the complete Git-visible inventory and derives an editable sequence from staged logical dependency units. It refuses partial groups, unresolved prerequisite selections, mixed staging and oversized sequences. The output includes the exact observed revision, index tree, staged path list and a `sequence` array suitable for the existing record file. Edit the messages and grouping, then obtain a separate exact sequence preview. Suggestions do not authorize publication or prove verification. The native desktop can request the same suggestion and explicitly load it into its existing sequence editor without automatically approving a commit.
+
+Observed Python/relative JavaScript import removals can order a consumer before deletion of its provider when both bounded preimage and postimage import sets are available. Remaining references to removed providers are flagged as risks. These are candidate edges, not a complete semantic graph. Mixed-stage observations, unresolved import resolution and unchanged external consumers still require inspection.
+
+## Paired provider usage and review quality evaluation
+
+Run `python tools/benchmark_git_change_evaluation.py paired-results.json` after executing paired raw-diff and compact-context review tasks on the same exact commit, task and provider/model. Use an approved corpus, independently adjudicated finding IDs and provider-reported usage totals including schemas, all calls, retries and detail follow-ups. The input schema is:
+
+```json
+{
+  "schema": 1,
+  "cases": [
+    {
+      "case_id": "review-1",
+      "task_digest": "<64 lowercase hex characters>",
+      "revision": "<40 or 64 lowercase hex characters>",
+      "provider_model": "provider/model",
+      "expected_finding_ids": ["finding-1"],
+      "raw": {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "cached_input_tokens": 0,
+        "calls": 2,
+        "finding_ids": ["finding-1"],
+        "completed": true,
+        "usage_source": "provider_reported"
+      },
+      "compact": {
+        "input_tokens": 500,
+        "output_tokens": 100,
+        "cached_input_tokens": 0,
+        "calls": 2,
+        "finding_ids": ["finding-1"],
+        "completed": true,
+        "usage_source": "provider_reported"
+      }
+    }
+  ]
+}
+```
+
+The example counts are illustrative, not measured. Use a consistent provider definition of total input tokens including cached input. The evaluator reports input/output and uncached-input differences, completion, precision, recall and per-case additional missed findings. It rejects estimated usage and inconsistent counters and does not treat lower token counts as evidence of equal quality. Actual experiments remain to be run; no provider API calls are made by this evaluator.
