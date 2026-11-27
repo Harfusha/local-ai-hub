@@ -514,3 +514,99 @@ def test_telemetry_page_rejects_malformed_server_cursors(rows, more, cursor):
     with pytest.raises(RuntimeError, match="Malformed telemetry"):
         desktop.dispatch(control, {"op": "timeline_page", "args": {"before": 13}})
     client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("scope,field", [("task", "task_id"), ("session", "session_id"),
+    ("clone", "clone_id"), ("worktree", "worktree_id"), ("branch", "branch")])
+def test_memory_find_transmits_only_selected_scope(tmp_path, scope, field):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post") as post:
+        desktop.dispatch(control, {"op": "memory_find", "args": {
+            "root": str(tmp_path), "scope": scope, field: "exact",
+            "query": "search", "value": "not part of query",
+        }})
+        post.assert_called_once_with(control, "/api/agent-state/memory", {
+            "root": str(tmp_path.resolve()), "scope": scope, field: "exact",
+            "action": "find", "query": "search", "limit": 100,
+        })
+
+
+def test_memory_delete_requires_exact_record_and_scope(tmp_path):
+    control = MagicMock()
+    args = {"root": str(tmp_path), "scope": "task", "task_id": "task_a",
+            "confirmed": True, "key": "not an identity"}
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(control, {"op": "memory_delete", "args": args})
+        post.assert_not_called()
+        args["record_id"] = "record_a"
+        desktop.dispatch(control, {"op": "memory_delete", "args": args})
+        post.assert_called_once_with(control, "/api/agent-state/memory", {
+            "root": str(tmp_path.resolve()), "scope": "task", "task_id": "task_a",
+            "action": "delete", "record_id": "record_a",
+        })
+
+
+def test_desktop_does_not_bypass_worktree_memory_delete_gate(tmp_path):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="verified scope"):
+            desktop.dispatch(MagicMock(), {"op": "memory_delete", "args": {
+                "root": str(tmp_path), "scope": "worktree", "worktree_id": "wt_a",
+                "record_id": "record_a", "confirmed": True,
+            }})
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("owner", ["wrong", ""])
+def test_file_lease_release_requires_observed_owner(tmp_path, owner):
+    with patch.object(desktop, "scoped_read", return_value={"success": True,
+            "leases": [{"lease_id": "lease_a", "owner": "writer"}]}), patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(MagicMock(), {"op": "lease_release", "args": {
+                "root": str(tmp_path), "id": "lease_a", "owner": owner, "confirmed": True,
+            }})
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("released_rows", [0, True, None, 2])
+def test_file_lease_release_checks_actual_result(tmp_path, released_rows):
+    control = MagicMock()
+    with patch.object(desktop, "scoped_read", return_value={"success": True,
+            "leases": [{"lease_id": "lease_a", "owner": "writer"}]}) as read, patch.object(
+            desktop, "checked_post", return_value={"success": True, "released_rows": released_rows}) as post:
+        request = {"op": "lease_release", "args": {
+            "root": str(tmp_path), "id": "lease_a", "owner": "writer", "confirmed": True,
+        }}
+        if type(released_rows) is int and released_rows > 0:
+            assert desktop.dispatch(control, request)["released_rows"] == released_rows
+        else:
+            with pytest.raises(RuntimeError, match="release not confirmed"):
+                desktop.dispatch(control, request)
+        read.assert_called_once_with(control, "/api/leases", str(tmp_path.resolve()))
+        post.assert_called_once_with(control, "/api/leases/release", {"lease_id": "lease_a", "owner": "writer"})
+
+
+def test_semaphore_release_uses_owner_and_checks_release():
+    control = MagicMock()
+    with patch.object(desktop, "checked_post", return_value={"success": True, "released": False}) as post:
+        with pytest.raises(RuntimeError, match="not released"):
+            desktop.dispatch(control, {"op": "semaphore_release", "args": {
+                "name": "gpu", "id": "lease_a", "owner": "worker", "confirmed": True,
+            }})
+        post.assert_called_once_with(control, "/api/coord/semaphore_release",
+                                     {"name": "gpu", "lease_id": "lease_a", "owner": "worker"})
+
+
+def test_session_briefing_is_scoped_read_without_confirmation(tmp_path):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post") as post:
+        desktop.dispatch(control, {"op": "session_briefing", "args": {"root": str(tmp_path)}})
+        post.assert_called_once_with(control, "/api/coord/session_briefing", {
+            "root": str(tmp_path.resolve()), "include": ["board", "plans", "active_tasks"],
+        })
+        post.reset_mock()
+        with pytest.raises(ValueError, match="sections"):
+            desktop.dispatch(control, {"op": "session_briefing", "args": {
+                "root": str(tmp_path), "include": ["board", "board"],
+            }})
+        post.assert_not_called()
