@@ -93,7 +93,12 @@ def test_update_migration_resumes_after_a_late_blocker(tmp_path: Path):
 
 def test_update_migration_rejects_source_change_between_record_kinds(tmp_path: Path, monkeypatch):
     root, _, state_dir = _setup_migration_env(tmp_path)
+    import local_ai_hub.agent_state_migration as migration
     import local_ai_hub.repo_knowledge_batch as knowledge_batch
+
+    # Force the cheap stat identity to stay constant: migration must bind its
+    # pages to the complete SQLite content digest, not only file metadata.
+    monkeypatch.setattr(migration, "_identity", lambda _path: (1, 2, 3, 4, 5))
 
     original_apply = knowledge_batch.apply_knowledge_batch
     changed = False
@@ -116,6 +121,26 @@ def test_update_migration_rejects_source_change_between_record_kinds(tmp_path: P
     assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
     assert not (root / ".local-ai-hub/agent-os/memory/mem-mig-1.json").exists()
     assert not (root / ".local-ai-hub/agent-os/incidents/inc-mig-1.json").exists()
+
+
+def test_legacy_database_snapshot_hashes_content_and_enforces_size_limit(tmp_path: Path):
+    import hashlib
+
+    from local_ai_hub.agent_state_migration import _MAX_DATABASE_BYTES, _database_snapshot
+
+    db = tmp_path / "agent_state.sqlite"
+    db.write_bytes(b"first")
+    first = _database_snapshot(db)
+    assert first == hashlib.sha256(b"first").hexdigest()
+    db.write_bytes(b"other")
+    assert _database_snapshot(db) == hashlib.sha256(b"other").hexdigest()
+    assert _database_snapshot(db) != first
+
+    oversized = tmp_path / "oversized.sqlite"
+    with oversized.open("wb") as stream:
+        stream.truncate(_MAX_DATABASE_BYTES + 1)
+    with pytest.raises(RepoPlanValidationError, match="size limit"):
+        _database_snapshot(oversized)
 
 
 def test_update_migrates_old_runtime_task_scope_once_and_fences_active_attempt(tmp_path: Path):

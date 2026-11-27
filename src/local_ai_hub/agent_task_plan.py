@@ -915,13 +915,21 @@ class TaskPlanSyncMixin:
         candidate_record = dict(existing_record)
         candidate_record["payload"] = {**actual_payload, **updated_payload}
         validate_project_task_payload(candidate_record)
-        saved = store.save(
-            candidate_record,
-            expected_revision=existing["revision"],
-            owner=event.actor or "agent-task-update",
-            idempotency_key=event.idempotency_key,
-            authorize_write=lambda: True,
-        )
+        try:
+            saved = store.save(
+                candidate_record,
+                expected_revision=existing["revision"],
+                owner=event.actor or "agent-task-update",
+                idempotency_key=event.idempotency_key,
+                authorize_write=lambda: True,
+            )
+        except RepoPlanConflictError as exc:
+            expected_target = f".local-ai-hub/agent-os/tasks/{current.task_id}.json"
+            if str(exc).startswith(f"Content revision conflict on {expected_target}:"):
+                raise ConcurrentTaskUpdateError(
+                    f"Canonical task {current.task_id} changed in Git; reload before retrying"
+                ) from exc
+            raise
         if saved.get("success") is True:
             return
 
@@ -933,7 +941,9 @@ class TaskPlanSyncMixin:
             latest_record = None
         if latest_record is not None and has_payload(latest_record.get("payload", {}), updated_payload):
             return
-        raise RepoPlanConflictError("Canonical task update lost its Git revision race")
+        raise ConcurrentTaskUpdateError(
+            f"Canonical task {current.task_id} changed in Git; reload before retrying"
+        )
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (

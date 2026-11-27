@@ -16,13 +16,16 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .agent_state_inventory import _identity, _sidecars_absent
-from .repo_knowledge import RepoKnowledgeStore, _digest_value, _encode, _path_for, validate_knowledge_file
+from .repo_knowledge import RepoKnowledgeStore, _encode, _path_for, validate_knowledge_file
 from .repo_knowledge_batch import preview_knowledge_batch
 from .repo_plan.schema_validation import RepoPlanValidationError
 from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 _MAX_BATCH = 16
 _MAX_JSON_BYTES = 65536
+_MAX_DATABASE_BYTES = 512 * 1024 * 1024
+_MAX_DATABASE_SNAPSHOT_SECONDS = 15.0
+_DATABASE_SNAPSHOT_CHUNK_BYTES = 1024 * 1024
 _CHECKPOINT = "CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END"
 _SCOPE = "$.state_data._agent_task_scope"
 # Exact v2 scope marker only; no inference from user-supplied context, worktree,
@@ -35,6 +38,63 @@ _SCOPED = (
     f"AND length(json_extract({_CHECKPOINT}, '{_SCOPE}.repo_root')) > 0 "
     f"AND (SELECT COUNT(*) FROM json_each({_CHECKPOINT}, '{_SCOPE}')) = 2"
 )
+
+
+def _database_snapshot(db: Path) -> str:
+    """Hash a bounded, offline SQLite snapshot and fence descriptor/path identity."""
+    if (
+        db.is_symlink() or getattr(db, "is_junction", lambda: False)()
+        or not db.is_file() or not _sidecars_absent(db)
+    ):
+        raise RepoPlanValidationError("Legacy project state requires a clean regular database file")
+
+    def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(db, flags)
+        with os.fdopen(fd, "rb", closefd=True) as stream:
+            started = time.monotonic()
+            before_fd = os.fstat(stream.fileno())
+            before_path = db.stat()
+            initial_fd = identity(before_fd)
+            initial_path = identity(before_path)
+            # Windows can report slightly different ctime_ns values through
+            # fstat and path stat; compare identity, size, and mtime across
+            # those views, then fence each view independently across the read.
+            if initial_fd[:4] != initial_path[:4]:
+                raise RepoPlanValidationError("Legacy project database path changed before snapshot")
+            if before_fd.st_size < 0 or before_fd.st_size > _MAX_DATABASE_BYTES:
+                raise RepoPlanValidationError("Legacy project database exceeds the 512 MiB snapshot size limit")
+
+            digest = hashlib.sha256()
+            total = 0
+            while total < before_fd.st_size:
+                if time.monotonic() - started > _MAX_DATABASE_SNAPSHOT_SECONDS:
+                    raise RepoPlanValidationError("Legacy project database snapshot exceeded the 15 second time limit")
+                chunk = stream.read(min(_DATABASE_SNAPSHOT_CHUNK_BYTES, before_fd.st_size - total))
+                if not chunk:
+                    raise RepoPlanValidationError("Legacy project database changed while hashing")
+                digest.update(chunk)
+                total += len(chunk)
+            if time.monotonic() - started > _MAX_DATABASE_SNAPSHOT_SECONDS:
+                raise RepoPlanValidationError("Legacy project database snapshot exceeded the 15 second time limit")
+
+            after_fd = os.fstat(stream.fileno())
+            after_path = db.stat()
+            if (
+                total != before_fd.st_size or identity(after_fd) != initial_fd
+                or identity(after_path) != initial_path or identity(after_fd)[:4] != identity(after_path)[:4]
+                or db.is_symlink()
+                or getattr(db, "is_junction", lambda: False)() or not _sidecars_absent(db)
+            ):
+                raise RepoPlanValidationError("Legacy project database changed during snapshot")
+            return digest.hexdigest()
+    except RepoPlanValidationError:
+        raise
+    except OSError as exc:
+        raise RepoPlanValidationError("Legacy project database snapshot is unavailable") from exc
 
 
 def _git_origin_identity(root: Path) -> str:
@@ -185,7 +245,7 @@ def preview_legacy_canonical_task_batch(
     if not _sidecars_absent(db):
         raise RepoPlanValidationError("Stop the Hub or use a clean offline backup")
     before = _identity(db)
-    snapshot = _digest_value(list(before))
+    snapshot = _database_snapshot(db)
     if expected_snapshot and snapshot != expected_snapshot:
         raise RepoPlanValidationError("Offline database snapshot changed; restart migration inventory")
     epoch = store.read_epoch()
@@ -251,7 +311,10 @@ def preview_legacy_canonical_task_batch(
         except (OSError, ValueError, TypeError, RepoPlanValidationError, RecursionError):
             pass
         states.append(entry)
-    if _identity(db) != before or not _sidecars_absent(db) or db.is_symlink():
+    if (
+        _identity(db) != before or _database_snapshot(db) != snapshot
+        or not _sidecars_absent(db) or db.is_symlink()
+    ):
         raise RepoPlanValidationError("Offline database changed during migration preview")
     if store.manifest()[1] != manifest_revision:
         raise RepoPlanValidationError("Project manifest changed during migration preview")
@@ -287,7 +350,7 @@ def preview_legacy_memory_batch(
     if not _sidecars_absent(db):
         raise RepoPlanValidationError("Stop the Hub or use a clean offline backup")
     before = _identity(db)
-    snapshot = _digest_value(list(before))
+    snapshot = _database_snapshot(db)
     if expected_snapshot and snapshot != expected_snapshot:
         raise RepoPlanValidationError("Offline database snapshot changed; restart migration inventory")
     epoch = store.read_epoch()
@@ -347,7 +410,10 @@ def preview_legacy_memory_batch(
             pass
         states.append(entry)
 
-    if _identity(db) != before or not _sidecars_absent(db) or db.is_symlink():
+    if (
+        _identity(db) != before or _database_snapshot(db) != snapshot
+        or not _sidecars_absent(db) or db.is_symlink()
+    ):
         raise RepoPlanValidationError("Offline database changed during memory preview")
     preview = preview_knowledge_batch(store, records) if records else None
     store.require_read_epoch(epoch)
@@ -381,7 +447,7 @@ def preview_legacy_incident_batch(
     if not _sidecars_absent(db):
         raise RepoPlanValidationError("Stop the Hub or use a clean offline backup")
     before = _identity(db)
-    snapshot = _digest_value(list(before))
+    snapshot = _database_snapshot(db)
     if expected_snapshot and snapshot != expected_snapshot:
         raise RepoPlanValidationError("Offline database snapshot changed; restart migration inventory")
     epoch = store.read_epoch()
@@ -450,7 +516,10 @@ def preview_legacy_incident_batch(
             pass
         states.append(entry)
 
-    if _identity(db) != before or not _sidecars_absent(db) or db.is_symlink():
+    if (
+        _identity(db) != before or _database_snapshot(db) != snapshot
+        or not _sidecars_absent(db) or db.is_symlink()
+    ):
         raise RepoPlanValidationError("Offline database changed during incident preview")
     preview = preview_knowledge_batch(store, records) if records else None
     store.require_read_epoch(epoch)
@@ -515,7 +584,7 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
         return {"status": "no_legacy_state", "project_id": project_id, "records": 0}
 
     source_identity = _identity(db)
-    source_snapshot = _digest_value(list(source_identity))
+    source_snapshot = _database_snapshot(db)
     if db.is_symlink() or getattr(db, "is_junction", lambda: False)() or not _sidecars_absent(db):
         raise RepoPlanValidationError("Project state migration requires a clean offline database")
     try:
@@ -525,14 +594,14 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
             }
     except sqlite3.Error as exc:
         raise RepoPlanValidationError("Project state migration database is unreadable") from exc
-    if _identity(db) != source_identity:
+    if _identity(db) != source_identity or _database_snapshot(db) != source_snapshot:
         raise RepoPlanValidationError("Legacy project state snapshot changed during migration inventory")
 
     # Do not inspect legacy paths or databases after this project has been cut over.
     repository_roots = tuple(sorted(set(_registered_project_roots(root, project_id)) | set(
         _database_project_roots(state, root, project_id)
     )))
-    if _identity(db) != source_identity:
+    if _identity(db) != source_identity or _database_snapshot(db) != source_snapshot:
         raise RepoPlanValidationError("Legacy project state snapshot changed during migration inventory")
 
     counts = {"task": 0, "memory": 0, "incident": 0}
@@ -576,7 +645,7 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
                 raise RepoPlanValidationError(f"Project {kind} migration pagination did not advance")
             cursor = next_cursor
 
-    if _identity(db) != source_identity:
+    if _identity(db) != source_identity or _database_snapshot(db) != source_snapshot:
         raise RepoPlanValidationError("Legacy project state snapshot changed before migration cutover")
     saved["projects"][project_id] = {"status": "complete", "records": counts}
     _write_project_migration_marker(marker, saved)

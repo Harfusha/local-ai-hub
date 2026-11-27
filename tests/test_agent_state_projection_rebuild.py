@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from dataclasses import replace
 from contextlib import closing
 from pathlib import Path
@@ -556,6 +558,16 @@ def test_task_reads_rebuild_projection_after_branch_switch(tmp_path: Path):
     subprocess.run(["git", "switch", "main"], cwd=repo, check=True, capture_output=True)
     assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None
 
+    # Reuse one live TaskStore across rapid checkout churn. Branch-owned records
+    # must follow the selected snapshot; the uncommitted local task stays visible.
+    for _ in range(12):
+        subprocess.run(["git", "switch", "without-task"], cwd=repo, check=True, capture_output=True)
+        assert store.get("task-branch-snapshot", repo_root=str(repo)) is None
+        assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None
+        subprocess.run(["git", "switch", "main"], cwd=repo, check=True, capture_output=True)
+        assert store.get("task-branch-snapshot", repo_root=str(repo)) is not None
+        assert store.get(runtime_task.task_id, repo_root=str(repo)) is not None
+
 
 def test_shared_task_checkpoint_is_git_canonical_across_state_dirs_without_head_change(tmp_path: Path):
     repo = tmp_path / "repo"
@@ -624,3 +636,64 @@ def test_shared_task_checkpoint_is_git_canonical_across_state_dirs_without_head_
         text=True,
     ).stdout.strip() == initial_head
     assert subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--quiet"]).returncode == 0
+
+
+def test_concurrent_same_checkout_agents_cannot_overwrite_shared_checkpoint(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+    control = repo / ".local-ai-hub"
+    control.mkdir()
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (control / "project.json").write_text(json.dumps({
+        "schema_version": 1,
+        "project_id": "9caf2080-c985-4a4b-9acd-b1ce9e18bc4c",
+        "mode": "shared",
+    }), encoding="utf-8")
+    ensure_agent_os_layout(repo)
+    subprocess.run(["git", "-C", str(repo), "add", ".local-ai-hub"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "--quiet", "-m", "project identity"], check=True)
+
+    task_id = "task-concurrent-checkpoint"
+    agent_a = TaskStore(AgentStateStore(tmp_path / "agent-a" / "agent_state.sqlite"))
+    agent_b = TaskStore(AgentStateStore(tmp_path / "agent-b" / "agent_state.sqlite"))
+    agent_a.create(
+        GoalContract(goal="Coordinate offline work", acceptance_criteria=["Conflicts remain visible"]),
+        ScopeContext(task_id=task_id), task_id=task_id, repo_root=str(repo),
+    )
+    current_a = agent_a.get(task_id, repo_root=str(repo))
+    current_b = agent_b.get(task_id, repo_root=str(repo))
+    assert current_a is not None and current_b is not None
+    start = Barrier(2)
+
+    def update(store: TaskStore, current, phase: str, actor: str) -> str:
+        updated = replace(
+            current,
+            checkpoint=replace(current.checkpoint, phase=phase, next_action=f"{actor} progress"),
+        )
+        event = AgentEvent.create(
+            f"task:{task_id}", "task.checkpoint",
+            {"phase": phase, "next_action": f"{actor} progress"}, actor=actor,
+        )
+        start.wait(timeout=5)
+        try:
+            store._commit_update(current, updated, event)
+            return "committed"
+        except ConcurrentTaskUpdateError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [
+            pool.submit(update, agent_a, current_a, "agent_a", "agent-a"),
+            pool.submit(update, agent_b, current_b, "agent_b", "agent-b"),
+        ]
+        outcomes = [future.result(timeout=10) for future in results]
+
+    assert sorted(outcomes) == ["committed", "conflict"]
+    canonical = RepoKnowledgeStore(repo).get("task", task_id, verify_sources=False)["record"]
+    checkpoint = canonical["payload"]["checkpoint"]
+    assert checkpoint["phase"] in {"agent_a", "agent_b"}
+    assert checkpoint["next_action"] in {"agent-a progress", "agent-b progress"}
+    assert (checkpoint["phase"] == "agent_a") == (checkpoint["next_action"] == "agent-a progress")

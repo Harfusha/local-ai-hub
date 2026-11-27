@@ -40,7 +40,7 @@
       ],
       "description": "Finish process/rule extraction, query and task context, findings lifecycle, review/remediation, UI/API/CLI surfaces, Laya gates, and provider workflow integration.",
       "kind": "code",
-      "next_action": "Completed and verified.",
+      "next_action": "Complete business knowledge and workflow integration; §40 still lists many KI/UPS/P1 areas partial or not implemented.",
       "order": 2,
       "spec_refs": [
         {
@@ -52,7 +52,7 @@
         }
       ],
       "title": "Complete business intelligence and human workflow",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_v4_cutover": {
       "acceptance_criteria": [
@@ -128,7 +128,7 @@
       "depends_on": [],
       "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
       "kind": "code",
-      "next_action": "Completed and verified.",
+      "next_action": "Close V4 P0 canonical ownership and migration gaps; current §40 audit marks memory/incidents/decisions/receipts and TaskStore authority cutover incomplete.",
       "order": 1,
       "spec_refs": [
         {
@@ -141,7 +141,7 @@
       ],
       "title": "Complete canonical Git-backed durable state",
       "work_phase": "implementation",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_v4_e2e": {
       "acceptance_criteria": [
@@ -161,7 +161,7 @@
       ],
       "description": "Run the full acceptance matrix from actual clones and the supported UI/adapters; fix all defects and verify CI, performance, security, docs, and full tests.",
       "kind": "operation",
-      "next_action": "Completed and verified.",
+      "next_action": "Run V4-E01–E18 and E2E-UPS acceptance on the current integrated revision; none is recorded as a complete PASS.",
       "order": 3,
       "spec_refs": [
         {
@@ -173,7 +173,7 @@
         }
       ],
       "title": "Close E2E, security, quality, and release gates",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_v4_master": {
       "acceptance_criteria": [
@@ -192,7 +192,7 @@
       ],
       "description": "Integrate reviewed V4 implementation without losing existing local work; update acceptance records and verify on master.",
       "kind": "operation",
-      "next_action": "Completed and integrated into master.",
+      "next_action": "Integrate only after E2E gates pass; current branch is ahead of origin/master by 9 commits and is not yet the verified master result.",
       "order": 4,
       "spec_refs": [
         {
@@ -204,7 +204,7 @@
         }
       ],
       "title": "Integrate completed change into master",
-      "work_status": "completed"
+      "work_status": "in_progress"
     }
   },
   "title": "Git-first unified project intelligence V4"
