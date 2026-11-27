@@ -85,7 +85,7 @@ class ChangeLedger:
                 or not isinstance(actor, str) or not actor.strip() or len(actor) > 128
                 or not isinstance(task, str) or len(task) > 128
                 or any(ord(c) < 32 for c in actor + task)
-                or status not in {"assigned", "reviewed", "needs_review", "withdrawn"}):
+                or not isinstance(status, str) or status not in {"assigned", "reviewed", "needs_review", "withdrawn"}):
             raise ValueError("Invalid or stale annotation")
         self.observe(plan)
         now = time.time()

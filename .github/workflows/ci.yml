@@ -95,6 +95,8 @@ jobs:
           tests/test_change_ledger.py
           tests/test_change_plan_projection.py
           tests/test_change_task_context.py
+      - name: Synthetic Git change context transport benchmark
+        run: python tools/benchmark_git_change_context.py --files 6 --lines 40
       - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills
       - run: python -m pytest -q tests/test_packaging_assets.py tests/test_provider_plugin_bundles.py
       - run: >-

@@ -922,7 +922,7 @@ class ServiceRepositoryMixin:
                 return {"success": False, "error": error, "commit_ready": False}
         if base is None and (mode != "full" or task_id):
             attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
-        if base is None and mode != "artifact" and result.get("git_visible_observation_complete") is True:
+        if base is None and mode not in {"artifact", "full"} and result.get("git_visible_observation_complete") is True:
             from .change_ledger import ChangeLedger
             from .state_paths import configured_state_dir
             import sqlite3
