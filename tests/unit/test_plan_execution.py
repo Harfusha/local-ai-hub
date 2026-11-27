@@ -122,3 +122,32 @@ def test_plan_actionability_requires_verified_local_dependencies_and_defers_exte
     assert waiting["conflict"]["reason"] == "task_blocked_or_binding_conflict"
     rows[0]["status"] = "incomplete"
     assert plan_actionability("p", tasks, rows)["next_plan_task"]["plan_task_id"] == "api"
+
+
+def test_verified_plan_rows_require_transitive_prerequisites():
+    from local_ai_hub.plan_execution import reconcile_plan_dependencies
+
+    def spec(*deps):
+        return {"depends_on": [{"plan_id": plan, "task_id": task} for plan, task in deps]}
+
+    tasks = {
+        "root": spec(),
+        "mid": spec(("p", "root")),
+        "leaf": spec(("p", "mid")),
+        "other": spec(),
+        "external": spec(("external", "done")),
+        "cycle1": spec(("p", "cycle2")),
+        "cycle2": spec(("p", "cycle1")),
+    }
+    rows = [{"plan_task_id": name, "status": "incomplete" if name == "root" else "verified"}
+            for name in tasks]
+    result = {row["plan_task_id"]: row for row in reconcile_plan_dependencies("p", tasks, rows)}
+    assert result["root"]["status"] == "incomplete"
+    assert result["other"]["status"] == "verified"
+    for task in ("mid", "leaf", "external", "cycle1", "cycle2"):
+        assert result[task]["status"] == "dependency_unverified"
+        assert result[task]["receipt_status"] == "verified"
+    rows[0]["status"] = "verified"
+    result = {row["plan_task_id"]: row for row in reconcile_plan_dependencies("p", tasks, rows)}
+    assert result["leaf"]["status"] == "verified"
+    assert result["cycle1"]["status"] == "dependency_unverified"
