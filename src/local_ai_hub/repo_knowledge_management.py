@@ -25,6 +25,8 @@ _FIELDS = {
     "preview_batch": {"action", "root", "records"},
     "save_batch": {"action", "root", "records", "preview_digest", "operation_id", "apply"},
     "save_batch_recovery": {"action", "root", "records", "preview_digest", "operation_id", "apply"},
+    "preview_execution_problem": {"action", "root", "task_id", "problem_id", "expected_revision"},
+    "save_execution_problem": {"action", "root", "task_id", "problem_id", "expected_revision", "preview_digest", "operation_id", "apply"},
     "preview_edit": {"action", "root", "record", "expected_revision"},
     "save_edit": {"action", "root", "record", "expected_revision", "preview_digest", "operation_id", "apply"},
     "preview_review": {"action", "root", "finding_id", "subject_digest", "decision", "note"},
@@ -47,6 +49,7 @@ def _revision(value: Any) -> bool:
 def manage_repository_knowledge(
     config: Mapping[str, Any], payload: Mapping[str, Any], *,
     authorize_operator_write: Callable[[], bool],
+    task_store: Any | None = None,
 ) -> dict[str, Any]:
     action = payload.get("action")
     if not isinstance(action, str) or action not in _FIELDS or set(payload) != _FIELDS[action]:
@@ -61,6 +64,32 @@ def manage_repository_knowledge(
     try:
         root = authorized_repository_root(config, payload["root"])
         store = RepoKnowledgeStore(root)
+        if action in {"preview_execution_problem", "save_execution_problem"}:
+            from pathlib import Path
+            from .agent_task_models import _task_scope_root
+            from .execution_problems import PROBLEM_STATE_KEY, _validated_records
+            from .execution_portable import build_publication_candidate
+
+            if task_store is None or not all(
+                isinstance(payload[key], str) and 0 < len(payload[key]) <= 200
+                for key in ("task_id", "problem_id")
+            ):
+                return _error(400, "Execution problem publication requires an available task and problem")
+            task = task_store.get(payload["task_id"])
+            if task is None or not _task_scope_root(task) or not Path(_task_scope_root(task)).samefile(root):
+                return _error(404, "Execution task unavailable in this checkout")
+            registry = _validated_records(task.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}))
+            entry = registry.get(payload["problem_id"])
+            if entry is None or entry["report"].get("share_repository") is not True:
+                return _error(404, "Execution problem unavailable for publication")
+            record = build_publication_candidate(entry["report"], store.manifest()[0]["project_id"])
+            # Reuse the exact existing preview digest, file CAS, privacy and
+            # operator authorization protocol; no second write mechanism.
+            action = "save_edit" if writing else "preview_edit"
+            payload = {"action": action, "root": root, "record": record,
+                       "expected_revision": payload["expected_revision"],
+                       **({key: payload[key] for key in ("preview_digest", "operation_id", "apply")}
+                          if writing else {})}
         if action == "sync_status":
             from .repo_knowledge_sync import checkout_sync_status
 
