@@ -105,6 +105,18 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
         count(problems, "open").map_or("unknown".into(), |n| n.to_string()),
         count(problems, "blocking_open").map_or("unknown".into(), |n| n.to_string()),
         count(problems, "resolved").map_or("unknown".into(), |n| n.to_string())));
+    if problems["dispositions_preview"].is_array() {
+        ui.small(format!("Deferred open: {} · verified rejections: {} · rejection awaiting evidence: {}",
+            count(problems, "deferred_open").unwrap_or(0),
+            count(problems, "rejected_verified").unwrap_or(0),
+            count(problems, "rejection_pending_evidence").unwrap_or(0)));
+        if let Some(decisions) = problems["dispositions_preview"].as_array() {
+            for decision in decisions.iter().take(12) {
+                ui.small(format!("{}: {} by {} — {}", label(decision, "id"), label(decision, "action"),
+                    label(decision, "actor"), label(decision, "reason")));
+            }
+        }
+    }
     if let Some(reports) = problems["open_preview"].as_array() {
         for report in reports.iter().take(12) {
             ui.label(format!("{}: {}", label(report, "id"), label(report, "title")));
