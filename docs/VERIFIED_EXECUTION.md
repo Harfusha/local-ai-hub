@@ -434,3 +434,64 @@ allows exit on this signal rather than forcing another automatic iteration.
 This is a bounded heuristic, not proof of stalled execution: changing
 checkpoint text may conceal repetition, and repeated checkpoints can be
 legitimate.
+
+
+### Additive graph steering
+
+An owned, nonterminal task that is not bound to a repository plan supports a
+standalone `task_checkpoint` command with these checkpoint fields:
+
+```json
+{
+  "phase": "graph_revision",
+  "next_action": "reload_contract",
+  "affected_paths": [],
+  "evidence_ids": [],
+  "blockers": [],
+  "state_data": {
+    "execution_graph_revision": {
+      "expected_revision": 1,
+      "reason": "New integration dependency discovered",
+      "patch": {
+        "add_criteria": ["verify new dependency"],
+        "units": {
+          "existing integration criterion": {
+            "depends_on": ["verify new dependency"]
+          },
+          "verify new dependency": {
+            "dimension": "integration",
+            "evidence_type": "test",
+            "priority": 90
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Use the exact current criterion names and revision. The complete prerequisites
+of an existing criterion must be retained. The server checks the normalized
+graph including problem-confirmation edges, rejects cycles, validates bounded
+metadata and preserves inventory membership and check semantics. Existing
+dimension and evidence kind cannot change; priorities may change where the
+inventory contract does not pin them. New required dimensions must retain all
+old required dimensions and be represented by obligations.
+
+The revision is committed by CAS with the prior full contract and receipt
+mapping in durable history. The event contains the resulting full contract,
+retired criteria and retained mappings. Added prerequisites retire the affected
+criteria and their transitive dependents, including problem-confirmation edges.
+Independent unchanged mappings remain subject to the existing owner, evidence,
+expiry, repository revision and mutation generation checks. Freshness floors
+prevent remapping a pre-revision receipt to satisfy a retired criterion.
+Priority-only changes preserve evidence. A stale revision is rejected; reload
+the current task before retrying. Contract history cannot be overwritten through
+ordinary checkpoints or rollback. Graph edits are not yet reconciled with
+repository-plan bindings and cannot bypass their normal steering mechanism.
+Repository mutations still use the existing strict global revision gate.
+
+Explicit source previews now also support Git change inventories, provided the
+resource still exists in the independently checked repository source inventory
+and satisfies the existing project policy, root and regular-file fences.
+Deleted or excluded paths do not receive source previews.
