@@ -19,7 +19,9 @@ def stage(source: Path, destination: Path, version: str, revision: str) -> None:
         matches = list(source.rglob(name))
         if len(matches) != 1 or matches[0].stat().st_size > 64 * 1024 * 1024:
             raise ValueError(f"Missing, duplicate or oversized CI desktop asset: {name}")
-        verify_archive(matches[0].read_bytes(), version=version, revision=revision, system=system, arch=arch)
+        receipt, _binary = verify_archive(matches[0].read_bytes(), version=version, revision=revision, system=system, arch=arch)
+        if receipt["format"] != 2:
+            raise ValueError(f"New desktop release requires license and lock evidence: {name}")
         shutil.copyfile(matches[0], destination / name)
 
 
