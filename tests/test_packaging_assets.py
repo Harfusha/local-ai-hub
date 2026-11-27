@@ -29,9 +29,7 @@ def test_authoritative_manifest_contains_all_runtime_assets():
     assert "repo-plan.v1.schema.json" in manifest["schemas"]
     assert "fp4_model_support.json" in manifest["data"]
 
-    ui_paths = {item["path"] for item in manifest["ui_static"]}
-    assert "dashboard.html" in ui_paths
-    assert "dist/dashboard.js" in ui_paths
+    assert manifest["ui_static"] == []
 
 
 def test_asset_loader_negative_cases():
@@ -58,12 +56,12 @@ def test_package_data_parity_in_pyproject_and_manifest():
     assert "defaults.toml" in pkg_data
     assert "automation_browser.js" in pkg_data
     assert "data/*.json" in pkg_data
-    assert "ui_static/*" in pkg_data
-    assert "ui_static/dist/*" in pkg_data
+    assert "ui_static/*" not in pkg_data
+    assert "ui_static/dist/*" not in pkg_data
 
     # MANIFEST.in parity
     assert "recursive-include src/local_ai_hub/grammars *.gbnf" in manifest_in
-    assert "recursive-include src/local_ai_hub/ui_static *" in manifest_in
+    assert "prune src/local_ai_hub/ui_static" in manifest_in
     assert "recursive-include src/local_ai_hub/data *.json" in manifest_in
     assert "include src/local_ai_hub/automation_browser.js" in manifest_in
     assert "include src/local_ai_hub/defaults.toml" in manifest_in

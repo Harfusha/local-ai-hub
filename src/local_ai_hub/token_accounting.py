@@ -18,6 +18,7 @@ Accounting rules:
 """
 
 import hashlib
+import importlib
 import json
 import math
 import re
@@ -29,9 +30,9 @@ from typing import Any, Mapping
 from .budget import estimate_tokens
 
 try:
-    import orjson as _orjson
+    _orjson: Any = importlib.import_module("orjson")
 except ImportError:  # pragma: no cover
-    _orjson = None  # type: ignore[assignment]
+    _orjson = None
 
 
 _PRIVATE_KEY = "_token_accounting"
@@ -176,6 +177,8 @@ def _has_nonfinite_float(value: Any, *, max_depth: int = 128) -> bool:
 
 def _orjson_matches_canonical(value: Any, *, max_depth: int = 128) -> bool:
     """Admit only built-in JSON values whose float spelling matches stdlib."""
+    if _orjson is None:
+        return False
     seen: set[int] = set()
 
     def _walk(current: Any, depth: int) -> bool:
@@ -186,7 +189,7 @@ def _orjson_matches_canonical(value: Any, *, max_depth: int = 128) -> bool:
             return True
         if kind is float:
             try:
-                return _orjson.dumps(current) == repr(current).encode("ascii")
+                return bool(_orjson.dumps(current) == repr(current).encode("ascii"))
             except (TypeError, ValueError, OverflowError):
                 return False
         if kind not in (dict, list, tuple):

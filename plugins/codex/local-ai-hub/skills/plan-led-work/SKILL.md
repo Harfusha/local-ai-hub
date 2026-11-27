@@ -39,3 +39,18 @@ Approved spec and live Hub plan stay aligned throughout work.
 - Bind task: `plan_bind_task(task_id=..., plan_id=..., plan_task_id=..., root=..., session_id=..., expected_revision=...)`.
 - Resume: `session_briefing`, task lookup, `plan_get`, `plan_board_view`. Recheck only changed items.
 - Completion gate: authentic verification evidence for each criterion. Receipt-gate actions for Agent OS completion. `plan_validate` checks plan validity.
+
+
+## 5. Verified execution for substantial work
+- When the installed Hub supports verified execution, create the Agent OS
+  GoalContract with `slo_profile.verified_execution` metadata, including
+  independent criteria, dimensions and dependencies. For reviews and large
+  collections, use the declared resource/check matrix from deterministic
+  inventory; partition oversized scopes rather than silently skipping items.
+- Use `verify_completion` after material changes and context recovery;
+  follow its next obligation and keep unresolved issues visible. Record
+  discoveries using `task_checkpoint` state_data.execution_problem_report.
+  A source read or self-reported success is not verification evidence.
+- Do not call a plan or project complete until mandatory criteria and
+  blocking reports are verified. If work is blocked, report the actual
+  remaining obligations. See `docs/VERIFIED_EXECUTION.md`.

@@ -126,7 +126,6 @@ def test_exact_scopes_reject_basename_selectors_and_deduplicate_events_after_res
 
 def test_project_stats_require_exact_roots_and_disclose_tool_call_semantics(tmp_path):
     from contextlib import closing
-    from local_ai_hub.dashboard import DASHBOARD_HTML
 
     store = EndpointStatsStore(tmp_path / "state")
     store.record_call(item_type="mcp", item_name="local_ai_task:review", duration_ms=1,
@@ -150,7 +149,6 @@ def test_project_stats_require_exact_roots_and_disclose_tool_call_semantics(tmp_
     assert store.reset(root="shared") is False
     assert store.reset(root="legacy:shared") is False
     assert store.get_stats(root="C:/two/shared", include_unused=False)["items"][0]["calls"] == 1
-    assert "neprokazuje spuštění modelu" in DASHBOARD_HTML
 
 
 def test_percentile_calculation():

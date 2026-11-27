@@ -160,6 +160,10 @@ class TaskLifecycleMixin:
         completion_started_at = time.monotonic()
         if "_pending_fenced_work" in task.checkpoint.state_data:
             raise CompletionGateError("Cannot transition to COMPLETED: fenced work mutation is pending")
+        from .verified_execution import EXECUTION_KEY
+
+        if EXECUTION_KEY in task.contract.slo_profile and task.checkpoint.blockers:
+            raise CompletionGateError("Cannot transition to COMPLETED: verified execution has unresolved checkpoint blockers")
         memory_audit_validator = getattr(self, "_validate_memory_audit", None)
         if callable(memory_audit_validator):
             memory_audit_validator(task)
@@ -264,6 +268,14 @@ class TaskLifecycleMixin:
             ) from exc
 
         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
+        if EXECUTION_KEY in task.contract.slo_profile:
+            execution = result.get("execution", {}) if isinstance(result, Mapping) else getattr(result, "execution", {})
+            scope_check = execution.get("scope_check", {})
+            if scope_check and scope_check.get("complete") is not True:
+                raise CompletionGateError("Cannot transition to COMPLETED: repository inventory scope changed or is unavailable")
+            problems = execution.get("problems", {})
+            if problems.get("blocking_open", 0):
+                raise CompletionGateError("Cannot transition to COMPLETED: verified execution has unresolved blocking problems")
         if complete is not True:
             if _waive_receipts and complete is False:
                 self._observe_laya_completion(
@@ -382,6 +394,12 @@ class TaskLifecycleMixin:
                 checkpoint,
                 allow_server_memory_refresh=_allow_server_memory_refresh,
             )
+
+        if target is TaskStatus.COMPLETED:
+            from .verified_execution import EXECUTION_KEY
+
+            if EXECUTION_KEY in current.contract.slo_profile and current.checkpoint.blockers:
+                raise CompletionGateError("Cannot complete with unresolved checkpoint blockers; record their resolution first")
 
         if target == current.status:
             if target == TaskStatus.COMPLETED:
@@ -639,6 +657,10 @@ class TaskLifecycleMixin:
             or current.owner not in (_expected_completion_content[6], actor)
         ):
             raise ConcurrentTaskUpdateError("task completion content changed after response preflight")
+        from .verified_execution import EXECUTION_KEY
+
+        if EXECUTION_KEY in current.contract.slo_profile and current.checkpoint.blockers:
+            raise CompletionGateError("Cannot complete with unresolved checkpoint blockers; record their resolution first")
         requested_checkpoint = current.checkpoint
         if checkpoint is not None:
             requested_checkpoint = _preserve_checkpoint_memory_state(current.checkpoint.state_data, checkpoint)
@@ -1055,6 +1077,9 @@ class TaskLifecycleMixin:
             "reason": reason.strip(),
         }]
         criteria = tuple(acceptance_criteria)
+        from .verified_execution import validate_criteria_revision
+
+        validate_criteria_revision(current.contract, criteria)
         contract = replace(current.contract, acceptance_criteria=criteria)
         state_data["contract_history"] = history
         state_data["contract_revision"] = revision + 1

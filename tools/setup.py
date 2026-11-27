@@ -2190,8 +2190,9 @@ def _remove_duplicate_antigravity_hooks(path: Path, backup_enabled: bool) -> boo
     # Recognize the previous exact Hub-owned hook shape so it can be safely
     # removed when the native plugin becomes active after this upgrade.
     for config in list(generated_configs):
-        config["PostToolUse"][0]["matcher"] = "edit_file|write_file"
-        generated_configs.append(config)
+        legacy = json.loads(json.dumps(config))
+        legacy["PostToolUse"][0]["matcher"] = "edit_file|write_file"
+        generated_configs.append(legacy)
     # Earlier releases emitted only the narrow PreToolUse policy.
     generated_configs.append({
         "enabled": True,
@@ -4718,7 +4719,11 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
             return 1
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
-            sync_packaged_defaults(install_dir)
+            # Generate-only does not copy/install a source checkout. Only sync
+            # an actual existing installation; never require a fresh target to
+            # contain a repository defaults file.
+            if (install_dir / "defaults.toml").is_file():
+                sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
             for manual_action in configure_agents(
                 install_dir, hub_python, None, cfg,
@@ -5534,7 +5539,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    log("Dashboard: http://127.0.0.1:11435/dashboard")
+    log("Desktop: python tools/hubctl.py desktop (build/install native binary first)")
     return 0
 
 

@@ -559,6 +559,7 @@ class CompletionResult:
     stale_criteria: tuple[str, ...]
     receipts: tuple[VerificationReceipt, ...]
     consistency: dict[str, Any] = field(default_factory=dict)
+    execution: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.task_id) is not str or "\x00" in self.task_id or self.task_id != self.task_id.strip():
@@ -594,6 +595,9 @@ class CompletionResult:
                 raise ValueError("complete requires passing evidence receipts for every satisfied criterion")
         object.__setattr__(self, "receipts", tuple(self.receipts))
         object.__setattr__(self, "consistency", dict(self.consistency))
+        if not isinstance(self.execution, Mapping):
+            raise TypeError("execution must be a mapping")
+        object.__setattr__(self, "execution", dict(self.execution))
 
     def is_complete(self) -> bool:
         return self.complete
@@ -627,6 +631,8 @@ class CompletionResult:
         }
         if self.consistency:
             payload["consistency"] = dict(self.consistency)
+        if self.execution:
+            payload["execution"] = dict(self.execution)
         return payload
 
 
@@ -655,6 +661,7 @@ def evaluate_completion_receipts(
     require_execution_provenance: bool = False,
     now: float | None = None,
     evidence_store: Any | None = None,
+    required_evidence_types: Mapping[str, str] | None = None,
 ) -> CompletionResult:
     """Apply shared receipt gates to durable tasks and work-order handoffs.
 
@@ -728,6 +735,10 @@ def evaluate_completion_receipts(
     mappings = mapped_receipt_ids or {}
 
     for criterion in criteria:
+        # Project-mandated commands retain their established evidence classification.
+        kind = (required_evidence_types or {}).get(criterion, criterion_evidence_type(criterion))
+        if criterion in rule_criteria or criterion in (configured_commands or {}):
+            kind = criterion_evidence_type(criterion)
         if criterion in unavailable_rule_criteria:
             unsatisfied.append(criterion)
             continue
@@ -770,17 +781,17 @@ def evaluate_completion_receipts(
             evidence_store=evidence_store,
         ):
             unsatisfied.append(criterion)
-        elif criterion_evidence_type(criterion) == "test" and (
+        elif kind == "test" and (
             receipt.evidence_type != "test" or not str(receipt.command_id or "").strip()
         ):
             unsatisfied.append(criterion)
         elif active_verification_rules and criterion == "lint" and not str(receipt.command_id or "").strip():
             unsatisfied.append(criterion)
-        elif criterion_evidence_type(criterion) == "benchmark" and (
+        elif kind == "benchmark" and (
             receipt.evidence_type != "benchmark" or not str(receipt.command_id or "").strip()
         ):
             unsatisfied.append(criterion)
-        elif criterion_evidence_type(criterion) == "source_review" and (
+        elif kind == "source_review" and (
             receipt.evidence_type != "source_review"
         ):
             unsatisfied.append(criterion)
@@ -1821,8 +1832,11 @@ class VerificationStore:
         rows = retry_busy(_fetch_receipts, retries=5, base_delay_seconds=0.02)
 
         latest_by_criterion: dict[str, VerificationReceipt] = {}
+        recent_receipts: list[VerificationReceipt] = []
         for row in rows:
             r = _stored_receipt(row)
+            if len(recent_receipts) < 128:
+                recent_receipts.append(r)
             if r.criterion not in latest_by_criterion:
                 latest_by_criterion[r.criterion] = r
 
@@ -1832,6 +1846,8 @@ class VerificationStore:
             if not expected_owner or receipt.owner in valid_owners
         )
         target_criteria = required_criteria
+        from .verified_execution import contract_evidence_types
+
         gated = evaluate_completion_receipts(
             task_id,
             target_criteria,
@@ -1854,6 +1870,7 @@ class VerificationStore:
             require_execution_provenance=self.require_execution_provenance,
             now=current_time,
             evidence_store=self.evidence_store,
+            required_evidence_types=contract_evidence_types(task_state.contract) if task_state else None,
         )
         if repo_bound and not has_trusted_current_revision:
             gated = CompletionResult(
@@ -1897,6 +1914,83 @@ class VerificationStore:
                 except Exception:
                     audit = {}
 
+        execution: dict[str, Any] = {}
+        from .verified_execution import EXECUTION_KEY, consecutive_failed_verifications, evidence_progress, execution_projection
+
+        if task_state is not None and EXECUTION_KEY in task_state.contract.slo_profile:
+            from .execution_problems import PROBLEM_STATE_KEY, problem_confirmation_dependencies, project_problems
+
+            problem_registry = task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {})
+
+            problems = project_problems(
+                problem_registry,
+                satisfied=satisfied,
+                receipts={receipt.criterion: receipt for receipt in visible_receipts},
+                current_owner=expected_owner,
+            )
+            blocking_criteria = set(problems["blocking_criteria"])
+            execution = execution_projection(
+                required_criteria, task_state.contract.slo_profile[EXECUTION_KEY],
+                satisfied=[criterion for criterion in satisfied if criterion not in blocking_criteria],
+                unsatisfied=list(dict.fromkeys((*unsatisfied, *sorted(blocking_criteria)))),
+                stale=stale,
+                receipt_ids={receipt.criterion: receipt.receipt_id for receipt in visible_receipts},
+                receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
+                receipt_observed_at={receipt.criterion: receipt.observed_at for receipt in visible_receipts},
+                include_verified_criteria=True,
+                confirmation_dependencies=problem_confirmation_dependencies(problem_registry),
+            )
+            effective = set(execution.pop("verified_criteria"))
+            dependency_stale = set(execution.get("dependency_stale_criteria", []))
+            invalidated = set(satisfied) - effective
+            if invalidated:
+                satisfied = [criterion for criterion in satisfied if criterion in effective]
+                stale = list(dict.fromkeys((*stale, *sorted(dependency_stale))))
+                unsatisfied = list(dict.fromkeys((*unsatisfied, *sorted(invalidated - dependency_stale))))
+                is_complete = False
+            # A valid individual receipt is insufficient to close a problem
+            # when its prerequisite chain is no longer verified.
+            problems = project_problems(
+                problem_registry,
+                satisfied=satisfied,
+                receipts={receipt.criterion: receipt for receipt in visible_receipts},
+                current_owner=expected_owner,
+            )
+            blocking_criteria = set(problems["blocking_criteria"])
+            execution["problems"] = problems
+            from .execution_inventory import check_repository_scope
+
+            scope_check = check_repository_scope(
+                task_state.contract.slo_profile[EXECUTION_KEY], trusted_repository_root,
+            )
+            if scope_check:
+                execution["scope_check"] = scope_check
+                execution["inventory"]["authority"] = (
+                    "server_checked_changes" if task_state.contract.slo_profile[EXECUTION_KEY]["inventory"].get("scope") == "changes"
+                    else "server_checked_repository"
+                )
+                if not scope_check["complete"]:
+                    execution["ready_for_completion_attempt"] = False
+                    is_complete = False
+            if problems["blocking_open"]:
+                execution["ready_for_completion_attempt"] = False
+            is_complete = is_complete and not task_state.checkpoint.blockers and not problems["blocking_open"]
+            next_obligation = execution.get("next_obligation")
+            repeated_failures = consecutive_failed_verifications(
+                recent_receipts, criterion=next_obligation["criterion"], now=current_time,
+                repository_revision=expected_revision, mutation_generation=expected_generation,
+                valid_owners=valid_owners,
+            ) if isinstance(next_obligation, dict) else 0
+            from .execution_progress import repeated_checkpoint_count
+
+            execution["progress"] = evidence_progress(
+                repeated_failure_count=repeated_failures,
+                repeated_checkpoint_count=repeated_checkpoint_count(task_state, now=current_time),
+                created_at=task_state.created_at, now=current_time,
+                active=task_state.status.value in {"active", "verifying"}, complete=is_complete,
+                observed_receipt_times=[receipt.observed_at for receipt in visible_receipts
+                                        if receipt.criterion in satisfied and receipt.criterion not in blocking_criteria],
+            )
         return CompletionResult(
             task_id=task_id,
             complete=is_complete,
@@ -1905,6 +1999,7 @@ class VerificationStore:
             stale_criteria=tuple(stale),
             receipts=visible_receipts,
             consistency=audit,
+            execution=execution,
         )
 
     def export_receipts(

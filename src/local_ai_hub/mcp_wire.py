@@ -539,6 +539,32 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
             if finalized > requested:
                 outer_metadata["returned_tokens"] = 0
 
+    if name == "local_ai_coord" and action == "context_compile" and requested == 128 and isinstance(value, dict):
+        # Context recovery must fit the actual structured MCP envelope. Never
+        # drop the budget contract merely to retain a verbose context snapshot.
+        context = value.get("task_context")
+        artifact_id = value.get("task_context_artifact_id") or (context.get("artifact_id") if isinstance(context, dict) else None)
+        source_budget = value.get("response_budget", {})
+        budget_rejected = isinstance(source_budget, dict) and source_budget.get("rejected") is True
+        if isinstance(artifact_id, str) and artifact_id or value.get("success") is True or budget_rejected:
+            candidates = []
+            if isinstance(artifact_id, str) and artifact_id:
+                candidates.append({"success": value.get("success") is True,
+                                   "task_context_artifact_id": artifact_id,
+                                   "response_budget": {"requested_tokens": requested, "returned_tokens": 0}})
+            candidates.append({"success": False, "error": "max_response_tokens too small",
+                               "next_action": "request_larger_response_budget",
+                               "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True}})
+            for candidate in candidates:
+                content = [services_module.mcp_types.TextContent(type="text", text="See structured context recovery.")]
+                wire = {"content": [item.model_dump(mode="json", exclude_none=True) for item in content],
+                        "structuredContent": candidate, "isError": False}
+                for _ in range(16):
+                    returned = services_module.json_tokens(wire)
+                    candidate["response_budget"]["returned_tokens"] = returned
+                    if services_module.json_tokens(wire) == returned and returned <= requested:
+                        return content, candidate
+
     if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
         pack = value.get("adaptive_context_pack")
         evidence = pack.get("evidence") if isinstance(pack, dict) else None
@@ -1050,6 +1076,13 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 "terminal": True, "retryable": False,
                 "error": f"MCP output contract failed: {output_error}",
             }
+            # Preserve a validated correlation identifier without forwarding
+            # any other fields from a malformed tool response.
+            if isinstance(raw, dict):
+                request_id = raw.get("request_id")
+                if (isinstance(request_id, str) and 0 < len(request_id) <= 160
+                        and all(32 <= ord(char) < 127 for char in request_id)):
+                    payload["request_id"] = request_id
             return finalize(services_module._mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
         if isinstance(raw, (dict, list)):
             return finalize(services_module._mcp_budget_payload(name, arguments, raw))

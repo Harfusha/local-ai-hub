@@ -44,11 +44,66 @@ class TaskMutationMixin:
         if not current:
             raise KeyError(f"Task {task_id} not found")
 
+        from .execution_problems import (PROBLEM_DISPOSITION_KEY, PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY,
+                                         record_disposition, record_problem, validate_resolution_order)
+        from .verified_execution import EXECUTION_KEY
+
+        has_problem_report = PROBLEM_REPORT_KEY in checkpoint.state_data
+        has_disposition = PROBLEM_DISPOSITION_KEY in checkpoint.state_data
+        if has_disposition and has_problem_report:
+            raise ValueError("report and disposition require separate checkpoints")
+        disposition = None
+        if has_disposition:
+            if (EXECUTION_KEY not in current.contract.slo_profile
+                    or actor != current.owner or current.is_terminal()):
+                raise ValueError("execution problem disposition requires an owned nonterminal verified execution")
+            incoming = dict(checkpoint.state_data)
+            disposition = incoming.pop(PROBLEM_DISPOSITION_KEY)
+            checkpoint = replace(checkpoint, state_data=incoming)
+        problem_report = None
+        if has_problem_report:
+            if (EXECUTION_KEY not in current.contract.slo_profile
+                    or actor != current.owner or current.is_terminal()):
+                raise ValueError("execution problem reporting requires an owned nonterminal verified execution")
+            incoming = dict(checkpoint.state_data)
+            problem_report = incoming.pop(PROBLEM_REPORT_KEY)
+            validate_resolution_order(
+                problem_report, current.contract.slo_profile[EXECUTION_KEY],
+                current.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+            )
+            checkpoint = replace(checkpoint, state_data=incoming)
+
         checkpoint = _preserve_checkpoint_memory_state(
             current.checkpoint.state_data,
             checkpoint,
             allow_server_memory_refresh=_allow_server_memory_refresh,
         )
+        if has_problem_report:
+            updated_data = dict(checkpoint.state_data)
+            updated_data[PROBLEM_STATE_KEY] = record_problem(
+                current.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+                problem_report, criteria=current.contract.acceptance_criteria,
+                receipt_ids=current.verification_receipts, reporter=actor, now=time.time(),
+            )
+            checkpoint = replace(checkpoint, state_data=updated_data)
+        if has_disposition:
+            updated_data = dict(checkpoint.state_data)
+            updated_data[PROBLEM_STATE_KEY] = record_disposition(
+                current.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+                disposition, actor=actor, now=time.time(),
+            )
+            checkpoint = replace(checkpoint, state_data=updated_data)
+        from .execution_progress import PROGRESS_STATE_KEY, observe_checkpoint
+
+        track_progress = (EXECUTION_KEY in current.contract.slo_profile and actor == current.owner
+                          and current.status in {TaskStatus.ACTIVE, TaskStatus.VERIFYING}
+                          and not _allow_server_memory_refresh)
+        if track_progress:
+            updated_data = dict(checkpoint.state_data)
+            updated_data[PROGRESS_STATE_KEY] = observe_checkpoint(
+                current, checkpoint, now=time.time(), idempotency_key=idempotency_key,
+            )
+            checkpoint = replace(checkpoint, state_data=updated_data)
         if not _allow_server_memory_refresh:
             self._validate_memory_audit(replace(current, checkpoint=checkpoint))
 
@@ -58,6 +113,7 @@ class TaskMutationMixin:
             response_budget_tokens=response_budget_tokens,
             _prepared_updated_at=_prepared_updated_at,
             _allow_server_memory_refresh=_allow_server_memory_refresh,
+            _allow_server_execution_update=has_problem_report or has_disposition or track_progress,
         )
 
     def _persist_checkpoint(
@@ -71,6 +127,7 @@ class TaskMutationMixin:
         idempotency_key: str = "",
         _prepared_updated_at: float | None = None,
         _allow_server_memory_refresh: bool = False,
+        _allow_server_execution_update: bool = False,
     ) -> TaskState:
         """Persist a validated agent checkpoint or server-owned bookkeeping."""
         task_id = current.task_id
@@ -146,6 +203,7 @@ class TaskMutationMixin:
             updated,
             event,
             allow_server_memory_refresh=_allow_server_memory_refresh,
+            allow_server_execution_update=_allow_server_execution_update,
         )
         try:
             from .repo_plan.host_adapters import (
@@ -341,6 +399,20 @@ class TaskMutationMixin:
             restored_checkpoint = TaskCheckpoint.from_dict(chk_events[-2].payload)
         else:
             restored_checkpoint = TaskCheckpoint()
+
+        # Checkpoint rollback may rewind working context, never issue history.
+        from .execution_problems import PROBLEM_DISPOSITION_KEY, PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY
+
+        restored_data = dict(restored_checkpoint.state_data)
+        restored_data.pop(PROBLEM_REPORT_KEY, None)
+        restored_data.pop(PROBLEM_DISPOSITION_KEY, None)
+        from .execution_progress import PROGRESS_STATE_KEY
+
+        for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY):
+            restored_data.pop(key, None)
+            if key in current.checkpoint.state_data:
+                restored_data[key] = current.checkpoint.state_data[key]
+        restored_checkpoint = replace(restored_checkpoint, state_data=restored_data)
 
         now = time.time()
         new_status = TaskStatus.ACTIVE if current.status in (TaskStatus.VERIFYING, TaskStatus.FAILED, TaskStatus.BLOCKED) else current.status

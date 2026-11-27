@@ -235,3 +235,22 @@ def test_code_index_null_boolean_returns_typed_field_diagnostic(tmp_path, monkey
     assert payload["terminal"] is True and payload["retryable"] is False
     assert "result.stale" in payload["error"]
     assert payload["request_id"] == "req_fixture"
+
+
+def test_compact_diagnostic_projection_keeps_only_recovery_protocol_metadata():
+    from local_ai_hub.agent_diagnostics import project_agent_response
+
+    response = {"success": False, "error": "max_response_tokens too small",
+                "request_id": "req_fixture", "debug": {"private": True},
+                "response_budget": {"requested_tokens": 128, "returned_tokens": 90,
+                                    "rejected": True, "original_tokens": 5000}}
+    result = project_agent_response(response, enabled=False)
+    assert result["request_id"] == "req_fixture"
+    assert result["response_budget"] == {"requested_tokens": 128, "returned_tokens": 90, "rejected": True}
+    assert "debug" not in result
+    assert "request_id" not in project_agent_response({**response, "request_id": "unsafe\nrequest"}, enabled=False)
+    assert "response_budget" not in project_agent_response({"success": True, "response_budget": {
+        "requested_tokens": 128, "returned_tokens": 90}}, enabled=False)
+    recovered = project_agent_response({"success": True, "task_context_artifact_id": "artifact_fixture",
+        "response_budget": {"requested_tokens": 1024, "returned_tokens": 50}}, enabled=False)
+    assert recovered["response_budget"]["requested_tokens"] == 1024

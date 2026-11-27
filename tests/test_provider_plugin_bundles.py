@@ -176,8 +176,12 @@ def test_codex_plugin_bundles_native_mcp_hooks_and_current_skills():
     assert (plugin / "scripts" / "run_hub.py").is_file()
     assert set(hooks["hooks"]) == {
         "SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse",
-        "PermissionRequest", "PostToolUse",
+        "PermissionRequest", "PostToolUse", "Stop",
     }
+    stop = hooks["hooks"]["Stop"][0]["hooks"][0]
+    assert stop["type"] == "command"
+    assert stop["timeout"] == 5
+    assert stop["command"] == "python ${PLUGIN_ROOT}/hooks/codex_hook.py"
     assert hooks["hooks"]["PermissionRequest"][0]["matcher"] == "Bash|apply_patch"
     for event in ("UserPromptSubmit", "SubagentStart"):
         handler = hooks["hooks"][event][0]["hooks"][0]
@@ -198,6 +202,10 @@ def test_claude_plugin_bundles_native_mcp_hooks_and_current_skills():
     assert hooks["hooks"]["PreToolUse"][0]["matcher"] == "Bash|PowerShell|Read"
     assert hooks["hooks"]["PermissionRequest"][0]["matcher"] == "Bash|PowerShell|Read"
     assert "SubagentStart" in hooks["hooks"]
+    stop = hooks["hooks"]["Stop"][0]["hooks"][0]
+    assert stop["type"] == "command"
+    assert stop["timeout"] == 5
+    assert stop["command"].endswith(" host_hooks --host claude")
     assert (plugin / "scripts" / "run_hub.py").is_file()
     _assert_shared_skills(plugin)
 

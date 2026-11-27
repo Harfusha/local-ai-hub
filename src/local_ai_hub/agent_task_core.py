@@ -73,6 +73,17 @@ class TaskCoreMixin:
                     outcome_unknown=False,
                 ) from exc
             raise
+        from .execution_inventory import check_repository_scope, repository_scope
+        from .verified_execution import EXECUTION_KEY
+
+        execution_config = contract.slo_profile.get(EXECUTION_KEY)
+        if repository_scope(execution_config):
+            if auto_worktree or _handoff_resume is not None:
+                raise ValueError("repository inventory must be created in the actual review checkout")
+            scope_check = check_repository_scope(execution_config, canonical_root)
+            if scope_check.get("complete") is not True:
+                raise ValueError("repository inventory does not match the current authorized scope")
+
         if _handoff_resume is not None:
             from .repo_task_handoff import validate_resume_creation
 

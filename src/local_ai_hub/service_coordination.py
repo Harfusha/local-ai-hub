@@ -217,8 +217,23 @@ class ServiceCoordinationMixin:
                          idempotency_key=idempotency_key, owner=owner)
         return self._plan_workspace(root, "plan_task_delete", arguments).delete_task(**arguments)
 
-    def plan_validate(self, root: str = "", plan_id: str = "") -> dict[str, Any]:
-        return self._plan_workspace(root, "plan_validate", {"plan_id": plan_id}).validate_plan(plan_id)
+    def plan_validate(self, root: str = "", plan_id: str = "",
+                      include: list[str] | None = None) -> dict[str, Any]:
+        arguments: dict[str, Any] = {"plan_id": plan_id}
+        if include is not None:
+            arguments["include"] = include
+        ws = self._plan_workspace(root, "plan_validate", arguments)
+        result = ws.validate_plan(plan_id)
+        if result.get("valid") and include and "execution" in include:
+            from .plan_execution import plan_execution_preview
+
+            try:
+                result["execution"] = plan_execution_preview(
+                    ws, plan_id, self.task_store, self.verification_store, self.repo_state,
+                )
+            except (OSError, RuntimeError, ValueError, KeyError):
+                result["execution"] = {"complete": False, "status": "verification_unavailable"}
+        return result
 
     def plan_archive(self, root: str = "", plan_id: str = "", expected_revision: str = "",
                      idempotency_key: str = "", owner: str = "agent") -> dict[str, Any]:

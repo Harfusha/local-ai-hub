@@ -2063,3 +2063,316 @@ def test_structured_project_receipt_recomputes_argv_env_and_arguments(
     )
 
     assert result.complete is expected_complete
+
+
+def test_verified_execution_uses_persisted_receipts_after_restart(tmp_path: Path):
+    db_path = tmp_path / "execution.sqlite3"
+    state_store = AgentStateStore(db_path)
+    task_store = TaskStore(state_store)
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    verifier = VerificationStore(state_store, task_store=task_store, artifact_store=artifacts)
+    task = task_store.create(
+        GoalContract(
+            goal="verify implementation", acceptance_criteria=("review api", "review consumer"),
+            slo_profile={"verified_execution": {
+                "profile": "implementation",
+                "units": {"review consumer": {"depends_on": ["review api"]}},
+            }},
+        ),
+        ScopeContext(task_id="structured-execution"),
+        task_id="structured-execution",
+    )
+    verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=artifacts))
+    first = verifier.completion(task.task_id)
+    assert not first.complete
+    assert first.execution["coverage"]["dependency_blocked"] == 1
+    assert first.execution["next_obligation"]["criterion"] == "review api"
+
+    reopened_state = AgentStateStore(db_path)
+    reopened_tasks = TaskStore(reopened_state)
+    reopened_verifier = VerificationStore(reopened_state, task_store=reopened_tasks, artifact_store=artifacts)
+    reopened = reopened_verifier.completion(task.task_id).execution
+    assert {k: v for k, v in reopened.items() if k != "progress"} == {
+        k: v for k, v in first.execution.items() if k != "progress"
+    }
+    reopened_verifier.record(receipt_for(task.task_id, "review api", artifact_store=artifacts))
+    superseded = reopened_verifier.completion(task.task_id)
+    assert not superseded.complete
+    assert "review consumer" in superseded.stale_criteria
+    assert superseded.execution["next_obligation"]["criterion"] == "review consumer"
+    with pytest.raises(CompletionGateError):
+        reopened_tasks.complete(task.task_id)
+    reopened_verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=artifacts))
+    assert reopened_verifier.completion(task.task_id).execution["coverage"]["verified"] == 2
+    assert reopened_tasks.complete(task.task_id).status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_blockers_cannot_be_cleared_in_completion(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="verify changes", acceptance_criteria=("review",),
+            slo_profile={"verified_execution": {}},
+        ),
+        ScopeContext(task_id="execution-blocker"),
+        task_id="execution-blocker",
+    )
+    verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    task_store.checkpoint(task.task_id, TaskCheckpoint(blockers=("unresolved integration",)))
+    projection = verifier.completion(task.task_id)
+    assert not projection.complete
+    assert projection.execution["checkpoint_blocker_count"] == 1
+    with pytest.raises(CompletionGateError, match="blockers"):
+        task_store.complete(task.task_id, checkpoint=TaskCheckpoint())
+    with pytest.raises(CompletionGateError, match="blockers"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    task_store.checkpoint(task.task_id, TaskCheckpoint())
+    assert task_store.complete(task.task_id).status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_problem_survives_checkpoint_and_requires_new_receipt(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="review", acceptance_criteria=("review",),
+            slo_profile={"verified_execution": {}},
+        ),
+        ScopeContext(task_id="problem-lifecycle"),
+        task_id="problem-lifecycle",
+    )
+    original = verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    report = {"id": "finding-1", "title": "inconsistent response", "criterion": "review", "blocking": True}
+    checkpoint = TaskCheckpoint(state_data={"execution_problem_report": report})
+    reported = task_store.checkpoint(task.task_id, checkpoint)
+    assert "execution_problem_report" not in reported.checkpoint.state_data
+    assert reported.checkpoint.state_data["_verified_execution_problems"]["finding-1"]["baseline_receipt_id"] == original.receipt_id
+    task_store.checkpoint(task.task_id, TaskCheckpoint())
+    projection = verifier.completion(task.task_id)
+    assert not projection.complete
+    assert projection.execution["problems"]["blocking_open"] == 1
+    assert projection.execution["coverage"]["verified"] == 0
+    assert projection.execution["next_obligation"]["criterion"] == "review"
+    with pytest.raises(ValueError, match="server-managed"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"_verified_execution_problems": {}}))
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    resolved = verifier.completion(task.task_id)
+    assert resolved.complete
+    assert resolved.execution["problems"]["resolved"] == 1
+    task_store.advance_mutation_generation(task.task_id)
+    stale = verifier.completion(task.task_id)
+    assert not stale.complete
+    assert stale.execution["problems"]["blocking_open"] == 1
+
+
+def test_verified_execution_problem_requires_owner_and_valid_criterion(stores):
+    task_store, _ = stores
+    task = task_store.create(
+        GoalContract("review", acceptance_criteria=("review",), slo_profile={"verified_execution": {}}),
+        ScopeContext(task_id="problem-owner"),
+        task_id="problem-owner",
+    )
+    report = {"id": "issue", "title": "missing evidence", "criterion": "review"}
+    with pytest.raises(ValueError, match="owned"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"execution_problem_report": report}), actor="other")
+    with pytest.raises(ValueError, match="criterion"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"execution_problem_report": {**report, "criterion": "missing"}}))
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"execution_problem_report": report}))
+    with pytest.raises(ValueError, match="different report"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"execution_problem_report": {**report, "title": "different"}}))
+
+
+def test_verified_execution_explicit_evidence_kind_ignores_path_names(stores):
+    task_store, verifier = stores
+    criterion = "inspect: tests/test_module.py"
+    contract = GoalContract("inspect source", slo_profile={"verified_execution": {
+        "inventory": {"resources": ["tests/test_module.py"], "checks": [
+            {"name": "inspect", "evidence_type": "source_review"},
+        ]},
+    }})
+    task = task_store.create(contract, ScopeContext(task_id="typed-evidence"), task_id="typed-evidence")
+    assert contract.acceptance_criteria == (criterion,)
+    verifier.record(receipt_for(task.task_id, criterion, evidence_type="source_review",
+                                artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.complete
+    assert result.execution["coverage"]["verified"] == 1
+
+
+def test_verified_execution_explicit_test_kind_requires_command(stores):
+    task_store, verifier = stores
+    contract = GoalContract("validate", acceptance_criteria=("verify",), slo_profile={
+        "verified_execution": {"units": {"verify": {"evidence_type": "test"}}},
+    })
+    task = task_store.create(contract, ScopeContext(task_id="typed-test"), task_id="typed-test")
+    verifier.record(receipt_for(task.task_id, "verify", evidence_type="source_review",
+                                artifact_store=verifier.artifact_store))
+    assert not verifier.completion(task.task_id).complete
+    verifier.record(receipt_for(task.task_id, "verify", evidence_type="test",
+                                artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+
+
+def test_verified_execution_problem_reopens_when_prerequisite_is_refreshed(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="review consumer", acceptance_criteria=("review api", "review consumer"),
+            slo_profile={"verified_execution": {
+                "units": {"review consumer": {"depends_on": ["review api"]}},
+            }},
+        ),
+        ScopeContext(task_id="problem-dependency"),
+        task_id="problem-dependency",
+    )
+    verifier.record(receipt_for(task.task_id, "review api", artifact_store=verifier.artifact_store))
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {
+            "id": "consumer-issue", "title": "consumer contract mismatch", "criterion": "review consumer",
+        },
+    }))
+    verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+    verifier.record(receipt_for(task.task_id, "review api", artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.execution["problems"]["blocking_open"] == 1
+    assert "review consumer" not in result.satisfied_criteria
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+
+
+def test_verified_execution_problem_requires_separate_confirmation(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="repair consumer", acceptance_criteria=("repair consumer", "review resolution"),
+            slo_profile={"verified_execution": {
+                "units": {"review resolution": {"priority": 100}},
+            }},
+        ),
+        ScopeContext(task_id="problem-confirmation"),
+        task_id="problem-confirmation",
+    )
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {
+            "id": "consumer-issue", "title": "consumer contract mismatch",
+            "criterion": "repair consumer", "resolution_criterion": "review resolution",
+        },
+    }))
+    initial = verifier.completion(task.task_id)
+    assert initial.execution["next_obligation"]["criterion"] == "repair consumer"
+    assert initial.execution["coverage"]["dependency_blocked"] == 1
+    verifier.record(receipt_for(task.task_id, "repair consumer", artifact_store=verifier.artifact_store))
+    pending = verifier.completion(task.task_id)
+    assert not pending.complete
+    assert pending.execution["problems"]["blocking_open"] == 1
+    assert pending.execution["coverage"]["verified"] == 1
+    assert pending.execution["next_obligation"]["criterion"] == "review resolution"
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    verifier.record(receipt_for(task.task_id, "review resolution", artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+    assert verifier.completion(task.task_id).execution["problems"]["resolved"] == 1
+    assert task_store.complete(task.task_id).status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_distinct_confirmation_after_task_adoption(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="repair and review", acceptance_criteria=("repair", "review"),
+            slo_profile={"verified_execution": {}},
+        ),
+        ScopeContext(task_id="distinct-confirmation"),
+        task_id="distinct-confirmation",
+    )
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {
+            "id": "issue", "title": "mismatch", "criterion": "repair",
+            "resolution_criterion": "review", "require_distinct_owner": True,
+        },
+    }))
+    verifier.record(receipt_for(task.task_id, "repair", artifact_store=verifier.artifact_store))
+    verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    blocked = verifier.completion(task.task_id)
+    assert not blocked.complete
+    assert blocked.execution["problems"]["open_preview"][0]["resolution_status"] == "awaiting_distinct_owner"
+    assert blocked.execution["problems"]["owner_handoff_criteria"] == ["review"]
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    task_store.claim(task.task_id, "reviewer", actor="reviewer")
+    verifier.record(receipt_for(task.task_id, "review", owner="reviewer",
+                                artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.complete
+    assert result.execution["problems"]["resolved"] == 1
+    assert task_store.complete(task.task_id, actor="reviewer").status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_disposition_checkpoint_requires_owner_and_survives_recovery(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="review", acceptance_criteria=("review",),
+                     slo_profile={"verified_execution": {}}),
+        ScopeContext(task_id="disposition-test"), task_id="disposition-test",
+    )
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {"id": "issue", "title": "mismatch", "criterion": "review"},
+    }))
+    command = {"id": "issue", "decision_id": "defer", "action": "defer", "reason": "needs evidence"}
+    with pytest.raises(ValueError, match="owned nonterminal"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+            "execution_problem_disposition": command,
+        }), actor="foreign")
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_disposition": command,
+    }))
+    assert verifier.completion(task.task_id).execution["problems"]["deferred_open"] == 1
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test"})
+    task_store.checkpoint(task.task_id, TaskCheckpoint(phase="other work"))
+    assert verifier.completion(task.task_id).execution["problems"]["deferred_open"] == 1
+    task_store.claim(task.task_id, "reviewer", actor="reviewer")
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_disposition": {
+            **command, "decision_id": "reject", "action": "reject", "reason": "false positive",
+        },
+    }), actor="reviewer")
+    pending = verifier.completion(task.task_id)
+    assert not pending.complete
+    assert pending.execution["problems"]["rejection_pending_evidence"] == 1
+    verifier.record(receipt_for(task.task_id, "review", owner="reviewer",
+                                artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.complete
+    assert result.execution["problems"]["rejected_verified"] == 1
+    assert task_store.complete(task.task_id, actor="reviewer").status is TaskStatus.COMPLETED
+
+
+def test_verified_execution_checkpoint_loop_is_persisted_and_server_managed(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="review", acceptance_criteria=("a", "b"),
+                     slo_profile={"verified_execution": {}}),
+        ScopeContext(task_id="checkpoint-loop"), task_id="checkpoint-loop",
+    )
+    task_store.claim(task.task_id, "agent", actor="agent")
+    for index in range(8):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(
+            phase="review", next_action="first" if index % 2 else "second",
+        ))
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.execution["progress"]["status"] == "repeated_checkpoint_pattern"
+    with pytest.raises(ValueError, match="progress is server-managed"):
+        task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+            "_verified_execution_progress": {},
+        }))
+    verifier.record(receipt_for(task.task_id, "a", artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.execution["progress"]["status"] != "repeated_checkpoint_pattern"

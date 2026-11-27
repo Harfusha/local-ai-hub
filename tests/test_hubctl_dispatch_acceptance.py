@@ -131,3 +131,22 @@ def test_hubctl_generate_dispatch_calls_generator_and_install(monkeypatch, capsy
     assert generated[0][2] == Path(sys.executable)
     assert len(configured) == 1
     assert '"success": true' in capsys.readouterr().out
+
+
+def test_execution_cli_uses_authoritative_read_only_status(monkeypatch, capsys, tmp_path):
+    calls = []
+
+    class Client:
+        def verify_completion(self, task_id, *, root):
+            calls.append((task_id, root))
+            return {"success": True, "completion": {"complete": False, "execution": {
+                "coverage": {"verified": 1, "total": 2},
+                "dimensions": {"review": {"verified": 1, "total": 2}},
+                "next_obligation": {"criterion": "review b"},
+                "ready_for_completion_attempt": False,
+            }}}
+
+    monkeypatch.setattr(hubctl, "HubClient", lambda **kwargs: Client())
+    assert _invoke(monkeypatch, "execution", "--task-id", "task-1", "--root", str(tmp_path)) == 2
+    assert calls == [("task-1", str(tmp_path.resolve()))]
+    assert "Next obligation: review b" in capsys.readouterr().out

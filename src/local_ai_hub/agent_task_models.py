@@ -153,6 +153,14 @@ class GoalContract:
         object.__setattr__(self, "constraints", _clean_tuple(self.constraints, "constraints"))
         if type(self.slo_profile) is not dict:
             raise ValueError("slo_profile must be a mapping")
+        from .verified_execution import EXECUTION_KEY, expand_declared_inventory, normalize_execution
+
+        if EXECUTION_KEY in self.slo_profile:
+            profile = dict(self.slo_profile)
+            criteria, config = expand_declared_inventory(self.acceptance_criteria, profile[EXECUTION_KEY])
+            profile[EXECUTION_KEY] = normalize_execution(criteria, config)
+            object.__setattr__(self, "acceptance_criteria", criteria)
+            object.__setattr__(self, "slo_profile", profile)
 
     def has_criteria(self) -> bool:
         return bool(self.acceptance_criteria)
@@ -463,10 +471,26 @@ def _preserve_checkpoint_memory_state(
     *,
     allow_server_memory_refresh: bool = False,
     allow_server_work_update: bool = False,
+    allow_server_execution_update: bool = False,
 ) -> TaskCheckpoint:
     if not allow_server_memory_refresh:
         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
     merged_state_data = dict(checkpoint.state_data)
+    from .execution_problems import PROBLEM_DISPOSITION_KEY, PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY
+
+    if PROBLEM_REPORT_KEY in merged_state_data or PROBLEM_DISPOSITION_KEY in merged_state_data:
+        raise ValueError("execution problem commands must use task_checkpoint")
+    from .execution_progress import PROGRESS_STATE_KEY
+
+    if not allow_server_execution_update:
+        for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY):
+            if key in merged_state_data and (
+                key not in current_state_data or merged_state_data[key] != current_state_data[key]
+            ):
+                raise ValueError("execution problem registry is server-managed" if key == PROBLEM_STATE_KEY
+                                 else "execution progress is server-managed")
+            if key in current_state_data:
+                merged_state_data[key] = current_state_data[key]
     lineage = "_portable_attempt"
     if lineage in merged_state_data and (
         lineage not in current_state_data or merged_state_data[lineage] != current_state_data[lineage]

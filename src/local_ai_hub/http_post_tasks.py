@@ -201,8 +201,26 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                 "terminal": True, "retryable": False,
             }); return
         try:
+            from subprocess import SubprocessError
+
+            from .execution_inventory import compile_repository_contract, repository_scope
+            from .verified_execution import EXECUTION_KEY
+
+            raw_contract = payload.get("contract")
+            if isinstance(raw_contract, dict):
+                profile = raw_contract.get("slo_profile")
+                config = profile.get(EXECUTION_KEY) if isinstance(profile, dict) else None
+                if repository_scope(config):
+                    from .agent_task_models import _canonical_repository_root
+
+                    requested = _canonical_repository_root(payload.get("repo_root", ""))
+                    if not repo_root or requested != _canonical_repository_root(repo_root):
+                        raise ValueError("repository inventory requires the authorized task repository root")
+                    if auto_worktree or "handoff_resume" in payload:
+                        raise ValueError("repository inventory must be created in the actual review checkout")
+                    payload = {**payload, "contract": compile_repository_contract(raw_contract, requested)}
             contract = services_module._task_create_contract(payload)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OSError, RuntimeError, SubprocessError) as exc:
             self._send(400, {
                 "success": False, "error": str(exc),
                 "terminal": True, "retryable": False,

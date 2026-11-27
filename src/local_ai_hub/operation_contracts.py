@@ -964,7 +964,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "plan_update": ("root", "plan_id", "expected_revision", "title", "description", "lifecycle", "default_target_ref", "spec_refs", "accountable_role", "owner", "idempotency_key"),
             "plan_task_edit": ("root", "plan_id", "expected_revision", "task_id", "task_data", "idempotency_key", "owner"),
             "plan_task_delete": ("root", "plan_id", "expected_revision", "task_id", "idempotency_key", "owner"),
-            "plan_validate": ("root", "plan_id"),
+            "plan_validate": ("root", "plan_id", "include"),
             "plan_archive": ("root", "plan_id", "expected_revision", "idempotency_key", "owner"),
             "plan_board_view": ("root", "plan_id", "query", "worktree_id"),
             "plan_adopt_legacy_board": ("root", "plan_id", "title", "owner", "idempotency_key"),

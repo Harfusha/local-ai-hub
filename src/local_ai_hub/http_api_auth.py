@@ -121,6 +121,13 @@ class HttpAuthorizationMixin:
         ):
             self._send(403, {"success": False, "error": "forbidden: dashboard mutation requires Origin"})
             return False
+        if header("X-LocalAI-Client", "") == "desktop" and (
+            header("Origin", "") or any(header(name, "") for name in (
+                "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"
+            ))
+        ):
+            self._send(403, {"success": False, "error": "forbidden: native desktop control is not a browser API"})
+            return False
         host_header = str(header("Host", "") or "").strip()
         host_port: int | None = None
         if host_header:

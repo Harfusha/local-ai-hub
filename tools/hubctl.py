@@ -247,7 +247,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge", "execution"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
@@ -923,8 +923,26 @@ def main() -> int:
         return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
-    if args.action == "dashboard":
-        c = client(); print(c.base_url + "/dashboard"); return 0
+    if args.action in {"desktop", "dashboard"}:
+        # Compatibility alias opens the native application, never an HTTP UI.
+        name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
+        candidates = (ROOT / "desktop" / "target" / "release" / name, ROOT / "bin" / name)
+        binary = next((path for path in candidates if path.is_file()), None)
+        if binary is None:
+            print("Desktop binary missing. Build: cargo build --manifest-path desktop/Cargo.toml --release", file=sys.stderr)
+            return 1
+        env = os.environ.copy()
+        env["LOCAL_AI_HUB_ROOT"] = str(ROOT)
+        env["LOCAL_AI_DESKTOP_PYTHON"] = sys.executable
+        config = _config_arg(args.config)
+        if config:
+            env["LOCAL_AI_CONFIG"] = str(Path(config).expanduser().resolve())
+        try:
+            subprocess.Popen([str(binary)], cwd=ROOT, env=env, **hidden_run_kwargs())
+        except OSError as exc:
+            print(f"Desktop launch failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.action == "service-status":
         path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0
@@ -1013,6 +1031,37 @@ def main() -> int:
             for p in plans:
                 print(f"{p.get('status', 'draft'):<12} {p.get('plan_id', ''):<24} {p.get('title', '')}")
         return 0
+    if args.action == "execution":
+        if not args.task_id or args.root is None:
+            print("Execution status requires --task-id and --root.", file=sys.stderr)
+            return 1
+        if args.complete or args.fail:
+            print("Execution status is read-only; use tasks for lifecycle transitions.", file=sys.stderr)
+            return 1
+        c = HubClient(config_path=_config_arg(args.config))
+        result = c.verify_completion(args.task_id, root=str(args.root.resolve()))
+        if args.raw_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        if result.get("success") is not True:
+            if not args.raw_json:
+                print(f"Execution status unavailable: {result.get('error', 'request failed')}", file=sys.stderr)
+            return 1
+        completion = result.get("completion")
+        execution = completion.get("execution") if isinstance(completion, dict) else None
+        if not isinstance(execution, dict) or not execution:
+            if not args.raw_json:
+                print("Task has no verified execution contract.", file=sys.stderr)
+            return 1
+        if not args.raw_json:
+            from local_ai_hub.verified_execution import execution_resume_summary
+
+            print(f"Task: {args.task_id}")
+            print(execution_resume_summary(execution))
+            for name, counts in sorted(execution.get("dimensions", {}).items()):
+                print(f"  {name}: {counts['verified']}/{counts['total']}")
+            for item in execution.get("problems", {}).get("open_preview", []):
+                print(f"  Problem {item['id']}: {item['title']}")
+        return 0 if completion.get("complete") is True and execution.get("ready_for_completion_attempt") is True else 2
     if args.action == "tasks":
         c = client()
         target_root = str(args.root.resolve()) if args.root else None
