@@ -129,3 +129,20 @@ Selected tracked regular files are explicitly reread in the temporary index befo
 ## Recent watcher evidence
 
 The existing preprocessing observer records at most 2048 recent root/path event observations in memory (one latest event per path, one-hour display horizon). Explicit watcher events are distinguished from manual invalidation calls. Git summaries expose a candidate path count, and details include the recent matching event and timestamp. No new watcher thread or per-event persistent write is introduced. Events are best-effort, may be missed or reordered, and do not prove which actor wrote a patch, that the event caused the observed content, or that all changed files were watched. Git content re-observation remains authoritative for transaction preflight. The metadata is not included in the opt-in artifact or local-model prompt. Authenticated attribution and shared review policy integration remain open.
+
+
+## Shared commit verification policy
+
+Projects may opt into the existing project configuration system with a version-controlled `.local-ai.toml`:
+
+```toml
+[commands.unit]
+argv = ["python", "-m", "pytest", "-q"]
+
+[verification_rules]
+git_commit = ["unit"]
+```
+
+Use one to four structured argv aliases. Shell strings and injected environment references are unsupported for this policy. Resolve executable names through absolute PATH entries and provide the matching absolute argv arrays in the explicit local verification manifest. The environment capsule digest is still supplied by the operator. The policy applies to each intermediate tree; a direct commit or unverified sequence is refused. A single-step sequence is supported. Preview identity includes the effective project configuration digest when the rule is active, and publication rechecks policy and receipts before updating the branch. No arbitrary commands are automatically executed from the repository configuration.
+
+This is a cooperative project policy, not a branch protection rule or a sandbox. The current local configuration and permitted overlays can be changed by an operator with filesystem access. Use protected branches and independent CI for enforcement against untrusted contributors. Authorship of native worktree edits cannot be inferred from task checkpoints, leases or watcher events.
