@@ -272,9 +272,10 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
     from local_ai_hub.state_paths import configured_state_dir
 
     action = args.get("action")
-    if action not in {"stage-preview", "stage-apply", "commit-staged", "commit-list", "commit-inspect"}:
+    if action not in {"stage-preview", "stage-apply", "commit-staged", "commit-list", "commit-inspect",
+                      "annotate", "sequence-preview", "sequence-apply"}:
         raise ValueError("Unsupported local Git operation")
-    if action in {"stage-apply", "commit-staged"} and args.get("confirmed") is not True:
+    if action in {"stage-apply", "commit-staged", "annotate", "sequence-apply"} and args.get("confirmed") is not True:
         raise ValueError("Explicit confirmation required")
     config = load_config(control.config, probe_hardware=False)
     root = authorized_repository_root(config, explicit_root(args.get("root")))
@@ -283,6 +284,14 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
         return CommitJournal(state).list_recent(root)
     if action == "commit-inspect":
         return CommitJournal(state).inspect(root, text_field(args, "operation_id", 32))
+    if action == "annotate":
+        from local_ai_hub.change_ledger import ChangeLedger
+
+        revision = text_field(args, "expected_revision", 64)
+        return ChangeLedger(state).annotate(
+            DeterministicEngine(config).split_changes(root, None),
+            expected_revision=revision, record=args.get("record"),
+        )
     paths = args.get("paths")
     if not isinstance(paths, list) or not 1 <= len(paths) <= 64 or any(
         not isinstance(p, str) or not p or len(p) > 4096 or "\0" in p for p in paths
@@ -303,6 +312,26 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
         return stage_selection(config, engine, leases, root=root, paths=paths,
                                expected_revision=revision, expected_tree=tree,
                                apply=action == "stage-apply", hunk_ids=hunks or None)
+    if action in {"sequence-preview", "sequence-apply"}:
+        sequence = args.get("sequence")
+        if not isinstance(sequence, list) or not 1 <= len(sequence) <= 16:
+            raise ValueError("Supply 1–16 ordered commit groups")
+        manifest = args.get("verification_manifest")
+        digest = ""
+        if action == "sequence-apply":
+            if not isinstance(manifest, dict):
+                raise ValueError("Desktop publication requires existing exact-tree verification receipts")
+            digest = text_field(args, "preview_digest", 64)
+        elif manifest is not None:
+            raise ValueError("Preview does not accept verification commands")
+        return execute_staged_commit(
+            config, engine, leases, root=root, paths=paths,
+            expected_revision=revision, expected_tree=tree, message="",
+            approved=action == "sequence-apply", journal=CommitJournal(state),
+            allow_mixed_staged=args.get("allow_mixed_staged") is True,
+            sequence=sequence, preview_only=action == "sequence-preview",
+            preview_digest=digest, verification_manifest=manifest,
+        )
     message = text_field(args, "message", 4096)
     return execute_staged_commit(config, engine, leases, root=root, paths=paths,
                                  expected_revision=revision, expected_tree=tree,
