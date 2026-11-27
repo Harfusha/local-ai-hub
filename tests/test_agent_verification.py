@@ -2212,3 +2212,34 @@ def test_verified_execution_explicit_test_kind_requires_command(stores):
     verifier.record(receipt_for(task.task_id, "verify", evidence_type="test",
                                 artifact_store=verifier.artifact_store))
     assert verifier.completion(task.task_id).complete
+
+
+def test_verified_execution_problem_reopens_when_prerequisite_is_refreshed(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(
+            goal="review consumer", acceptance_criteria=("review api", "review consumer"),
+            slo_profile={"verified_execution": {
+                "units": {"review consumer": {"depends_on": ["review api"]}},
+            }},
+        ),
+        ScopeContext(task_id="problem-dependency"),
+        task_id="problem-dependency",
+    )
+    verifier.record(receipt_for(task.task_id, "review api", artifact_store=verifier.artifact_store))
+    task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={
+        "execution_problem_report": {
+            "id": "consumer-issue", "title": "consumer contract mismatch", "criterion": "review consumer",
+        },
+    }))
+    verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
+    verifier.record(receipt_for(task.task_id, "review api", artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert not result.complete
+    assert result.execution["problems"]["blocking_open"] == 1
+    assert "review consumer" not in result.satisfied_criteria
+    with pytest.raises(CompletionGateError, match="blocking problems"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test waiver"})
+    verifier.record(receipt_for(task.task_id, "review consumer", artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
