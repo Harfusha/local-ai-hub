@@ -22,7 +22,8 @@ def obligation_source_context(
     """Read a small exact source preview, not evidence or completion authority."""
     inventory = config.get("inventory", {})
     next_unit = execution.get("next_obligation")
-    if (inventory.get("scope") != "repository"
+    scope = inventory.get("scope")
+    if (scope not in ("repository", "changes")
             or execution.get("scope_check", {}).get("complete") is not True
             or not isinstance(next_unit, dict)
             or next_unit.get("evidence_type") != "source_review"
@@ -36,6 +37,13 @@ def obligation_source_context(
         base = Path(trusted_root).resolve(strict=True)
         if Path(requested_root).resolve(strict=True) != base:
             return None
+        if scope == "changes":
+            # Git change inventories also include ignored, deleted and non-source paths.
+            # Require independent membership in the confined source inventory before reading.
+            from .execution_inventory import repository_resources
+
+            if resource not in repository_resources(str(base)):
+                return None
         candidate = base / resource
         safe = RepositoryTools._resolve_inventory_path_safe_with_stat(base, candidate, resolved_base=base)
         if safe is None or not stat.S_ISREG(safe[2].st_mode):
