@@ -779,3 +779,56 @@ def test_task_page_rejects_invalid_server_cursor(tmp_path, bad_page):
     with pytest.raises(RuntimeError, match="Malformed task page"):
         desktop.dispatch(control, {"op": "task_page", "args": {"root": str(tmp_path)}})
     client.close.assert_called_once()
+
+
+def test_memory_find_filters_do_not_include_mutation_fields(tmp_path):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post") as post:
+        desktop.dispatch(control, {"op": "memory_find", "args": {
+            "root": str(tmp_path), "scope": "repository", "key": "exact",
+            "query": "query", "status": "quarantined", "limit": 25,
+            "reason": "unused", "record_id": "unused", "value": "unused",
+        }})
+        post.assert_called_once_with(control, "/api/agent-state/memory", {
+            "root": str(tmp_path.resolve()), "scope": "repository", "action": "find",
+            "key": "exact", "query": "query", "status": "quarantined", "limit": 25,
+        })
+
+
+@pytest.mark.parametrize("fields", [{"status": "wrong"}, {"limit": True}, {"limit": 1000}])
+def test_memory_filter_rejects_invalid_values(tmp_path, fields):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(MagicMock(), {"op": "memory_find", "args": {
+                "root": str(tmp_path), **fields,
+            }})
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("op", ["memory_get", "memory_quarantine"])
+def test_memory_exact_response_identity_is_required(tmp_path, op):
+    args = {"root": str(tmp_path), "scope": "repository", "record_id": "rec_a",
+            "reason": "bad evidence", "confirmed": True}
+    control = MagicMock()
+    with patch.object(desktop, "checked_post", return_value={
+        "success": True, "record": {"record_id": "rec_other", "scope": "repository", "status": "quarantined"},
+    }) as post:
+        with pytest.raises(RuntimeError, match="not confirmed"):
+            desktop.dispatch(control, {"op": op, "args": args})
+        payload = {"root": str(tmp_path.resolve()), "scope": "repository",
+                   "record_id": "rec_a", "action": "get" if op == "memory_get" else "quarantine"}
+        if op == "memory_quarantine":
+            payload["reason"] = "bad evidence"
+        post.assert_called_once_with(control, "/api/agent-state/memory", payload)
+
+
+@pytest.mark.parametrize("fields", [{"confirmed": False}, {"reason": ""},
+    {"scope": "worktree", "worktree_id": "worktree-a"}])
+def test_memory_quarantine_requires_confirmed_authorized_scope_and_reason(tmp_path, fields):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(MagicMock(), {"op": "memory_quarantine", "args": {
+                "root": str(tmp_path), "scope": "repository", "record_id": "rec_a",
+                "reason": "review", "confirmed": True, **fields,
+            }})
+        post.assert_not_called()
