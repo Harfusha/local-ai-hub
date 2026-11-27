@@ -61,7 +61,9 @@ Use this for non-trivial multi-step, long-running, delegated, or acceptance-crit
 
 ## Context economy contract
 
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
 - If a requested response is too large, fetch a smaller artifact page/slice; do not repeat the same oversized request.
