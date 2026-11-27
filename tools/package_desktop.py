@@ -38,9 +38,14 @@ def dependency_notices(metadata: dict, lock: dict) -> bytes:
         declared = package.get("license_file")
         if declared:
             candidate = root / declared
-            if not candidate.resolve(strict=True).is_relative_to(root):
-                raise ValueError("Declared package license escapes crate")
-            candidates.add(candidate)
+            # Some upstream metadata refers to a workspace-level license
+            # not included in its published crate. Report the gap explicitly;
+            # never copy an external filesystem path.
+            if (candidate.is_file() and not candidate.is_symlink()
+                    and candidate.resolve(strict=True).is_relative_to(root)):
+                candidates.add(candidate)
+            else:
+                text += "Declared license file unavailable within bundled crate; upstream review required.\n"
         for item in root.iterdir():
             label = item.name.casefold()
             if item.is_file() and label.startswith(("license", "licence", "copying", "notice", "copyright", "unlicense")):
