@@ -2412,3 +2412,20 @@ def test_verified_execution_graph_amendment_retires_only_affected_receipts(store
     for criterion in ("d", "b", "c"):
         verifier.record(receipt_for(task.task_id, criterion, artifact_store=verifier.artifact_store))
     assert verifier.completion(task.task_id).complete
+
+
+def test_verified_execution_required_knowledge_guard_cannot_be_waived(stores):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="review", acceptance_criteria=("review",),
+                     slo_profile={"verified_execution": {"knowledge_guard": True}}),
+        ScopeContext(task_id="knowledge-guard"), task_id="knowledge-guard",
+    )
+    verifier.record(receipt_for(task.task_id, "review", artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.satisfied_criteria == ("review",)
+    assert not result.complete
+    assert result.execution["knowledge_check"]["status"] == "unavailable"
+    assert not result.execution["ready_for_completion_attempt"]
+    with pytest.raises(CompletionGateError, match="required repository knowledge"):
+        task_store.complete(task.task_id, operator_waiver={"consent": True, "reason": "test"})
