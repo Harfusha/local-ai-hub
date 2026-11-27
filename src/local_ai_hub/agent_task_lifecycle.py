@@ -1046,6 +1046,8 @@ class TaskLifecycleMixin:
         actor: str,
         reason: str,
         expected_revision: int,
+        execution_patch: dict[str, Any] | None = None,
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
         """Persist a requirements revision and invalidate prior receipt mappings by CAS."""
         if type(expected_revision) is not int or expected_revision < 1:
@@ -1079,20 +1081,41 @@ class TaskLifecycleMixin:
         criteria = tuple(acceptance_criteria)
         from .verified_execution import validate_criteria_revision
 
-        validate_criteria_revision(current.contract, criteria)
-        contract = replace(current.contract, acceptance_criteria=criteria)
+        retained: dict[str, str] = {}
+        retired: set[str] = set()
+        if execution_patch is not None:
+            from .execution_steering import revise_graph
+            from .execution_problems import PROBLEM_STATE_KEY
+            from .agent_task_models import _task_scope_root
+            from .repo_plan.agent_bridge import TaskBindingManager
+
+            root = _task_scope_root(current)
+            if root and TaskBindingManager(root).get_binding(task_id) is not None:
+                raise ValueError("plan-bound graph amendments require plan reconciliation")
+            if criteria != current.contract.acceptance_criteria:
+                raise ValueError("graph amendment must use add_criteria")
+            contract, retired = revise_graph(current.contract, execution_patch,
+                                             problems=state_data.get(PROBLEM_STATE_KEY, {}))
+            retained = {name: receipt for name, receipt in current.verification_receipts.items()
+                        if name in current.contract.acceptance_criteria and name not in retired}
+        else:
+            validate_criteria_revision(current.contract, criteria)
+            contract = replace(current.contract, acceptance_criteria=criteria)
         state_data["contract_history"] = history
         state_data["contract_revision"] = revision + 1
         checkpoint = replace(current.checkpoint, state_data=state_data)
         status = TaskStatus.VERIFYING if current.status == TaskStatus.COMPLETED else current.status
         updated = replace(current, contract=contract, checkpoint=checkpoint,
-                          verification_receipts={}, status=status, updated_at=time.time())
+                          verification_receipts=retained, status=status, updated_at=time.time())
+        self._preflight_response_budget(updated, response_budget_tokens)
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",
             kind="task.contract_revised",
             payload={"task_id": task_id, "contract_revision": revision + 1,
                      "acceptance_criteria": list(contract.acceptance_criteria),
-                     "reason": reason.strip()},
+                     "reason": reason.strip(),
+                     **({"contract": contract.to_dict(), "retired_criteria": sorted(retired),
+                         "retained_receipt_ids": retained} if execution_patch is not None else {})},
             idempotency_key=f"contract_revision_{task_id}_{revision + 1}",
             actor=actor,
         )
