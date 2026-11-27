@@ -46,6 +46,26 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
     }
 
 
+def validate_resolution_order(report: Any, config: Mapping[str, Any]) -> None:
+    """Reject confirmation-before-primary dependencies, including transitive ones."""
+    if type(report) is not dict or "resolution_criterion" not in report:
+        return
+    primary = report.get("criterion")
+    resolution = report["resolution_criterion"]
+    if type(primary) is not str or type(resolution) is not str:
+        raise ValueError("invalid resolution criterion")
+    units = config.get("units", {})
+    pending = [primary]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == resolution:
+            raise ValueError("resolution criterion cannot be a prerequisite of the primary criterion")
+        if current not in visited:
+            visited.add(current)
+            pending.extend(units.get(current, {}).get("depends_on", []))
+
+
 def record_problem(
     existing: Any,
     report: Any,
