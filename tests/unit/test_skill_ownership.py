@@ -28,7 +28,7 @@ remove_skill = skill_ownership.remove_skill
 class SkillOwnershipTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.install = self.root / "install"
         self.source_root = self.install / "skills"
         self.tools = self.install / "tools"
