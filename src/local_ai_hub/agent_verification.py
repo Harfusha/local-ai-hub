@@ -1926,6 +1926,7 @@ class VerificationStore:
                 problem_registry,
                 satisfied=satisfied,
                 receipts={receipt.criterion: receipt for receipt in visible_receipts},
+                current_owner=expected_owner,
             )
             blocking_criteria = set(problems["blocking_criteria"])
             execution = execution_projection(
@@ -1953,6 +1954,7 @@ class VerificationStore:
                 problem_registry,
                 satisfied=satisfied,
                 receipts={receipt.criterion: receipt for receipt in visible_receipts},
+                current_owner=expected_owner,
             )
             blocking_criteria = set(problems["blocking_criteria"])
             execution["problems"] = problems
