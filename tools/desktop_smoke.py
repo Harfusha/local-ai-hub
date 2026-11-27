@@ -59,7 +59,10 @@ def isolated_hub(temp: Path):
             if response.status != 200:
                 raise RuntimeError("Isolated Hub is not ready")
             response.read()
-        # The subsequent request must be from the actual desktop adapter.
+        # Wait for the handler to finish the initial request before clearing it;
+        # the next observed request must come from the actual desktop adapter.
+        if not observed_ready.wait(timeout=5):
+            raise RuntimeError("Initial readiness request was not observed")
         observed_ready.clear()
         yield config, observed_ready, ready_url
     finally:
