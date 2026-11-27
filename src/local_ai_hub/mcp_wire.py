@@ -739,6 +739,49 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
         if recovery is not None:
             return recovery
     contents, structured = services_module._build_mcp_budget_payload(name, arguments, value)
+    if (name == "local_ai_coord" and arguments.get("action") == "context_compile"
+            and type(arguments.get("max_response_tokens")) is int
+            and arguments["max_response_tokens"] >= 128 and isinstance(value, dict)):
+        requested = arguments["max_response_tokens"]
+
+        def artifact_pointer(candidate: Any) -> str:
+            if not isinstance(candidate, dict):
+                return ""
+            pointer = candidate.get("task_context_artifact_id")
+            if not isinstance(pointer, str) or not pointer:
+                nested = candidate.get("task_context")
+                pointer = nested.get("artifact_id") if isinstance(nested, dict) else None
+            return pointer if isinstance(pointer, str) else ""
+
+        try:
+            text_value = services_module.json.loads(contents[0].text)
+        except (IndexError, AttributeError, ValueError):
+            text_value = None
+        projected = structured if isinstance(structured, dict) else text_value
+        source_pointer = artifact_pointer(value)
+        lost_pointer = bool(source_pointer and artifact_pointer(projected) != source_pointer)
+        budget_failure = (
+            isinstance(projected, dict) and projected.get("success") is False
+            and projected.get("error") == "max_response_tokens too small"
+        ) or value.get("next_action") == "request_larger_response_budget"
+        if lost_pointer or budget_failure:
+            rejection = {"success": False, "error": "max_response_tokens too small",
+                         "next_action": "request_larger_response_budget",
+                         "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True}}
+            # JSON text alone is a supported MCP result; avoid paying twice
+            # for the mandatory recovery instruction at the 128-token floor.
+            for structured_result in (True, False):
+                for _ in range(16):
+                    returned = services_module.json_tokens(
+                        services_module._mcp_wire_view(rejection, structured=structured_result))
+                    rejection["response_budget"]["returned_tokens"] = returned
+                    if services_module.json_tokens(
+                            services_module._mcp_wire_view(rejection, structured=structured_result)) == returned:
+                        break
+                if returned <= requested:
+                    return ([services_module.mcp_types.TextContent(
+                        type="text", text=services_module.json_dumps(rejection))],
+                            rejection if structured_result else None)
     if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
             and isinstance(value, dict) and value.get("success") is True):
         try:
