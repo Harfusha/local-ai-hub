@@ -497,6 +497,7 @@ impl Desktop {
     fn navigate(&mut self, page: usize, view: usize) {
         if !self.can_edit_context() || (self.page == page && self.view == view) { return; }
         self.reset_scope();
+        self.settings_draft = settings::Draft::default();
         self.page = page;
         self.view = view;
     }
@@ -1178,8 +1179,10 @@ impl Desktop {
         });
     }
 }
-impl eframe::App for Desktop {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl Desktop {
+    // Keep rendering independent of eframe::Frame so all native screens can
+    // be exercised with an egui context in the cross-platform test matrix.
+    fn render(&mut self, ctx: &egui::Context) {
         self.receive();
         // Only wake for health checks while focused, never continuously repaint an idle window.
         let focused = ctx.input(|i| i.focused);
@@ -1631,6 +1634,12 @@ impl eframe::App for Desktop {
     }
 }
 
+impl eframe::App for Desktop {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.render(ctx);
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 760.0]).with_min_inner_size([800.0, 500.0]),
@@ -1685,6 +1694,40 @@ mod tests {
         assert!(app.operator_fields.is_empty());
         app.installation_open = true;
         assert!(!app.can_edit_context());
+    }
+    #[test]
+    fn all_native_views_render_offline_without_spawning_adapter() {
+        let mut app = Desktop::new();
+        app.auto_probe = false;
+        app.repo = "/repo".into();
+        let ctx = egui::Context::default();
+        for (page, (_, views)) in PAGES.iter().enumerate() {
+            for (view, name) in views.iter().enumerate() {
+                app.navigate(page, view);
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 500.0))),
+                    ..Default::default()
+                };
+                let output = ctx.run(input, |ctx| app.render(ctx));
+                assert!(!output.shapes.is_empty(), "No shapes rendered for {name}");
+                assert!(app.busy.is_none() && app.receiver.is_none(), "Unexpected adapter for {name}");
+                assert!(app.pending.is_none(), "Unexpected confirmation for {name}");
+            }
+        }
+    }
+    #[test]
+    fn failed_worker_invalidates_previous_snapshot_and_mutation_revision() {
+        let mut app = Desktop::new();
+        app.snapshot = Some(json!({"success":true}));
+        app.revision = "stale".into();
+        app.busy = Some("Edit plan task".into());
+        let (tx, rx) = mpsc::channel();
+        app.receiver = Some(rx);
+        tx.send(Completed { label: "Edit plan task".into(), result: Err("conflict".into()), probe: false, live: false }).unwrap();
+        app.receive();
+        assert!(app.snapshot.is_none() && app.revision.is_empty());
+        assert!(app.busy.is_none() && app.receiver.is_none());
+        assert!(app.status.contains("conflict"));
     }
     #[test]
     fn navigation_drops_cross_view_mutation_targets_and_preserves_root() {
