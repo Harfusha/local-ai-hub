@@ -93,6 +93,17 @@ class TaskMutationMixin:
                 disposition, actor=actor, now=time.time(),
             )
             checkpoint = replace(checkpoint, state_data=updated_data)
+        from .execution_progress import PROGRESS_STATE_KEY, observe_checkpoint
+
+        track_progress = (EXECUTION_KEY in current.contract.slo_profile and actor == current.owner
+                          and current.status in {TaskStatus.ACTIVE, TaskStatus.VERIFYING}
+                          and not _allow_server_memory_refresh)
+        if track_progress:
+            updated_data = dict(checkpoint.state_data)
+            updated_data[PROGRESS_STATE_KEY] = observe_checkpoint(
+                current, checkpoint, now=time.time(), idempotency_key=idempotency_key,
+            )
+            checkpoint = replace(checkpoint, state_data=updated_data)
         if not _allow_server_memory_refresh:
             self._validate_memory_audit(replace(current, checkpoint=checkpoint))
 
@@ -102,7 +113,7 @@ class TaskMutationMixin:
             response_budget_tokens=response_budget_tokens,
             _prepared_updated_at=_prepared_updated_at,
             _allow_server_memory_refresh=_allow_server_memory_refresh,
-            _allow_server_execution_update=has_problem_report or has_disposition,
+            _allow_server_execution_update=has_problem_report or has_disposition or track_progress,
         )
 
     def _persist_checkpoint(
@@ -395,9 +406,12 @@ class TaskMutationMixin:
         restored_data = dict(restored_checkpoint.state_data)
         restored_data.pop(PROBLEM_REPORT_KEY, None)
         restored_data.pop(PROBLEM_DISPOSITION_KEY, None)
-        restored_data.pop(PROBLEM_STATE_KEY, None)
-        if PROBLEM_STATE_KEY in current.checkpoint.state_data:
-            restored_data[PROBLEM_STATE_KEY] = current.checkpoint.state_data[PROBLEM_STATE_KEY]
+        from .execution_progress import PROGRESS_STATE_KEY
+
+        for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY):
+            restored_data.pop(key, None)
+            if key in current.checkpoint.state_data:
+                restored_data[key] = current.checkpoint.state_data[key]
         restored_checkpoint = replace(restored_checkpoint, state_data=restored_data)
 
         now = time.time()
