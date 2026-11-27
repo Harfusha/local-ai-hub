@@ -119,3 +119,36 @@ def test_invalid_distinct_owner_confirmation(fields):
     with pytest.raises(ValueError, match="distinct owner"):
         record_problem({}, {"id": "issue", "title": "issue", "criterion": "repair", **fields},
                        criteria=("repair", "verify"), receipt_ids={}, reporter="agent", now=10)
+
+
+def test_execution_problem_dispositions_never_waive_evidence():
+    from local_ai_hub.execution_problems import record_disposition
+
+    state = record_problem({}, {"id": "issue", "title": "issue", "criterion": "review"},
+                           criteria=("review",), receipt_ids={}, reporter="author", now=10)
+    defer = {"id": "issue", "decision_id": "d1", "action": "defer", "reason": "needs input"}
+    deferred = record_disposition(state, defer, actor="author", now=11)
+    assert "dispositions" not in state["issue"]
+    result = project_problems(deferred, satisfied=(), receipts={})
+    assert result["deferred_open"] == result["blocking_open"] == 1
+    assert record_disposition(deferred, defer, actor="author", now=12) == deferred
+    with pytest.raises(ValueError, match="already used"):
+        record_disposition(deferred, {**defer, "reason": "different"}, actor="author", now=12)
+    reject = {"id": "issue", "decision_id": "d2", "action": "reject", "reason": "false positive"}
+    with pytest.raises(ValueError, match="different authorized"):
+        record_disposition(deferred, reject, actor="author", now=13)
+    rejected = record_disposition(deferred, reject, actor="reviewer", now=13)
+    assert project_problems(rejected, satisfied=(), receipts={})["blocking_open"] == 1
+    for owner, observed in (("author", 14), ("reviewer", 12)):
+        proof = SimpleNamespace(receipt_id="proof", observed_at=observed, owner=owner)
+        result = project_problems(rejected, satisfied=("review",), receipts={"review": proof})
+        assert result["rejection_pending_evidence"] == 1
+        assert result["rejected_verified"] == 0
+    proof = SimpleNamespace(receipt_id="proof", observed_at=14, owner="reviewer")
+    result = project_problems(rejected, satisfied=("review",), receipts={"review": proof})
+    assert result["rejected_verified"] == result["resolved"] == 1
+    assert project_problems(rejected, satisfied=(), receipts={"review": proof})["blocking_open"] == 1
+    resumed = record_disposition(rejected, {**defer, "decision_id": "d3", "action": "resume"},
+                                 actor="reviewer", now=15)
+    assert len(resumed["issue"]["dispositions"]) == 3
+    assert project_problems(resumed, satisfied=(), receipts={})["deferred_open"] == 0
