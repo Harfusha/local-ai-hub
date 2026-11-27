@@ -11,6 +11,7 @@ from local_ai_hub.client import HubClient
 def _client(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text(
+        "config_schema_version = 1\n"
         "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n"
         "[client]\nmax_request_timeout_seconds=5\n",
         encoding="utf-8",
