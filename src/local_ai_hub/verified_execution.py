@@ -487,6 +487,8 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
             parts.append(f"Declared resource: {next_unit['resource']}; check: {next_unit['check']}")
         if next_unit.get("evidence_type"):
             parts.append(f"Required evidence: {next_unit['evidence_type']}")
+        if next_unit.get("criterion") in problems.get("owner_handoff_criteria", []):
+            parts.append("This confirmation requires an authorized task handoff to a different receipt owner.")
     elif execution.get("ready_for_completion_attempt") is True:
         parts.append("Evidence preview ready; run the authoritative completion gate.")
     else:
