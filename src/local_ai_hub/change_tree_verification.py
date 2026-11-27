@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,44 @@ _TTL = 3600
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def commit_policy(root: str, manifest: Any = None, *, require_manifest: bool = False) -> dict[str, Any]:
+    """Resolve shared project verification rules without executing project commands."""
+    from .project_config import CommandDefinition, resolve_project_config
+
+    resolution = resolve_project_config(root)
+    if resolution.error_codes:
+        raise ValueError("Invalid project configuration; cannot resolve Git commit policy")
+    settings = resolution.settings
+    rule = settings.verification_rules.get("git_commit")
+    policy = {"required": rule is not None, "config_digest": resolution.config_digest,
+              "command_aliases": list(rule) if isinstance(rule, tuple) else []}
+    if rule is None:
+        return policy
+    if not isinstance(rule, tuple) or not 1 <= len(rule) <= 4:
+        raise ValueError("git_commit policy requires 1–4 structured command aliases")
+    expected = []
+    for alias in rule:
+        command = settings.commands.get(alias)
+        if not isinstance(command, CommandDefinition) or command.env_references or not command.argv:
+            raise ValueError("Git commit policy requires structured argv without injected environment")
+        argv = list(command.argv)
+        if not all(argv) or not argv[0]:
+            raise ValueError("Invalid Git commit policy argv")
+        if not Path(argv[0]).is_absolute():
+            if Path(argv[0]).name != argv[0] or "/" in argv[0] or "\\" in argv[0]:
+                raise ValueError("Git commit policy executable must be a name or absolute path")
+            search = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
+                                     if Path(p).is_absolute())
+            executable = shutil.which(argv[0], path=search)
+            if not executable or not Path(executable).is_absolute():
+                raise ValueError("Git commit policy executable unavailable")
+            argv[0] = executable
+        expected.append(argv)
+    if require_manifest and (not isinstance(manifest, dict) or manifest.get("commands") != expected):
+        raise ValueError("Verification manifest must exactly match the git_commit project policy")
+    return policy
 
 
 def verification_identity(manifest: Any) -> tuple[str, str, list[list[str]], dict[str, str]]:
@@ -125,6 +164,9 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
     if preview.get("success") is not True:
         return preview
     try:
+        policy = commit_policy(root, manifest, require_manifest=True)
+        if preview.get("project_commit_policy", policy) != policy:
+            raise ValueError("Project commit policy changed after preview")
         command_id, environment_id, commands, base_env = verification_identity(manifest)
         parent = preview["parent_oid"]
         entries = _entries(_git(root, "ls-tree", "-r", "-z", parent), staged=False)
@@ -178,6 +220,8 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
                     if cp.returncode or not complete:
                         return {"success": False, "error": "Verification command failed or output was incomplete",
                                 "tree_oid": tree, "checks": checks, "verified_steps": results}
+            if commit_policy(root, manifest, require_manifest=True) != policy:
+                raise ValueError("Project commit policy changed during verification")
             if verification_identity(manifest)[:2] != (command_id, environment_id):
                 raise ValueError("Observed verification environment changed")
             receipt = journal.record_tree_checks(root=root, tree=tree, command_id=command_id,
@@ -192,6 +236,9 @@ def verify_sequence(root: str, preview: dict[str, Any], manifest: Any, journal: 
 
 
 def require_sequence_receipts(root: str, preview: dict[str, Any], manifest: Any, journal: Any) -> list[str]:
+    policy = commit_policy(root, manifest, require_manifest=True)
+    if preview.get("project_commit_policy", policy) != policy:
+        raise ValueError("Project commit policy changed after preview")
     command_id, environment_id, _, _ = verification_identity(manifest)
     receipts = []
     for step in preview["steps"]:
