@@ -136,3 +136,45 @@ def test_change_inventory_includes_project_mapped_tests_and_binds_policy(tmp_pat
     assert not check_repository_scope(config, str(tmp_path))["complete"]
     with pytest.raises(ValueError, match="no allowed inventory match"):
         compile_repository_contract(contract, str(tmp_path))
+
+
+def test_explicit_exclusions_are_exact_persisted_and_rechecked(tmp_path: Path):
+    for name in ("a.py", "b.py", "c.py"):
+        (tmp_path / name).write_text("pass", encoding="utf-8")
+    contract = _contract()
+    inventory = contract["slo_profile"]["verified_execution"]["inventory"]
+    inventory["exclusions"] = [{"path": "b.py", "reason": "generated fixture"}]
+    created = GoalContract.from_dict(compile_repository_contract(contract, str(tmp_path)))
+    config = created.slo_profile["verified_execution"]
+    assert created.acceptance_criteria == ("review: a.py", "review: c.py")
+    assert config["inventory"]["exclusions"] == inventory["exclusions"]
+    assert check_repository_scope(config, str(tmp_path))["complete"]
+    (tmp_path / "d.py").write_text("pass", encoding="utf-8")
+    assert check_repository_scope(config, str(tmp_path))["added_preview"] == ["d.py"]
+    (tmp_path / "b.py").unlink()
+    assert not check_repository_scope(config, str(tmp_path))["complete"]
+
+
+@pytest.mark.parametrize("exclusions", [
+    [{"path": "*.py", "reason": "wildcard"}],
+    [{"path": "../a.py", "reason": "escape"}],
+    [{"path": "missing.py", "reason": "typo"}],
+    [{"path": "a.py", "reason": ""}],
+    [{"path": "a.py", "reason": "one"}, {"path": "a.py", "reason": "two"}],
+    [{"path": "a.py", "reason": "all resources"}],
+])
+def test_invalid_exclusions_fail_closed(tmp_path: Path, exclusions):
+    (tmp_path / "a.py").write_text("pass", encoding="utf-8")
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"]["exclusions"] = exclusions
+    with pytest.raises(ValueError, match="exclusion"):
+        compile_repository_contract(contract, str(tmp_path))
+
+
+def test_exclusions_not_supported_for_declared_inventory():
+    contract = _contract()
+    inventory = contract["slo_profile"]["verified_execution"]["inventory"]
+    inventory.update(scope="declared", resources=["a.py"],
+                     exclusions=[{"path": "b.py", "reason": "not in scope"}])
+    with pytest.raises(ValueError, match="exclusions require"):
+        GoalContract.from_dict(contract)
