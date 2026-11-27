@@ -605,6 +605,9 @@ def _verified_execution_stop(root: Path, payload: dict[str, Any]) -> dict[str, A
             return {}
         if execution.get("progress", {}).get("status") in {"no_recent_verified_evidence", "repeated_failed_verification"}:
             return {}
+        next_obligation = execution.get("next_obligation")
+        if isinstance(next_obligation, dict) and next_obligation.get("criterion") in execution.get("problems", {}).get("owner_handoff_criteria", []):
+            return {}
         if execution.get("ready_for_completion_attempt") is True and completion.get("complete") is True:
             reason = ("Local AI Hub has current verification evidence for the active session task. "
                       "Recheck it and complete through the authoritative task gate if appropriate.")
