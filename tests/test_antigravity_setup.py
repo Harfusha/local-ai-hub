@@ -539,7 +539,7 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     else:
         assert 'case "${1-}" in' in runner_text
         assert "PreToolUse)" in runner_text
-        assert "printf '{}\\n'" in runner_text
+        assert r"printf '{}\\n'" in runner_text
     hub_hook = data["local-ai-hub"]
     assert hub_hook["enabled"] is True
     assert "PreInvocation" not in hub_hook
