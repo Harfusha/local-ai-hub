@@ -74,7 +74,7 @@ def expand_declared_inventory(
     check_names: set[str] = set()
     normalized_checks: list[dict[str, Any]] = []
     for check in checks:
-        if type(check) is not dict or set(check) - {"name", "dimension", "priority"}:
+        if type(check) is not dict or set(check) - {"name", "dimension", "priority", "depends_on"}:
             raise ValueError("invalid inventory check")
         name = _canonical(check.get("name"), "check name", 100)
         if ":" in name or name in check_names:
@@ -84,7 +84,19 @@ def expand_declared_inventory(
         priority = check.get("priority", 0)
         if type(priority) is not int or not 0 <= priority <= 100:
             raise ValueError("inventory check priority must be an integer from 0 to 100")
-        normalized_checks.append({"name": name, "dimension": dimension, "priority": priority})
+        dependencies = check.get("depends_on", [])
+        if type(dependencies) is not list or len(dependencies) > 64:
+            raise ValueError("check dependencies must be a bounded array")
+        for dependency in dependencies:
+            _canonical(dependency, "check dependency", 100)
+        if len(set(dependencies)) != len(dependencies) or name in dependencies:
+            raise ValueError("invalid check dependencies")
+        normalized_checks.append({
+            "name": name, "dimension": dimension, "priority": priority,
+            **({"depends_on": list(dependencies)} if dependencies else {}),
+        })
+    if any(set(check.get("depends_on", [])) - check_names for check in normalized_checks):
+        raise ValueError("check dependencies must refer to exact check names")
     supplied = raw.get("units", {})
     if type(supplied) is not dict:
         raise ValueError("execution units must be an object")
@@ -100,7 +112,12 @@ def expand_declared_inventory(
                 key in metadata and metadata[key] != value for key, value in expected.items()
             ):
                 raise ValueError("inventory criterion metadata conflicts with check")
-            units[criterion] = {**metadata, **expected}
+            check_dependencies = [f"{dependency}: {resource}" for dependency in check.get("depends_on", [])]
+            dependencies = metadata.get("depends_on", [])
+            if type(dependencies) is not list or any(type(dep) is not str for dep in dependencies):
+                raise ValueError("invalid inventory criterion dependencies")
+            # Explicit graph metadata may add prerequisites but cannot drop mandatory check prerequisites.
+            units[criterion] = {**metadata, **expected, "depends_on": list(dict.fromkeys((*dependencies, *check_dependencies)))}
             if criterion not in existing:
                 expanded.append(criterion)
                 existing.add(criterion)
@@ -276,6 +293,22 @@ def execution_projection(
     }
 
 
+def evidence_progress(
+    *, created_at: float, now: float, active: bool, complete: bool,
+    observed_receipt_times: Sequence[float], threshold_seconds: int = 900,
+) -> dict[str, Any]:
+    """Advisory evidence age, not an estimate of effort or proof of stagnation."""
+    last_observation = max([created_at, *(t for t in observed_receipt_times if 0 < t <= now)])
+    elapsed = max(0, int(now - last_observation))
+    return {
+        "status": "no_recent_verified_evidence" if active and not complete and elapsed >= threshold_seconds
+        else "recent_or_not_active",
+        "seconds_since_verified_observation_or_creation": elapsed,
+        "threshold_seconds": threshold_seconds,
+        "advisory": True,
+    }
+
+
 def validate_criteria_revision(contract: Any, criteria: Sequence[str]) -> None:
     """Check the exact resulting structured contract before a plan is mutated."""
     from dataclasses import replace
@@ -297,6 +330,7 @@ def execution_resume_summary(execution: Mapping[str, Any]) -> str:
     problems = execution.get("problems", {})
     scope = execution.get("scope_check", {})
     next_unit = execution.get("next_obligation")
+    progress = execution.get("progress", {})
     parts = [
         "Verified execution (advisory snapshot; recheck with verify_completion):",
         f"coverage {counts.get('verified', 0)}/{counts.get('total', 0)}; "

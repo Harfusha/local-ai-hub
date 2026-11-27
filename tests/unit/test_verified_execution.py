@@ -163,3 +163,44 @@ def test_inventory_rejects_conflicting_generated_metadata():
             "inventory": {"resources": ["a"], "checks": [{"name": "review", "dimension": "security"}]},
             "units": {"review: a": {"dimension": "general"}},
         }})
+
+
+def test_inventory_check_dependencies_apply_per_resource():
+    contract = GoalContract("review", slo_profile={"verified_execution": {
+        "inventory": {"resources": ["a", "b"], "checks": [
+            {"name": "inspect"},
+            {"name": "verify", "depends_on": ["inspect"], "priority": 90},
+        ]},
+    }})
+    config = contract.slo_profile["verified_execution"]
+    assert config["units"]["verify: a"]["depends_on"] == ["inspect: a"]
+    assert config["units"]["verify: b"]["depends_on"] == ["inspect: b"]
+    assert GoalContract.from_dict(contract.to_dict()) == contract
+    result = execution_projection(contract.acceptance_criteria, config,
+                                  satisfied=("inspect: a",), unsatisfied=("verify: a", "inspect: b", "verify: b"),
+                                  stale=(), receipt_ids={}, receipt_gate_complete=False)
+    assert result["coverage"]["dependency_blocked"] == 1
+    assert result["next_obligation"]["criterion"] == "verify: a"
+
+
+@pytest.mark.parametrize("checks", [
+    [{"name": "inspect", "depends_on": ["missing"]}],
+    [{"name": "a", "depends_on": ["b"]}, {"name": "b", "depends_on": ["a"]}],
+])
+def test_inventory_check_dependencies_reject_invalid_graph(checks):
+    with pytest.raises(ValueError):
+        GoalContract("review", slo_profile={"verified_execution": {
+            "inventory": {"resources": ["a"], "checks": checks},
+        }})
+
+
+def test_evidence_progress_is_advisory_and_ignores_future_observations():
+    from local_ai_hub.verified_execution import evidence_progress
+
+    result = evidence_progress(created_at=10, now=1000, active=True, complete=False,
+                               observed_receipt_times=[20, 2000])
+    assert result["status"] == "no_recent_verified_evidence"
+    assert result["seconds_since_verified_observation_or_creation"] == 980
+    assert result["advisory"] is True
+    assert evidence_progress(created_at=10, now=1000, active=False, complete=False,
+                             observed_receipt_times=[])["status"] == "recent_or_not_active"

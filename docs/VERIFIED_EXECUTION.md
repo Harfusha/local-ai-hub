@@ -119,6 +119,17 @@ Structured contract steering is additive: existing mandatory obligations
 cannot disappear in an ordinary criteria revision. This is deliberately
 more restrictive than unstructured task steering.
 
+Each inventory check may also specify `depends_on` with the exact names of
+other checks in the matrix. The compiler expands those prerequisites separately
+for every resource, rejects cycles, and prevents explicit unit metadata from
+removing them. For example, `verify` can depend on `inspect` and `repair`.
+
+The verification preview includes advisory evidence age. An active incomplete
+task without a recently validated receipt for 15 minutes is flagged
+`no_recent_verified_evidence`. This does not prove inactivity (long tests or
+research may take longer), does not block cancellation, and does not force an
+external agent to keep running.
+
 ## Git change scope
 
 Use inventory `"scope": "changes"` to enumerate staged, unstaged, deleted

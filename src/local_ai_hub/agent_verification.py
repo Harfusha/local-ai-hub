@@ -1904,7 +1904,7 @@ class VerificationStore:
                     audit = {}
 
         execution: dict[str, Any] = {}
-        from .verified_execution import EXECUTION_KEY, execution_projection
+        from .verified_execution import EXECUTION_KEY, evidence_progress, execution_projection
 
         if task_state is not None and EXECUTION_KEY in task_state.contract.slo_profile:
             from .execution_problems import PROBLEM_STATE_KEY, project_problems
@@ -1941,6 +1941,12 @@ class VerificationStore:
             if problems["blocking_open"]:
                 execution["ready_for_completion_attempt"] = False
             is_complete = is_complete and not task_state.checkpoint.blockers and not problems["blocking_open"]
+            execution["progress"] = evidence_progress(
+                created_at=task_state.created_at, now=current_time,
+                active=task_state.status.value in {"active", "verifying"}, complete=is_complete,
+                observed_receipt_times=[receipt.observed_at for receipt in visible_receipts
+                                        if receipt.criterion in satisfied and receipt.criterion not in blocking_criteria],
+            )
         return CompletionResult(
             task_id=task_id,
             complete=is_complete,
