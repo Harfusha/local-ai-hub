@@ -1930,7 +1930,13 @@ class VerificationStore:
                 stale=stale,
                 receipt_ids={receipt.criterion: receipt.receipt_id for receipt in visible_receipts},
                 receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
+                receipt_observed_at={receipt.criterion: receipt.observed_at for receipt in visible_receipts},
             )
+            dependency_stale = set(execution.get("dependency_stale_criteria", []))
+            if dependency_stale:
+                satisfied = [criterion for criterion in satisfied if criterion not in dependency_stale]
+                stale = list(dict.fromkeys((*stale, *sorted(dependency_stale))))
+                is_complete = False
             execution["problems"] = problems
             from .execution_inventory import check_repository_scope
 
