@@ -71,3 +71,7 @@ The web dashboard cutover is incorporated from the native desktop branch. Change
 ## Artifact-backed detail
 
 Use `split_changes(mode="artifact")` to explicitly publish the current full metadata-only observation to the existing artifact store, then read it through `local_ai_artifact(action="slice", artifact_id=..., offset=..., max_chars=...)`. The snapshot is historical and not a lease; never treat artifact retrieval as a new observation. Oversized payloads are rejected rather than silently clipped. This opt-in path stores repository metadata (including file names, symbol names; task candidate metadata is excluded), not raw patches. It does not retain verification authority.
+
+## Prospective staged tree identity
+
+A stage-zero index tree object ID is computed in memory from the bounded Git index listing, with Git tree ordering and repository hash format. No objects or index entries are written. Unmerged or unsupported index entries yield no tree ID. Preflight exposes it only when the entire staged selection matches and no staging blockers exist. This identifies the observed index tree; it is not proof of object availability, independent intermediate-tree validation, a receipt or commit authorization.

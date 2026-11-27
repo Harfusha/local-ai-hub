@@ -8,6 +8,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
+from .change_index_tree import index_tree_oid
 from .change_atoms import PatchBudgetExceeded, identity, inspect_change_atoms
 from .change_dependencies import annotate_dependencies
 from .process_utils import clean_git_env, run_hidden
@@ -214,7 +215,8 @@ def _git_snapshot_metadata(git: Any) -> dict[str, str]:
         # Unborn and inaccessible HEAD must not be claimed as a verified revision.
         head = "unavailable"
     index = git("ls-files", "--stage", "-z")
-    return {"head": head, "index_digest": hashlib.sha256(index).hexdigest()}
+    return {"head": head, "index_digest": hashlib.sha256(index).hexdigest(),
+            "index_tree_oid": index_tree_oid(index, head) or ""}
 
 
 def run_split_changes(

@@ -115,7 +115,7 @@ source = ["local_ai_hub"]
 show_missing = true
 
 [tool.mypy]
-python_version = "8.2.0"
+python_version = "3.11"
 mypy_path = "src"
 strict = true
 warn_unused_configs = true
@@ -147,7 +147,7 @@ files = [
 ]
 
 [tool.ruff]
-target-version = "8.2.0"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]

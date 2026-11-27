@@ -40,3 +40,30 @@ def test_staged_scope_does_not_prove_validation():
     assert result["index_scope_matches_selection"]
     assert result["verification_status"] == "unknown"
     assert not result["commit_ready"]
+
+
+def test_index_tree_identity_matches_git_write_tree(tmp_path):
+    import subprocess
+    from local_ai_hub.change_index_tree import index_tree_oid
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path)
+
+    git("init")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "file.txt").write_text("nested", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("prefix ordering", encoding="utf-8")
+    git("add", "--", "a", "a.txt")
+    raw = git("ls-files", "--stage", "-z")
+    expected = git("write-tree").strip().decode("ascii")
+    assert index_tree_oid(raw, "a" * len(expected)) == expected
+    assert index_tree_oid(raw.replace(b" 0\t", b" 1\t", 1), "a" * len(expected)) is None
+
+
+def test_preflight_exposes_tree_only_for_exact_index():
+    plan = _plan(("a.py", "M "), ("other.py", " M"))
+    plan["git_snapshot_metadata"] = {"index_tree_oid": "b" * 40}
+    result = commit_preflight(plan, ["a.py"], "a" * 64)
+    assert result["prospective_index_tree_oid"] == "b" * 40
+    assert not result["commit_ready"]
+    assert commit_preflight(plan, ["other.py"], "a" * 64)["prospective_index_tree_oid"] is None

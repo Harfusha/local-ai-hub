@@ -639,6 +639,7 @@ def _local_ai_repo_impl(
                           "outside_staged_paths", "outside_staged_omitted", "blockers", "selection_matches_observation",
                           "staging_preview_available", "stage_argv_preview", "index_scope_matches_selection",
                           "candidate_dependency_count", "requires_explicit_approval", "requires_post_stage_reinspection",
+                          "prospective_index_tree_oid", "prospective_tree_status",
                           "draft_summary", "summary_kind", "semantic_group_proposals", "semantic_group_scope",
                           "semantic_group_proposals_authoritative", "artifact_id", "artifact_kind", "artifact_status", "artifact_bytes"])
     if action == "synthesize_rules":

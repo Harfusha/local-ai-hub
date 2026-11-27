@@ -90,8 +90,13 @@ def commit_preflight(result: dict[str, Any], paths: list[str] | None, expected: 
         blockers.append("unselected_dependency_candidates")
     if any("dependency_cycle_or_blocked" in group.get("risks", []) for group in selected_groups):
         blockers.append("dependency_cycle_or_blocked")
+    exact_index = not blockers and not to_stage and set(staged) == selection
+    metadata = result.get("git_snapshot_metadata") or {}
+    prospective_tree = metadata.get("index_tree_oid") if exact_index else None
     return {
         "success": True,
+        "prospective_index_tree_oid": prospective_tree or None,
+        "prospective_tree_status": "observed_index_only" if prospective_tree else "unavailable",
         "observed_change_set_id": expected,
         "selected_paths": sorted(selection),
         "already_staged": staged,
@@ -103,7 +108,7 @@ def commit_preflight(result: dict[str, Any], paths: list[str] | None, expected: 
         "selection_matches_observation": True,
         "staging_preview_available": not blockers,
         "stage_argv_preview": ["git", "--literal-pathspecs", "add", "--", *to_stage] if to_stage and not blockers else [],
-        "index_scope_matches_selection": not blockers and not to_stage and set(staged) == selection,
+        "index_scope_matches_selection": exact_index,
         "candidate_dependency_count": len(pending_dependencies),
         "verification_status": "unknown",
         "commit_ready": False,
