@@ -273,9 +273,10 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
 
     action = args.get("action")
     if action not in {"stage-preview", "stage-apply", "commit-staged", "commit-list", "commit-inspect",
-                      "annotate", "sequence-preview", "sequence-apply", "sequence-suggest"}:
+                      "annotate", "sequence-preview", "sequence-apply", "sequence-suggest",
+                      "sequence-status", "sequence-verify-policy"}:
         raise ValueError("Unsupported local Git operation")
-    if action in {"stage-apply", "commit-staged", "annotate", "sequence-apply"} and args.get("confirmed") is not True:
+    if action in {"stage-apply", "commit-staged", "annotate", "sequence-apply", "sequence-verify-policy"} and args.get("confirmed") is not True:
         raise ValueError("Explicit confirmation required")
     config = load_config(control.config, probe_hardware=False)
     root = authorized_repository_root(config, explicit_root(args.get("root")))
@@ -319,26 +320,41 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
         return stage_selection(config, engine, leases, root=root, paths=paths,
                                expected_revision=revision, expected_tree=tree,
                                apply=action == "stage-apply", hunk_ids=hunks or None)
-    if action in {"sequence-preview", "sequence-apply"}:
+    if action in {"sequence-preview", "sequence-apply", "sequence-status", "sequence-verify-policy"}:
         sequence = args.get("sequence")
         if not isinstance(sequence, list) or not 1 <= len(sequence) <= 16:
             raise ValueError("Supply 1–16 ordered commit groups")
         manifest = args.get("verification_manifest")
         digest = ""
-        if action == "sequence-apply":
+        if action != "sequence-preview":
             if not isinstance(manifest, dict):
                 raise ValueError("Desktop publication requires existing exact-tree verification receipts")
             digest = text_field(args, "preview_digest", 64)
         elif manifest is not None:
             raise ValueError("Preview does not accept verification commands")
-        return execute_staged_commit(
+        journal = CommitJournal(state)
+        result = execute_staged_commit(
             config, engine, leases, root=root, paths=paths,
             expected_revision=revision, expected_tree=tree, message="",
-            approved=action == "sequence-apply", journal=CommitJournal(state),
+            approved=action == "sequence-apply", journal=journal,
             allow_mixed_staged=args.get("allow_mixed_staged") is True,
-            sequence=sequence, preview_only=action == "sequence-preview",
+            sequence=sequence, preview_only=action != "sequence-apply",
             preview_digest=digest, verification_manifest=manifest,
         )
+        if action in {"sequence-status", "sequence-verify-policy"} and result.get("success") is True and not result.get("cleanup_unconfirmed"):
+            from local_ai_hub.change_tree_verification import commit_policy, sequence_receipt_status, verify_sequence
+
+            if result.get("preview_digest") != digest:
+                raise ValueError("Sequence differs from reviewed preview")
+            if action == "sequence-status":
+                return sequence_receipt_status(root, result, manifest, journal)
+            # Desktop executes only explicit project policy commands, not an
+            # arbitrary caller-supplied argv. CLI remains available for local
+            # operator-defined checks on projects without this policy.
+            if not commit_policy(root, manifest, require_manifest=True)["required"]:
+                raise ValueError("Desktop verification requires configured git_commit project policy")
+            return verify_sequence(root, result, manifest, journal)
+        return result
     message = text_field(args, "message", 4096)
     return execute_staged_commit(config, engine, leases, root=root, paths=paths,
                                  expected_revision=revision, expected_tree=tree,

@@ -259,3 +259,31 @@ def require_sequence_receipts(root: str, preview: dict[str, Any], manifest: Any,
             raise ValueError("Missing or expired exact-tree verification; run sequence-verify")
         receipts.append(receipt)
     return receipts
+
+
+def sequence_receipt_status(root: str, preview: dict[str, Any], manifest: Any, journal: Any) -> dict[str, Any]:
+    """Inspect exact-tree receipts without running commands or authorizing publication."""
+    if preview.get("success") is not True or preview.get("cleanup_unconfirmed"):
+        return preview
+    try:
+        policy = commit_policy(root, manifest, require_manifest=True)
+        if preview.get("project_commit_policy", policy) != policy:
+            raise ValueError("Project commit policy changed after preview")
+        command_id, environment_id, _, _ = verification_identity(manifest)
+        statuses = []
+        for step in preview["steps"]:
+            receipt = journal.current_tree_checks(root=root, tree=step["tree_oid"],
+                                                  command_id=command_id, environment_id=environment_id)
+            statuses.append({"tree_oid": step["tree_oid"], "status": "current" if receipt else "missing_or_expired",
+                             "receipt_id": receipt})
+        if commit_policy(root, manifest, require_manifest=True) != policy or verification_identity(manifest)[:2] != (command_id, environment_id):
+            raise ValueError("Policy or environment changed during inspection")
+        missing = sum(step["status"] != "current" for step in statuses)
+        return {"success": True, "preview_digest": preview["preview_digest"], "steps": statuses,
+                "current_step_count": len(statuses) - missing, "missing_or_expired_step_count": missing,
+                "all_receipts_current": missing == 0, "commands_digest": command_id,
+                "observed_environment_digest": environment_id, "project_commit_policy": policy,
+                "commit_ready": False, "commands_executed": False,
+                "publication_rechecks_receipts": True}
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        return {"success": False, "error": str(exc), "commit_ready": False, "commands_executed": False}

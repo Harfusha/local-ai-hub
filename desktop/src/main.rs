@@ -767,7 +767,7 @@ impl Desktop {
                     }
                 });
                 ui.collapsing("Ordered staged commit sequence", |ui| {
-                    ui.small("Use the exact staged paths, revision and tree above. Preview first. Run exact-tree checks through hubctl sequence-verify, then publish here with the same manifest. Desktop never executes supplied verification commands.");
+                    ui.small("Use the exact staged paths, revision and tree above. Preview first. Inspect receipt status or explicitly run configured git_commit policy checks. For other local checks use hubctl sequence-verify. Checks run as your OS user, not in a security sandbox.");
                     if ui.button("Suggest sequence from staged changes").clicked() {
                         self.submit(ctx, "Sequence suggestion".into(), request("change_transaction", json!({
                             "action": "sequence-suggest", "root": self.repo
@@ -800,7 +800,7 @@ impl Desktop {
                             self.change_preview_digest = digest.into();
                         }
                     }
-                    ui.label("Verification manifest JSON used in CLI checks");
+                    ui.label("Verification manifest JSON (exact executable argv and environment digest)");
                     ui.text_edit_multiline(&mut self.change_verification);
                     let sequence = serde_json::from_str::<Value>(&self.change_sequence).ok().filter(Value::is_array);
                     let manifest = serde_json::from_str::<Value>(&self.change_verification).ok().filter(Value::is_object);
@@ -817,7 +817,23 @@ impl Desktop {
                         args["action"] = json!("sequence-preview");
                         self.submit(ctx, "Sequence preview".into(), request("change_transaction", args));
                     }
-                    if ui.add_enabled(ready && manifest.is_some() && self.change_preview_digest.len() == 64,
+                    let verified_input = ready && manifest.is_some() && self.change_preview_digest.len() == 64;
+                    if ui.add_enabled(verified_input, egui::Button::new("Inspect exact-tree receipt status")).clicked() {
+                        let mut args = common.clone();
+                        args["action"] = json!("sequence-status");
+                        args["verification_manifest"] = json!(manifest.clone());
+                        args["preview_digest"] = json!(self.change_preview_digest);
+                        self.submit(ctx, "Verification receipt status".into(), request("change_transaction", args));
+                    }
+                    if ui.add_enabled(verified_input, egui::Button::new("Run configured project checks")).clicked() {
+                        let mut args = common.clone();
+                        args["action"] = json!("sequence-verify-policy");
+                        args["verification_manifest"] = json!(manifest.clone());
+                        args["preview_digest"] = json!(self.change_preview_digest);
+                        args["confirmed"] = json!(true);
+                        self.confirm("Run reviewed project policy commands as local user (not sandboxed)", request("change_transaction", args));
+                    }
+                    if ui.add_enabled(verified_input,
                         egui::Button::new("Publish verified sequence (no push)")).clicked() {
                         let mut args = common;
                         args["action"] = json!("sequence-apply");

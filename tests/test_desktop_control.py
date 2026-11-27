@@ -332,3 +332,40 @@ def test_desktop_sequence_suggestion_does_not_invoke_mutation(tmp_path):
         engine.return_value.split_changes.assert_called_once_with(str(tmp_path.resolve()), None)
         suggest.assert_called_once_with(engine.return_value.split_changes.return_value, None)
         execute.assert_not_called()
+
+
+def test_desktop_verification_only_executes_configured_policy_after_exact_preview(tmp_path):
+    control = MagicMock()
+    common = {"root": str(tmp_path), "paths": ["a.py"], "expected_revision": "a" * 64,
+              "expected_tree": "b" * 40, "sequence": [{"paths": ["a.py"], "message": "fix: a"}],
+              "preview_digest": "d" * 64, "verification_manifest": {"environment_id": "c" * 64,
+              "commands": [["/trusted/python", "-m", "pytest"]]}}
+    preview = {"success": True, "preview_digest": "d" * 64}
+    with patch("local_ai_hub.config.load_config", return_value={}), \
+         patch("local_ai_hub.deterministic.DeterministicEngine"), \
+         patch("local_ai_hub.leases.ScopeLeaseStore"), \
+         patch("local_ai_hub.state_paths.configured_state_dir", return_value=tmp_path / "state"), \
+         patch("local_ai_hub.change_commit_journal.CommitJournal"), \
+         patch("local_ai_hub.change_commit_execution.execute_staged_commit", return_value=preview) as execute, \
+         patch("local_ai_hub.change_tree_verification.commit_policy", return_value={"required": False}) as policy, \
+         patch("local_ai_hub.change_tree_verification.verify_sequence", return_value={"success": True}) as verify, \
+         patch("local_ai_hub.change_tree_verification.sequence_receipt_status", return_value={"success": True}) as status:
+        with pytest.raises(ValueError, match="confirmation"):
+            desktop.change_transaction(control, {**common, "action": "sequence-verify-policy"})
+        execute.assert_not_called()
+        with pytest.raises(ValueError, match="configured git_commit"):
+            desktop.change_transaction(control, {**common, "action": "sequence-verify-policy", "confirmed": True})
+        verify.assert_not_called()
+        policy.return_value = {"required": True}
+        with pytest.raises(ValueError, match="reviewed preview"):
+            desktop.change_transaction(control, {**common, "action": "sequence-verify-policy",
+                                                  "confirmed": True, "preview_digest": "e" * 64})
+        verify.assert_not_called()
+        assert desktop.change_transaction(control, {**common, "action": "sequence-status"})["success"]
+        status.assert_called_once()
+        verify.assert_not_called()
+        assert desktop.change_transaction(control, {**common, "action": "sequence-verify-policy",
+                                                     "confirmed": True})["success"]
+        verify.assert_called_once()
+        assert execute.call_args.kwargs["preview_only"] is True
+        assert execute.call_args.kwargs["approved"] is False

@@ -152,7 +152,7 @@ def test_sequence_preview_and_publish_two_commits_atomically(tmp_path):
 def test_exact_tree_receipts_bind_sequence_and_environment(tmp_path):
     import sys
     from local_ai_hub.change_commit_journal import CommitJournal
-    from local_ai_hub.change_tree_verification import verify_sequence
+    from local_ai_hub.change_tree_verification import sequence_receipt_status, verify_sequence
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -170,10 +170,16 @@ def test_exact_tree_receipts_bind_sequence_and_environment(tmp_path):
     assert preview["success"], preview
     manifest = {"environment_id": "c" * 64, "commands": [[sys.executable, "-c",
                 "from pathlib import Path; assert Path('a').read_text() == 'new'; assert not Path('.git').exists()"]]}
+    initial_status = sequence_receipt_status(str(repo.resolve()), preview, manifest, journal)
+    assert initial_status["success"] and initial_status["missing_or_expired_step_count"] == 2
+    assert not initial_status["commands_executed"] and not initial_status["commit_ready"]
     result = verify_sequence(str(repo.resolve()), preview, manifest, journal)
     assert result["success"], result
     assert len(result["verified_steps"]) == 2
     assert result["executed_step_count"] == 2
+    current_status = sequence_receipt_status(str(repo.resolve()), preview, manifest, journal)
+    assert current_status["all_receipts_current"] and current_status["current_step_count"] == 2
+    assert not current_status["commit_ready"]
     reused = verify_sequence(str(repo.resolve()), preview, manifest, journal)
     assert reused["success"], reused
     assert reused["reused_step_count"] == 2

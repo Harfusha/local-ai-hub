@@ -305,7 +305,7 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply", "sequence-suggest", "annotate"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply", "sequence-suggest", "annotate"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "sequence-suggest" and (args.apply or args.base or args.changed_path or args.record_file):
             parser.error("sequence-suggest is read-only and observes the complete staged scope")
@@ -315,13 +315,15 @@ def main() -> int:
         elif args.sub_arg == "commit-staged":
             if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
                 parser.error("commit-staged requires --apply, --expected-revision, --expected-tree, --commit-message and exact --changed-path values")
-        elif args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-apply"}:
+        elif args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
             if args.base or not all((args.expected_revision, args.expected_tree, args.record_file, args.changed_path)):
                 parser.error("sequence requires --record-file, --expected-revision, --expected-tree and exact --changed-path values")
-            if args.sub_arg in {"sequence-preview", "sequence-verify"} and args.apply:
+            if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status"} and args.apply:
                 parser.error("sequence preview/verification cannot apply")
-            if args.sub_arg == "sequence-verify" and not args.verification_file:
-                parser.error("sequence-verify requires --verification-file")
+            if args.sub_arg in {"sequence-verify", "sequence-status"} and not args.verification_file:
+                parser.error("sequence verification/status requires --verification-file")
+            if args.sub_arg == "sequence-status" and not args.preview_digest:
+                parser.error("sequence-status requires --preview-digest")
             if args.sub_arg == "sequence-apply" and bool(args.verification_file) == bool(args.allow_unverified):
                 parser.error("sequence-apply requires either --verification-file or explicit --allow-unverified")
             if args.sub_arg == "sequence-apply" and (not args.apply or args.dry_run or not args.preview_digest):
@@ -337,7 +339,7 @@ def main() -> int:
             parser.error("only commit-staged or stage-apply accepts --apply")
         if args.hunk_id and args.sub_arg not in {"stage-preview", "stage-apply"}:
             parser.error("--hunk-id requires stage-preview or stage-apply")
-        if args.allow_mixed_staged and args.sub_arg not in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-apply"}:
+        if args.allow_mixed_staged and args.sub_arg not in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
             parser.error("--allow-mixed-staged requires commit-staged")
         if args.sub_arg == "commit-inspect" and not args.operation_id:
             parser.error("commit-inspect requires --operation-id")
@@ -459,7 +461,7 @@ def main() -> int:
                       else journal.inspect(scoped_root, args.operation_id))
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True else 1
-        if args.sub_arg in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-apply"}:
+        if args.sub_arg in {"commit-staged", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
             from local_ai_hub.change_commit_journal import CommitJournal
             from local_ai_hub.change_commit_execution import execute_staged_commit
             from local_ai_hub.deterministic import DeterministicEngine
@@ -468,7 +470,7 @@ def main() -> int:
 
             config = load_config(_config_arg(args.config))
             sequence = None
-            if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-apply"}:
+            if args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status", "sequence-apply"}:
                 with args.record_file.open("rb") as stream:
                     raw = stream.read(100001)
                 if len(raw) > 100000:
@@ -490,9 +492,16 @@ def main() -> int:
                 expected_revision=args.expected_revision, expected_tree=args.expected_tree,
                 message=args.commit_message, approved=args.apply,
                 journal=journal, allow_mixed_staged=args.allow_mixed_staged,
-                sequence=sequence, preview_only=args.sub_arg in {"sequence-preview", "sequence-verify"},
+                sequence=sequence, preview_only=args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-status"},
                 preview_digest=args.preview_digest, verification_manifest=verification_manifest,
             )
+            if args.sub_arg == "sequence-status" and result.get("success") is True and not result.get("cleanup_unconfirmed"):
+                from local_ai_hub.change_tree_verification import sequence_receipt_status
+
+                if result.get("preview_digest") != args.preview_digest:
+                    result = {"success": False, "error": "Sequence differs from reviewed preview", "commit_ready": False}
+                else:
+                    result = sequence_receipt_status(str(args.root.resolve()), result, verification_manifest, journal)
             if args.sub_arg == "sequence-verify" and result.get("success") is True and not result.get("cleanup_unconfirmed"):
                 from local_ai_hub.change_tree_verification import verify_sequence
 
