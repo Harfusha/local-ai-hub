@@ -33,15 +33,17 @@ rows = []
 expected = {
     'treesitter_parser.py': ('_extract_python', 'def _extract_python('),
     'code_index.py': ('CodeIndex', 'class CodeIndex'),
-    'mcp_server.py': ('local_ai_repo', 'def local_ai_repo('),
+    'mcp_tools_repo.py': ('local_ai_repo', 'def local_ai_repo('),
 }
-for name in ('treesitter_parser.py', 'code_index.py', 'mcp_server.py'):
+for name in ('treesitter_parser.py', 'code_index.py', 'mcp_tools_repo.py'):
     source = Path(parser.__file__).with_name(name).read_text(encoding='utf-8')
     outcome = parser._worker_parse(source, 'python', source_key=name)
     assert outcome['status'] == 'ok', outcome
     symbol, marker = expected[name]
-    expected_line = next(i for i, line in enumerate(source.splitlines(), 1) if line.startswith(marker))
-    assert expected_line > 256
+    source_lines = source.splitlines()
+    expected_line = next(i for i, line in enumerate(source_lines, 1) if line.startswith(marker))
+    if len(source_lines) > 256:
+        assert expected_line > 256
     match = next(row for row in outcome['result'][0] if row['name'] == symbol)
     assert match['line'] == expected_line, match
     reused = parser._worker_parse(source, 'python', source_key=name)
@@ -60,5 +62,5 @@ print(json.dumps(rows))
     )
     assert completed.returncode == 0, completed.stderr[-4000:]
     assert json.loads(completed.stdout) == [
-        "treesitter_parser.py", "code_index.py", "mcp_server.py",
+        "treesitter_parser.py", "code_index.py", "mcp_tools_repo.py",
     ]

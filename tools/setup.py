@@ -4162,8 +4162,9 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
-    sync_packaged_defaults()
-    if install_dir.resolve() != SOURCE_ROOT.resolve():
+    if install_dir.resolve() == SOURCE_ROOT.resolve():
+        sync_packaged_defaults()
+    else:
         sync_packaged_defaults(install_dir)
     write_all_generated(cfg, install_dir, hub_python, serena)
     sync_generated_prompt_policies()

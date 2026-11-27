@@ -978,7 +978,8 @@ client.write('POST /api/chat/completions HTTP/1.1\\r\\nHost: ignored.invalid\\r\
             assert observed["response_sent"] is True
 
             opencode = shutil.which("opencode") or (
-                r"C:\Users\Adam\AppData\Local\Programs\OpenCode-LocalAIHub\2.2.5\opencode.exe"
+                str(Path.home() / "AppData" / "Local" / "Programs" / "OpenCode-LocalAIHub"
+                    / "2.2.5" / "opencode.exe")
             )
             assert opencode and os.path.isfile(opencode), "OpenCode 2.2.5 executable is unavailable"
             staged_opencode = stage / "opencode.exe"
