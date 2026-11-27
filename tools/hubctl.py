@@ -268,6 +268,7 @@ def main() -> int:
     parser.add_argument("--query", type=str, default="", help="Memory or knowledge search query")
     parser.add_argument("--record-file", type=Path, default=None, help="Knowledge record JSON input")
     parser.add_argument("--verification-file", type=Path, default=None, help="Explicit exact-tree verification manifest JSON")
+    parser.add_argument("--rerun-checks", action="store_true", help="Force fresh exact-tree checks instead of reusing current receipts")
     parser.add_argument("--allow-unverified", action="store_true", help="Explicitly acknowledge unverified commit sequence")
     parser.add_argument("--hunk-id", action="append", default=[], help="Exact unstaged hunk ID for partial staging (repeatable)")
     parser.add_argument("--allow-mixed-staged", action="store_true", help="Explicitly commit the reviewed staged tree while leaving other hunks unstaged")
@@ -397,6 +398,8 @@ def main() -> int:
     else:
         requested_mode = None
 
+    if args.rerun_checks and (args.action != "changes" or args.sub_arg != "sequence-verify"):
+        parser.error("--rerun-checks requires changes sequence-verify")
     if args.action == "changes":
         if args.sub_arg == "sequence-suggest":
             from local_ai_hub.change_commit_sequence import suggest_sequence
@@ -493,7 +496,8 @@ def main() -> int:
             if args.sub_arg == "sequence-verify" and result.get("success") is True and not result.get("cleanup_unconfirmed"):
                 from local_ai_hub.change_tree_verification import verify_sequence
 
-                result = verify_sequence(str(args.root.resolve()), result, verification_manifest, journal)
+                result = verify_sequence(str(args.root.resolve()), result, verification_manifest, journal,
+                                         rerun=args.rerun_checks)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
         payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary"}
