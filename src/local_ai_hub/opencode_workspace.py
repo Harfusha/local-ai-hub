@@ -6,7 +6,9 @@ boundary have been verified end to end.
 """
 from __future__ import annotations
 
+import ctypes
 import hashlib
+from ctypes import wintypes
 import os
 import stat
 import tempfile
@@ -63,6 +65,55 @@ class _PreparedChange:
 _REPARSE_POINT = 0x400
 _DEFAULT_MAX_FILES = 100_000
 _DEFAULT_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _rename_handle_relative(file_handle, parent_handle, name: str) -> None:
+    """Rename an open file under an open directory without replacing a name.
+
+    The source handle pins the file object and RootDirectory pins the target
+    directory.  FILE_RENAME_INFO's ReplaceIfExists flag is deliberately false.
+    """
+    if os.name != "nt":
+        raise OSError("handle-relative rename is available only on Windows")
+    if (not name or name in {".", ".."} or "\\" in name or "/" in name
+            or ":" in name or "\x00" in name):
+        raise ValueError("rename target must be a single relative file name")
+
+    class _RenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", wintypes.BOOL),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * 1),
+        ]
+
+    encoded = name.encode("utf-16-le")
+    size = _RenameInfo.FileName.offset + len(encoded)
+    storage = ctypes.create_string_buffer(size)
+    info = ctypes.cast(storage, ctypes.POINTER(_RenameInfo)).contents
+    info.ReplaceIfExists = False
+    info.RootDirectory = getattr(parent_handle, "handle", parent_handle)
+    info.FileNameLength = len(encoded)
+    ctypes.memmove(ctypes.addressof(storage) + _RenameInfo.FileName.offset, encoded, len(encoded))
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    ntdll = ctypes.WinDLL("ntdll")
+    set_info = ntdll.NtSetInformationFile
+    set_info.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
+        wintypes.DWORD, ctypes.c_int,
+    )
+    set_info.restype = ctypes.c_long
+    status_to_error = ntdll.RtlNtStatusToDosError
+    status_to_error.argtypes = (ctypes.c_long,)
+    status_to_error.restype = wintypes.ULONG
+    raw_handle = getattr(file_handle, "handle", file_handle)
+    io_status = _IoStatusBlock()
+    status = set_info(raw_handle, ctypes.byref(io_status), ctypes.byref(storage), size, 10)
+    if status < 0:
+        raise ctypes.WinError(status_to_error(status))
 
 
 def _is_reparse(path: Path, info: os.stat_result | None = None) -> bool:

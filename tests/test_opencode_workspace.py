@@ -338,6 +338,52 @@ def test_workspace_tree_lock_validates_managed_root_handle(tmp_path: Path):
         win32api.CloseHandle(stage_handle)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative rename only")
+def test_workspace_rename_uses_parent_handle_and_never_replaces_existing_entry(tmp_path: Path):
+    import win32api
+    import win32con
+    import win32file
+
+    import local_ai_hub.opencode_workspace as workspace
+
+    source = tmp_path / "source.txt"
+    renamed = tmp_path / "renamed.txt"
+    occupied = tmp_path / "occupied.txt"
+    contender = tmp_path / "contender.txt"
+    source.write_text("source", encoding="utf-8")
+    occupied.write_text("keep", encoding="utf-8")
+    contender.write_text("contender", encoding="utf-8")
+
+    parent_handle = win32file.CreateFile(
+        str(tmp_path), 0x80 | 0x2 | 0x40,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+        None, win32con.OPEN_EXISTING, 0x02000000 | 0x00200000, None,
+    )
+    source_handle = win32file.CreateFile(
+        str(source), 0x10000,
+        win32con.FILE_SHARE_READ,
+        None, win32con.OPEN_EXISTING, 0x00200000, None,
+    )
+    contender_handle = win32file.CreateFile(
+        str(contender), 0x10000,
+        win32con.FILE_SHARE_READ,
+        None, win32con.OPEN_EXISTING, 0x00200000, None,
+    )
+    try:
+        workspace._rename_handle_relative(source_handle, parent_handle, renamed.name)
+        with pytest.raises(OSError):
+            workspace._rename_handle_relative(contender_handle, parent_handle, occupied.name)
+    finally:
+        win32api.CloseHandle(contender_handle)
+        win32api.CloseHandle(source_handle)
+        win32api.CloseHandle(parent_handle)
+
+    assert not source.exists()
+    assert renamed.read_text(encoding="utf-8") == "source"
+    assert occupied.read_text(encoding="utf-8") == "keep"
+    assert contender.read_text(encoding="utf-8") == "contender"
+
+
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")
 def test_snapshot_rejects_source_symlinks_without_reading_external_content(tmp_path: Path):
     project = tmp_path / "project"
