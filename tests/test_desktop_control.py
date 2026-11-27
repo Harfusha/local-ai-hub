@@ -333,3 +333,35 @@ def test_project_purge_requires_confirmation_and_boolean(tmp_path):
         args["purge_data"] = True
         desktop.dispatch(desktop.HubControl(), {"op": "project", "args": args})
         assert post.call_args.args[2]["purge_data"] is True
+
+
+def test_settings_batch_validates_before_transport():
+    control = desktop.HubControl()
+    with patch.object(desktop, "checked_post", return_value={"success": True, "restart_required": True}) as post:
+        for settings in ({"features.dashboard": True}, {"telemetry.mode": "full"}, {"features.tasks": "true"}):
+            with pytest.raises(ValueError):
+                desktop.dispatch(control, {"op": "settings_batch", "args": {"confirmed": True, "settings": settings}})
+        post.assert_not_called()
+        settings = {"features.tasks": False, "hardware.profile": "cpu"}
+        result = desktop.dispatch(control, {"op": "settings_batch", "args": {"confirmed": True, "settings": settings}})
+        assert result["restart_required"] is True
+        post.assert_called_once_with(control, "/api/config/update", {"action": "update", "settings": settings})
+
+
+def test_live_period_is_allowlisted_and_not_injected():
+    control = desktop.HubControl()
+    with patch.object(desktop, "HubClient") as factory:
+        with pytest.raises(ValueError, match="period"):
+            control.read("Overview", period="window&secret=true")
+        factory.assert_not_called()
+        client = factory.return_value
+        client._online.return_value = True
+        client.get.return_value = {"success": True}
+        control.read("Overview", period="window")
+        assert client.get.call_args.args[0] == "/api/live/status?light=1&scope=window"
+
+
+def test_stats_reset_unavailable_is_not_success(tmp_path):
+    with patch.object(desktop, "checked_post", return_value={"success": True, "reset": False, "available": False}):
+        with pytest.raises(RuntimeError, match="confirm reset"):
+            desktop.dispatch(desktop.HubControl(), {"op": "endpoint_reset", "args": {"root": str(tmp_path), "confirmed": True}})

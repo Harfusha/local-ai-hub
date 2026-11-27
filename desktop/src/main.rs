@@ -3,6 +3,7 @@
 mod records;
 mod trace;
 mod summary;
+mod settings;
 
 use eframe::egui;
 use serde_json::{json, Value};
@@ -136,7 +137,8 @@ struct Desktop {
     reason: String,
     prompt: String,
     mode: String,
-    feature: String,
+    settings_draft: settings::Draft,
+    metrics_period: String,
     goal: String,
     criteria: String,
     memory_key: String,
@@ -173,7 +175,6 @@ struct Desktop {
     last_live: Instant,
     update_version: String,
     update_revision: String,
-    hardware_profile: String,
     plan_status: String,
     vision_path: String,
     filter: String,
@@ -208,7 +209,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -274,6 +275,9 @@ impl Desktop {
                         self.reveal_trace = false;
                         self.detail = None;
                         self.record_detail = None;
+                        if done.label == "Settings" { self.settings_draft = settings::Draft::from_response(&value); }
+                        if done.label == "Save settings" || done.label == "Reset configuration overrides" { self.settings_draft = settings::Draft::default(); }
+                        if done.label == "Run events" { value = trace::sanitize(&value); }
                         if done.label == "Trace content" {
                             // Do not flatten arbitrary stored text into searchable or copyable rows.
                             self.rows.clear();
@@ -330,7 +334,7 @@ impl Desktop {
             "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
             "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
-            _ => view_request(view, &self.repo, &self.entity),
+            _ => { let mut payload = view_request(view, &self.repo, &self.entity); payload["args"]["period"] = json!(self.metrics_period); payload },
         };
         self.submit(ctx, view.into(), data);
     }
@@ -369,7 +373,7 @@ impl Desktop {
                         ui.checkbox(&mut self.endpoint_desc, "Descending");
                         if ui.button("Reset selected statistics").clicked() {
                             let global = self.repo.trim().is_empty();
-                            let label = if global { "Reset statistics across ALL projects" } else { "Reset statistics for selected repository" };
+                            let label = if global { "Reset ALL project statistics and retained telemetry" } else { "Reset statistics for selected repository" };
                             self.confirm(label, request("endpoint_reset", json!({"root": self.repo, "global": global, "confirmed": true})));
                         }
                     });
@@ -664,51 +668,27 @@ impl Desktop {
                     }
                     return;
                 }
-                ui.horizontal_wrapped(|ui| {
-                    egui::ComboBox::from_id_salt("hardware_profile").selected_text(&self.hardware_profile).show_ui(ui, |ui| {
-                        for profile in ["auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"] {
-                            ui.selectable_value(&mut self.hardware_profile, profile.into(), profile);
+                if self.current() == "Settings" {
+                    if self.settings_draft.render(ui) {
+                        let patch = self.settings_draft.patch();
+                        if !patch.is_empty() {
+                            self.confirm("Save settings", request("settings_batch", json!({"settings": patch, "confirmed": true})));
                         }
-                    });
-                    if ui.button("Apply hardware profile").clicked() {
-                        self.confirm("Apply hardware profile", request("setting", json!({
-                            "key": "hardware.profile", "value": self.hardware_profile, "confirmed": true})));
                     }
-                    for (title, key) in [("Preprocessing", "preprocessing.enabled"), ("Code intelligence", "code_intelligence.enabled"),
-                        ("Serena", "code_intelligence.serena_enabled"), ("Work orchestrator", "features.work_orchestrator")] {
-                        ui.menu_button(title, |ui| {
-                            for (label, enabled) in [("Enable", true), ("Disable", false)] {
-                                if ui.button(label).clicked() {
-                                    self.confirm(&format!("{label} {title}"), request("setting",
-                                        json!({"key": key, "value": enabled, "confirmed": true})));
-                                    ui.close_menu();
-                                }
+                    ui.horizontal_wrapped(|ui| {
+                        for (title, mode) in [("Telemetry off", "off"), ("Minimal telemetry", "minimal"), ("Detailed telemetry", "full")] {
+                            if ui.button(title).clicked() {
+                                self.confirm(&format!("{title} (may retain sensitive request content)"),
+                                    request("telemetry", json!({"mode": mode, "confirmed": true})));
                             }
-                        });
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    for (title, mode) in [("Telemetry off", "off"), ("Minimal telemetry", "minimal"), ("Detailed telemetry", "full")] {
-                        if ui.button(title).clicked() {
-                            self.confirm(&format!("{title} (may retain sensitive request content)"),
-                                request("telemetry", json!({"mode": mode, "confirmed": true})));
                         }
-                    }
-                    egui::ComboBox::from_id_salt("feature").selected_text(&self.feature).show_ui(ui, |ui| {
-                        for feature in ["status", "repo", "tasks", "rag", "commands", "coord", "artifacts", "subagents", "agent_os"] {
-                            ui.selectable_value(&mut self.feature, feature.to_owned(), feature);
+                        if ui.button("Reset configuration overrides").clicked() {
+                            self.confirm("Reset configuration overrides", request("config_reset", json!({"confirmed": true})));
                         }
                     });
-                    for (title, enabled) in [("Enable feature", true), ("Disable feature", false)] {
-                        if ui.button(title).clicked() {
-                            self.confirm(&format!("{title}: {}", self.feature), request("feature",
-                                json!({"feature": self.feature, "enabled": enabled, "confirmed": true})));
-                        }
-                    }
-                    if ui.button("Reset configuration overrides").clicked() {
-                        self.confirm("Reset configuration overrides", request("config_reset", json!({"confirmed": true})));
-                    }
-                });
+                } else {
+                    ui.small("Change activity mode from the top toolbar.");
+                }
             }
             9 => {
                 if self.current() == "Agent event stream" {
@@ -892,6 +872,14 @@ impl eframe::App for Desktop {
                             self.view = index; self.clear_response(); self.entity.clear(); self.revision.clear();
                         }
                     }
+                    if matches!(self.current(), "Overview" | "Requests" | "Active requests" | "Async jobs" | "Work orders" | "Commands" | "Process sessions" | "Recent errors" | "Runtime health" | "Models & search" | "Laya") {
+                        let previous = self.metrics_period.clone();
+                        egui::ComboBox::from_id_salt("metrics_period").selected_text(if self.metrics_period == "process" { "Since restart" } else { "Last 30 days" }).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.metrics_period, "process".into(), "Since restart");
+                            ui.selectable_value(&mut self.metrics_period, "window".into(), "Last 30 days");
+                        });
+                        if self.metrics_period != previous { self.clear_response(); self.refresh(ctx); }
+                    }
                     if ui.button("Load / refresh").clicked() { self.refresh(ctx); }
                 });
                 self.operations(ui, ctx);
@@ -960,6 +948,19 @@ impl eframe::App for Desktop {
                         }
                     });
                     return;
+                }
+            }
+            if self.snapshot_view == "Completion gate" && !self.raw_view {
+                if let Some(snapshot) = self.snapshot.as_ref() {
+                    summary::completion(ui, &snapshot["completion"]);
+                    return;
+                }
+            }
+            if matches!(self.snapshot_view.as_str(), "Save settings" | "Reset configuration overrides") {
+                if let Some(snapshot) = self.snapshot.as_ref() {
+                    if snapshot["restart_required"] == true { ui.colored_label(ui.visuals().warn_fg_color, "Overrides saved; restart Hub to apply."); }
+                    else if snapshot["applied_live"] == true { ui.label("Server reports settings applied live."); }
+                    else { ui.label("Application status not reported; reload configuration."); }
                 }
             }
             if self.snapshot_view == "Run events" && !self.raw_view {
@@ -1117,6 +1118,9 @@ impl eframe::App for Desktop {
                 for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
                 }
+                if let Some(changes) = args["settings"].as_object() {
+                    for (key, value) in changes { ui.label(format!("{key}: {value}")); }
+                }
                 if let Some(fields) = args["fields"].as_object() {
                     ui.collapsing("Reviewed operator parameters", |ui| {
                         for (key, value) in fields { ui.label(format!("{key}: {value}")); }
@@ -1150,7 +1154,7 @@ impl eframe::App for Desktop {
                 self.install = Install { root: PathBuf::from(&self.root_input),
                     python: PathBuf::from(&self.python_input),
                     config: (!self.config_input.trim().is_empty()).then(|| PathBuf::from(&self.config_input)) };
-                self.service = None; self.clear_response(); self.entity.clear(); self.revision.clear();
+                self.service = None; self.settings_draft = settings::Draft::default(); self.clear_response(); self.entity.clear(); self.revision.clear();
                 self.last_probe = Instant::now() - Duration::from_secs(30);
                 open = false;
             }

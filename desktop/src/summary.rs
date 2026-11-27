@@ -72,6 +72,26 @@ fn recent_durations(snapshot: &Value) -> Vec<f64> {
             .filter(|ms| ms.is_finite() && *ms >= 0.0).collect()).unwrap_or_default()
 }
 
+pub fn completion(ui: &mut egui::Ui, completion: &Value) {
+    ui.heading("Server completion gate");
+    if !completion.is_object() { ui.label("No completion receipt returned"); return; }
+    for (title, key) in [("Satisfied", "satisfied_criteria"), ("Unsatisfied", "unsatisfied_criteria"), ("Stale", "stale_criteria")] {
+        match completion[key].as_array() {
+            Some(items) => {
+                ui.collapsing(format!("{title} ({})", items.len()), |ui| {
+                    for item in items.iter().take(1000) { ui.label(crate::records::display(item)); }
+                });
+            }
+            None => { ui.label(format!("{title}: unavailable")); }
+        }
+    }
+    ui.collapsing("Server receipt details", |ui| {
+        egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+            ui.label(serde_json::to_string_pretty(completion).unwrap_or_default());
+        });
+    });
+}
+
 pub fn render(ui: &mut egui::Ui, view: &str, snapshot: &Value) {
     if matches!(view, "Overview" | "Runtime health") {
         let (label, notes) = health(snapshot);

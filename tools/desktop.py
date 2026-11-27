@@ -136,8 +136,12 @@ class HubControl:
         finally:
             client.close()
 
-    def read(self, view: str, root: str = "") -> dict[str, Any]:
+    def read(self, view: str, root: str = "", period: str = "process") -> dict[str, Any]:
         path = VIEWS[view]
+        if period not in {"process", "window"}:
+            raise ValueError("Invalid metrics period")
+        if path.startswith("/api/live/status?"):
+            path = "/api/live/status?" + urlencode({"light": 1, "scope": period})
         if view in SCOPED or (view == "Endpoint analytics" and root.strip()):
             if not root.strip():
                 raise ValueError("Select an explicit repository root first.")
@@ -423,6 +427,17 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if action == "continue":
             payload["answer"] = text_field(args, "answer", 12000)
         return checked_post(control, "/api/async-jobs" if op == "async_job" else "/api/work-orders", payload)
+    if op == "settings_batch":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        settings = args.get("settings")
+        from local_ai_hub.dashboard_contracts import dashboard_settings_patch
+        if not isinstance(settings, dict) or not settings or len(settings) > 20:
+            raise ValueError("Choose 1–20 settings")
+        if set(settings) & {"features.dashboard", "monitoring.dashboard_enabled", "telemetry.mode"}:
+            raise ValueError("Retired web settings and live telemetry are not part of this batch")
+        dashboard_settings_patch(settings)
+        return checked_post(control, "/api/config/update", {"action": "update", "settings": settings})
     if op == "setting":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
@@ -540,7 +555,7 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
     if op == "probe":
         return {"online": control.online()}
     if op == "read":
-        return control.read(text_field(args, "view", 100), args.get("root", ""))
+        return control.read(text_field(args, "view", 100), args.get("root", ""), args.get("period", "process"))
     if op == "lifecycle":
         action = text_field(args, "action", 20)
         if action != "start" and args.get("confirmed") is not True:
@@ -590,8 +605,11 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             raise ValueError("Invalid repository root")
         if not root.strip() and args.get("global") is not True:
             raise ValueError("Global reset requires explicit global scope")
-        return checked_post(control, "/api/telemetry/endpoint-stats/reset",
-                            {"root": explicit_root(root) if root.strip() else ""})
+        result = checked_post(control, "/api/telemetry/endpoint-stats/reset",
+                              {"root": explicit_root(root) if root.strip() else ""})
+        if result.get("reset") is not True:
+            raise RuntimeError("Statistics store did not confirm reset")
+        return result
     if op == "task":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
