@@ -213,3 +213,61 @@ def test_transitive_mapped_impact_cycles_and_missing_targets(tmp_path: Path):
     assert not check_repository_scope(config, str(tmp_path))["complete"]
     with pytest.raises(ValueError, match="no allowed inventory match"):
         compile_repository_contract(contract, str(tmp_path))
+
+
+def test_static_python_import_impact_includes_transitive_and_deleted_modules(tmp_path: Path):
+    import subprocess
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "Fixture")
+    package = tmp_path / "src" / "demo"
+    package.mkdir(parents=True)
+    for name, source in {
+        "__init__.py": "",
+        "api.py": "def api(): return 1\n",
+        "consumer.py": "from .api import api\n",
+        "downstream.py": "from demo.consumer import api\n",
+        "unrelated.py": "import os\n",
+    }.items():
+        (package / name).write_text(source, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "fixture")
+    (package / "api.py").unlink()
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"].update(
+        scope="changes", include_python_imports=True,
+    )
+    created = GoalContract.from_dict(compile_repository_contract(contract, str(tmp_path)))
+    config = created.slo_profile["verified_execution"]
+    assert config["inventory"]["resources"] == [
+        "src/demo/api.py", "src/demo/consumer.py", "src/demo/downstream.py",
+    ]
+    assert config["inventory"]["include_python_imports"] is True
+    assert check_repository_scope(config, str(tmp_path))["complete"]
+    (package / "unrelated.py").write_text("from demo.consumer import api\n", encoding="utf-8")
+    assert check_repository_scope(config, str(tmp_path))["added_preview"] == ["src/demo/unrelated.py"]
+
+
+def test_static_python_import_impact_refuses_invalid_source(tmp_path: Path):
+    import subprocess
+
+    subprocess.check_call(["git", "-C", str(tmp_path), "init"])
+    (tmp_path / "bad.py").write_text("def broken(", encoding="utf-8")
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"].update(
+        scope="changes", include_python_imports=True,
+    )
+    with pytest.raises(ValueError, match="could not be parsed"):
+        compile_repository_contract(contract, str(tmp_path))
+
+
+def test_python_import_policy_is_rejected_outside_changes_scope(tmp_path: Path):
+    (tmp_path / "a.py").write_text("pass", encoding="utf-8")
+    contract = _contract()
+    contract["slo_profile"]["verified_execution"]["inventory"]["include_python_imports"] = True
+    with pytest.raises(ValueError, match="impact expansion requires"):
+        compile_repository_contract(contract, str(tmp_path))
