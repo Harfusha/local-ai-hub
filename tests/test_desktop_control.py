@@ -296,3 +296,40 @@ def test_sensitive_operator_actions_require_confirmation(op, args):
         with pytest.raises(ValueError, match="confirmation"):
             desktop.dispatch(desktop.HubControl(), {"op": op, "args": args})
         factory.assert_not_called()
+
+
+def test_task_gate_is_scoped_and_preserves_server_receipts(tmp_path):
+    control = desktop.HubControl()
+    response = {"success": True, "completion": {"unsatisfied_criteria": ["test"]}}
+    with patch.object(desktop, "checked_post", return_value=response) as post:
+        result = desktop.dispatch(control, {"op": "task_gate", "args": {"root": str(tmp_path), "id": "t"}})
+        assert result == response
+        post.assert_called_once_with(control, "/api/agent-state/verification",
+                                     {"root": str(tmp_path.resolve()), "action": "completion", "task_id": "t"})
+
+
+def test_task_transition_does_not_bypass_completion_gate(tmp_path):
+    with patch.object(desktop, "checked_post") as post:
+        args = {"root": str(tmp_path), "id": "t", "action": "transition", "status": "completed",
+                "reason": "review", "confirmed": True}
+        with pytest.raises(ValueError, match="transition"):
+            desktop.dispatch(desktop.HubControl(), {"op": "task", "args": args})
+        post.assert_not_called()
+
+
+def test_endpoint_reset_needs_explicit_global_scope():
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError, match="global"):
+            desktop.dispatch(desktop.HubControl(), {"op": "endpoint_reset", "args": {"confirmed": True}})
+        post.assert_not_called()
+
+
+def test_project_purge_requires_confirmation_and_boolean(tmp_path):
+    with patch.object(desktop, "checked_post") as post:
+        args = {"root": str(tmp_path), "action": "unregister", "purge_data": "yes", "confirmed": True}
+        with pytest.raises(ValueError, match="purge"):
+            desktop.dispatch(desktop.HubControl(), {"op": "project", "args": args})
+        post.assert_not_called()
+        args["purge_data"] = True
+        desktop.dispatch(desktop.HubControl(), {"op": "project", "args": args})
+        assert post.call_args.args[2]["purge_data"] is True

@@ -571,19 +571,42 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         action = text_field(args, "action", 30)
         if action not in {"register", "refresh", "unregister", "pause", "resume"}:
             raise ValueError("Unsupported project action")
+        purge = args.get("purge_data", False)
+        if type(purge) is not bool or (purge and action != "unregister"):
+            raise ValueError("Invalid project purge option")
         return checked_post(control, "/api/preprocess",
                             {"root": explicit_root(args.get("root")), "action": action,
-                             **({"purge_data": False} if action == "unregister" else {})})
+                             **({"purge_data": purge} if action == "unregister" else {})})
+    if op == "task_gate":
+        return checked_post(control, "/api/agent-state/verification", {
+            "root": explicit_root(args.get("root")), "action": "completion",
+            "task_id": text_field(args, "id", 200),
+        })
+    if op == "endpoint_reset":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        root = args.get("root", "")
+        if not isinstance(root, str):
+            raise ValueError("Invalid repository root")
+        if not root.strip() and args.get("global") is not True:
+            raise ValueError("Global reset requires explicit global scope")
+        return checked_post(control, "/api/telemetry/endpoint-stats/reset",
+                            {"root": explicit_root(root) if root.strip() else ""})
     if op == "task":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         action = text_field(args, "action", 20)
-        if action not in {"get", "complete", "fail"}:
+        if action not in {"get", "complete", "fail", "transition"}:
             raise ValueError("Unsupported task action")
         payload = {"root": explicit_root(args.get("root")), "action": action,
                    "task_id": text_field(args, "id", 200)}
         if action != "get":
             payload["reason"] = text_field(args, "reason")
+        if action == "transition":
+            target = args.get("status")
+            if target not in {"active", "verifying", "blocked", "planned"}:
+                raise ValueError("Unsupported task transition")
+            payload["status"] = target
         return checked_post(control, "/api/agent-state/tasks", payload)
     if op in {"task_create", "memory_record", "memory_delete", "plan_create",
               "global_preprocess", "feature"}:

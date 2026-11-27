@@ -18,7 +18,7 @@ use std::{
 const PAGES: &[(&str, &[&str])] = &[
     ("Overview", &["Overview", "Hardware", "GPU"]),
     ("Requests", &["Requests", "Active requests", "Async jobs", "Work orders", "Trace index", "Endpoint analytics"]),
-    ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review"]),
+    ("Tasks", &["Tasks", "Memory", "Incidents", "Vision review", "Run history"]),
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
@@ -161,6 +161,11 @@ struct Desktop {
     trace_content_offset: i64,
     task_offset: i64,
     task_query: String,
+    task_target: String,
+    history_cursor: i64,
+    endpoint_scope: String,
+    endpoint_sort: String,
+    endpoint_desc: bool,
     stream_id: String,
     event_cursor: i64,
     live_events: Vec<Value>,
@@ -203,7 +208,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -322,7 +327,7 @@ impl Desktop {
         let data = match view {
             "Updates" => request("update_status", json!({})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
-            "Tasks" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
+            "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
             "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
             _ => view_request(view, &self.repo, &self.entity),
@@ -350,6 +355,24 @@ impl Desktop {
                         }
                     });
                     return;
+                }
+                if self.current() == "Endpoint analytics" {
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("endpoint_scope").selected_text(&self.endpoint_scope).show_ui(ui, |ui| {
+                            for scope in ["all", "active", "unused"] { ui.selectable_value(&mut self.endpoint_scope, scope.into(), scope); }
+                        });
+                        egui::ComboBox::from_id_salt("endpoint_sort").selected_text(&self.endpoint_sort).show_ui(ui, |ui| {
+                            for key in ["name", "type", "calls", "success_rate", "p50_ms", "p95_ms", "p99_ms"] {
+                                ui.selectable_value(&mut self.endpoint_sort, key.into(), key);
+                            }
+                        });
+                        ui.checkbox(&mut self.endpoint_desc, "Descending");
+                        if ui.button("Reset selected statistics").clicked() {
+                            let global = self.repo.trim().is_empty();
+                            let label = if global { "Reset statistics across ALL projects" } else { "Reset statistics for selected repository" };
+                            self.confirm(label, request("endpoint_reset", json!({"root": self.repo, "global": global, "confirmed": true})));
+                        }
+                    });
                 }
                 if self.current() == "Trace index" {
                     ui.small("Full inputs and outputs are captured only when detailed telemetry is enabled. Stored details appear as recorded; local access only; separate local retention policy.");
@@ -451,13 +474,35 @@ impl Desktop {
                     if ui.add_enabled(self.task_offset >= 100, egui::Button::new("Previous 100")).clicked() {
                         self.task_offset = self.task_offset.saturating_sub(100); self.refresh(ctx);
                     }
-                    let more = self.snapshot_view == "Tasks" && self.snapshot.as_ref()
+                    let more = self.snapshot_view == self.current() && self.snapshot.as_ref()
                         .is_some_and(|v| v["has_more"].as_bool().unwrap_or_else(|| v["tasks"].as_array().is_some_and(|a| a.len() == 100)));
                     if ui.add_enabled(more, egui::Button::new("Next 100")).clicked() {
                         self.task_offset = (self.task_offset + 100).min(i32::MAX as i64); self.refresh(ctx);
                     }
                     ui.label(format!("Offset {}", self.task_offset));
                 });
+                if self.current() == "Run history" {
+                    ui.label("Select a task from the table or enter its ID. History stays repository-scoped.");
+                    if ui.text_edit_singleline(&mut self.entity).changed() { self.history_cursor = 0; }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("After sequence");
+                        ui.add(egui::DragValue::new(&mut self.history_cursor).range(0..=i64::MAX));
+                        if ui.button("Inspect run events").clicked() {
+                            self.submit(ctx, "Run events".into(), request("event_page",
+                                json!({"root": self.repo, "stream": self.entity, "after": self.history_cursor})));
+                        }
+                        let next = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Run events")
+                            .and_then(|v| v["next_seq"].as_i64());
+                        if let Some(next) = next {
+                            if ui.add_enabled(next > self.history_cursor, egui::Button::new("Next event page")).clicked() {
+                                self.history_cursor = next;
+                                self.submit(ctx, "Run events".into(), request("event_page",
+                                    json!({"root": self.repo, "stream": self.entity, "after": self.history_cursor})));
+                            }
+                        }
+                    });
+                    return;
+                }
                 ui.collapsing("Create task contract", |ui| {
                     ui.horizontal_wrapped(|ui| {
                         egui::ComboBox::from_id_salt("task_scope").selected_text(&self.task_scope).show_ui(ui, |ui| {
@@ -480,10 +525,19 @@ impl Desktop {
                 ui.text_edit_singleline(&mut self.entity);
                 ui.text_edit_singleline(&mut self.reason);
                 ui.horizontal_wrapped(|ui| {
-                    for (title, action) in [("Inspect", "get"), ("Complete", "complete"), ("Fail", "fail")] {
+                    if ui.button("Check completion receipts").clicked() {
+                        self.submit(ctx, "Completion gate".into(), request("task_gate",
+                            json!({"root": self.repo, "id": self.entity})));
+                    }
+                    egui::ComboBox::from_id_salt("task_target").selected_text(&self.task_target).show_ui(ui, |ui| {
+                        for state in ["active", "verifying", "blocked", "planned"] {
+                            ui.selectable_value(&mut self.task_target, state.into(), state);
+                        }
+                    });
+                    for (title, action) in [("Inspect", "get"), ("Complete", "complete"), ("Fail", "fail"), ("Transition", "transition")] {
                         if ui.button(title).clicked() {
                             let data = request("task", json!({"root": self.repo, "id": self.entity,
-                                "reason": self.reason, "action": action, "confirmed": true}));
+                                "reason": self.reason, "status": self.task_target, "action": action, "confirmed": true}));
                             if action == "get" { self.submit(ctx, title.into(), data); }
                             else { self.confirm(title, data); }
                         }
@@ -567,6 +621,9 @@ impl Desktop {
                         }
                     }
                 });
+                if ui.button("Unregister and purge project data").clicked() {
+                    self.confirm("Unregister and permanently purge selected project data", request("project", json!({"root": self.repo, "action": "unregister", "purge_data": true, "confirmed": true})));
+                }
                 ui.horizontal_wrapped(|ui| {
                     for (title, action) in [("Pause all", "pause"), ("Resume all", "resume"), ("Cleanup missing", "cleanup_deleted")] {
                         if ui.button(title).clicked() {
@@ -809,7 +866,7 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
                 if self.current() == "Agent event stream" { ui.checkbox(&mut self.auto_live, "Follow live SSE while focused"); }
                 ui.label("Repository root");
-                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
+                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.history_cursor = 0; self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -905,6 +962,28 @@ impl eframe::App for Desktop {
                     return;
                 }
             }
+            if self.snapshot_view == "Run events" && !self.raw_view {
+                if let Some(snapshot) = self.snapshot.as_ref() {
+                    ui.heading("Task run events");
+                    if snapshot["retention_gap_metadata_available"] != true {
+                        ui.colored_label(ui.visuals().warn_fg_color, "History completeness is not established; inspect retention metadata.");
+                    }
+                    if let Some(gaps) = snapshot["gap_ranges"].as_array() {
+                        if !gaps.is_empty() { ui.colored_label(ui.visuals().warn_fg_color, format!("Retention gaps: {}", snapshot["gap_ranges"])); }
+                    }
+                    ui.label(format!("Next sequence: {} · more: {}", snapshot["next_seq"], snapshot["has_more"]));
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        if let Some(events) = snapshot["events"].as_array() {
+                            for event in events.iter().take(100) {
+                                ui.collapsing(format!("{} · {}", event["seq"], records::display(&event["kind"])), |ui| {
+                                    ui.label(serde_json::to_string_pretty(&trace::sanitize(event)).unwrap_or_default());
+                                });
+                            }
+                        }
+                    });
+                    return;
+                }
+            }
             if !self.raw_view && self.snapshot_view == self.current() {
                 if let Some(snapshot) = &self.snapshot {
                     summary::render(ui, self.current(), snapshot);
@@ -951,8 +1030,12 @@ impl eframe::App for Desktop {
                     if self.current() == "Endpoint analytics" { ui.label("Endpoint and MCP calls do not prove model execution. Select an explicit repository to scope counts."); }
                     if let Some(table) = records::records(self.current(), snapshot) {
                         let needle = self.filter.to_lowercase();
-                        let filtered: Vec<&Value> = table.values.into_iter().filter(|item|
+                        let mut filtered: Vec<&Value> = table.values.into_iter().filter(|item|
                             needle.is_empty() || item.to_string().to_lowercase().contains(&needle)).collect();
+                        if self.current() == "Endpoint analytics" {
+                            filtered.retain(|item| records::endpoint_matches(item, &self.endpoint_scope));
+                            records::sort_records(&mut filtered, &self.endpoint_sort, self.endpoint_desc);
+                        }
                         ui.label(format!("{} matching records (bounded response)", filtered.len()));
                         let mut selected = None;
                         egui::ScrollArea::horizontal().id_salt("records").show(ui, |ui| {
@@ -980,7 +1063,7 @@ impl eframe::App for Desktop {
                             });
                         });
                         if let Some(item) = selected {
-                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { self.entity = id.to_owned(); }
+                            if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { if self.entity != id { self.history_cursor = 0; } self.entity = id.to_owned(); }
                             if self.current() == "Plans" {
                                 if let Some(revision) = item["file_revision"].as_str() { self.revision = revision.to_owned(); }
                                 if let Some(title) = item["title"].as_str() { self.plan_title = title.to_owned(); }

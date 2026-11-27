@@ -16,10 +16,11 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Commands" => (&["/runtime_stats/commands/active"], &["command", "cwd", "class", "age_ms", "timeout_seconds"]),
         "Process sessions" => (&["/observability/sessions"], &["session_id", "pid", "status", "started_at", "duration_seconds", "events", "cache_hit_rate", "version"]),
         "Recent errors" => (&["/observability/recent_errors"], &["component", "operation", "safe_message", "count", "recovered_count", "last_seen"]),
+        "Run history" => (&["/tasks", "/items"], &["task_id", "goal", "status", "owner", "tokens_used", "updated_at"]),
         "Tasks" => (&["/tasks", "/items"], &["task_id", "goal", "status", "updated_at", "root"]),
         "Memory" => (&["/records", "/memory", "/items"], &["key", "scope", "kind", "confidence", "provenance", "created_at", "updated_at"]),
         "Search workspaces" => (&["/workspaces"], &["root", "path", "workspace", "status", "documents", "chunks"]),
-        "Endpoint analytics" => (&["/items"], &["name", "type", "calls", "success_rate", "p95_ms", "p99_ms", "status"]),
+        "Endpoint analytics" => (&["/items"], &["name", "type", "calls", ""success_rate", "p50_ms", "p95_ms", "p99_ms", "status"]),
         "Incidents" => (&["/incidents", "/items"], &["incident_id", "operation_class", "redacted_message", "status", "created_at"]),
         "Projects" => (&["/projects", "/preprocessing/projects"], &["root", "project", "phase", "phase_progress_pct", "active_detail", "waiting_reason"]),
         "Plans" => (&["/plans", "/items"], &["id", "title", "lifecycle", "file_revision"]),
@@ -35,9 +36,38 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
 pub fn field<'a>(item: &'a Value, name: &str) -> &'a Value {
     item.get(name).filter(|v| !v.is_null()).or_else(|| match name {
         "goal" => item.pointer("/contract/goal"),
+        "tokens_used" => item.pointer("/checkpoint/state_data/tokens_used"),
         "status" => item.get("state"),
         _ => None,
     }).unwrap_or(&Value::Null)
+}
+
+pub fn endpoint_matches(item: &Value, scope: &str) -> bool {
+    match scope {
+        "active" => item["calls"].as_u64().is_some_and(|n| n > 0),
+        "unused" => item["calls"].as_u64() == Some(0),
+        _ => true,
+    }
+}
+
+pub fn sort_records(values: &mut [&Value], key: &str, descending: bool) {
+    use std::cmp::Ordering;
+    values.sort_by(|a, b| {
+        let a = field(a, key);
+        let b = field(b, key);
+        match (a.is_null(), b.is_null()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            _ => {
+                let order = match (a.as_f64(), b.as_f64()) {
+                    (Some(a), Some(b)) => a.total_cmp(&b),
+                    _ => display(a).to_lowercase().cmp(&display(b).to_lowercase()),
+                };
+                if descending { order.reverse() } else { order }
+            }
+        }
+    });
 }
 
 pub fn display(value: &Value) -> String {
@@ -130,5 +160,30 @@ mod tests {
     fn unavailable_fields_are_not_zero() {
         assert_eq!(display(&Value::Null), "Unavailable");
         assert_eq!(display(&json!(false)), "false");
+    }
+}
+
+#[cfg(test)]
+mod endpoint_filter_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_counts_are_neither_active_nor_unused() {
+        assert!(!endpoint_matches(&json!({}), "active"));
+        assert!(!endpoint_matches(&json!({}), "unused"));
+        assert!(endpoint_matches(&json!({"calls": 0}), "unused"));
+    }
+
+    #[test]
+    fn missing_metric_sorts_after_measured_zero_in_both_directions() {
+        let a = json!({"calls": 0});
+        let b = json!({});
+        let c = json!({"calls": 2});
+        let mut rows = vec![&b, &a, &c];
+        sort_records(&mut rows, "calls", true);
+        assert_eq!(rows, vec![&c, &a, &b]);
+        sort_records(&mut rows, "calls", false);
+        assert_eq!(rows, vec![&a, &c, &b]);
     }
 }
