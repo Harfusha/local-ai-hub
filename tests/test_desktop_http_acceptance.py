@@ -436,3 +436,123 @@ def test_desktop_supervisor_lifecycle(tmp_path):
                 continue
             if process_owner_state(value, state, role) == "owned":
                 assert terminate_owned_process(value, state, role, grace_seconds=5.0)
+
+
+def test_desktop_ollama_management_through_real_http_and_ipc(tmp_path, monkeypatch):
+    """The backend is a local protocol fixture; no model download or inference."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    installed = {"fixture:7b", "fixture:7b-large"}
+    resident = {"fixture:7b"}
+    mutations = []
+    state = {"ps_available": True}
+
+    class OllamaFixture(BaseHTTPRequestHandler):
+        def reply(self, status, payload):
+            data = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self.reply(200, {"models": [{"name": name, "size": 1000} for name in sorted(installed)]})
+            elif self.path == "/api/ps":
+                if state["ps_available"]:
+                    self.reply(200, {"models": [{"model": name, "size_vram": 1024} for name in sorted(resident)]})
+                else:
+                    self.reply(503, {"error": "fixture unavailable"})
+            else:
+                self.reply(404, {"error": "not found"})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/pull":
+                name = payload["name"]
+                mutations.append(("pull", name))
+                installed.add(name)
+                self.reply(200, {"status": "success"})
+            else:
+                self.reply(404, {"error": "not found"})
+
+        def do_DELETE(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/delete" and payload["name"] in installed:
+                name = payload["name"]
+                mutations.append(("delete", name))
+                installed.remove(name)
+                self.reply(200, {})
+            else:
+                self.reply(404, {"error": "not found"})
+
+        def log_message(self, *_args):
+            pass
+
+    backend = ThreadingHTTPServer(("127.0.0.1", 0), OllamaFixture)
+    backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
+    backend_thread.start()
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    config = tmp_path / "isolated-models.toml"
+    config.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n[server]\n"
+        + "port = " + str(server.server_address[1])
+        + "\nstate_dir = " + json.dumps(str(tmp_path / "state"))
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\nurl = "
+        + json.dumps(f"http://127.0.0.1:{backend.server_address[1]}")
+        + "\n[smart_ollama]\nenabled = false\n[observability]\nenabled = false"
+        + "\n[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    app = None
+    thread = None
+
+    def call(op, **args):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools/desktop.py"), "--bridge", "--config", str(config)],
+            input=json.dumps({"op": op, "args": args}), capture_output=True, text=True,
+            encoding="utf-8", timeout=40, cwd=ROOT, check=True,
+        )
+        return json.loads(result.stdout)
+
+    try:
+        app = LocalAIApp(str(config))
+        monkeypatch.setattr(http_server, "APP", app)
+        # Enable only the admin fixture's configuration read after constructing
+        # the isolated disabled runtime. No background model process is started.
+        app.config["ollama"]["enabled"] = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        inventory = call("read", view="Ollama management")
+        assert inventory["ok"], inventory
+        assert inventory["result"]["running_status_available"] is True
+        models = {row["name"]: row for row in inventory["result"]["models"]}
+        assert models["fixture:7b"]["running"] is True
+        assert models["fixture:7b-large"]["running"] is False
+        assert not call("model_manage", action="delete", model="fixture:7b", confirmed=True)["ok"]
+        assert not call("model_manage", action="delete", model="fixture:7b-large")["ok"]
+        state["ps_available"] = False
+        unknown = call("read", view="Ollama management")
+        assert unknown["ok"] and unknown["result"]["running_status_available"] is False
+        assert all(row["running"] is None and row["vram_mb"] is None for row in unknown["result"]["models"])
+        assert not call("model_manage", action="delete", model="fixture:7b-large", confirmed=True)["ok"]
+        assert mutations == []
+        state["ps_available"] = True
+        removed = call("model_manage", action="delete", model="fixture:7b-large", confirmed=True)
+        assert removed["ok"] and removed["result"]["deleted"] == "fixture:7b-large", removed
+        pulled = call("model_manage", action="pull", model="fixture:new", confirmed=True)
+        assert pulled["ok"] and pulled["result"]["pulled"] == "fixture:new", pulled
+        assert mutations == [("delete", "fixture:7b-large"), ("pull", "fixture:new")]
+        assert installed == {"fixture:7b", "fixture:new"}
+    finally:
+        if thread is not None:
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
+        if app is not None:
+            app.config["ollama"]["enabled"] = False
+            app.close()
+        backend.shutdown()
+        backend_thread.join(timeout=5)
+        backend.server_close()
