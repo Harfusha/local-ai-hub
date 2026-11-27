@@ -77,3 +77,13 @@ def test_reject_confirmation_that_is_transitive_prerequisite_of_primary():
     with pytest.raises(ValueError, match="prerequisite"):
         validate_resolution_order({"criterion": "repair", "resolution_criterion": "verify"}, config)
     validate_resolution_order({"criterion": "verify", "resolution_criterion": "repair"}, config)
+
+
+def test_reject_cycles_across_multiple_confirmation_reports():
+    from local_ai_hub.execution_problems import validate_resolution_order
+
+    state = record_problem({}, {"id": "one", "title": "one", "criterion": "a",
+                               "resolution_criterion": "b"},
+                           criteria=("a", "b"), receipt_ids={}, reporter="agent", now=10)
+    with pytest.raises(ValueError, match="prerequisite"):
+        validate_resolution_order({"criterion": "b", "resolution_criterion": "a"}, {}, state)
