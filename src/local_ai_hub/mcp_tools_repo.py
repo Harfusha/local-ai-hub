@@ -633,7 +633,7 @@ def _local_ai_repo_impl(
                           "unavailable_patch_scopes", "unavailable_patch_scope_count", "unavailable_patch_scopes_omitted",
                           "summary_cache_hits", "persistent_summary_cache_hits", "observed_change_set_id",
                           "projection_mode", "projection_partial", "comparison", "offset", "limit", "has_more",
-                          "next_offset", "model_advice_status", "task_context", "git_snapshot_metadata",
+                          "next_offset", "model_advice_status", "task_context", "local_ledger", "git_snapshot_metadata",
                           "inventory_scope", "inventory_file_count", "git_visible_observation_complete", "dependency_plan",
                           "selected_paths", "already_staged", "unstaged_selection", "outside_staged_count",
                           "outside_staged_paths", "outside_staged_omitted", "blockers", "selection_matches_observation",

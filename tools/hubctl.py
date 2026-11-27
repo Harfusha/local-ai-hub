@@ -304,9 +304,12 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-apply", "annotate"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
-        if args.sub_arg == "commit-staged":
+        if args.sub_arg == "annotate":
+            if not args.apply or args.dry_run or args.base or not args.expected_revision or not args.record_file:
+                parser.error("annotate requires --apply, --expected-revision and --record-file")
+        elif args.sub_arg == "commit-staged":
             if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
                 parser.error("commit-staged requires --apply, --expected-revision, --expected-tree, --commit-message and exact --changed-path values")
         elif args.sub_arg in {"sequence-preview", "sequence-verify", "sequence-apply"}:
@@ -393,6 +396,27 @@ def main() -> int:
         requested_mode = None
 
     if args.action == "changes":
+        if args.sub_arg == "annotate":
+            from local_ai_hub.change_ledger import ChangeLedger
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.repository_scope import authorized_repository_root
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            root = authorized_repository_root(config, str(args.root.resolve()))
+            with args.record_file.open("rb") as stream:
+                raw = stream.read(100001)
+            if len(raw) > 100000:
+                parser.error("Annotation file exceeds 100000 bytes")
+            try:
+                result = ChangeLedger(configured_state_dir(config)).annotate(
+                    DeterministicEngine(config).split_changes(root, None),
+                    expected_revision=args.expected_revision, record=json.loads(raw),
+                )
+            except (OSError, ValueError) as exc:
+                result = {"success": False, "error": str(exc)}
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
         if args.sub_arg in {"stage-preview", "stage-apply"}:
             from local_ai_hub.change_stage_execution import stage_selection
             from local_ai_hub.deterministic import DeterministicEngine

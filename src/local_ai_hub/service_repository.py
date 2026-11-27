@@ -922,6 +922,18 @@ class ServiceRepositoryMixin:
                 return {"success": False, "error": error, "commit_ready": False}
         if base is None and (mode != "full" or task_id):
             attach_task_context(self, result, tasks, root, revision_before=revision_before, truncated=truncated)
+        if base is None and mode != "artifact" and result.get("git_visible_observation_complete") is True:
+            from .change_ledger import ChangeLedger
+            from .state_paths import configured_state_dir
+            import sqlite3
+
+            try:
+                ledger = ChangeLedger(configured_state_dir(getattr(self, "config", {})))
+                if mode in {"summary", "delta"}:
+                    ledger.observe(result)
+                ledger.attach(result)
+            except (OSError, ValueError, sqlite3.Error):
+                result["local_ledger"] = {"status": "unavailable", "authoritative_ownership_proven": False}
         from .change_plan_delta import change_delta, remember_baseline
 
         cache = getattr(self.deterministic, "_change_summary_cache", None)

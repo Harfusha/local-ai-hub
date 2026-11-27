@@ -26,7 +26,7 @@ def project_change_plan(
         item = {k: group[k] for k in (
             "cluster_id", "group_key", "name", "category", "summary", "suggested_commit_message",
             "verification_status", "risks", "line_totals", "semantic_change_counts",
-            "semantic_observed_scopes", "observed_hunk_count", "task_candidates", "task_candidates_omitted",
+            "semantic_observed_scopes", "observed_hunk_count", "task_candidates", "task_candidates_omitted", "local_ledger",
         ) if k in group}
         dependencies = group.get("dependency_group_candidates", [])
         item["dependency_group_candidates"] = dependencies[:8]

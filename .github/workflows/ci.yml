@@ -92,6 +92,7 @@ jobs:
           tests/test_change_commit_preflight.py
           tests/test_change_commit_execution.py
           tests/test_change_stage_execution.py
+          tests/test_change_ledger.py
           tests/test_change_plan_projection.py
           tests/test_change_task_context.py
       - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills

@@ -15,11 +15,19 @@ def publish_change_plan(result: dict[str, Any], store: Any) -> dict[str, Any]:
         return {"success": False, "error": "Artifact store unavailable", "artifact_status": "unavailable"}
     # Exclude task context from globally addressable derived artifacts. Task
     # associations remain available from the authorized live plan interface.
-    safe = {k: v for k, v in result.items() if k not in {"clusters", "task_context"}}
+    safe = {k: v for k, v in result.items() if k not in {"clusters", "task_context", "local_ledger"}}
     safe["clusters"] = [
-        {k: v for k, v in group.items() if k not in {"task_candidates", "task_candidates_omitted"}}
+        {k: v for k, v in group.items() if k not in {"task_candidates", "task_candidates_omitted", "local_ledger", "changes"}}
         for group in result.get("clusters", [])
     ]
+    for group, source in zip(safe["clusters"], result.get("clusters", [])):
+        group["changes"] = [
+            {**{k: v for k, v in change.items() if k != "atoms"}, "atoms": [
+                {k: v for k, v in atom.items() if k not in {"local_annotations", "local_annotations_omitted"}}
+                for atom in change.get("atoms", [])
+            ]}
+            for change in source.get("changes", [])
+        ]
     safe["commit_ready"] = False
     safe["verification_status"] = "unknown"
     safe["artifact_historical_observation"] = True
