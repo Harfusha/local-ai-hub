@@ -4,7 +4,7 @@ The Rust/egui desktop is a separate local operator application. The Hub continue
 
 ## Build and launch
 
-Install stable Rust and the platform OpenGL development/runtime libraries. On Ubuntu 22.04 CI installs libgl1-mesa-dev, libxkbcommon-dev, libwayland-dev, libx11-dev, libxi-dev, libxcursor-dev and libxrandr-dev. Windows and macOS use the native platform renderer.
+Install stable Rust and the platform OpenGL development/runtime libraries. On Ubuntu 22.04 CI installs libgl1-mesa-dev, libxkbcommon-dev, libxkbcommon-x11-0, libxkbcommon-x11-dev, libwayland-dev, libx11-dev, libxi-dev, libxcursor-dev and libxrandr-dev. Linux X11 installations also require the XKB X11 runtime (`libxkbcommon-x11-0` on Debian/Ubuntu) and working OpenGL/EGL drivers. Windows and macOS use the native platform renderer.
 
 ```sh
 cargo build --manifest-path desktop/Cargo.toml --release --locked
