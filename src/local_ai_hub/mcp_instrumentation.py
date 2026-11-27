@@ -340,6 +340,8 @@ def _agent_output(
     value: Any,
     tool: str,
     arguments: dict[str, Any],
+    *,
+    retain_internal_metadata: bool = False,
 ) -> Any:
     """Keep internal observations out of ordinary agent responses.
 
@@ -591,7 +593,7 @@ def _instrumented_tool(services_module: Any = None):
                         clean = candidate
                         handoff_added = True
             clean = services_module._agent_output(
-                clean, fn.__name__, arguments,
+                clean, fn.__name__, arguments, retain_internal_metadata=True,
             )
             if (
                 isinstance(clean, dict)

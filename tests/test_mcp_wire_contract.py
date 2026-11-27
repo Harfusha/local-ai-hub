@@ -39,7 +39,8 @@ def test_context_compile_minimum_wire_budget_keeps_recovery_instruction() -> Non
 
     content, structured = mcp_server._mcp_budget_payload(
         "local_ai_coord",
-        {"action": "context_compile", "max_response_tokens": 128, "response_profile": "minimal"},
+        {"action": "context_compile", "max_response_tokens": 128, "response_profile": "minimal",
+         "extra_fields": ["response_budget"]},
         {"success": False, "error": "max_response_tokens too small",
          "next_action": "request_larger_response_budget",
          "response_budget": {"requested_tokens": 128, "returned_tokens": 0, "rejected": True}},
@@ -64,7 +65,8 @@ def test_context_compile_lost_artifact_pointer_returns_exact_recovery(monkeypatc
                         lambda *args: ([t.TextContent(type="text", text=json.dumps(rejected))], rejected))
     content, structured = mcp_server._mcp_budget_payload(
         "local_ai_coord",
-        {"action": "context_compile", "max_response_tokens": 1024, "response_profile": "compact"},
+        {"action": "context_compile", "max_response_tokens": 1024, "response_profile": "compact",
+         "extra_fields": ["response_budget"]},
         {"success": False, "task_context_artifact_id": pointer, "next_action": "read_task_context_artifact"},
     )
     value = structured if structured is not None else json.loads(content[0].text)
