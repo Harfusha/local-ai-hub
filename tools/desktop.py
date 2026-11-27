@@ -59,7 +59,7 @@ VIEWS = {
     "GPU": "/api/hardware/gpu",
     "Audit": "/api/audit/tail",
 }
-SCOPED = frozenset({"Tasks", "Memory", "Incidents"})
+SCOPED = frozenset({"Tasks", "Memory", "Incidents", "File leases"})
 MAINTENANCE = {
     "Optimize databases": ("/api/maintenance/optimize_db", {}),
     "Purge expired cache (7 days)": ("/api/maintenance/purge_cache", {"days": 7}),
@@ -609,14 +609,20 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             return result
         finally:
             client.close()
+    if op == "session_briefing":
+        root = explicit_root(args.get("root"))
+        include = args.get("include", ["board", "plans", "active_tasks"])
+        if (not isinstance(include, list) or not include
+                or any(type(item) is not str or item not in {"board", "plans", "active_tasks"} for item in include)
+                or len(include) != len(set(include))):
+            raise ValueError("Invalid session briefing sections")
+        return checked_post(control, "/api/coord/session_briefing", {"root": root, "include": include})
     if op in {"plan_update", "plan_task_create", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
-              "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release", "session_briefing"}:
+              "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release"}:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         if op == "lease_release":
             return checked_post(control, "/api/leases/release", {"lease_id": text_field(args, "id", 200)})
-        if op == "session_briefing":
-            return checked_post(control, "/api/coord/session_briefing", {"agent_id": text_field(args, "id", 200)})
         if op.startswith("semaphore_"):
             payload = {"name": text_field(args, "name", 200)}
             if op == "semaphore_release":
