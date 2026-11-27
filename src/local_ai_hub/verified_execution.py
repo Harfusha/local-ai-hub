@@ -54,7 +54,7 @@ def expand_declared_inventory(
         return tuple(criteria), raw
     inventory = raw["inventory"]
     if (type(inventory) is not dict or not {"resources", "checks"}.issubset(inventory)
-            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision", "include_mapped_tests", "policy_sha256", "exclusions"}):
+            or set(inventory) - {"resources", "checks", "scope", "partition", "base_revision", "include_mapped_tests", "policy_sha256", "exclusions", "include_python_imports"}):
         raise ValueError("inventory must contain resources and checks")
     scope = inventory.get("scope", "declared")
     if scope not in ("declared", "repository", "changes"):
@@ -63,6 +63,9 @@ def expand_declared_inventory(
     if "base_revision" in inventory and (scope != "changes" or type(base_revision) is not str
             or len(base_revision) not in (40, 64) or any(c not in "0123456789abcdef" for c in base_revision)):
         raise ValueError("base_revision requires a full Git commit ID in changes scope")
+    python_imports = inventory.get("include_python_imports", False)
+    if type(python_imports) is not bool or ("include_python_imports" in inventory and scope != "changes"):
+        raise ValueError("invalid Python import impact scope")
     mapped = inventory.get("include_mapped_tests", False)
     policy_digest = inventory.get("policy_sha256", "")
     if type(mapped) is not bool or ("include_mapped_tests" in inventory and scope != "changes"):
@@ -174,6 +177,7 @@ def expand_declared_inventory(
             **({"scope": scope} if scope != "declared" else {}),
             **({"base_revision": base_revision} if base_revision else {}),
             **({"include_mapped_tests": True, "policy_sha256": policy_digest} if mapped else {}),
+            **({"include_python_imports": True} if python_imports else {}),
             **({"partition": dict(partition)} if partition is not None else {}),
             **({"exclusions": exclusions} if exclusions else {}),
         },
@@ -353,6 +357,7 @@ def execution_projection(
     total = len(ordered)
     inventory_summary = ({
         "authority": "declared", "resources": len(inventory["resources"]),
+        **({"impact_analysis": "static_python_imports"} if inventory.get("include_python_imports") else {}),
         **({"excluded_count": len(inventory["exclusions"]),
             "exclusions_preview": inventory["exclusions"][:MAX_PREVIEW]} if inventory.get("exclusions") else {}),
         "checks": len(inventory["checks"]),
