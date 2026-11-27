@@ -449,10 +449,19 @@ def _local_ai_repo_impl(
     if action == "map":
         return services_module._compact(services_module.CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=services_module._timeout("quick")), "architecture")
     if action == "code_index":
-        return services_module._compact(
-            services_module.CLIENT.post("/api/repo/code-index", {"root": root, "query": query, "limit": limit, "offset": offset, "include_code": include_code}, timeout=services_module._timeout("quick")),
-            "code_index", identity={"root": root, "query": query},
-        )
+        raw = services_module.CLIENT.post("/api/repo/code-index", {"root": root, "query": query, "limit": limit, "offset": offset, "include_code": include_code}, timeout=services_module._timeout("quick"))
+        # Validate before the pagination projector can drop or coerce fields.
+        output_error = services_module.validate_operation_output("local_ai_repo", action, raw)
+        if output_error is not None:
+            failure = {"success": False, "status_code": 500, "terminal": True, "retryable": False,
+                       "error": f"MCP output contract failed: {output_error}"}
+            if isinstance(raw, dict):
+                request_id = raw.get("request_id")
+                if (isinstance(request_id, str) and 0 < len(request_id) <= 160
+                        and all(32 <= ord(char) < 127 for char in request_id)):
+                    failure["request_id"] = request_id
+            return failure
+        return services_module._compact(raw, "code_index", identity={"root": root, "query": query})
     if action in {"semantic", "intelligence"}:
         backend = "serena" if action == "semantic" else "auto"
         operation = relation or ("find_symbol" if backend == "serena" else "search")
