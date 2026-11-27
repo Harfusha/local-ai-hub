@@ -21,6 +21,10 @@ The Native desktop CI workflow produces platform-specific binary artifacts and a
 
 Select a repository for scoped operations. Refresh views explicitly; focus-only health probes and optional bounded event follow avoid resident polling. Mutations use named, validated operations and confirmation. Detailed traces may contain locally stored sensitive material; the default trace presentation redacts credential-shaped fields and explicit raw display can expose the original record. Never share raw diagnostic output inadvertently.
 
+## Changes & commits
+
+Select a repository root and open **Changes & commits** for summary, details, local-model advisory commit messages, PR and release comparisons. Page through groups with the observed revision; after edits refresh the plan. This surface is read-only: it cannot stage or commit. See [Git Change Intelligence](GIT_CHANGE_INTELLIGENCE.md).
+
 ## Release status
 
 The current PR is a draft. See [parity and evidence](DESKTOP_PARITY.md) for gaps and verification requirements. Passing builds do not establish complete behavioral parity.

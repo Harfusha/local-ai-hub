@@ -268,6 +268,27 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         raise ValueError("args must be an object")
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "change_plan":
+        root = explicit_root(args.get("root"))
+        mode = args.get("mode", "summary")
+        offset = args.get("offset", 0)
+        if mode not in {"summary", "details", "semantic", "pr", "release"}:
+            raise ValueError("Invalid read-only change plan mode")
+        if type(offset) is not int or not 0 <= offset <= 100000:
+            raise ValueError("Invalid change plan offset")
+        payload = {"root": root, "mode": mode, "offset": offset, "limit": 4}
+        for name, maximum in (("base", 512), ("head", 512), ("path", 4096), ("expected_revision", 128)):
+            value = args.get(name, "")
+            if not isinstance(value, str) or len(value) > maximum or "\0" in value:
+                raise ValueError(f"Invalid {name}")
+            if value and name == "path":
+                payload["paths"] = [value]
+            elif value and name != "head":
+                payload[name] = value
+        if payload.get("base"):
+            payload["head"] = args.get("head") or "HEAD"
+        return checked_post(control, "/api/repo/split_changes", payload,
+                            timeout=1800.0 if mode == "semantic" else 120.0)
     if op == "task_page":
         root = explicit_root(args.get("root"))
         offset = args.get("offset", 0)

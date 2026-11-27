@@ -63,3 +63,7 @@ Extend the existing repository analysis, Agent OS, artifact, context ledger, ver
 ## Acceptance
 
 All changes are accounted for or explicitly identified as unavailable. No unproven atomicity, correctness or review claims. No silent loss of index/worktree changes. A second unchanged request reuses content-bound summaries/receipts; a changed atom invalidates only affected evidence. Each proposed commit is independently validated or blocked. The cloud agent receives a bounded plan and only escalates unresolved/risky evidence. The initial implementation does not yet satisfy the full target acceptance.
+
+## Native desktop integration
+
+The web dashboard cutover is incorporated from the native desktop branch. Changes & commits uses a named, scoped bridge operation and the same read-only HTTP plan, with bounded paging and expected observed revision. It does not run arbitrary Git commands or authorize mutations.

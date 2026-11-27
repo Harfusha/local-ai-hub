@@ -27,6 +27,7 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Settings", &["Settings", "Settings — activity mode", "Updates"]),
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Search workspaces"]),
+    ("Changes & commits", &["Changes & commits"]),
 ];
 const MAINTENANCE: &[&str] = &[
     "Optimize databases", "Purge expired cache (7 days)", "Cleanup stale agent state",
@@ -157,6 +158,11 @@ struct Desktop {
     capacity: i64,
     trace_cursor: i64,
     task_offset: i64,
+    change_offset: i64,
+    change_mode: String,
+    change_base: String,
+    change_head: String,
+    change_expected: String,
     task_query: String,
     stream_id: String,
     event_cursor: i64,
@@ -197,7 +203,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, change_offset: 0, change_mode: "summary".into(), change_base: String::new(), change_head: "HEAD".into(), change_expected: String::new(), task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -290,6 +296,46 @@ impl Desktop {
                 self.busy = None; self.receiver = None;
                 self.status = "Operation worker disconnected; outcome unknown.".into();
             }
+            11 => {
+                ui.label("Read-only commit planning; summaries are not approval or verification.");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("View");
+                    if egui::ComboBox::from_id_salt("change_mode").selected_text(&self.change_mode).show_ui(ui, |ui| {
+                        let mut changed = false;
+                        for mode in ["summary", "details", "semantic", "pr", "release"] {
+                            changed |= ui.selectable_value(&mut self.change_mode, mode.into(), mode).changed();
+                        }
+                        changed
+                    }).inner.unwrap_or(false) {
+                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                    }
+                    ui.label("Base (optional)");
+                    if ui.text_edit_singleline(&mut self.change_base).changed() {
+                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                    }
+                    ui.label("Head");
+                    if ui.text_edit_singleline(&mut self.change_head).changed() {
+                        self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                    }
+                });
+                ui.label("Optional repository-relative file (details)");
+                if ui.text_edit_singleline(&mut self.entity).changed() {
+                    self.change_offset = 0; self.change_expected.clear(); self.clear_response();
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Refresh plan").clicked() {
+                        self.change_offset = 0; self.change_expected.clear(); self.refresh(ctx);
+                    }
+                    let revision = self.snapshot.as_ref().and_then(|v| v["observed_change_set_id"].as_str()).unwrap_or("").to_owned();
+                    let next = self.snapshot.as_ref().and_then(|v| v["next_offset"].as_i64());
+                    if ui.add_enabled(next.is_some() && !revision.is_empty(), egui::Button::new("Next groups")).clicked() {
+                        if let Some(offset) = next {
+                            self.change_offset = offset; self.change_expected = revision; self.refresh(ctx);
+                        }
+                    }
+                });
+                ui.small("For PR/release choose the explicit base. Semantic mode uses local advisory messages only. Refresh after any repository edit.");
+            }
             _ => {}
         }
     }
@@ -309,6 +355,11 @@ impl Desktop {
             "Updates" => request("update_status", json!({})),
             "Tasks" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
+            "Changes & commits" => request("change_plan", json!({
+                "root": self.repo, "mode": self.change_mode, "base": self.change_base,
+                "head": self.change_head, "path": self.entity, "offset": self.change_offset,
+                "expected_revision": self.change_expected
+            })),
             "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
             _ => view_request(view, &self.repo, &self.entity),
         };
@@ -709,7 +760,7 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
                 if self.current() == "Agent event stream" { ui.checkbox(&mut self.auto_live, "Follow live SSE while focused"); }
                 ui.label("Repository root");
-                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
+                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.change_offset = 0; self.change_expected.clear(); self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -720,7 +771,7 @@ impl eframe::App for Desktop {
             ui.add_enabled_ui(self.busy.is_none() && self.pending.is_none(), |ui| {
                 for (index, (name, _)) in PAGES.iter().enumerate() {
                     if ui.selectable_label(self.page == index, *name).clicked() && self.page != index {
-                        self.page = index; self.view = 0; self.clear_response(); self.entity.clear(); self.revision.clear();
+                        self.page = index; self.view = 0; self.clear_response(); self.entity.clear(); self.revision.clear(); self.change_offset = 0; self.change_expected.clear();
                         self.filter.clear();
                     }
                 }

@@ -234,3 +234,21 @@ def test_native_update_install_requires_confirmation():
     with pytest.raises(ValueError, match="confirmation"):
         desktop.dispatch(control, {"op": "update_install", "args": {"version": "1.0.0"}})
     control._client.assert_not_called()
+
+
+def test_change_plan_bridge_is_read_only_and_scoped(tmp_path):
+    control = MagicMock()
+    with patch.object(desktop, "checked_post", return_value={"success": True}) as post:
+        desktop.dispatch(control, {"op": "change_plan", "args": {
+            "root": str(tmp_path), "mode": "summary", "offset": 4,
+            "expected_revision": "abc",
+        }})
+        assert post.call_args.args == (
+            control, "/api/repo/split_changes",
+            {"root": str(tmp_path.resolve()), "mode": "summary", "offset": 4,
+             "limit": 4, "expected_revision": "abc"},
+        )
+        with pytest.raises(ValueError):
+            desktop.dispatch(control, {"op": "change_plan", "args": {
+                "root": str(tmp_path), "mode": "apply",
+            }})

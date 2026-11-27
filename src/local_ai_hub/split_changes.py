@@ -294,12 +294,13 @@ def run_split_changes(
             unstaged = {}
             before = b""
 
-            def atom_git(*patch_args: str) -> bytes:
+            def committed_git(*patch_args: str) -> bytes:
                 if patch_args[0] == "diff" and "--cached" in patch_args:
                     args_without_cached = tuple(arg for arg in patch_args if arg != "--cached")
                     boundary = args_without_cached.index("--")
                     return git(*args_without_cached[:boundary], base_sha, head_sha, *args_without_cached[boundary:])
                 return git(*patch_args)
+            atom_git = committed_git
         full_status_count = len(statuses)
         if changed_files is not None:
             if not isinstance(changed_files, list) or any(not isinstance(p, str) or p not in statuses for p in changed_files):
