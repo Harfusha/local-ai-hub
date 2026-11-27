@@ -8753,11 +8753,16 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve bounded factual change summaries, exact identities, pagination, and explicit gaps. Advisory model output is not authorization or verification. Legacy full responses remain supported.",
+      "response_policy": "Accept only canonical changed_paths selection; reject retired paths and changed_files aliases. Preserve bounded factual change summaries, exact identities, pagination, explicit gaps, and terminal contract errors. Advisory model output is not authorization or verification.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_split_changes_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
           "APP.services.split_changes",
           "local:result"
