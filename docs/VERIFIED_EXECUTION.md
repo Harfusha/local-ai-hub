@@ -290,6 +290,20 @@ the current verification preview is ready, 2 means incomplete, and 1 means
 the request failed or is not a structured execution. The CLI is not a
 replacement for task_complete, which still revalidates completion.
 
+## Obligation-specific source context
+
+For an explicit server-checked repository review, request `context_compile`
+with `include_kinds: ["task_goal", "execution_source"]`. If the next actionable
+obligation is a `source_review` of an inventoried code file, the context
+compiler can include up to 40 initial lines and 1,600 characters, with the
+full source SHA-256, range, total lines and pagination information in provenance.
+The request and trusted task repository must match, current inventory must be
+matched, and project search policy must allow the file. Symlinks, unlisted paths,
+non-source extensions and changing files are rejected. Change inventories and
+declared resource names are intentionally not auto-read. Source content is
+untrusted data, never a verification receipt; use the existing exact source
+slice action for further ranges. Context budget selection may omit the preview.
+
 ## Native desktop Work Center
 
 In the desktop application choose Tasks → Work Center, select the explicit
@@ -352,7 +366,8 @@ Remaining acceptance work (not claimed complete):
 3. Full graph metadata steering and replay beyond additive criteria.
 4. Dependency-selective receipt invalidation across repository mutations (prerequisite
    receipt ordering is implemented) with conservative fallback and
-   obligation-specific retrieval of source context (not just exact resource identity).
+   broader obligation-specific retrieval (explicit bounded source previews for
+   server-inventoried code reviews are implemented).
 5. Semantic consistency guard, independent critic and representative seeded-defect
    evaluations. Deterministic projection regression tests do not measure model recall.
 6. Real-host acceptance of continuation hooks and broader no-progress detection
