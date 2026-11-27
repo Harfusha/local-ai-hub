@@ -629,7 +629,7 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                 or len(include) != len(set(include))):
             raise ValueError("Invalid session briefing sections")
         return checked_post(control, "/api/coord/session_briefing", {"root": root, "include": include})
-    if op in {"plan_update", "plan_task_create", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
+    if op in {"plan_update", "plan_archive", "plan_task_create", "plan_task_edit", "plan_task_move", "plan_task_delete", "lease_release",
               "semaphore_acquire", "semaphore_release", "worktree_prune", "worktree_release"}:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
@@ -671,6 +671,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         payload = {"root": root, "plan_id": text_field(args, "id", 85),
                    "expected_revision": text_field(args, "revision", 200),
                    "owner": "desktop", "idempotency_key": "desktop-" + uuid.uuid4().hex}
+        if op == "plan_archive":
+            return checked_post(control, "/api/coord/plan_archive", payload)
         if op == "plan_update":
             payload.update(plan_text_patch(args, task=False))
         else:
@@ -718,16 +720,35 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         return control.maintenance(text_field(args, "action", 100))
-    if op in {"plans", "plan_board", "plan_detail", "worktrees", "project_config"}:
+    if op in {"plans", "plan_board", "plan_detail", "plan_validate", "worktrees", "project_config"}:
         root = explicit_root(args.get("root"))
-        if op == "plans":
-            return checked_post(control, "/api/coord/plan_list", {"root": root})
-        if op == "plan_detail":
-            return checked_post(control, "/api/coord/plan_get",
+        if op in {"plans", "plan_board"}:
+            query = args.get("query", "")
+            if not isinstance(query, str) or len(query) > 1000:
+                raise ValueError("Invalid plan search")
+            payload = {"root": root, "query": query}
+            if op == "plans":
+                limit = args.get("limit", 100)
+                if type(limit) is not int or limit not in (25, 100, 250):
+                    raise ValueError("Invalid plan list limit")
+                lifecycle = args.get("lifecycle", "")
+                if lifecycle not in ("", "draft", "active", "completed", "archived", "cancelled"):
+                    raise ValueError("Invalid plan lifecycle")
+                payload["limit"] = limit
+                if lifecycle:
+                    payload["lifecycle"] = lifecycle
+                result = checked_post(control, "/api/coord/plan_list", payload)
+                result["desktop_list_limit"] = limit
+                return result
+            plan_id = args.get("id", "")
+            if not isinstance(plan_id, str) or len(plan_id) > 85:
+                raise ValueError("Invalid plan ID")
+            if plan_id.strip():
+                payload["plan_id"] = plan_id.strip()
+            return checked_post(control, "/api/coord/plan_board_view", payload)
+        if op in {"plan_detail", "plan_validate"}:
+            return checked_post(control, "/api/coord/" + ("plan_get" if op == "plan_detail" else "plan_validate"),
                                 {"root": root, "plan_id": text_field(args, "id", 85)})
-        if op == "plan_board":
-            return checked_post(control, "/api/coord/plan_board_view",
-                                {"root": root, "plan_id": text_field(args, "id", 100)})
         return scoped_read(control, "/api/coord/worktrees" if op == "worktrees"
                            else "/api/project/config", root)
     if op == "semaphores":
