@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
-from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
+from local_ai_hub.process_utils import hidden_run_kwargs
 
 ROOT_CONFIG = ROOT / "config.toml"
 ACTIVITY_MODES = ("active", "gaming", "maintenance", "preprocessing")
@@ -172,26 +172,61 @@ def _startup_wait_seconds() -> float:
     return min(330.0, max(12.0, grace + 30.0))
 
 
-def stop() -> bool:
-    # Stop the supervisor/service first; killing only the hub would make the supervisor restart it.
-    _service("stop")
-    data = status()
-    if not data.get("running"):
-        return True
-    pid = int(data.get("hub_pid", 0) or 0)
-    if pid <= 0 or pid == os.getpid():
+def _confirmed_service_stop(completed: subprocess.CompletedProcess[str]) -> bool:
+    # A native service stop proves owner identity, role exit and listener
+    # release. Never substitute an untrusted PID from /api/status or equate
+    # HTTP unreachability with a stopped supervisor.
+    if completed.returncode == 0:
+        return completed.stdout.strip() == "stopped"
+    if completed.returncode != 1:
         return False
     try:
-        terminate_tree(pid, grace_seconds=5.0)
-    except Exception:
+        receipt = json.loads(completed.stdout)
+    except (TypeError, ValueError):
         return False
-    deadline = time.time() + 8
-    c = client()
-    while time.time() < deadline:
-        if not c._online():
-            return True
-        time.sleep(0.15)
-    return not c._online()
+    if not isinstance(receipt, dict):
+        return False
+    manager = receipt.get("service_manager")
+    if not isinstance(manager, dict) or manager.get("supported") is not False:
+        return False
+    reason = manager.get("reason")
+    # Linux/macOS installations without a registered user service may use
+    # the detached supervisor. Accept only the explicit missing-manager
+    # reason with every owned process and port positively confirmed stopped.
+    return (
+        reason in ("managed_user_unit_not_installed", "managed_launch_agent_not_installed")
+        and receipt.get("errors") == [reason]
+        and all(receipt.get(key) is True for key in (
+            "stopped", "supervisor_stopped", "hub_stopped", "managed_ollama_stopped",
+        ))
+        and "port_listener_pid" in receipt
+        and receipt["port_listener_pid"] is None
+    )
+
+
+def stop() -> bool:
+    service = ROOT / "tools" / "service.py"
+    if not service.is_file():
+        print("Service controller unavailable; shutdown not confirmed.", file=sys.stderr)
+        return False
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(service), "stop"], check=False, timeout=35.0,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            **hidden_run_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        print("Service controller failed; shutdown outcome unknown.", file=sys.stderr)
+        return False
+    if not _confirmed_service_stop(completed):
+        print("Service controller did not confirm owned shutdown: " +
+              (completed.stdout.strip() or completed.stderr.strip())[-2000:], file=sys.stderr)
+        return False
+    c = HubClient(config_path=_config_arg(), auto_start=False)
+    try:
+        return not c._online(timeout=2.0)
+    finally:
+        c.close()
 
 
 def start(verbose: bool = True) -> bool:
