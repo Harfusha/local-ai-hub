@@ -132,6 +132,79 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
             ids = {item["record_id"] for item in found["result"]["records"]}
             assert saved[0] not in ids and (saved[1] in ids) == (index == 1), found
 
+        # Real task contract creation, scoped paging and completion gating.
+        from local_ai_hub.agent_tasks import GoalContract, ScopeContext
+
+        task_ids = []
+        for index, root in enumerate(roots):
+            created = call("task_create", root=str(root), goal=f"Desktop task fixture {index}",
+                           criteria="verified test result", description="fixture contract",
+                           constraints="no external calls", non_goals="unrelated repositories",
+                           scope="repository", risk="critical", slo='{"latency_ms": 100}', confirmed=True)
+            assert created["ok"], created
+            task = created["result"]["task"]
+            assert task["contract"]["description"] == "fixture contract"
+            assert task["contract"]["non_goals"] == ["unrelated repositories"]
+            assert task["contract"]["constraints"] == ["no external calls"]
+            assert task["contract"]["risk_profile"] == "critical"
+            task_ids.append(task["task_id"])
+            if index == 0:
+                # Seed additional real store records to force cursor continuation
+                # without spawning another 25 Python adapter processes.
+                context = ScopeContext.from_dict(task["context"])
+                for number in range(25):
+                    app.agent_tasks.create(
+                        GoalContract(goal=f"Desktop task fixture page {number}"),
+                        context, repo_root=str(root), actor="desktop-fixture",
+                    )
+        first_page = call("task_page", root=str(roots[0]), query="Desktop task fixture", status="planned", limit=25)
+        assert first_page["ok"], first_page
+        page = first_page["result"]
+        assert page["has_more"] is True and len(page["tasks"]) == 25
+        next_page = call("task_page", root=str(roots[0]), query="Desktop task fixture", status="planned",
+                         limit=25, offset=page["next_offset"])
+        assert next_page["ok"], next_page
+        assert next_page["result"]["has_more"] is False and len(next_page["result"]["tasks"]) == 1
+        first_ids = {row["task_id"] for row in page["tasks"]}
+        next_ids = {row["task_id"] for row in next_page["result"]["tasks"]}
+        assert not first_ids.intersection(next_ids)
+        assert task_ids[0] in first_ids | next_ids and task_ids[1] not in first_ids | next_ids
+        other_page = call("task_page", root=str(roots[1]), query="Desktop task fixture", status="planned", limit=25)
+        assert other_page["ok"] and [row["task_id"] for row in other_page["result"]["tasks"]] == [task_ids[1]]
+        wrong_task = call("task", root=str(roots[1]), id=task_ids[0], action="get", confirmed=True)
+        assert wrong_task["ok"] is False
+        active = call("task", root=str(roots[0]), id=task_ids[0], action="transition",
+                      status="active", reason="fixture started", confirmed=True)
+        assert active["ok"], active
+        verifying = call("task", root=str(roots[0]), id=task_ids[0], action="transition",
+                         status="verifying", reason="fixture verification", confirmed=True)
+        assert verifying["ok"], verifying
+        completed = call("task", root=str(roots[0]), id=task_ids[0], action="complete",
+                         reason="must not complete without receipt", confirmed=True)
+        assert completed["ok"] is False, completed
+        current = call("task", root=str(roots[0]), id=task_ids[0], action="get", confirmed=True)
+        assert current["ok"] and current["result"]["task"]["status"] == "verifying", current
+
+        # Real incident recording, resolution filter and repository isolation.
+        incident_ids = []
+        for index, root in enumerate(roots):
+            recorded = call("incident", root=str(root), kind="desktop-fixture",
+                            message="Desktop fixture parser mismatch", cause="Incorrect parser configuration",
+                            fix="Validated parser configuration with regression test" if index == 0 else "",
+                            confirmed=True)
+            assert recorded["ok"], recorded
+            incident_ids.append(recorded["result"]["incident"]["incident_id"])
+        assert incident_ids[0] != incident_ids[1]
+        for index, root in enumerate(roots):
+            inventory = call("incident_list", root=str(root), status="resolved" if index == 0 else "unresolved", limit=25)
+            assert inventory["ok"], inventory
+            ids = {row["incident_id"] for row in inventory["result"]["incidents"]}
+            assert incident_ids[index] in ids and incident_ids[1-index] not in ids
+            found = call("incident_find", root=str(root), query="parser mismatch", limit=25)
+            assert found["ok"], found
+            ids = {row["incident_id"] for row in found["result"]["incidents"]}
+            assert incident_ids[index] in ids and incident_ids[1-index] not in ids
+
         original = call("plan_detail", root=str(roots[0]), id="plan_desktop")
         assert original["ok"], original
         revision = original["result"]["file_revision"]
