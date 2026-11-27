@@ -161,3 +161,22 @@ def test_real_partial_stage_commit_preserves_unrelated_changes_and_project_lease
     assert "FIVE" in (root / "a.txt").read_text(encoding="utf-8")
     assert _git(root, "show", "HEAD:b.txt") == "old"
     assert _git(root, "diff", "--name-only") == "a.txt\nb.txt"
+
+
+def test_stage_rereads_same_size_same_timestamp_tracked_file(tmp_path):
+    import os
+
+    engine, leases = _fixture(tmp_path)
+    _git(tmp_path, "config", "core.trustctime", "false")
+    file = tmp_path / "a"
+    file.write_text("old", encoding="utf-8")
+    _git(tmp_path, "add", "a")
+    previous = file.stat()
+    file.write_text("new", encoding="utf-8")
+    os.utime(file, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64)
+    preview = stage_selection({}, engine, leases, **kwargs)
+    assert preview["success"], preview
+    result = stage_selection({}, engine, leases, **kwargs, expected_tree=preview["prospective_tree_oid"], apply=True)
+    assert result["success"], result
+    assert _git(tmp_path, "show", ":a") == "new"
