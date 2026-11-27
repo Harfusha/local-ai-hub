@@ -77,7 +77,8 @@ def python_import_dependents(root: str, resources: Iterable[str], changed: Itera
         try:
             _, lines = tools._read_snapshot(candidate, force=True, max_bytes=MAX_SOURCE_BYTES)
             after = tools._resolve_inventory_path_safe_with_stat(base, candidate, resolved_base=base)
-            if after is None or after[2] != info:
+            if after is None or any(getattr(after[2], field) != getattr(info, field)
+                                    for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")):
                 raise ValueError("Python import impact source changed during analysis")
             tree = ast.parse("\n".join(lines), filename=rel)
         except (OSError, SyntaxError, UnicodeError, RecursionError) as exc:
