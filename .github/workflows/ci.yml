@@ -434,8 +434,24 @@ jobs:
           path: ${{ runner.temp }}/critical-coverage.json
           if-no-files-found: error
 
+  optional-model-and-vision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install Pillow
+      - run: python -c "import torch; from PIL import Image"
+      - run: python -m pytest -q tests/test_distill.py tests/test_dpo_loss.py tests/test_speculative_decoding.py tests/test_visual_diff.py
+
   package:
-    needs: [lint, typing, fast-contract, platform-smoke, integration, critical-coverage]
+    needs: [lint, typing, fast-contract, platform-smoke, integration, critical-coverage, optional-model-and-vision]
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
