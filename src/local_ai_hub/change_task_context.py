@@ -165,15 +165,16 @@ def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> Non
         rows = impact.get(key, [])
         if not isinstance(rows, list):
             return []
-        found = set()
-        for row in rows[:24]:
+        found: list[str] = []
+        for row in rows[:8]:
             path = row.get("path") if isinstance(row, dict) else None
             if (isinstance(path, str) and 0 < len(path) <= 512 and "\0" not in path
                     and "\\" not in path and ":" not in path and not path.startswith("/")
                     and all(part not in {"", ".", ".."} for part in path.split("/"))
                     and all(ord(c) >= 32 for c in path)):
-                found.add(path)
-        return sorted(found)
+                if path not in found:
+                    found.append(path)
+        return found
 
     dependents = [p for p in candidates("likely_dependents") if p not in paths]
     tests = candidates("suggested_tests")
@@ -197,8 +198,9 @@ def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> Non
         freshness_paths_omitted=freshness.get("omitted_path_count") if type(freshness.get("omitted_path_count")) is int else None,
         changed_path_count=len(paths),
         indexed_changed_path_count=indexed if type(indexed) is int and 0 <= indexed <= len(paths) else None,
-        dependent_paths=dependents[:8], dependent_paths_omitted=max(0, len(dependents) - 8),
-        test_paths=tests[:8], test_paths_omitted=max(0, len(tests) - 8),
+        dependent_paths=dependents[:8], dependent_paths_omitted=max(0, len(impact.get("likely_dependents", [])) - 8) if isinstance(impact.get("likely_dependents"), list) else 0,
+        test_paths=tests[:8], test_paths_omitted=max(0, len(impact.get("suggested_tests", [])) - 8) if isinstance(impact.get("suggested_tests"), list) else 0,
+        input_scope="visible_change_plan_page_only",
         index_scan_truncated=impact.get("truncated") is not False,
         complete=False,
     )

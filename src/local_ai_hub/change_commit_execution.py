@@ -148,7 +148,7 @@ def execute_staged_commit(
                 import hashlib
 
                 sequence_plan["preview_digest"] = hashlib.sha256(
-                    (sequence_plan["preview_digest"] + policy["config_digest"]).encode("ascii")
+                    (sequence_plan["preview_digest"] + policy["config_digest"] + policy["resolved_commands_digest"]).encode("ascii")
                 ).hexdigest()
             if preview_only is True:
                 outcome = {"success": True, "applied": False, **sequence_plan}

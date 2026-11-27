@@ -800,10 +800,26 @@ impl Desktop {
                             self.change_preview_digest = digest.into();
                         }
                     }
+                    if ui.button("Resolve configured verification policy").clicked() {
+                        self.submit(ctx, "Project verification policy".into(), request("change_transaction", json!({
+                            "action": "verification-policy", "root": self.repo
+                        })));
+                    }
+                    if ui.button("Load displayed policy manifest template").clicked() {
+                        if let Some(value) = self.snapshot.as_ref().and_then(|v| v.get("verification_manifest")) {
+                            if let Ok(record) = serde_json::to_string_pretty(value) {
+                                self.change_verification = record;
+                            }
+                        }
+                    }
+                    ui.small("Supply the actual environment capsule SHA-256; the template never generates or certifies it.");
                     ui.label("Verification manifest JSON (exact executable argv and environment digest)");
                     ui.text_edit_multiline(&mut self.change_verification);
                     let sequence = serde_json::from_str::<Value>(&self.change_sequence).ok().filter(Value::is_array);
-                    let manifest = serde_json::from_str::<Value>(&self.change_verification).ok().filter(Value::is_object);
+                    let manifest = serde_json::from_str::<Value>(&self.change_verification).ok().filter(|value| {
+                        value.is_object() && value["environment_id"].as_str().is_some_and(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b\x27a\x27..=b\x27f\x27).contains(&b)))
+                            && value["commands"].is_array()
+                    });
                     let paths: Vec<&str> = self.change_paths.lines().filter(|p| !p.is_empty()).collect();
                     let ready = !paths.is_empty() && self.change_revision.len() == 64
                         && (self.change_tree.len() == 40 || self.change_tree.len() == 64) && sequence.is_some();

@@ -369,3 +369,16 @@ def test_desktop_verification_only_executes_configured_policy_after_exact_previe
         verify.assert_called_once()
         assert execute.call_args.kwargs["preview_only"] is True
         assert execute.call_args.kwargs["approved"] is False
+
+
+def test_desktop_policy_template_is_read_only_and_root_scoped(tmp_path):
+    control = MagicMock()
+    with patch("local_ai_hub.config.load_config", return_value={}), \
+         patch("local_ai_hub.state_paths.configured_state_dir", return_value=tmp_path / "state"), \
+         patch("local_ai_hub.change_tree_verification.verification_manifest_template",
+               return_value={"success": True, "commands_executed": False}) as template, \
+         patch("local_ai_hub.change_commit_execution.execute_staged_commit") as execute:
+        result = desktop.change_transaction(control, {"action": "verification-policy", "root": str(tmp_path)})
+        assert result["success"] and not result["commands_executed"]
+        template.assert_called_once_with(str(tmp_path.resolve()))
+        execute.assert_not_called()

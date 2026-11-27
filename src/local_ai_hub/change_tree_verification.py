@@ -34,7 +34,7 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def commit_policy(root: str, manifest: Any = None, *, require_manifest: bool = False) -> dict[str, Any]:
+def _resolve_commit_policy(root: str) -> tuple[dict[str, Any], list[list[str]]]:
     """Resolve shared project verification rules without executing project commands."""
     from .project_config import CommandDefinition, resolve_project_config
 
@@ -46,7 +46,7 @@ def commit_policy(root: str, manifest: Any = None, *, require_manifest: bool = F
     policy = {"required": rule is not None, "config_digest": resolution.config_digest,
               "command_aliases": list(rule) if isinstance(rule, tuple) else []}
     if rule is None:
-        return policy
+        return policy, []
     if not isinstance(rule, tuple) or not 1 <= len(rule) <= 4:
         raise ValueError("git_commit policy requires 1–4 structured command aliases")
     expected = []
@@ -55,7 +55,7 @@ def commit_policy(root: str, manifest: Any = None, *, require_manifest: bool = F
         if not isinstance(command, CommandDefinition) or command.env_references or not command.argv:
             raise ValueError("Git commit policy requires structured argv without injected environment")
         argv = list(command.argv)
-        if not all(argv) or not argv[0]:
+        if not 1 <= len(argv) <= 32 or any(not arg or len(arg) > 4096 or "\\0" in arg for arg in argv):
             raise ValueError("Invalid Git commit policy argv")
         if not Path(argv[0]).is_absolute():
             if Path(argv[0]).name != argv[0] or "/" in argv[0] or "\\" in argv[0]:
@@ -67,9 +67,31 @@ def commit_policy(root: str, manifest: Any = None, *, require_manifest: bool = F
                 raise ValueError("Git commit policy executable unavailable")
             argv[0] = executable
         expected.append(argv)
-    if require_manifest and (not isinstance(manifest, dict) or manifest.get("commands") != expected):
+    policy["resolved_commands_digest"] = _digest(expected)
+    return policy, expected
+
+
+def commit_policy(root: str, manifest: Any = None, *, require_manifest: bool = False) -> dict[str, Any]:
+    policy, expected = _resolve_commit_policy(root)
+    if policy["required"] and require_manifest and (not isinstance(manifest, dict) or manifest.get("commands") != expected):
         raise ValueError("Verification manifest must exactly match the git_commit project policy")
     return policy
+
+
+def verification_manifest_template(root: str) -> dict[str, Any]:
+    """Local operator-only preview of policy argv; no generated environment assertion."""
+    try:
+        policy, commands = _resolve_commit_policy(root)
+        if not policy["required"]:
+            return {"success": False, "error": "No configured git_commit project policy",
+                    "commands_executed": False, "commit_ready": False}
+        return {"success": True, "project_commit_policy": policy,
+                "verification_manifest": {"commands": commands, "environment_id": ""},
+                "requires_explicit_environment_id": True, "commands_executed": False,
+                "commit_ready": False,
+                "limitations": "Review local argv and supply the actual environment capsule SHA-256 before verification; no command has run."}
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"success": False, "error": str(exc), "commands_executed": False, "commit_ready": False}
 
 
 def verification_identity(manifest: Any) -> tuple[str, str, list[list[str]], dict[str, str]]:

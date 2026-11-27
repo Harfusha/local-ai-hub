@@ -305,8 +305,10 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply", "sequence-suggest", "annotate"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "commit-list", "stage-preview", "stage-apply", "sequence-preview", "sequence-verify", "sequence-status", "sequence-apply", "sequence-suggest", "verification-policy", "annotate"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
+        if args.sub_arg == "verification-policy" and (args.apply or args.base or args.changed_path or args.record_file or args.verification_file):
+            parser.error("verification-policy is a read-only local manifest template")
         if args.sub_arg == "sequence-suggest" and (args.apply or args.base or args.changed_path or args.record_file):
             parser.error("sequence-suggest is read-only and observes the complete staged scope")
         if args.sub_arg == "annotate":
@@ -403,6 +405,15 @@ def main() -> int:
     if args.rerun_checks and (args.action != "changes" or args.sub_arg != "sequence-verify"):
         parser.error("--rerun-checks requires changes sequence-verify")
     if args.action == "changes":
+        if args.sub_arg == "verification-policy":
+            from local_ai_hub.change_tree_verification import verification_manifest_template
+            from local_ai_hub.repository_scope import authorized_repository_root
+
+            config = load_config(_config_arg(args.config))
+            root = authorized_repository_root(config, str(args.root.resolve()))
+            result = verification_manifest_template(root)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True else 1
         if args.sub_arg == "sequence-suggest":
             from local_ai_hub.change_commit_sequence import suggest_sequence
             from local_ai_hub.deterministic import DeterministicEngine

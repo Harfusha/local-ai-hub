@@ -236,7 +236,7 @@ def test_shared_project_commit_policy_requires_exact_manifest_and_receipts(tmp_p
 
     import pytest
 
-    from local_ai_hub.change_tree_verification import commit_policy
+    from local_ai_hub.change_tree_verification import commit_policy, verification_manifest_template, verification_identity
 
     engine, leases, parent, tree = _fixture(tmp_path)
     executable = str(Path(sys.executable).absolute())
@@ -249,6 +249,12 @@ def test_shared_project_commit_policy_requires_exact_manifest_and_receipts(tmp_p
     policy = commit_policy(root)
     assert policy["required"] is True
     assert policy["command_aliases"] == ["check"]
+    template = verification_manifest_template(root)
+    assert template["success"] and template["requires_explicit_environment_id"]
+    assert template["verification_manifest"] == {"commands": [argv], "environment_id": ""}
+    assert not template["commands_executed"] and not template["commit_ready"]
+    with pytest.raises(ValueError, match="environment capsule"):
+        verification_identity(template["verification_manifest"])
     manifest = {"environment_id": "b" * 64, "commands": [argv]}
     assert commit_policy(root, manifest, require_manifest=True) == policy
     with pytest.raises(ValueError, match="exactly match"):
