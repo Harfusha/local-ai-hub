@@ -40,10 +40,23 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "File leases" => (&["/leases"], &["lease_id", "owner", "root", "path", "purpose", "expires_at"]),
         "Session briefing" => (&["/active_tasks"], &["task_id", "goal", "status", "phase"]),
         "Model inventory" => (&["/data"], &["id", "owned_by", "object"]),
+        "Resident inventory" => (&["/loaded_model_details"], &["name", "context_length", "parameter_size", "quantization", "vram_bytes", "size_bytes", "gpu_fraction", "cpu_offload_fraction", "expires_at"]),
+        "Execution profiles" => (&["/runtime_profile/execution/models", "/model_execution/models"], &["model", "tier", "num_ctx", "max_ctx", "parallel_limit", "think", "prompt_budget_tokens"]),
+        "Model statistics" => (&["/observability/by_model"], &["model", "calls", "avg_ms", "avg_load_ms", "failures"]),
+        "Cache layers" => (&["/observability/cache_layers"], &["layer", "calls", "avg_ms", "context_tokens_avoided_est"]),
+        "Agent statistics" => (&["/observability/by_agent"], &["agent", "requests", "local_inference_calls", "avg_ms", "failures"]),
+        "Execution routes" => (&["/observability/execution_routes"], &["route", "task_type", "complexity", "calls", "avg_ms", "failures"]),
+        "Laya capture" => (&["/observability/laya_capture_reasons", "/observability/laya_capture_stages"], &["stage", "reason", "error_type", "calls", "failures"]),
         "Activity" | "Agent event stream" => (&["/events", "/items"], &["seq", "kind", "agent", "action", "success", "duration_ms"]),
         _ => return None,
     };
+    if view == "Resident inventory" && crate::summary::resident_inventory(response) != "Loaded" {
+        return None;
+    }
     let values = paths.iter().find_map(|p| response.pointer(p).and_then(Value::as_array))?;
+    let values = if view == "Laya capture" && values.is_empty() {
+        response.pointer("/observability/laya_capture_stages").and_then(Value::as_array).unwrap_or(values)
+    } else { values };
     Some(Records { columns, values: values.iter().take(12_000).collect() })
 }
 
