@@ -78,8 +78,16 @@ def test_http_and_mcp_reject_invalid_identity_without_context_compilation(isolat
     assert compile_calls == []
 
 
-def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated_hub):
+@pytest.mark.parametrize("detailed", [False, True])
+def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated_hub, monkeypatch, detailed):
     app, roots, _post, _retrievals = isolated_hub
+    # Budget instrumentation is diagnostic-only; the actual wire bound and
+    # recoverability must hold with and without that instrumentation.
+    monkeypatch.setattr(mcp_server, "CFG", {
+        **mcp_server.CFG,
+        "agent_output": {"detailed_diagnostics": detailed},
+        "telemetry": {**mcp_server.CFG.get("telemetry", {}), "agent_diagnostics": False},
+    })
     original = app.agent_tasks.get("isolated-task-0")
     large_goal = " ".join(f"large-context-item-{index:04d}" for index in range(1100))
     task = app.agent_tasks.create(
@@ -106,7 +114,10 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
                     if result.structuredContent is None:
                         wire.pop("structuredContent")
                     assert json_tokens(wire) <= budget, value
-                    assert value["response_budget"]["requested_tokens"] == budget
+                    if detailed:
+                        assert value["response_budget"]["requested_tokens"] == budget
+                    else:
+                        assert "response_budget" not in value
                     artifact_id = value.get("task_context_artifact_id")
                     if not artifact_id:
                         artifact_id = (value.get("task_context") or {}).get("artifact_id")
@@ -114,7 +125,8 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
                         assert value["success"] is False
                         assert value["error"] == "max_response_tokens too small"
                         assert value["next_action"] == "request_larger_response_budget"
-                        assert value["response_budget"]["rejected"] is True
+                        if detailed:
+                            assert value["response_budget"]["rejected"] is True
                         continue
                     if not isinstance(artifact_id, str) or not artifact_id:
                         pytest.fail(f"{profile}/{budget}: {json.dumps(value)}", pytrace=False)
