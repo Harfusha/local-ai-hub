@@ -610,16 +610,17 @@ class PreprocessSchedulerMixin:
                 # Watchdog also reports access/close events on some backends. They
                 # are not repository mutations and treating them as edits makes
                 # sync tools such as Mutagen continuously requeue preprocessing.
-                if str(getattr(event, "event_type", "")) not in {"created", "deleted", "modified", "moved"}:
+                event_kind = str(getattr(event, "event_type", ""))
+                if event_kind not in {"created", "deleted", "modified", "moved"}:
                     return
                 if getattr(event, "is_directory", True):
                     return
                 src = str(getattr(event, "src_path", ""))
                 dst = str(getattr(event, "dest_path", ""))
                 if src:
-                    self._preprocessor.notify_path_changed(src, root_hint=self._root)
+                    self._preprocessor.notify_path_changed(src, root_hint=self._root, watcher_event=event_kind)
                 if dst and dst != src:
-                    self._preprocessor.notify_path_changed(dst, root_hint=self._root)
+                    self._preprocessor.notify_path_changed(dst, root_hint=self._root, watcher_event=event_kind)
 
         observer = Observer()
         watches: dict[str, Any] = {}
