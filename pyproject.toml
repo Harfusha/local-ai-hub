@@ -59,8 +59,6 @@ local_ai_hub = [
   "defaults.toml",
   "automation_browser.js",
   "grammars/*.gbnf",
-  "ui_static/*",
-  "ui_static/dist/*",
   "data/*.json",
 ]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]

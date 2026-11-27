@@ -1789,7 +1789,7 @@ def sync_cursor_plugin_bundle(cursor_dir: Path, backup_enabled: bool) -> bool:
         relative = source_file.relative_to(source)
         if "__pycache__" in relative.parts or source_file.suffix in {".pyc", ".pyo"}:
             continue
-        if relative.parts[0] in ("skills", "rules"):
+        if relative.parts[0] == "skills":
             continue
         target_file = target / relative
         if target_file.is_symlink():
@@ -5538,7 +5538,7 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    log("Dashboard: http://127.0.0.1:11435/dashboard")
+    log("Desktop: python tools/hubctl.py desktop (build/install native binary first)")
     return 0
 
 

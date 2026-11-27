@@ -49,7 +49,6 @@ jobs:
       - run: python -m compileall -q src tools tests
       - run: pyflakes src tools
       - run: ruff check src tools tests
-      - run: npm run typecheck
       - run: python tools/validate_ci_selectors.py
 
   typing:
@@ -84,7 +83,6 @@ jobs:
           package-manager-cache: false
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c tools/ci-constraints-py3.13.txt
-      - run: npm run build
       - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills
       - run: python -m pytest -q tests/test_packaging_assets.py tests/test_provider_plugin_bundles.py
       - name: Verify execution graph, inventory, persisted problems and context recovery
@@ -263,7 +261,7 @@ jobs:
       - name: Reject test/runtime side effects
         run: python tools/release_check.py --post-test
       - run: python -m local_ai_hub.generator --config src/local_ai_hub/defaults.toml --output-dir .
-      - run: python tools/check_dashboard.py
+      - run: python tools/check_desktop_cutover.py
       - name: Reject tracked test mutations
         run: git diff --exit-code
       - name: Clean ignored test artifacts
@@ -453,7 +451,7 @@ jobs:
       - run: python tools/selftest.py
         env:
           LOCAL_AI_SELFTEST_STARTUP_TIMEOUT: "60.0"
-      - run: python tools/check_dashboard.py
+      - run: python tools/check_desktop_cutover.py
       - name: Reject tracked mutations
         run: git diff --exit-code
       - name: Reject runtime side effects before cleanup

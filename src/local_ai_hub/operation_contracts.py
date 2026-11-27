@@ -520,6 +520,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "explain_query": ("query",),
             "dependency_slice": ("query",),
             "structural_search": ("query",),
+            "pipeline": ("steps",),
             # git_history_search allows query to be empty for full commit log
             "cross_repo_contract": ("path",),
             "route": ("path",),
@@ -2097,7 +2098,8 @@ def _cached_operation_parameters_schema(
         for field in ("max_tokens", "token_budget"):
             properties[field].update(minimum=0, maximum=100000)
         properties["steps"] = {
-            "type": "array", "items": repo_pipeline_step_schema(properties, available_actions),
+            "type": "array", "minItems": 1,
+            "items": repo_pipeline_step_schema(properties, available_actions),
         }
     if tool == "local_ai_coord":
         properties["max_tokens"].update(minimum=0, maximum=100000)

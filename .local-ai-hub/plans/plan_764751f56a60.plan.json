@@ -16,12 +16,12 @@
         "Offline legacy migration preview is bounded, read-only, snapshot-bound, and publishes only an explicitly reviewed record.",
         "Projection rebuild CLI works on a clean project; HTTP/MCP acceptance and authorization boundaries pass, including non-critical MCP routing contract checks."
       ],
-      "blocker": "Code and route contracts are pushed through 633bf987; runtime restarted and healthy at 8.2.1 (704 tasks). Practical validation includes 209 passed/1 symlink skip, 79 route registry, 108 MCP/HTTP contracts, and 3 bounded-envelope cases. Missing 575 changed-history task streams remain skipped by explicit approval. verify_completion still lacks authentic broker receipts for the seven criteria; available native exec exposes no trusted command_id.",
+      "blocker": "Published at 00c61019; remote master matches. Hub 8.2.1 restarted, selftest/doctor/release-check pass. PR9 task/repo suites: 209 passed, 1 symlink skip; route registry: 79 passed; MCP/HTTP suite: 108 passed; plugin/setup/MCP/repo-plan suite: 242 passed; setup+MCP wire suite: 124 passed. Full critical suite: 2024 passed, 14 skipped, 8 failed during response cleanup edits; focused rerun after that state: 8 passed, 1 failed at test_surface_audit_policy.py::test_wire_budget_retains_limits_and_actual_size_without_internal_before_size. Seven endpoint files are currently dirty under a separate active plan and preserved; the focused test evidence predates the latest edits, so stable-candidate rerun is pending. Seventeen creation-only task projections restored; 575 changed-history streams skipped by explicit approval. Authentic CommandBroker receipts for seven criteria remain unavailable; native tools expose no trusted command_id.",
       "clarifications": [],
       "depends_on": [],
       "description": "Exercise merged PR #9 through realistic project task, memory, incident, projection, legacy migration, CLI, HTTP, and MCP workflows. Repair demonstrated defects and publish verified work.",
       "kind": "code",
-      "next_action": "Acquire an exposed task-bound trusted CommandBroker session and collect authentic receipts for all seven acceptance criteria. Do not close the task until receipts exist.",
+      "next_action": "Acquire an exposed task-bound trusted CommandBroker session and collect authentic receipts for all seven acceptance criteria. When the seven-file endpoint overlay is released/stable, rerun the focused response-budget failure and critical suite against the resulting candidate. Do not close before receipts and clean required validation.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",

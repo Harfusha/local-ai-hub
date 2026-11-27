@@ -13,7 +13,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from html.parser import HTMLParser
 from contextlib import closing
 from pathlib import Path
 
@@ -258,99 +257,6 @@ def test_bundle_rejects_extra_members_and_bad_integrity(tmp_path: Path):
         app.close()
 
 
-class _IdParser(HTMLParser):
-    def __init__(self): super().__init__(); self.ids=[]
-    def handle_starttag(self, tag, attrs):
-        for k,v in attrs:
-            if k == "id": self.ids.append(v)
-
-
-def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
-    from local_ai_hub.dashboard import DASHBOARD_HTML
-    parser = _IdParser(); parser.feed(DASHBOARD_HTML)
-    assert len(parser.ids) == len(set(parser.ids))
-    assert 'id="reliabilityValue"' in DASHBOARD_HTML
-    assert 'id="handledRequests"' in DASHBOARD_HTML
-    assert 'id="tokensSaved"' in DASHBOARD_HTML
-    assert 'id="dollarsSaved"' in DASHBOARD_HTML
-    assert "estimated_savings_usd" in DASHBOARD_HTML
-    assert 'Content-Type\':\'application/zip' in DASHBOARD_HTML
-    assert 'FormData()' not in DASHBOARD_HTML
-    assert 'id="config" class="page"' in DASHBOARD_HTML
-    assert 'id="page-title-work">Requests</h1>' in DASHBOARD_HTML
-    assert "recent_http" in DASHBOARD_HTML
-    assert "badge-waiting" in DASHBOARD_HTML
-    assert "statusPollInFlight" in DASHBOARD_HTML
-    assert "progress_age_seconds" in DASHBOARD_HTML
-    assert "id=\"sloScope\"" in DASHBOARD_HTML
-    assert "scope='+sloScope" in DASHBOARD_HTML
-    assert "Since restart" in DASHBOARD_HTML
-    assert "probeHealth" in DASHBOARD_HTML
-    assert "Request trace inspector" in DASHBOARD_HTML
-    assert "/api/debug-traces" in DASHBOARD_HTML
-    assert "traceDisplayModel" in DASHBOARD_HTML
-    assert "renderHumanModal" in DASHBOARD_HTML
-    assert "Raw JSON" in DASHBOARD_HTML
-    assert "human-grid" in DASHBOARD_HTML
-    assert "trace-timeline" in DASHBOARD_HTML
-    assert "toggleTraceStep" in DASHBOARD_HTML
-    assert "Request trace" in DASHBOARD_HTML
-    assert "trace-view-picker" in DASHBOARD_HTML
-    assert "data-trace-view-select" in DASHBOARD_HTML
-    assert "Tool result" in DASHBOARD_HTML
-    assert "traceInspector" in DASHBOARD_HTML
-    assert "traceSidebarList" in DASHBOARD_HTML
-    assert "setupWorkLayout" in DASHBOARD_HTML
-    assert "work-kpis" in DASHBOARD_HTML
-    assert "work-panel-1" in DASHBOARD_HTML
-    assert "workSchedulerRow" in DASHBOARD_HTML
-    assert "workSearch" in DASHBOARD_HTML
-    assert "workState" in DASHBOARD_HTML
-    assert "workVisible" in DASHBOARD_HTML
-    assert "Agent trace history" in DASHBOARD_HTML
-    assert "Clicking a linked row opens a dedicated trace page" in Path("docs/DASHBOARD.md").read_text(encoding="utf-8")
-    from local_ai_hub.preprocess import ProjectPreprocessor
-    assert "batch in progress" in inspect.getsource(ProjectPreprocessor.status)
-    assert 'id="controlMenu"' in DASHBOARD_HTML
-    assert 'id="projectSearch"' in DASHBOARD_HTML
-    assert 'id="projectFilter"' in DASHBOARD_HTML
-    assert 'id="projectSort"' in DASHBOARD_HTML
-    assert "13 Pipeline Phases:" not in DASHBOARD_HTML
-    assert "Graphics accelerator" not in DASHBOARD_HTML
-    assert "<th>Pipeline Phase &amp; Stepper</th>" not in DASHBOARD_HTML
-    assert "<th>Index Readiness</th>" not in DASHBOARD_HTML
-    assert '/api/config/update' in DASHBOARD_HTML
-    assert 'id="agentOsState">0 active · 0 total tasks · 0 memories</span>' in DASHBOARD_HTML
-    assert 'id="prepState">0 registered projects · global running</span>' in DASHBOARD_HTML
-    assert 'id="projectSummary">0 of 0 projects</span>' in DASHBOARD_HTML
-    assert 'id="commandState">0 running</span>' in DASHBOARD_HTML
-    js = DASHBOARD_HTML.split("<script>",1)[1].split("</script>",1)[0]
-    js_file = tmp_path / "dashboard.js"; js_file.write_text(js, encoding="utf-8")
-    if subprocess.run(["node", "--version"], capture_output=True).returncode == 0:
-        cp = subprocess.run(["node", "--check", str(js_file)], capture_output=True, text=True)
-        assert cp.returncode == 0, cp.stderr
-
-
-def test_live_trace_retryable_detail_errors_do_not_open_terminal_modal():
-    from test_dashboard_trace_loading import _trace_scenario
-
-    _trace_scenario("""
-await openTrace('retryable');await pollers[0].poll(()=>true);
-assert.equal(pollers[0].stopped,false);
-assert.match(body.innerHTML,/Trace loading paused/);
-response=success('retryable');await pollers[0].poll(()=>true);
-assert.match(body.innerHTML,/Loaded retryable/);
-assert.doesNotMatch(body.innerHTML,/Trace loading paused/);
-""")
-
-
-def test_live_trace_rerender_preserves_nested_scroll_positions():
-    from local_ai_hub.dashboard import DASHBOARD_HTML
-
-    assert "captureTraceScrollPositions" in DASHBOARD_HTML
-    assert "restoreTraceScrollPositions" in DASHBOARD_HTML
-
-
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); return sock.getsockname()[1]
@@ -533,3 +439,8 @@ mode="full"
         for stream in (proc.stdout, proc.stderr):
             if stream:
                 stream.close()
+
+
+def test_preprocessor_status_preserves_batch_progress():
+    from local_ai_hub.preprocess import ProjectPreprocessor
+    assert "batch in progress" in inspect.getsource(ProjectPreprocessor.status)

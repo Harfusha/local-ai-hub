@@ -110,3 +110,6 @@ MagicMock/
 /.local-ai-hub/telemetry/
 /telemetry/
 
+
+# Native Rust build output
+/desktop/target/

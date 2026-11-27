@@ -103,9 +103,6 @@ def build_runtime_asset_manifest() -> dict[str, Any]:
         raise ValueError("Invalid fp4_model_support.json data")
     manifest["data"]["fp4_model_support.json"] = len(fp4_data)
 
-    # Verify ui_static assets
-    for ui_file in ("dashboard.html", "dist/dashboard.js"):
-        content = load_packaged_text(f"ui_static/{ui_file}")
-        manifest["ui_static"].append({"path": ui_file, "bytes": len(content)})
+    # Legacy manifest key is retained empty for external consumers.
 
     return manifest
