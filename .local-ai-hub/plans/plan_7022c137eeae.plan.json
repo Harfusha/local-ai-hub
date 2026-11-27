@@ -34,7 +34,7 @@
       "depends_on": [],
       "description": "Audit and complete all GCI acceptance requirements, resolve verified findings, validate current PR head and integrate safely.",
       "kind": "code",
-      "next_action": "Continue §9 with deterministic hard edges and unchanged consumers; audit remaining requirements and current-head CI. Keep hard_dependencies empty until evidence can be proven.",
+      "next_action": "Continue §9 with verified hard edges, unchanged consumers and other edge classes; audit remaining requirements and current-head CI. Keep unsupported claims uncertain.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-27-git-change-intelligence-commit-orchestration.md",

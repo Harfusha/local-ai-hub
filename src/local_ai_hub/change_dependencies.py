@@ -136,13 +136,18 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                 annotate_hunks(atom)
     edges: dict[str, set[str]] = {group["group_key"]: set() for group in groups}
     evidence: dict[str, list[dict[str, str]]] = {key: [] for key in edges}
+    evidence_omitted: dict[str, int] = {key: 0 for key in edges}
     soft_relation_evidence: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    soft_relation_evidence_omitted: dict[tuple[str, str, str], int] = {}
 
     def record_relation(source: str, target: str, item: dict[str, str]) -> None:
         key = (source, target, item["kind"])
         entries = soft_relation_evidence.setdefault(key, [])
-        if item not in entries and len(entries) < 16:
-            entries.append(item)
+        if item not in entries:
+            if len(entries) < 16:
+                entries.append(item)
+            else:
+                soft_relation_evidence_omitted[key] = soft_relation_evidence_omitted.get(key, 0) + 1
 
     ambiguous = 0
     unmatched = 0
@@ -223,10 +228,12 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                         unresolved_removed_imports += 1
                         group["risks"] = sorted(set(group["risks"]) | {"import_candidate_points_to_removed_path"})
                     edges[key].add(other)
-                    if len(evidence[key]) < 16:
-                        item = {"source": path, "target": target, "kind": "import_candidate"}
-                        if item not in evidence[key]:
+                    item = {"source": path, "target": target, "kind": "import_candidate"}
+                    if item not in evidence[key]:
+                        if len(evidence[key]) < 16:
                             evidence[key].append(item)
+                        else:
+                            evidence_omitted[key] += 1
                     record_relation(key, other, {"source": path, "target": target,
                                                  "kind": "import_candidate"})
                 semantic = atom.get("semantic", {})
@@ -257,8 +264,11 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
                         removal_edges += 1
                     edges[other].add(key)
                     item = {"source": target, "target": path, "kind": "import_removal_candidate"}
-                    if len(evidence[other]) < 16 and item not in evidence[other]:
-                        evidence[other].append(item)
+                    if item not in evidence[other]:
+                        if len(evidence[other]) < 16:
+                            evidence[other].append(item)
+                        else:
+                            evidence_omitted[other] += 1
                     record_relation(other, key, item)
     remaining = {key: set(deps) for key, deps in edges.items()}
     order = []
@@ -278,13 +288,19 @@ def annotate_dependencies(groups: list[dict[str, Any]]) -> dict[str, Any]:
         group["dependency_component_keys"] = membership[key]
         group["dependency_group_candidates"] = sorted(edges[key])
         group["dependency_evidence"] = evidence[key]
+        group["dependency_evidence_omitted"] = evidence_omitted[key]
         if len(membership[key]) > 1:
             group["risks"] = sorted(set(group["risks"]) | {"dependency_cycle_requires_joint_commit"})
-    soft_dependencies = [
-        {"source_group_key": source, "target_group_key": target,
-         "kind": kind, "evidence": items}
-        for (source, target, kind), items in sorted(soft_relation_evidence.items())
-    ]
+    soft_dependencies = []
+    for relation, items in sorted(soft_relation_evidence.items()):
+        source, target, kind = relation
+        soft_dependencies.append({
+            "source_group_key": source,
+            "target_group_key": target,
+            "kind": kind,
+            "evidence": items,
+            "evidence_omitted": soft_relation_evidence_omitted.get(relation, 0),
+        })
     return {
         "method": "observed_import_edges_v2",
         "hard_dependencies": [],

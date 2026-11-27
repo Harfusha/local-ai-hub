@@ -334,6 +334,7 @@ def test_uniquely_resolved_import_edges_are_soft_dependencies():
         "target_group_key": "provider",
         "kind": "import_candidate",
         "evidence": [{"source": "payment.py", "target": "cache.py", "kind": "import_candidate"}],
+        "evidence_omitted": 0,
     }]
     assert graph["uncertain_candidates"] == []
 
@@ -408,6 +409,31 @@ def test_unresolved_import_candidate_output_is_bounded_with_omitted_count():
     assert len(graph["uncertain_candidates"]) == 256
     assert graph["uncertain_candidates_omitted"] == 1
     assert graph["uncertain_candidates"][0]["import_name"] == "missing_000"
+
+
+def test_soft_edge_evidence_limits_report_omitted_observations():
+    from local_ai_hub.change_dependencies import annotate_dependencies
+
+    consumer_paths = [f"consumer_{index:02d}.py" for index in range(17)]
+    groups = [
+        {"group_key": "provider", "files": ["cache.py"], "risks": [],
+         "changes": [{"path": "cache.py", "status": "M", "atoms": []}]},
+        {"group_key": "consumer", "files": consumer_paths, "risks": [],
+         "changes": [{"path": path, "status": "M", "atoms": [{
+             "semantic": {"status": "observed", "imports_after": ["cache"],
+                          "imports_truncated": False, "imports_before_truncated": False}
+         }]} for path in consumer_paths]},
+    ]
+
+    graph = annotate_dependencies(groups)
+
+    assert len(graph["soft_dependencies"]) == 1
+    edge = graph["soft_dependencies"][0]
+    assert len(edge["evidence"]) == 16
+    assert edge["evidence_omitted"] == 1
+    assert len(groups[1]["dependency_evidence"]) == 16
+    assert groups[1]["dependency_evidence_omitted"] == 1
+
 
 def test_source_fact_delta_is_not_behavior_proof():
     from local_ai_hub.change_source_facts import summarize_facts
