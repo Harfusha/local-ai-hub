@@ -208,14 +208,63 @@ def plan_text_patch(args: dict[str, Any], *, task: bool, create: bool = False) -
                 or len(title) > (240 if task else 160)):
             raise ValueError("Invalid plan title")
         result["title"] = title
-    for key, limit in (("description", 12000), ("next_action", 2000),
-                       ("accountable_role", 2000), ("blocker", 2000)):
-        if key not in args or (not task and key != "description"):
+    for key, limit in (("description", 32768), ("next_action", 8192),
+                       ("accountable_role", 128), ("blocker", 8192)):
+        if key not in args or (not task and key not in {"description", "accountable_role"}):
             continue
         value = args[key]
-        if not isinstance(value, str) or len(value) > limit:
+        if not isinstance(value, str) or len(value) > limit or "\x00" in value:
             raise ValueError(f"Invalid plan field: {key}")
-        result[key] = (value or None) if key in {"blocker", "accountable_role"} else value
+        if key == "accountable_role" and not value.strip():
+            raise ValueError("Accountable role cannot be blank; leave the existing field unchanged")
+        result[key] = (value or None) if key == "blocker" else value
+    if not task and "lifecycle" in args:
+        lifecycle = args["lifecycle"]
+        if lifecycle not in ("draft", "active", "paused", "cancelled"):
+            raise ValueError("Only draft, active, paused and cancelled may be selected; archive separately, completion requires evidence")
+        result["lifecycle"] = lifecycle
+    if not task and "default_target_ref" in args:
+        from local_ai_hub.repo_plan.schema_validation import TARGET_REF_REGEX
+        target = args["default_target_ref"]
+        if not isinstance(target, str) or (target and not TARGET_REF_REGEX.fullmatch(target)):
+            raise ValueError("Invalid default target ref; use refs/heads/... or blank for none")
+        result["default_target_ref"] = target or None
+    if task:
+        for key, choices in (
+            ("kind", ("code", "documentation", "analysis", "operation")),
+            ("work_phase", ("discovery", "implementation", "verification", "integration")),
+        ):
+            if key in args:
+                if args[key] not in choices:
+                    raise ValueError(f"Invalid plan task {key}")
+                result[key] = args[key]
+        if "order" in args:
+            order = args["order"]
+            if not isinstance(order, str) or not order.isascii() or not order.isdecimal() or len(order) > 10 or int(order) > 1_000_000_000:
+                raise ValueError("Invalid task order (0–1000000000)")
+            result["order"] = int(order)
+        if "depends_on_json" in args:
+            from local_ai_hub.repo_plan.schema_validation import PLAN_ID_REGEX, TASK_ID_REGEX
+            raw = args["depends_on_json"]
+            if not isinstance(raw, str) or len(raw) > 50000:
+                raise ValueError("Invalid bounded dependency JSON")
+            try:
+                deps = json.loads(raw)
+            except (ValueError, RecursionError) as exc:
+                raise ValueError("Dependencies must be a JSON array of plan_id/task_id objects") from exc
+            if not isinstance(deps, list) or len(deps) > 256:
+                raise ValueError("Dependencies must be an array of at most 256 entries")
+            seen = set()
+            for dep in deps:
+                if (not isinstance(dep, dict) or set(dep) != {"plan_id", "task_id"}
+                        or not isinstance(dep["plan_id"], str) or not PLAN_ID_REGEX.fullmatch(dep["plan_id"])
+                        or not isinstance(dep["task_id"], str) or not TASK_ID_REGEX.fullmatch(dep["task_id"])):
+                    raise ValueError("Invalid dependency identity")
+                pair = (dep["plan_id"], dep["task_id"])
+                if pair in seen:
+                    raise ValueError("Duplicate dependency")
+                seen.add(pair)
+            result["depends_on"] = deps
     if task and "criteria" in args:
         criteria = args["criteria"]
         if not isinstance(criteria, str) or len(criteria) > 12000:
@@ -754,7 +803,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             if op in {"plan_task_create", "plan_task_edit"}:
                 data = plan_text_patch(args, task=True, create=op == "plan_task_create")
                 if op == "plan_task_create":
-                    data.update({"kind": "code", "work_status": "planned", "depends_on": [], "clarifications": []})
+                    for key, default in (("kind", "code"), ("work_status", "planned"), ("depends_on", []), ("clarifications", [])):
+                        data.setdefault(key, default)
                     op = "plan_task_edit"
                 payload["task_data"] = data
             if op == "plan_task_move":
