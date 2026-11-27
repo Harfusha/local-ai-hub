@@ -46,7 +46,6 @@ VIEWS = {
     "Incidents": "/api/agent-state/incidents",
     "Activity": "/api/live?limit=50",
     "Service health": "/api/logs/tail?lines=250",
-    "Diagnostics": "/api/doctor",
     "Settings — activity mode": "/api/mode",
     "Search workspaces": "/api/rag/workspaces",
     "File leases": "/api/leases",
@@ -321,6 +320,41 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         return control._cli(argv, timeout=spec.timeout, structured=True)
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
+    if op == "doctor":
+        result = checked_post(control, "/api/doctor", {}, timeout=120.0)
+        if result.get("success") is not True or not isinstance(result.get("checks"), list):
+            raise RuntimeError("Invalid diagnostics report")
+        return result
+    if op == "timeline_page":
+        before = args.get("before", 0)
+        limit = args.get("limit", 100)
+        if type(before) is not int or not 0 <= before <= (1 << 63) - 1:
+            raise ValueError("Invalid telemetry cursor")
+        if type(limit) is not int or limit not in (50, 100, 250):
+            raise ValueError("Invalid telemetry page size")
+        query = {"limit": limit, **({"before_id": before} if before else {})}
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            result = client.get("/api/telemetry/timeline?" + urlencode(query),
+                                timeout=15.0, requires_heavy_work=False)
+            if result.get("success") is not True:
+                raise RuntimeError(str(result.get("error") or "Telemetry history unavailable"))
+            rows = result.get("timeline")
+            more = result.get("has_more")
+            cursor = result.get("next_cursor")
+            if not isinstance(rows, list) or len(rows) > limit or type(more) is not bool:
+                raise RuntimeError("Malformed telemetry page")
+            ids = [row.get("id") if isinstance(row, dict) else None for row in rows]
+            if (any(type(item) is not int or item <= 0 or (before and item >= before) for item in ids)
+                    or ids != sorted(set(ids))
+                    or (more and (not ids or type(cursor) is not int or cursor != ids[0]))
+                    or (not more and cursor is not None)):
+                raise RuntimeError("Malformed telemetry cursor sequence")
+            return result
+        finally:
+            client.close()
     if op == "log_tail":
         lines = args.get("lines", 250)
         if type(lines) is not int or lines not in {100, 250, 500}:
