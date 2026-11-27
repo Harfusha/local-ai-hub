@@ -96,15 +96,36 @@ def measure(binary: Path, temp: Path, env: dict[str, str], idle_seconds: float,
                 tree = windows.stdout
                 match = re.search(r'(0x[0-9a-fA-F]+)\s+"Local AI Hub"', tree)
                 if match:
-                    window_id = match.group(1)
-                    break
+                    candidate = match.group(1)
+                    # X11 creates the named window before it maps it. A
+                    # successful focus request requires a viewable window.
+                    info = subprocess.run(["xwininfo", "-id", candidate],
+                                          capture_output=True, text=True, timeout=3)
+                    if info.returncode == 0 and "Map State: IsViewable" in info.stdout:
+                        window_id = candidate
+                        break
                 time.sleep(0.1)
             if window_id is None:
                 raise RuntimeError("No Local AI Hub window observed within smoke deadline; X11 tree: " + tree[-3000:])
             startup = time.monotonic() - started
             # Explicitly focus the window so its normal 30-second health probe
             # is exercised under Xvfb, which has no window manager.
-            subprocess.run(["xdotool", "windowfocus", "--sync", window_id], check=True, timeout=5)
+            focus_deadline = time.monotonic() + 5
+            focus_error = ""
+            while time.monotonic() < focus_deadline:
+                if process.poll() is not None:
+                    raise RuntimeError("Desktop exited before focus")
+                try:
+                    focused = subprocess.run(["xdotool", "windowfocus", "--sync", window_id],
+                                             capture_output=True, text=True, timeout=1)
+                    if focused.returncode == 0:
+                        break
+                    focus_error = focused.stderr
+                except subprocess.TimeoutExpired:
+                    focus_error = "X11 focus request timed out"
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Native window could not receive focus: " + focus_error[-1000:])
             first_ready = None
             if online is not None:
                 _, observed_ready, _ = online
