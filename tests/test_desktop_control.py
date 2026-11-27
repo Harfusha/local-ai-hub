@@ -460,3 +460,57 @@ def test_add_task_uses_exact_reviewed_revision_for_new_id(tmp_path):
         payload = post.call_args.args[2]
         assert payload["expected_revision"] == "rev" and payload["task_id"] == "task_1"
         assert payload["task_data"]["title"] == "new"
+
+
+def test_desktop_doctor_uses_post_and_preserves_failed_checks():
+    report = {"success": True, "checks": [
+        {"component": "Runtime", "status": "FAIL", "detail": "offline"},
+    ]}
+    control = MagicMock()
+    with patch.object(desktop, "checked_post", return_value=report) as post:
+        assert desktop.dispatch(control, {"op": "doctor", "args": {}}) == report
+        post.assert_called_once_with(control, "/api/doctor", {}, timeout=120.0)
+
+
+@pytest.mark.parametrize("before,limit", [(True, 100), (-1, 100), (0, 99), (2**63, 100), (0, True)])
+def test_telemetry_page_rejects_invalid_input(before, limit):
+    control = MagicMock()
+    with pytest.raises(ValueError):
+        desktop.dispatch(control, {"op": "timeline_page", "args": {"before": before, "limit": limit}})
+    control._client.assert_not_called()
+
+
+def test_telemetry_page_uses_exclusive_cursor_and_never_autostarts():
+    from urllib.parse import parse_qs, urlsplit
+
+    page = {"success": True, "timeline": [{"id": 11}, {"id": 12}], "has_more": True, "next_cursor": 11}
+    with patch.object(desktop, "HubClient") as factory:
+        client = factory.return_value
+        client._online.return_value = True
+        client.get.return_value = page
+        result = desktop.dispatch(desktop.HubControl(), {"op": "timeline_page", "args": {"before": 13, "limit": 50}})
+        assert result == page
+        assert factory.call_args.kwargs["auto_start"] is False
+        route = urlsplit(client.get.call_args.args[0])
+        assert route.path == "/api/telemetry/timeline"
+        assert parse_qs(route.query) == {"limit": ["50"], "before_id": ["13"]}
+        client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("rows,more,cursor", [
+    ([{"id": 12}, {"id": 11}], False, None),
+    ([{"id": 11}, {"id": 11}], False, None),
+    ([{"id": 13}], False, None),
+    ([{"id": True}], False, None),
+    ([{"id": 11}], True, 12),
+    ([], True, None),
+    ([{"id": 11}], False, 11),
+])
+def test_telemetry_page_rejects_malformed_server_cursors(rows, more, cursor):
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    client.get.return_value = {"success": True, "timeline": rows, "has_more": more, "next_cursor": cursor}
+    with pytest.raises(RuntimeError, match="Malformed telemetry"):
+        desktop.dispatch(control, {"op": "timeline_page", "args": {"before": 13}})
+    client.close.assert_called_once()
