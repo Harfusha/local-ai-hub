@@ -214,3 +214,5 @@ Worktree details also query the existing indexed impact service for the displaye
 ### Dependency candidate coverage
 
 Changed PHP declarations are compared on both source sides; removal of a consumer import can precede deletion of its uniquely matched provider, and retained imports to deleted providers or removed declarations are flagged. Node-style TypeScript imports with emitted JS extensions also consider matching TypeScript source paths; ambiguous matches remain unresolved. Dependency summaries explicitly count observed, unmatched and ambiguous imports, unavailable semantic scopes and truncated import/declaration scopes. These are changed-file candidate relationships, not a complete compiler-resolved graph or a proof of dependency closure.
+
+Delta pages use a single `offset`/`limit` cursor for changed groups and removed group keys. Continue while `has_more` is true even when a page has no changed groups. This avoids losing deleted-group identities when more groups disappear than fit on one page.

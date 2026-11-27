@@ -145,3 +145,39 @@ def test_delta_reprojects_transitive_consumers_when_prerequisite_changes():
     assert result["unchanged_content_group_count"] == 3
     assert [group["group_key"] for group in result["clusters"]] == [key * 64 for key in "abc"]
     assert result["verification_status"] == "unknown"
+
+
+def test_delta_pages_all_deleted_groups_even_without_changed_groups():
+    from local_ai_hub.change_plan_delta import change_delta, remember_baseline
+
+    class Cache:
+        def __init__(self):
+            self.values = {}
+
+        def get(self, key):
+            return self.values.get(key)
+
+        def set(self, key, value):
+            self.values[key] = value
+
+    cache = Cache()
+    groups = [{"group_key": f"{index:064x}", "observed_atom_ids": [f"{index + 100:064x}"]}
+              for index in range(1, 21)]
+    old = {"success": True, "root": "/repo", "comparison": None,
+           "inventory_scope": "git_visible_changes", "git_visible_observation_complete": True,
+           "observed_change_set_id": "a" * 64, "clusters": groups}
+    assert remember_baseline(old, cache)
+    current = {**old, "observed_change_set_id": "b" * 64, "clusters": []}
+    offset = 0
+    collected = []
+    for _ in range(5):
+        page = change_delta(current, cache, old["observed_change_set_id"], limit=8, offset=offset)
+        assert page["success"]
+        assert page["changed_group_count"] == 0
+        assert page["removed_group_count"] == 20
+        collected.extend(page["removed_group_keys"])
+        if not page["has_more"]:
+            assert page["next_offset"] is None
+            break
+        offset = page["next_offset"]
+    assert collected == sorted(group["group_key"] for group in groups)

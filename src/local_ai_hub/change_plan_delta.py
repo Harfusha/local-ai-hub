@@ -42,6 +42,12 @@ def _snapshot(result: dict[str, Any]) -> dict[str, dict[str, str]] | None:
         ):
             return None
         edges[key] = sorted(set(deps))
+    # Precompute each node digest once; hashing every outgoing edge again
+    # for every transitive consumer was cubic in dense candidate graphs.
+    node_digests = {
+        node: identity("dependency-node-v1", node, output.get(node, "unresolved"), *edges.get(node, []))
+        for node in set(output) | {dep for deps in edges.values() for dep in deps}
+    }
     snapshot = {}
     for key, digest in output.items():
         reached: set[str] = set()
@@ -54,8 +60,7 @@ def _snapshot(result: dict[str, Any]) -> dict[str, dict[str, str]] | None:
             pending.extend(edges.get(candidate, []))
         dependency_digest = identity(
             "group-dependency-context-v2",
-            *[identity("dependency-node-v1", node, output.get(node, "unresolved"), *edges.get(node, []))
-              for node in sorted(reached)],
+            *[node_digests[node] for node in sorted(reached)],
         )
         snapshot[key] = {"content": digest, "dependencies": dependency_digest}
     return snapshot
@@ -110,16 +115,22 @@ def change_delta(result: dict[str, Any], cache: Any, previous: str | None, *, li
     # Task and verification metadata can change independently. A dependency
     # context match is not a review or verification receipt.
     output = project_change_plan(delta, mode="summary", limit=limit, offset=offset)
+    # Both inventories use the same page cursor, including deletion-only deltas.
+    removed_page = removed[offset:offset + limit]
+    has_more = offset + limit < max(len(changed), len(removed))
     output.update({
         "projection_mode": "delta",
+        "has_more": has_more,
+        "next_offset": offset + limit if has_more else None,
         "previous_observed_change_set_id": previous,
         "changed_group_count": len(changed),
         "content_changed_group_count": len(content_changed),
         "dependency_context_only_changed_group_count": len(dependency_only),
         "unchanged_content_group_count": unchanged,
         "removed_group_count": len(removed),
-        "removed_group_keys": removed[:16],
-        "removed_group_keys_omitted": max(0, len(removed) - 16),
+        "removed_group_keys": removed_page,
+        "removed_group_keys_omitted": len(removed) - len(removed_page),
+        "removed_group_offset": offset,
         "baseline_stored": remember_baseline(result, cache),
         "verification_status": "unknown",
         "commit_ready": False,
