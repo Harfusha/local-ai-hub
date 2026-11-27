@@ -5,12 +5,12 @@ requested feature/verification matrix, not a second project plan. The authoritat
 work plan is `.local-ai-hub/plans/plan_pr10_native_desktop.plan.json` and is
 maintained through the Local AI Hub planner API.
 
-## CI and runtime evidence at PR head c647a6b
+## CI and runtime evidence at PR head 39b77f0
 
-- Local `HEAD` and `origin/feat/native-desktop-hub` are `c647a6b69adb17464686780e16defc4a6e804fcf`; current `origin/master` at `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc` is an ancestor. The workload-count change below is uncommitted on top of that head.
-- Fresh native desktop run [46063010283](https://github.com/Harfusha/local-ai-hub/actions/runs/46063010283) for `c647a6b` is still in progress: 0/4 bridge and 0/4 desktop jobs completed at last check. Main CI run [46063010292](https://github.com/Harfusha/local-ai-hub/actions/runs/46063010292) is queued; integration is 5/12, typing and platform smoke are 0/2 and 0/12, and release-asset checks are waiting. These runs do not include the uncommitted workload-count change and are not complete CI receipts.
+- Local `HEAD` and `origin/feat/native-desktop-hub` are `39b77f09`; current `origin/master` at `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc` is an ancestor. The checkout was clean after push.
+- Latest visible native desktop run [46063010283](https://github.com/Harfusha/local-ai-hub/actions/runs/46063010283) is for previous head `c647a6b` and remains in progress: 0/4 bridge and 0/4 desktop jobs completed at last check. Main CI run [46063010292](https://github.com/Harfusha/local-ai-hub/actions/runs/46063010292), also for `c647a6b`, is queued; integration is 5/12, typing and platform smoke are 0/2 and 0/12, and release-asset checks are waiting. These runs do not validate `39b77f09` and are not complete CI receipts; no workflow run for `39b77f09` was visible after push.
 - On the previous tested head, Windows visible-window acceptance failed before first window with `Wgpu(NoSuitableAdapterFound)` on `windows-latest`; Linux and both macOS targets passed. A GPU-capable Windows runtime remains unverified.
-- Current local working-tree checks after adding Overview workload counts: `cargo fmt --manifest-path desktop/Cargo.toml --check`, all 41 locked Rust tests, and Clippy with warnings denied passed. `git diff --check` found no whitespace errors (Git warned that it may convert LF to CRLF). These local checks include the uncommitted change and do not replace CI or interactive runtime acceptance.
+- Local checks at `39b77f09` after adding Overview workload counts: `cargo fmt --manifest-path desktop/Cargo.toml --check`, all 41 locked Rust tests, Clippy with warnings denied, and `git diff --check` passed. Git warned that it may convert LF to CRLF. These local checks do not replace CI or interactive runtime acceptance.
 - Overview now shows queued and running workload counts when reported by the server, distinguishes server totals from returned rows, and leaves absent values unavailable. Full UI/CLI parity, remaining main CI jobs, GPU-capable Windows runtime, physical interactive acceptance, accessibility, security/performance audit, signed installer and release acceptance remain open. Keep the PR draft; no merge-readiness claim is made.
 
 ## Earlier local audit snapshot — 2026-11-27, before commit 6a2351f1
