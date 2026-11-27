@@ -5448,13 +5448,16 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         )
         return 1
 
-    try:
-        # Cold starts may include managed inference/backend initialization.
-        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=420)
-    except Exception as exc:
-        log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
-        write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)
-        return 1
+    if service_required:
+        try:
+            # Cold starts may include managed inference/backend initialization.
+            run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=420)
+        except Exception as exc:
+            log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
+            write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)
+            return 1
+    else:
+        log("Skipping Hub restart because persistent service management is disabled.")
 
     agent_config_error: str | None = None
     agent_config_manual_actions: list[str] = []

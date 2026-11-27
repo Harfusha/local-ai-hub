@@ -1635,7 +1635,7 @@ def test_codex_plugin_packages_skills_and_all_configured_hook_surfaces():
     }
 
 
-def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_path, monkeypatch):
+def test_setup_skip_service_does_not_restart_global_hub_without_registering_service(tmp_path, monkeypatch):
     config_source = tmp_path / "config.toml"
     config_source.write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
     install_dir = tmp_path / "install"
@@ -1694,11 +1694,11 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
     ])
 
     assert setup.main() == 0
-    assert restart_timeouts == [420]
+    assert restart_timeouts == []
     assert sum(
         command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
         for command in commands
-    ) == 1
+    ) == 0
     assert not any(command[-1:] == ["install"] and any(part.endswith("tools/service.py") or part.endswith("tools\\service.py") for part in command) for command in commands)
 
 
@@ -2508,7 +2508,7 @@ def test_v8_setup_migration_clears_active_vectors_with_backup(tmp_path: Path, mo
 
 
 
-def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):
+def test_skip_service_does_not_restart_global_hub_without_managed_service(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     install = tmp_path / "installed"
     source.mkdir()
@@ -2547,7 +2547,7 @@ def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Pat
     assert sum(
         len(command) >= 2 and Path(command[-2]).name == "hubctl.py" and command[-1] == "restart"
         for command in commands
-    ) == 1
+    ) == 0
     assert not any(
         len(command) >= 2 and Path(command[-2]).name == "service.py" and command[-1] == "install"
         for command in commands
