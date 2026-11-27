@@ -68,12 +68,24 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
     }
     if execution["next_obligation"].is_object() {
         ui.heading("Next obligation");
-        ui.label(label(&execution["next_obligation"], "criterion"));
+        let next = &execution["next_obligation"];
+        ui.label(label(next, "criterion"));
+        if let Some(kind) = next["evidence_type"].as_str() { ui.small(format!("Required evidence: {kind}")); }
+        if let Some(superseded) = next["superseded_by"].as_array() {
+            for prerequisite in superseded.iter().filter_map(Value::as_str).take(12) {
+                ui.small(format!("Reverify after prerequisite: {prerequisite}"));
+            }
+        }
     }
     if let Some(remaining) = execution["remaining_preview"].as_array() {
         ui.heading("Remaining obligations (bounded preview)");
         for row in remaining.iter().take(12) {
             ui.label(format!("{} — {}", label(row, "status"), label(row, "criterion")));
+            if let Some(superseded) = row["superseded_by"].as_array() {
+                for prerequisite in superseded.iter().filter_map(Value::as_str).take(12) {
+                    ui.small(format!("Superseded by: {prerequisite}"));
+                }
+            }
             if let Some(waiting) = row["waiting_on"].as_array() {
                 for dependency in waiting.iter().filter_map(Value::as_str).take(12) {
                     ui.small(format!("Depends on: {dependency}"));
