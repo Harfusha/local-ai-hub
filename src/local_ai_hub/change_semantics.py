@@ -180,10 +180,13 @@ def summarize_python_sources(
             "after_range": [change["after"]["line"], change["after"]["end_line"]] if change["after"] else None,
         })
     imports, imports_truncated = import_candidates("source.py", decoded[1])
+    imports_before, before_truncated = import_candidates("source.py", decoded[0])
     summary = {
         "status": "observed",
         "method": "python_ast_v2",
         "imports_after": imports,
+        "imports_before": imports_before,
+        "imports_before_truncated": before_truncated,
         "imports_truncated": imports_truncated,
         "structural_equal": result["structural_equal"],
         "formatting_only": result["formatting_only"],
@@ -201,15 +204,18 @@ def _valid(value: Any) -> bool:
     if not isinstance(value, dict) or set(value) != {
         "status", "method", "structural_equal", "formatting_only", "change_counts",
         "symbols", "symbols_truncated", "behavior_equivalence_proven", "imports_after", "imports_truncated",
+        "imports_before", "imports_before_truncated",
     }:
         return False
     counts, symbols = value["change_counts"], value["symbols"]
     return (
         value["status"] == "observed" and value["method"] == "python_ast_v2"
         and value["behavior_equivalence_proven"] is False
-        and all(type(value[k]) is bool for k in ("structural_equal", "formatting_only", "symbols_truncated", "imports_truncated"))
+        and all(type(value[k]) is bool for k in ("structural_equal", "formatting_only", "symbols_truncated", "imports_truncated", "imports_before_truncated"))
         and isinstance(counts, dict)
         and all(k in _KINDS and type(v) is int and 0 <= v <= 2001 for k, v in counts.items())
+        and isinstance(value["imports_before"], list) and len(value["imports_before"]) <= 32
+        and all(isinstance(n, str) and len(n) <= 200 and re.fullmatch(r"[A-Za-z0-9_.\\/@\-$]+", n) for n in value["imports_before"])
         and isinstance(value["imports_after"], list) and len(value["imports_after"]) <= 32
         and all(isinstance(n, str) and len(n) <= 200 and re.fullmatch(r"[A-Za-z0-9_.\\/@\-$]+", n) for n in value["imports_after"])
         and isinstance(symbols, list) and len(symbols) <= _MAX_SYMBOLS
