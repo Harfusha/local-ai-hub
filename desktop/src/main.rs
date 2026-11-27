@@ -461,6 +461,34 @@ fn task_create_payload(input: TaskCreateInput<'_>) -> Result<Value, String> {
 // Never dump an arbitrary request (e.g. image bytes, archive passwords).
 fn confirmation_items(payload: &Value) -> Vec<(String, String)> {
     let args = &payload["args"];
+    if payload["op"] == "task_create" {
+        let mut items = Vec::new();
+        if let Some(root) = args["root"].as_str() {
+            items.push(("root".into(), root.into()));
+        }
+        for key in [
+            "goal",
+            "acceptance_criteria",
+            "scope",
+            "risk_profile",
+            "description",
+            "non_goals",
+            "constraints",
+            "slo_profile",
+        ] {
+            if let Some(value) = args["contract"].get(key) {
+                let text = value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.to_string());
+                items.push((format!("contract.{key}"), text));
+            }
+        }
+        if let Some(session_id) = args["context"]["session_id"].as_str() {
+            items.push(("session_id".into(), session_id.into()));
+        }
+        return items;
+    }
     [
         "root",
         "id",
@@ -3685,6 +3713,65 @@ mod tests {
             })
             .is_err());
         }
+    }
+
+    #[test]
+    fn task_creation_confirmation_shows_nested_contract_fields() {
+        let payload = task_create_payload(TaskCreateInput {
+            root: "/repo",
+            goal: "Build a native app",
+            criteria: "Tests pass",
+            scope: "repository",
+            risk_profile: "high",
+            description: "Replace dashboard",
+            non_goals: "No web UI",
+            constraints: "No legacy behavior",
+            session_id: "session-2",
+            slo_json: "{\"max_runtime_seconds\":30}",
+        })
+        .unwrap();
+        let items: std::collections::BTreeMap<_, _> =
+            confirmation_items(&payload).into_iter().collect();
+
+        assert_eq!(items.get("root").map(String::as_str), Some("/repo"));
+        assert_eq!(
+            items.get("contract.goal").map(String::as_str),
+            Some("Build a native app")
+        );
+        assert_eq!(
+            items
+                .get("contract.acceptance_criteria")
+                .map(String::as_str),
+            Some("[\"Tests pass\"]")
+        );
+        assert_eq!(
+            items.get("contract.scope").map(String::as_str),
+            Some("repository")
+        );
+        assert_eq!(
+            items.get("contract.risk_profile").map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            items.get("contract.description").map(String::as_str),
+            Some("Replace dashboard")
+        );
+        assert_eq!(
+            items.get("contract.non_goals").map(String::as_str),
+            Some("[\"No web UI\"]")
+        );
+        assert_eq!(
+            items.get("contract.constraints").map(String::as_str),
+            Some("[\"No legacy behavior\"]")
+        );
+        assert_eq!(
+            items.get("contract.slo_profile").map(String::as_str),
+            Some("{\"max_runtime_seconds\":30}")
+        );
+        assert_eq!(
+            items.get("session_id").map(String::as_str),
+            Some("session-2")
+        );
     }
 
     #[test]
