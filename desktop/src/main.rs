@@ -335,6 +335,33 @@ impl Desktop {
         self.snapshot = None; self.snapshot_view.clear(); self.reveal_trace = false;
         self.live_events.clear(); self.auto_live = false;
     }
+    // A root or installation switch invalidates all scope-bound selection and
+    // continuation state, not just the visible rows.
+    fn reset_scope(&mut self) {
+        self.clear_response();
+        self.pending = None;
+        self.entity.clear();
+        self.revision.clear();
+        self.plan_task.clear();
+        self.memory_scope_id.clear();
+        self.stream_id.clear();
+        self.task_offset = 0;
+        self.task_query.clear();
+        self.history_cursor = 0;
+        self.event_cursor = 0;
+        self.trace_cursor = 0;
+        self.trace_before = 0;
+        self.trace_offset = 0;
+        self.trace_content_offset = 0;
+        self.update_version.clear();
+        self.update_revision.clear();
+        self.operator_name.clear();
+        self.operator_fields.clear();
+        self.filter.clear();
+    }
+    fn can_edit_context(&self) -> bool {
+        self.busy.is_none() && self.pending.is_none() && !self.installation_open
+    }
     fn refresh(&mut self, ctx: &egui::Context) {
         let view = self.current();
         let data = match view {
@@ -870,7 +897,7 @@ impl eframe::App for Desktop {
                 ui.heading("Local AI Hub");
                 ui.separator();
                 ui.label(match self.service { Some(true) => "Service online", Some(false) => "Service unreachable — Start Hub", None => "Service status unknown" });
-                ui.add_enabled_ui(self.busy.is_none() && self.pending.is_none(), |ui| {
+                ui.add_enabled_ui(self.can_edit_context(), |ui| {
                     for (title, action) in [("Start Hub", "start"), ("Stop", "stop"), ("Restart", "restart")] {
                         if ui.button(title).clicked() { self.lifecycle(ctx, action); }
                     }
@@ -890,7 +917,7 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.auto_probe, "Check status automatically while focused");
                 if self.current() == "Agent event stream" { ui.checkbox(&mut self.auto_live, "Follow live SSE while focused"); }
                 ui.label("Repository root");
-                if ui.add_enabled(self.busy.is_none(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.clear_response(); self.entity.clear(); self.revision.clear(); self.task_offset = 0; self.history_cursor = 0; self.event_cursor = 0; self.update_version.clear(); self.update_revision.clear(); }
+                if ui.add_enabled(self.can_edit_context(), egui::TextEdit::singleline(&mut self.repo).desired_width(400.0)).changed() { self.reset_scope(); }
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -898,7 +925,7 @@ impl eframe::App for Desktop {
             else { ui.label(&self.status); }
         });
         egui::SidePanel::left("navigation").resizable(false).default_width(170.0).show(ctx, |ui| {
-            ui.add_enabled_ui(self.busy.is_none() && self.pending.is_none(), |ui| {
+            ui.add_enabled_ui(self.can_edit_context(), |ui| {
                 for (index, (name, _)) in PAGES.iter().enumerate() {
                     if ui.selectable_label(self.page == index, *name).clicked() && self.page != index {
                         self.page = index; self.view = 0; self.clear_response(); self.entity.clear(); self.revision.clear();
@@ -909,7 +936,7 @@ impl eframe::App for Desktop {
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(PAGES[self.page].0);
-            ui.add_enabled_ui(self.busy.is_none() && self.pending.is_none(), |ui| {
+            ui.add_enabled_ui(self.can_edit_context(), |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for (index, view) in PAGES[self.page].1.iter().enumerate() {
                         if ui.selectable_label(self.view == index, *view).clicked() && self.view != index {
@@ -1163,8 +1190,13 @@ impl eframe::App for Desktop {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name"] {
+                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name", "mode", "stream", "session_id"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
+                }
+                for key in ["global", "purge", "confirmed", "capacity"] {
+                    if args[key].is_boolean() || args[key].is_number() {
+                        ui.label(format!("{key}: {}", args[key]));
+                    }
                 }
                 if let Some(changes) = args["settings"].as_object() {
                     for (key, value) in changes { ui.label(format!("{key}: {value}")); }
@@ -1202,7 +1234,7 @@ impl eframe::App for Desktop {
                 self.install = Install { root: PathBuf::from(&self.root_input),
                     python: PathBuf::from(&self.python_input),
                     config: (!self.config_input.trim().is_empty()).then(|| PathBuf::from(&self.config_input)) };
-                self.service = None; self.settings_draft = settings::Draft::default(); self.clear_response(); self.entity.clear(); self.revision.clear();
+                self.service = None; self.settings_draft = settings::Draft::default(); self.reset_scope(); self.operator_catalog.clear(); self.repo.clear();
                 self.last_probe = Instant::now() - Duration::from_secs(30);
                 open = false;
             }
@@ -1233,6 +1265,33 @@ mod tests {
         let mut rows = Vec::new();
         flatten(&json!(vec![1; MAX_ROWS + 10]), "", 0, &mut rows);
         assert_eq!(rows.len(), MAX_ROWS);
+    }
+    #[test]
+    fn context_switch_discards_scope_bound_targets_and_cursors() {
+        let mut app = Desktop::new();
+        app.entity = "old-task".into();
+        app.plan_task = "old-plan-card".into();
+        app.revision = "old-revision".into();
+        app.memory_scope_id = "old-session".into();
+        app.stream_id = "old-stream".into();
+        app.history_cursor = 42;
+        app.event_cursor = 42;
+        app.trace_offset = 100;
+        app.trace_content_offset = 200;
+        app.task_offset = 100;
+        app.operator_fields.insert("task-id".into(), json!("old-task"));
+        app.snapshot = Some(json!({"old": true}));
+        app.pending = Some(Pending { label: "old operation".into(), payload: json!({}) });
+        assert!(!app.can_edit_context());
+        app.reset_scope();
+        assert!(app.can_edit_context());
+        assert!(app.pending.is_none() && app.snapshot.is_none());
+        assert!(app.entity.is_empty() && app.plan_task.is_empty() && app.revision.is_empty());
+        assert!(app.memory_scope_id.is_empty() && app.stream_id.is_empty());
+        assert_eq!((app.history_cursor, app.event_cursor, app.trace_offset, app.trace_content_offset, app.task_offset), (0, 0, 0, 0, 0));
+        assert!(app.operator_fields.is_empty());
+        app.installation_open = true;
+        assert!(!app.can_edit_context());
     }
     #[test]
     fn response_paths_are_stable() {
