@@ -139,6 +139,72 @@ fn linked_trace(record: &Value) -> Option<&str> {
         !id.is_empty() && id.len() <= 200 &&
         id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'))
 }
+// Plan edits are based on the complete server document, not the potentially
+// truncated Kanban projection. An omitted field is never silently overwritten.
+struct PlanDraft {
+    plan_id: String,
+    task_id: String,
+    revision: String,
+    original: serde_json::Map<String, Value>,
+    edited: serde_json::Map<String, Value>,
+}
+impl PlanDraft {
+    fn from_response(response: &Value, plan_id: &str, task_id: &str) -> Option<Self> {
+        if response["success"] != true || response["plan"]["id"].as_str()? != plan_id {
+            return None;
+        }
+        let revision = response["file_revision"].as_str()?.to_owned();
+        if revision.is_empty() { return None; }
+        let plan = &response["plan"];
+        let source = if task_id.is_empty() { plan } else { plan.get("tasks")?.get(task_id)? };
+        let mut original = serde_json::Map::new();
+        for key in ["title", "description"] {
+            original.insert(key.into(), json!(source.get(key)?.as_str()?));
+        }
+        if !task_id.is_empty() {
+            for key in ["next_action", "accountable_role", "blocker"] {
+                if let Some(value) = source.get(key).and_then(Value::as_str) {
+                    original.insert(key.into(), json!(value));
+                } else if source.get(key).is_none_or(Value::is_null) {
+                    original.insert(key.into(), json!(""));
+                }
+            }
+            // Multiline criteria cannot round-trip through the one-per-line editor.
+            // Keep such criteria untouched instead of flattening them.
+            if let Some(items) = source.get("acceptance_criteria").and_then(Value::as_array) {
+                let lines: Option<Vec<&str>> = items.iter().map(|item| {
+                    item.as_str().filter(|line| !line.contains(['\n', '\r']) && line.trim() == *line && !line.is_empty())
+                }).collect();
+                if let Some(lines) = lines { original.insert("criteria".into(), json!(lines.join("\n"))); }
+            }
+        }
+        Some(Self { plan_id: plan_id.into(), task_id: task_id.into(), revision,
+                    edited: original.clone(), original })
+    }
+    fn matches(&self, plan_id: &str, task_id: &str, revision: &str) -> bool {
+        self.plan_id == plan_id && self.task_id == task_id && self.revision == revision
+    }
+    fn patch(&self) -> serde_json::Map<String, Value> {
+        self.edited.iter().filter(|(key, value)| self.original.get(*key) != Some(*value))
+            .map(|(key, value)| (key.clone(), value.clone())).collect()
+    }
+    fn render(&mut self, ui: &mut egui::Ui) {
+        for (key, label, multiline) in [
+            ("title", "Title", false), ("description", "Description", true),
+            ("criteria", "Acceptance criteria (one per line)", true),
+            ("next_action", "Next action", true), ("accountable_role", "Accountable role", false),
+            ("blocker", "Blocker", true),
+        ] {
+            if let Some(Value::String(text)) = self.edited.get_mut(key) {
+                ui.label(label);
+                if multiline { ui.text_edit_multiline(text); }
+                else { ui.text_edit_singleline(text); }
+            } else if !self.task_id.is_empty() && key == "criteria" {
+                ui.small("Criteria unavailable for lossless line editing; preserved unchanged.");
+            }
+        }
+    }
+}
 struct Pending { label: String, payload: Value }
 struct Completed { label: String, result: Result<Value, String>, probe: bool, live: bool }
 struct Desktop {
@@ -167,6 +233,7 @@ struct Desktop {
     plan_title: String,
     revision: String,
     plan_task: String,
+    plan_draft: Option<PlanDraft>,
     description: String,
     archive_path: String,
     semaphore: String,
@@ -232,7 +299,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -298,6 +365,16 @@ impl Desktop {
                         self.reveal_trace = false;
                         self.detail = None;
                         self.record_detail = None;
+                        if done.label == "Plan detail" {
+                            self.plan_draft = PlanDraft::from_response(&value, &self.entity, &self.plan_task);
+                            self.revision = if value["plan"]["id"].as_str() == Some(self.entity.as_str()) && value["success"] == true {
+                                value["file_revision"].as_str().unwrap_or("").to_owned()
+                            } else { String::new() };
+                        }
+                        if matches!(done.label.as_str(), "Update plan" | "Edit plan task" | "Add plan task" | "Delete plan task" | "Move plan task") {
+                            self.plan_draft = None;
+                            self.revision.clear();
+                        }
                         if done.label == "Settings" { self.settings_draft = settings::Draft::from_response(&value); }
                         if done.label == "Save settings" || done.label == "Reset configuration overrides" { self.settings_draft = settings::Draft::default(); }
                         if matches!(done.label.as_str(), "Run events" | "Trace index") { value = trace::sanitize(&value); }
@@ -357,6 +434,9 @@ impl Desktop {
         self.entity.clear();
         self.revision.clear();
         self.plan_task.clear();
+        self.plan_draft = None;
+        self.plan_title.clear();
+        self.description.clear();
         self.memory_scope_id.clear();
         self.stream_id.clear();
         self.task_offset = 0;
@@ -676,31 +756,68 @@ impl Desktop {
                     self.worktrees(ui);
                     return;
                 }
-                ui.label("Plan ID, current file revision (required for edits)");
-                ui.text_edit_singleline(&mut self.entity);
-                ui.text_edit_singleline(&mut self.revision);
-                ui.label("Plan/task title and description");
-                ui.text_edit_singleline(&mut self.plan_title);
-                ui.text_edit_multiline(&mut self.description);
-                ui.label("Plan task ID (for task edit/delete)");
-                ui.text_edit_singleline(&mut self.plan_task);
-                ui.horizontal_wrapped(|ui| {
-                    for (title, op) in [("Create plan", "plan_create"), ("Update plan", "plan_update"),
-                        ("Add plan task", "plan_task_create"), ("Edit plan task", "plan_task_edit"), ("Delete plan task", "plan_task_delete")] {
-                        if ui.button(title).clicked() {
-                            self.confirm(title, request(op, json!({"root": self.repo, "id": self.entity,
-                                "title": self.plan_title, "description": self.description, "revision": self.revision,
-                                "task_id": self.plan_task, "confirmed": true})));
+                ui.label("Plan ID");
+                if ui.text_edit_singleline(&mut self.entity).changed() {
+                    self.revision.clear(); self.plan_draft = None; self.plan_task.clear();
+                    self.plan_title.clear(); self.description.clear();
+                }
+                ui.label("Task ID (empty for plan-level edit)");
+                if ui.text_edit_singleline(&mut self.plan_task).changed() {
+                    self.plan_draft = None; self.plan_title.clear(); self.description.clear();
+                }
+                ui.label(format!("Observed revision: {}", if self.revision.is_empty() { "not loaded" } else { &self.revision }));
+                if ui.button("Load exact plan / task for editing").clicked() {
+                    self.plan_draft = None; self.revision.clear();
+                    self.submit(ctx, "Plan detail".into(), request("plan_detail",
+                        json!({"root": self.repo, "id": self.entity})));
+                }
+                let mut edit_request = None;
+                if let Some(draft) = self.plan_draft.as_mut().filter(|d|
+                    d.matches(&self.entity, &self.plan_task, &self.revision)) {
+                    ui.collapsing("Edit observed plan fields", |ui| {
+                        draft.render(ui);
+                        let changes = draft.patch();
+                        let title = if draft.task_id.is_empty() { "Update plan" } else { "Edit plan task" };
+                        if ui.add_enabled(!changes.is_empty(), egui::Button::new(title)).clicked() {
+                            let op = if draft.task_id.is_empty() { "plan_update" } else { "plan_task_edit" };
+                            let mut args = changes;
+                            args.insert("root".into(), json!(self.repo));
+                            args.insert("id".into(), json!(draft.plan_id));
+                            args.insert("task_id".into(), json!(draft.task_id));
+                            args.insert("revision".into(), json!(draft.revision));
+                            args.insert("confirmed".into(), json!(true));
+                            edit_request = Some((title, request(op, Value::Object(args))));
                         }
-                    }
+                    });
+                }
+                if let Some((title, payload)) = edit_request { self.confirm(title, payload); }
+                ui.collapsing("Create new plan or task", |ui| {
+                    ui.label("New title and description");
+                    ui.text_edit_singleline(&mut self.plan_title);
+                    ui.text_edit_multiline(&mut self.description);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Create plan").clicked() {
+                            self.confirm("Create plan", request("plan_create", json!({"root": self.repo,
+                                "id": self.entity, "title": self.plan_title, "description": self.description, "confirmed": true})));
+                        }
+                        if ui.add_enabled(!self.plan_task.is_empty() && !self.revision.is_empty(), egui::Button::new("Add plan task")).clicked() {
+                            self.confirm("Add plan task", request("plan_task_create", json!({"root": self.repo,
+                                "id": self.entity, "title": self.plan_title, "description": self.description,
+                                "revision": self.revision, "task_id": self.plan_task, "confirmed": true})));
+                        }
+                    });
                 });
+                if ui.add_enabled(!self.plan_task.is_empty() && !self.revision.is_empty(), egui::Button::new("Delete plan task")).clicked() {
+                    self.confirm("Delete plan task", request("plan_task_delete", json!({"root": self.repo,
+                        "id": self.entity, "revision": self.revision, "task_id": self.plan_task, "confirmed": true})));
+                }
                 ui.horizontal_wrapped(|ui| {
                     egui::ComboBox::from_id_salt("plan_move").selected_text(&self.plan_status).show_ui(ui, |ui| {
                         for status in ["planned", "ready", "in_progress", "blocked"] {
                             ui.selectable_value(&mut self.plan_status, status.into(), status);
                         }
                     });
-                    if ui.button("Move task").clicked() {
+                    if ui.add_enabled(!self.plan_task.is_empty() && !self.revision.is_empty(), egui::Button::new("Move task")).clicked() {
                         self.confirm("Move plan task", request("plan_task_move", json!({
                             "root": self.repo, "id": self.entity, "task_id": self.plan_task,
                             "revision": self.revision, "status": self.plan_status, "confirmed": true})));
@@ -1138,7 +1255,7 @@ impl eframe::App for Desktop {
                                             for card in cards.iter().take(500) {
                                                 if !needle.is_empty() && !card.to_string().to_lowercase().contains(&needle) { continue; }
                                                 let title = records::display(&card["title"]);
-                                                if ui.button(title.chars().take(80).collect::<String>()).clicked() { selected = Some(card.clone()); }
+                                                if ui.add_enabled(self.can_edit_context(), egui::Button::new(title.chars().take(80).collect::<String>())).clicked() { selected = Some(card.clone()); }
                                                 ui.small(records::display(&card["task_id"]));
                                                 if state == "done" && card["verified"].as_bool() != Some(true) {
                                                     ui.small("Declared, not verified");
@@ -1151,10 +1268,11 @@ impl eframe::App for Desktop {
                                 });
                             });
                             if let Some(card) = selected {
-                                if let Some(id) = card["task_id"].as_str() { self.plan_task = id.to_owned(); }
-                                if let Some(revision) = card["plan_file_revision"].as_str() { self.revision = revision.to_owned(); }
-                                if let Some(id) = card["plan_id"].as_str() { self.entity = id.to_owned(); }
-                                if let Some(title) = card["title"].as_str() { self.plan_title = title.to_owned(); }
+                                self.plan_task = card["task_id"].as_str().unwrap_or("").to_owned();
+                                self.revision = card["plan_file_revision"].as_str().unwrap_or("").to_owned();
+                                self.entity = card["plan_id"].as_str().unwrap_or("").to_owned();
+                                self.plan_draft = None;
+                                self.plan_title.clear(); self.description.clear();
                                 self.record_detail = Some(card);
                             }
                             return;
@@ -1191,7 +1309,7 @@ impl eframe::App for Desktop {
                                             let value = if self.current() == "Trace index" { records::display(&trace::sanitize(records::field(item, field))) } else { records::display(records::field(item, field)) };
                                             let display: String = value.chars().take(32).collect();
                                             if col == 0 {
-                                                if ui.add_sized([155.0, height], egui::Button::new(display)).clicked() { selected = Some(item.clone()); }
+                                                if ui.add_enabled(self.can_edit_context(), egui::Button::new(display).min_size(egui::vec2(155.0, height))).clicked() { selected = Some(item.clone()); }
                                             } else {
                                                 ui.add_sized([155.0, height], egui::Label::new(display));
                                             }
@@ -1203,8 +1321,9 @@ impl eframe::App for Desktop {
                         if let Some(item) = selected {
                             if let Some(id) = item["trace_id"].as_str().or_else(|| item["task_id"].as_str()).or_else(|| item["job_id"].as_str()).or_else(|| item["work_id"].as_str()).or_else(|| item["id"].as_str()) { if self.entity != id { self.history_cursor = 0; self.trace_cursor = 0; self.trace_before = 0; self.trace_content_offset = 0; } self.entity = id.to_owned(); }
                             if self.current() == "Plans" {
-                                if let Some(revision) = item["file_revision"].as_str() { self.revision = revision.to_owned(); }
-                                if let Some(title) = item["title"].as_str() { self.plan_title = title.to_owned(); }
+                                self.revision = item["file_revision"].as_str().unwrap_or("").to_owned();
+                                self.plan_task.clear(); self.plan_draft = None;
+                                self.plan_title.clear(); self.description.clear();
                             }
                             self.record_detail = Some(if self.current() == "Trace index" { trace::sanitize(&item) } else { item });
                         }
@@ -1267,6 +1386,9 @@ impl eframe::App for Desktop {
                     if args[key].is_boolean() || args[key].is_number() {
                         ui.label(format!("{key}: {}", args[key]));
                     }
+                }
+                for key in ["title", "description", "criteria", "next_action", "accountable_role", "blocker"] {
+                    if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
                 }
                 if let Some(changes) = args["settings"].as_object() {
                     for (key, value) in changes { ui.label(format!("{key}: {value}")); }
@@ -1379,6 +1501,30 @@ mod tests {
         assert_eq!(filtered_log_lines(&response, "").unwrap().len(), 3);
         assert!(filtered_log_lines(&json!({}), "").is_none());
         assert!(filtered_log_lines(&response, "absent").unwrap().is_empty());
+    }
+    #[test]
+    fn plan_draft_preserves_unedited_fields_and_binds_target_revision() {
+        let response = json!({"success":true,"file_revision":"rev1","plan":{"id":"plan_a",
+            "title":"Plan","description":"Plan description","tasks":{"task_a":{"title":"Task",
+            "description":"Complete task description","acceptance_criteria":["first","second"],
+            "next_action":"test","blocker":null,"accountable_role":"developer"}}}});
+        let mut draft = PlanDraft::from_response(&response, "plan_a", "task_a").unwrap();
+        assert!(draft.matches("plan_a", "task_a", "rev1"));
+        assert!(!draft.matches("plan_a", "task_b", "rev1"));
+        assert!(!draft.matches("plan_a", "task_a", "rev2"));
+        assert!(draft.patch().is_empty());
+        draft.edited.insert("next_action".into(), json!("review"));
+        assert_eq!(Value::Object(draft.patch()), json!({"next_action":"review"}));
+        assert!(PlanDraft::from_response(&response, "other", "task_a").is_none());
+        assert!(PlanDraft::from_response(&response, "plan_a", "missing").is_none());
+    }
+    #[test]
+    fn plan_draft_preserves_multiline_criteria_without_lossy_editing() {
+        let response = json!({"success":true,"file_revision":"rev1","plan":{"id":"plan_a",
+            "tasks":{"task_a":{"title":"Task","description":"Text","acceptance_criteria":["one\ntwo"]}}}});
+        let draft = PlanDraft::from_response(&response, "plan_a", "task_a").unwrap();
+        assert!(!draft.edited.contains_key("criteria"));
+        assert!(draft.patch().is_empty());
     }
     #[test]
     fn response_paths_are_stable() {
