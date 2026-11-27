@@ -421,12 +421,17 @@ def test_opencode_plugin_route_refreshes_existing_json_plugin(tmp_path, monkeypa
     mcp_plugin.mkdir(parents=True)
     goal_plugin.mkdir(parents=True)
     (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    removed_root = tmp_path / "removed-worktree" / ".local-ai-hub"
+    stale_mcp_plugin = removed_root / "plugins" / "opencode" / "local-ai-hub"
+    stale_goal_plugin = removed_root / "tools" / "opencode_goal"
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({
         "plugins": [
             {"package": str(mcp_plugin.resolve()), "options": {
                 "server": {"command": ["old-python"], "nativeMcp": False},
             }},
+            {"package": str(stale_mcp_plugin), "options": {}},
+            {"package": str(stale_goal_plugin), "options": {}},
             "user-plugin",
         ],
         "providers": {"user-provider": {"name": "preserve me"}},
@@ -482,6 +487,38 @@ def test_opencode_plugin_route_refreshes_existing_json_plugin(tmp_path, monkeypa
     assert refreshed_by_package[str(mcp_plugin.resolve())]["options"]["server"]["nativeMcp"] is True
     assert str(goal_plugin.resolve()) in refreshed_by_package
     assert "local-ai-hub" in refreshed["providers"]
+
+
+def test_opencode_plugin_sync_preserves_existing_valid_hub_copy(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    mcp_plugin = install / "plugins" / "opencode" / "local-ai-hub"
+    goal_plugin = install / "tools" / "opencode_goal"
+    mcp_plugin.mkdir(parents=True)
+    goal_plugin.mkdir(parents=True)
+    (goal_plugin / "index.js").write_text("export default {}\n", encoding="utf-8")
+    retained_mcp_plugin = tmp_path / "other-install" / "plugins" / "opencode" / "local-ai-hub"
+    retained_mcp_plugin.mkdir(parents=True)
+    retained = {"package": str(retained_mcp_plugin.resolve()), "options": {"user": "preserve"}}
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": [retained]}), encoding="utf-8")
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *_args, **_kwargs: {
+        "local-ai": {"command": "C:/Python/python.exe", "args": ["-m", "local_ai_hub.mcp_server"],
+                     "cwd": str(install), "env": {"LOCAL_AI_AGENT": "opencode"}},
+    })
+    cfg = {
+        "models": {"general": "gemma4:12b-128k"},
+        "server": {"bind": "127.0.0.1", "port": 11435},
+    }
+
+    assert setup.sync_opencode_plugin_config(config, install, Path("C:/Python/python.exe"), cfg, False)
+
+    configured = json.loads(config.read_text(encoding="utf-8"))
+    packages = {
+        entry["package"]: entry for entry in configured["plugins"] if isinstance(entry, dict)
+    }
+    assert packages[str(retained_mcp_plugin.resolve())] == retained
+    assert str(mcp_plugin.resolve()) in packages
+    assert str(goal_plugin.resolve()) in packages
 
 
 def test_opencode_plugin_route_installs_goal_lifecycle_plugin_and_preserves_others(tmp_path, monkeypatch):

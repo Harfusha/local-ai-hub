@@ -900,6 +900,36 @@ def sync_opencode_plugin_config(
             plugins.append(plugin_entry)
         elif plugins[replace_index] != plugin_entry:
             plugins[replace_index] = plugin_entry
+    desired_package_paths = {
+        os.path.normcase(os.path.normpath(entry["package"])) for entry in desired
+    }
+    retained_plugins: list[Any] = []
+    for item in plugins:
+        package = item.get("package") if isinstance(item, dict) else None
+        if isinstance(package, str):
+            normalized = os.path.normcase(os.path.normpath(package))
+            known_hub_suffixes = (
+                os.path.normcase(os.path.join("plugins", "opencode", "local-ai-hub")),
+                os.path.normcase(os.path.join("tools", "opencode_goal")),
+            )
+            recognized_hub_path = any(
+                normalized.endswith(os.sep + suffix) for suffix in known_hub_suffixes
+            )
+            if (
+                recognized_hub_path
+                and normalized not in desired_package_paths
+                and Path(package).is_absolute()
+            ):
+                try:
+                    Path(package).stat()
+                except FileNotFoundError:
+                    log(f"Removed stale OpenCode Hub plugin path: {package}")
+                    continue
+                except OSError:
+                    # Preserve paths that cannot be safely checked.
+                    pass
+        retained_plugins.append(item)
+    plugins = retained_plugins
     # OpenCode auto-discovers Ollama independently of configured providers. Disable
     # that route so its local inference always passes through Hub policy/admission.
     if "-opencode.provider.ollama" not in plugins:
