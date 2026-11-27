@@ -64,6 +64,7 @@ def _local_ai_repo_impl(
     match_offset: int = 0,
     file_offset: int | None = None,
     expected_revision: str | None = None,
+    continuation_revision: str | None = None,
     search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -617,9 +618,10 @@ def _local_ai_repo_impl(
         if type(page_limit) is not int or not 1 <= page_limit <= 8 or type(offset) is not int or not 0 <= offset <= 100000:
             return services_module.contract_error("split_changes limit must be 1 through 8 and offset 0 through 100000")
         return services_module._compact(services_module.CLIENT.post("/api/repo/split_changes", {
-            "root": root, "paths": [path] if path else changed_paths,
+            "root": root, "changed_paths": [path] if path else changed_paths,
             "mode": view, "limit": page_limit, "offset": offset,
             **({"expected_revision": expected_revision} if expected_revision is not None else {}),
+            **({"continuation_revision": continuation_revision} if continuation_revision is not None else {}),
             **({"task_id": task_id} if task_id else {}),
             **({"base": base, "head": head or "HEAD"} if base != "HEAD" or head else {}),
         }, timeout=services_module._timeout("model" if view == "semantic" else "quick")), "architecture",
@@ -636,7 +638,7 @@ def _local_ai_repo_impl(
                           "candidate_dependency_count", "requires_explicit_approval", "requires_post_stage_reinspection",
                           "prospective_index_tree_oid", "prospective_tree_status",
                           "draft_summary", "summary_kind", "semantic_group_proposals", "semantic_group_scope",
-                          "semantic_group_proposals_authoritative", "artifact_id", "artifact_kind", "artifact_status", "artifact_bytes", "baseline_stored", "previous_observed_change_set_id", "changed_group_count",
+                          "semantic_group_proposals_authoritative", "artifact_id", "artifact_kind", "artifact_status", "artifact_bytes", "baseline_stored", "previous_observed_change_set_id", "continuation_revision", "restart_required", "changed_group_count", "updated_group_count", "review_verification_changed_group_count",
                           "unchanged_content_group_count", "removed_group_count", "removed_group_keys",
                           "removed_group_keys_omitted", "indexed_impact", "watcher_context", "broker_postimage_context",
                           "content_changed_group_count", "dependency_context_only_changed_group_count"])
@@ -1192,6 +1194,7 @@ def local_ai_repo(
     match_offset: int = 0,
     file_offset: int | None = None,
     expected_revision: str | None = None,
+    continuation_revision: str | None = None,
     search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -1322,7 +1325,8 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit,
         summarize_results=summarize_results, offset=offset, match_offset=match_offset,
-        file_offset=file_offset, expected_revision=expected_revision, search_mode=search_mode,
+        file_offset=file_offset, expected_revision=expected_revision, continuation_revision=continuation_revision,
+        search_mode=search_mode,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
         max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, owner=owner, lease_id=lease_id, **forward,
     )

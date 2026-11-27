@@ -98,6 +98,26 @@ def test_split_changes_has_no_legacy_full_mode(tmp_path: Path, monkeypatch) -> N
     assert services.split_changes(str(tmp_path), mode="full")["success"] is False
 
 
+def test_split_changes_continuation_requires_a_prior_observation_revision(tmp_path: Path) -> None:
+    services = LocalAIServices(
+        config={"server": {"state_dir": str(tmp_path)}},
+        runtime=MagicMock(),
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=MagicMock(),
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=MagicMock(),
+    )
+
+    result = services.split_changes(str(tmp_path), mode="summary", offset=1)
+
+    assert result["success"] is False
+    assert result["restart_required"] is True
+    assert "expected_revision" in result["error"]
+    services.deterministic.split_changes.assert_not_called()
+
+
 def test_synthesize_rules(tmp_path: Path) -> None:
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
     # create pyproject.toml

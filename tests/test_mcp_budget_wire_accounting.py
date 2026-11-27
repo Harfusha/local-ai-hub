@@ -61,7 +61,7 @@ def test_admission_diagnostics_survive_minimal_mcp_wire(monkeypatch):
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_kw: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kw: None)
     result = asyncio.run(mcp_server.mcp.call_tool("local_ai_task", {"action": "second_opinion",
-        "task": "Check", "candidate": "A", "response_profile": "minimal", "max_response_tokens": 512}))
+        "question": "Check", "candidate": "A", "response_profile": "minimal", "max_response_tokens": 512}))
     tokens, parsed, structured = _wire_measure(result)
     assert tokens <= 512 and parsed == structured
     assert parsed["success"] is False and parsed["retryable"] is True

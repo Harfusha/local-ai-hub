@@ -231,3 +231,9 @@ Project configuration and PathHint core: `resolve_project_context(root, state_di
 ## Installed API and operational contracts
 
 Installed schema is authoritative. Hub modes: `active`, `gaming`, `maintenance`. For durable work, create and checkpoint an Agent OS task before edits. If live schema lacks an action, use authorized native tool directly. Native fallback after Hub action requires `terminal=true` and `retryable=false`.
+
+## Git change lifecycle
+- At task start and before review, handoff, recovery, or commit planning, inspect `local_ai_repo(action="split_changes", mode="summary", task_id=...)`; use `mode="delta"` with the prior `expected_revision` and returned `continuation_revision` to refresh changed context.
+- Use exact artifact retrieval for file or hunk details. Treat task-path overlap, model advice, and ownership declarations as candidates; none proves authorship, review, or verification.
+- Use `changed_paths` as sole path-selection field. Stage and publish through Changes UI or `hubctl changes` preview, exact-tree verification, explicit approval, and recovery flow. Never auto-push.
+- Do not add runtime aliases or old-contract fallback. Only one-time update migration may translate persisted old state.

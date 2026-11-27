@@ -273,6 +273,12 @@ def main() -> int:
     parser.add_argument("--allow-mixed-staged", action="store_true", help="Explicitly commit the reviewed staged tree while leaving other hunks unstaged")
     parser.add_argument("--expected-tree", default="", help="Exact reviewed staged Git tree ID")
     parser.add_argument("--expected-revision", default=None, help="Exact knowledge record revision; empty string for create")
+    parser.add_argument("--change-limit", type=int, choices=range(1, 9), default=8,
+                        help="Change-plan page size for changes summary/details/delta")
+    parser.add_argument("--change-offset", type=int, default=0,
+                        help="Change-plan page offset; continuation requires the prior page revision")
+    parser.add_argument("--continuation-revision", default=None,
+                        help="Opaque current snapshot cursor returned by a prior changes delta page")
     parser.add_argument("--operation-id", default="", help="Optional retry-safe knowledge operation ID")
     parser.add_argument("--project-id", default="", help="Explicit project UUID for a replayable knowledge initialization")
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
@@ -294,6 +300,10 @@ def main() -> int:
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
+    if args.action != "changes" and (
+        args.change_limit != 8 or args.change_offset != 0 or args.continuation_revision is not None
+    ):
+        parser.error("change pagination options require the changes action")
     if args.action == "mode":
         if args.sub_arg is not None and args.sub_arg not in ACTIVITY_MODES:
             parser.error(f"MODE must be one of: {', '.join(ACTIVITY_MODES)}")
@@ -307,6 +317,13 @@ def main() -> int:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "verification-policy" and (args.apply or args.base or args.changed_path or args.record_file or args.verification_file):
             parser.error("verification-policy is a read-only local manifest template")
+        if args.continuation_revision is not None and args.sub_arg != "delta":
+            parser.error("--continuation-revision requires changes delta")
+        if args.change_offset < 0 or args.change_offset > 100000:
+            parser.error("--change-offset must be between 0 and 100000")
+        paged_modes = {None, "summary", "details", "semantic", "pr", "release", "delta"}
+        if args.sub_arg not in paged_modes and (args.change_limit != 8 or args.change_offset != 0):
+            parser.error("change pagination options require a paged changes view")
         if args.sub_arg == "sequence-suggest" and (args.apply or args.base or args.changed_path or args.record_file):
             parser.error("sequence-suggest is read-only and observes the complete staged scope")
         if args.sub_arg == "annotate":
@@ -517,11 +534,14 @@ def main() -> int:
                                          rerun=args.rerun_checks)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
-        payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary"}
+        payload = {"root": str(args.root.resolve()), "mode": args.sub_arg or "summary",
+                   "limit": args.change_limit, "offset": args.change_offset}
         if args.expected_revision is not None:
             payload["expected_revision"] = args.expected_revision
+        if args.continuation_revision is not None:
+            payload["continuation_revision"] = args.continuation_revision
         if args.changed_path:
-            payload["paths"] = args.changed_path
+            payload["changed_paths"] = args.changed_path
         if args.base:
             payload.update(base=args.base, head=args.head)
         result = HubClient(config_path=_config_arg(args.config)).post(

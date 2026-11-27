@@ -141,7 +141,8 @@ def test_context_projection_keeps_actual_context_text_after_budget() -> None:
 
 def test_context_projection_budget_rejection_keeps_bounded_identity_and_citation() -> None:
     token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
-        {"max_response_tokens": 220, "response_profile": "compact", "reuse_key": "ctx-citation", "tool": "local_ai_repo"}
+        {"max_response_tokens": 220, "response_profile": "compact", "reuse_key": "ctx-citation",
+         "tool": "local_ai_repo", "extra_fields": ["response_budget"]}
     )
     try:
         result = mcp_server._context_pack_projection(
@@ -168,7 +169,8 @@ def test_context_projection_budget_rejection_keeps_bounded_identity_and_citation
                         for _ in range(12)
                     ],
                 },
-            }
+            },
+            extra_fields=["response_budget"],
         )
     finally:
         mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)

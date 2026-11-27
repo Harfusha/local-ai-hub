@@ -1,6 +1,7 @@
 """Derived change-plan baselines. Reuse metadata, never verification authority."""
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -62,12 +63,45 @@ def _snapshot(result: dict[str, Any]) -> dict[str, dict[str, str]] | None:
             "group-dependency-context-v2",
             *[node_digests[node] for node in sorted(reached)],
         )
-        snapshot[key] = {"content": digest, "dependencies": dependency_digest}
+        try:
+            evidence_digest = _review_verification_digest(group)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        snapshot[key] = {
+            "content": digest,
+            "dependencies": dependency_digest,
+            "review_verification": evidence_digest,
+        }
     return snapshot
 
 
+def _review_verification_digest(group: dict[str, Any]) -> str:
+    """Fingerprint only currently exposed review and verification evidence."""
+    fields = (
+        "verification_status", "review_status", "review_evidence",
+        "verification_evidence", "risks", "task_candidates", "local_ledger",
+    )
+    evidence = {field: group[field] for field in fields if field in group}
+    canonical = json.dumps(evidence, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return identity("group-review-verification-v1", canonical)
+
+
 def _key(root: str, revision: str) -> str:
-    return identity("change-plan-baseline-v2", root, revision)
+    return identity("change-plan-baseline-v3", root, revision)
+
+
+def _continuation_revision(
+    result: dict[str, Any], previous: str, current: dict[str, dict[str, str]],
+    old: dict[str, dict[str, str]],
+) -> str:
+    parts = [
+        str(result.get("observed_change_set_id", "")), previous,
+    ]
+    for label, snapshot in (("current", current), ("previous", old)):
+        parts.append(label)
+        for key, values in sorted(snapshot.items()):
+            parts.extend((key, values["content"], values["dependencies"], values["review_verification"]))
+    return identity("change-delta-continuation-v1", *parts)
 
 
 def remember_baseline(result: dict[str, Any], cache: Any) -> bool:
@@ -77,15 +111,21 @@ def remember_baseline(result: dict[str, Any], cache: Any) -> bool:
     if cache is None or snapshot is None or not isinstance(root, str) or not isinstance(revision, str) or not _HEX.fullmatch(revision):
         return False
     try:
-        cache.set(_key(root, revision), {"schema": 2, "groups": snapshot})
+        cache.set(_key(root, revision), {"schema": 3, "groups": snapshot})
         return True
     except Exception:
         return False
 
 
-def change_delta(result: dict[str, Any], cache: Any, previous: str | None, *, limit: int, offset: int) -> dict[str, Any]:
+def change_delta(
+    result: dict[str, Any], cache: Any, previous: str | None, *, limit: int, offset: int,
+    continuation_revision: str | None = None,
+) -> dict[str, Any]:
     if result.get("success") is not True:
         return result
+    revision = result.get("observed_change_set_id")
+    if not isinstance(revision, str) or not _HEX.fullmatch(revision):
+        return {"success": False, "error": "Current observation revision unavailable; refresh the full summary"}
     if not isinstance(previous, str) or not _HEX.fullmatch(previous):
         return {"success": False, "error": "Delta requires a prior observed revision"}
     current = _snapshot(result)
@@ -95,43 +135,73 @@ def change_delta(result: dict[str, Any], cache: Any, previous: str | None, *, li
         stored = cache.get(_key(result["root"], previous))
     except Exception:
         stored = None
-    old = stored.get("groups") if isinstance(stored, dict) and stored.get("schema") == 2 else None
+    old = stored.get("groups") if isinstance(stored, dict) and stored.get("schema") == 3 else None
     if (
         not isinstance(old, dict) or len(old) > _MAX_GROUPS
         or any(not isinstance(k, str) or not _HEX.fullmatch(k) or not isinstance(v, dict)
-               or set(v) != {"content", "dependencies"}
+               or set(v) != {"content", "dependencies", "review_verification"}
                or any(not isinstance(digest, str) or not _HEX.fullmatch(digest) for digest in v.values())
                for k, v in old.items())
     ):
         return {"success": False, "error": "Prior baseline unavailable or invalid; refresh the full summary"}
-    changed = {key for key, digest in current.items() if old.get(key) != digest}
+    page_revision = _continuation_revision(result, previous, current, old)
+    if offset > 0 and continuation_revision != page_revision:
+        return {
+            "success": False,
+            "error": "Delta continuation is missing or stale; restart from offset 0 with the same prior revision",
+            "restart_required": True,
+            "commit_ready": False,
+        }
+    if offset == 0 and continuation_revision is not None and continuation_revision != page_revision:
+        return {"success": False, "error": "Delta continuation revision does not match the current observation",
+                "restart_required": True, "commit_ready": False}
+    changed = {
+        key for key, value in current.items()
+        if old.get(key, {}).get("content") != value["content"]
+        or old.get(key, {}).get("dependencies") != value["dependencies"]
+    }
     removed = sorted(set(old) - set(current))
     content_changed = {key for key, value in current.items() if old.get(key, {}).get("content") != value["content"]}
-    dependency_only = changed - content_changed
+    dependency_only = {
+        key for key in changed - content_changed
+        if old.get(key, {}).get("dependencies") != current[key]["dependencies"]
+    }
+    review_verification_changed = {
+        key for key, value in current.items()
+        if old.get(key, {}).get("review_verification") != value["review_verification"]
+    }
     unchanged = len(current) - len(content_changed)
     delta = dict(result)
-    delta["clusters"] = [g for g in result["clusters"] if g["group_key"] in changed]
+    updated = changed | review_verification_changed
+    delta["clusters"] = [g for g in result["clusters"] if g["group_key"] in updated]
     delta["cluster_count"] = len(delta["clusters"])
     # Task and verification metadata can change independently. A dependency
     # context match is not a review or verification receipt.
     output = project_change_plan(delta, mode="summary", limit=limit, offset=offset)
     # Both inventories use the same page cursor, including deletion-only deltas.
     removed_page = removed[offset:offset + limit]
-    has_more = offset + limit < max(len(changed), len(removed))
+    has_more = offset + limit < max(len(updated), len(removed))
+    final_page = not has_more
     output.update({
         "projection_mode": "delta",
         "has_more": has_more,
         "next_offset": offset + limit if has_more else None,
+        "continuation_revision": page_revision if has_more else None,
         "previous_observed_change_set_id": previous,
         "changed_group_count": len(changed),
+        "updated_group_count": len(updated),
         "content_changed_group_count": len(content_changed),
         "dependency_context_only_changed_group_count": len(dependency_only),
+        "review_verification_changed_group_count": len(review_verification_changed),
         "unchanged_content_group_count": unchanged,
         "removed_group_count": len(removed),
         "removed_group_keys": removed_page,
         "removed_group_keys_omitted": len(removed) - len(removed_page),
         "removed_group_offset": offset,
-        "baseline_stored": remember_baseline(result, cache),
+        # Preserve the previous baseline until all pages from this snapshot
+        # have been delivered. If a caller stops early, repeating a delta may
+        # duplicate evidence, but cannot silently skip it.
+        "baseline_stored": remember_baseline(result, cache) if final_page else False,
         "verification_status": "unknown",
         "commit_ready": False,
     })

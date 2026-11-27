@@ -911,7 +911,7 @@ def _repo_validation_arguments(action: str, candidates: dict[str, Any]) -> dict[
     if not isinstance(action_contract, dict):
         return candidates
     allowed = action_contract.get("allowed")
-    scoped_names = {"max_commits", "author", "since", "until", "days", "limit"}
+    scoped_names = {"max_commits", "author", "since", "until", "days", "limit", "continuation_revision"}
     required_names = tuple(action_contract.get("required", ()))
     if allowed is None:
         relevant_names = set(required_names) | scoped_names

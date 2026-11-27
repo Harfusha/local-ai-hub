@@ -180,7 +180,11 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         else:
             budget_meta = final.get("response_budget") if isinstance(final, dict) else None
             if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
-                budget_meta["returned_tokens"] = services_module.json_tokens(final)
+                for _ in range(16):
+                    returned = services_module.json_tokens(final)
+                    budget_meta["returned_tokens"] = returned
+                    if services_module.json_tokens(final) == returned:
+                        break
                 if services_module.json_tokens(final) > requested:
                     return services_module._context_input_error("response budget metadata exceeds max_response_tokens")
         pointer = safe_value.get("task_context_artifact_id")

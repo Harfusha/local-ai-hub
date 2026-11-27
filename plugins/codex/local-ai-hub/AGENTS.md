@@ -8,4 +8,7 @@ Prioritize `local-ai` MCP tools for all repository exploration, AST code index, 
 - Use action-specific fields from the live schema: `reason.problem`, `review.code`, `second_opinion.question`, `compress.text`, `explore.task`, `delegate.task`. Semantic output is advisory; it cannot replace exact evidence, deterministic validation, permission checks, approval, or quality gates.
 - Use `local_ai_task(action="delegate")` only for bounded advisory suggestions; native subagent management remains Codex-owned and does not replace main-agent Hub calls.
 - Record durable task progress in `local_ai_coord(action="task_create"|"task_checkpoint"|"verify_receipt")`.
+- For task start, checkpoints, review, handoff, recovery, and commit preparation, inspect GCI through `local_ai_repo(action="split_changes")`; pass known `task_id`, refresh with delta revisions, and use exact artifact details.
+- Task overlap and ownership declarations are advisory. Commit only through Changes preview, exact per-tree verification, explicit approval, and journal recovery; never auto-push.
+- Use `changed_paths`; reject runtime aliases and old-contract fallback. One-time update migration is sole compatibility path.
 <!-- END LOCAL AI HUB CODEX INSTRUCTIONS -->

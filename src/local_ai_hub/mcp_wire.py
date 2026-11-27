@@ -594,7 +594,13 @@ def _build_mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) 
                         content = [services_module.mcp_types.TextContent(type="text", text=services_module.json_dumps(compact_value))]
                         return content, compact_value if structured else None
 
-    inner_limits = list(dict.fromkeys((requested, max(64, requested - 32), max(64, requested // 2), 64)))
+    # The application compactor measures one JSON value, while this finalizer
+    # measures both text and structuredContent. Try smaller inner budgets when
+    # a candidate fits the former estimate but misses the actual MCP envelope.
+    inner_limits = list(dict.fromkeys((
+        requested, max(64, requested - 32), max(64, requested // 2),
+        max(64, requested // 3), max(64, requested // 4), 64,
+    )))
     for inner_limit in inner_limits:
         candidate = services_module.budget_response(
             services_module.copy.deepcopy(value),
@@ -947,13 +953,16 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
     if isinstance(safe, dict):
         if safe.get("success") is False and isinstance(structured.get("request_id"), str):
             safe["request_id"] = structured["request_id"][:160]
-        # Explicit context quotas carry public recovery/budget metadata. The
-        # original wire already fit; restoring these fields cannot enlarge it.
+        # Explicitly requested budgets are public accounting. The original
+        # wire already fit; restoring the measured metadata cannot enlarge it.
+        if (type(arguments.get("max_response_tokens")) is int
+                and arguments["max_response_tokens"] >= 128
+                and isinstance(structured.get("response_budget"), dict)):
+            safe["response_budget"] = services_module.copy.deepcopy(structured["response_budget"])
         if (arguments.get("action") == "context_compile" and name == "local_ai_coord"
                 and type(arguments.get("max_response_tokens")) is int
                 and arguments["max_response_tokens"] > 0
                 and isinstance(structured.get("response_budget"), dict)):
-            safe["response_budget"] = services_module.copy.deepcopy(structured["response_budget"])
             for key in ("next_action", "task_context_artifact_id"):
                 if isinstance(structured.get(key), str):
                     safe[key] = structured[key]

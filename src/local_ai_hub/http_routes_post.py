@@ -6,6 +6,21 @@ from uuid import uuid4
 from .http_server_proxy import services_module
 
 
+def split_change_paths_from_payload(payload: Any) -> list[str] | None:
+    if not isinstance(payload, dict):
+        raise ValueError("split_changes request must be an object")
+    retired_fields = sorted({"paths", "changed_files"}.intersection(payload))
+    if retired_fields:
+        raise ValueError(f"Unsupported split_changes field(s): {', '.join(retired_fields)}; use changed_paths")
+    changed_paths = payload.get("changed_paths")
+    if changed_paths is not None and (
+        not isinstance(changed_paths, list)
+        or any(not isinstance(path, str) or not path.strip() for path in changed_paths)
+    ):
+        raise ValueError("changed_paths must be a list of non-empty strings")
+    return changed_paths
+
+
 class HTTPPostRoutesMixin:
     def _handle_post_opencode_gateway(self, payload: Any) -> None:
         """Run OpenAI chat requests only through Hub policy and scheduler."""
@@ -1071,12 +1086,17 @@ class HTTPPostRoutesMixin:
                 self._handle_task_automation(payload); return
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
-                paths = payload.get("paths", payload.get("changed_files"))
+                try:
+                    paths = split_change_paths_from_payload(payload)
+                except ValueError as exc:
+                    self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                    return
                 result = services_module.APP.services.split_changes(
                     root, paths, mode=payload.get("mode", "summary"),
                     limit=payload.get("limit", 8), offset=payload.get("offset", 0),
                     base=payload.get("base"), head=payload.get("head", "HEAD"), task_id=payload.get("task_id", ""),
                     expected_revision=payload.get("expected_revision"),
+                    continuation_revision=payload.get("continuation_revision"),
                 )
                 self._send(200, result); return
             if 'post_repo_synthesize_rules_1' in post_route_ids:

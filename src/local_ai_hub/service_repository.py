@@ -881,7 +881,7 @@ class ServiceRepositoryMixin:
         self, root: str, changed_files: list[str] | None = None, *,
         mode: str = "summary", limit: int = 8, offset: int = 0,
         base: str | None = None, head: str = "HEAD", task_id: str = "",
-        expected_revision: str | None = None,
+        expected_revision: str | None = None, continuation_revision: str | None = None,
     ) -> dict[str, Any]:
         from .change_commit_preflight import commit_preflight, revision_error
         from .change_plan_projection import project_change_plan
@@ -896,6 +896,13 @@ class ServiceRepositoryMixin:
         root = authorized_repository_root(getattr(self, "config", {}), root)
         if mode == "delta" and (base is not None or changed_files is not None):
             return {"success": False, "error": "Delta requires the complete worktree scope"}
+        if mode in {"preflight", "artifact"} and (limit != 8 or offset != 0):
+            return {"success": False, "error": f"{mode} mode does not accept change-plan pagination"}
+        if continuation_revision is not None and mode != "delta":
+            return {"success": False, "error": "continuation_revision is only valid for delta mode"}
+        if offset > 0 and mode != "delta" and expected_revision is None:
+            return {"success": False, "error": "Continuation requires expected_revision from the prior page",
+                    "restart_required": True, "commit_ready": False}
         if mode == "preflight":
             if base is not None:
                 return {"success": False, "error": "Preflight requires a working tree"}
@@ -944,7 +951,8 @@ class ServiceRepositoryMixin:
 
         cache = getattr(self.deterministic, "_change_summary_cache", None)
         if mode == "delta":
-            return change_delta(result, cache, expected_revision, limit=limit, offset=offset)
+            return change_delta(result, cache, expected_revision, limit=limit, offset=offset,
+                                continuation_revision=continuation_revision)
         if mode == "artifact":
             from .change_plan_artifact import publish_change_plan
 

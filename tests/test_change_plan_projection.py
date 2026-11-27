@@ -169,9 +169,11 @@ def test_delta_pages_all_deleted_groups_even_without_changed_groups():
     assert remember_baseline(old, cache)
     current = {**old, "observed_change_set_id": "b" * 64, "clusters": []}
     offset = 0
+    continuation_revision = None
     collected = []
     for _ in range(5):
-        page = change_delta(current, cache, old["observed_change_set_id"], limit=8, offset=offset)
+        page = change_delta(current, cache, old["observed_change_set_id"], limit=8, offset=offset,
+                            continuation_revision=continuation_revision)
         assert page["success"]
         assert page["changed_group_count"] == 0
         assert page["removed_group_count"] == 20
@@ -180,7 +182,115 @@ def test_delta_pages_all_deleted_groups_even_without_changed_groups():
             assert page["next_offset"] is None
             break
         offset = page["next_offset"]
+        continuation_revision = page["continuation_revision"]
     assert collected == sorted(group["group_key"] for group in groups)
+
+
+def test_delta_reports_review_and_verification_changes_without_content_changes():
+    from local_ai_hub.change_plan_delta import change_delta, remember_baseline
+
+    class Cache:
+        def __init__(self):
+            self.values = {}
+        def get(self, key):
+            return self.values.get(key)
+        def set(self, key, value):
+            self.values[key] = value
+
+    cache = Cache()
+    group = {"group_key": "a" * 64, "observed_atom_ids": ["b" * 64], "files": ["a.py"],
+             "verification_status": "unknown", "risks": ["review_not_verified"],
+             "task_candidates": [{"task_id": "task-1", "verification": {"status": "unknown"}}]}
+    old = {"success": True, "root": "/repo", "comparison": None,
+           "inventory_scope": "git_visible_changes", "git_visible_observation_complete": True,
+           "observed_change_set_id": "1" * 64, "clusters": [group]}
+    assert remember_baseline(old, cache)
+    current = {**old, "observed_change_set_id": "2" * 64, "clusters": [{
+        **group, "verification_status": "verified", "risks": [],
+        "task_candidates": [{"task_id": "task-1", "verification": {"status": "task_completion_current"}}],
+    }]}
+
+    result = change_delta(current, cache, old["observed_change_set_id"], limit=8, offset=0)
+
+    assert result["content_changed_group_count"] == 0
+    assert result["dependency_context_only_changed_group_count"] == 0
+    assert result["review_verification_changed_group_count"] == 1
+    assert result["clusters"][0]["verification_status"] == "verified"
+    assert result["clusters"][0]["task_candidates"][0]["verification"]["status"] == "task_completion_current"
+    assert result["commit_ready"] is False
+
+
+def test_delta_requires_matching_current_revision_for_continuation_pages():
+    from local_ai_hub.change_plan_delta import change_delta, remember_baseline
+
+    class Cache:
+        def __init__(self):
+            self.values = {}
+        def get(self, key):
+            return self.values.get(key)
+        def set(self, key, value):
+            self.values[key] = value
+
+    cache = Cache()
+    old_groups = [{"group_key": f"{i:064x}", "observed_atom_ids": [f"{i + 100:064x}"], "files": [f"{i}.py"]}
+                  for i in range(1, 4)]
+    old = {"success": True, "root": "/repo", "comparison": None,
+           "inventory_scope": "git_visible_changes", "git_visible_observation_complete": True,
+           "observed_change_set_id": "1" * 64, "clusters": old_groups}
+    current = {**old, "observed_change_set_id": "2" * 64,
+               "clusters": [{**group, "observed_atom_ids": [f"{i + 200:064x}"]}
+                            for i, group in enumerate(old_groups, 1)]}
+    assert remember_baseline(old, cache)
+
+    first = change_delta(current, cache, old["observed_change_set_id"], limit=1, offset=0)
+    assert isinstance(first["continuation_revision"], str)
+    assert first["continuation_revision"] != current["observed_change_set_id"]
+    missing = change_delta(current, cache, old["observed_change_set_id"], limit=1, offset=1)
+    stale = change_delta({**current, "observed_change_set_id": "3" * 64}, cache,
+                         old["observed_change_set_id"], limit=1, offset=1,
+                         continuation_revision="3" * 64)
+    page = change_delta(current, cache, old["observed_change_set_id"], limit=1, offset=1,
+                        continuation_revision=first["continuation_revision"])
+
+    assert missing["success"] is False
+    assert stale["success"] is False
+    assert page["success"] is True
+    assert page["clusters"][0]["group_key"] == current["clusters"][1]["group_key"]
+
+
+def test_split_changes_contract_exposes_scoped_delta_continuation_revision():
+    from local_ai_hub.operation_contracts import operation_contract, operation_tool_input_schema
+
+    schema = operation_tool_input_schema("local_ai_repo")
+    split_changes_inputs = operation_contract("local_ai_repo")["actions"]["split_changes"]["allowed"]
+
+    assert "continuation_revision" in schema["properties"]
+    assert "continuation_revision" in split_changes_inputs
+
+
+def test_mcp_split_changes_forwards_delta_continuation_revision(tmp_path, monkeypatch):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.mcp_tools_repo import local_ai_repo
+
+    captured = {}
+
+    def post(path, payload, timeout=None):
+        captured.update(path=path, payload=payload)
+        return {"success": True, "continuation_revision": "c" * 64, "commit_ready": False}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    result = local_ai_repo(
+        action="split_changes", root=str(tmp_path), mode="delta", limit=8, offset=8,
+        expected_revision="a" * 64, continuation_revision="b" * 64,
+    )
+
+    assert captured["path"] == "/api/repo/split_changes"
+    assert captured["payload"]["changed_paths"] is None
+    assert "paths" not in captured["payload"]
+    assert "changed_files" not in captured["payload"]
+    assert captured["payload"]["expected_revision"] == "a" * 64
+    assert captured["payload"]["continuation_revision"] == "b" * 64
+    assert result["continuation_revision"] == "c" * 64
 
 
 def test_change_plan_artifact_does_not_export_private_local_provenance():
