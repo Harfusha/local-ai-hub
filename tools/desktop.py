@@ -943,15 +943,58 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             "plan_id": text_field(args, "id", 85), **plan_text_patch(args, task=False, create=True),
             "lifecycle": "active", "owner": "desktop",
             "idempotency_key": "desktop-" + uuid.uuid4().hex})
+    if op == "incident_list":
+        root = explicit_root(args.get("root"))
+        status = args.get("status", "")
+        limit = args.get("limit", 100)
+        if type(status) is not str or status not in {"", "ignored", "resolved", "unresolved"}:
+            raise ValueError("Invalid incident status")
+        if type(limit) is not int or limit not in (25, 50, 100):
+            raise ValueError("Invalid incident result limit")
+        client = control._client()
+        try:
+            if not client._online(timeout=2.0):
+                raise RuntimeError("Hub is not reachable.")
+            query = {"root": root, "limit": limit, **({"status": status} if status else {})}
+            result = client.get("/api/agent-state/incidents?" + urlencode(query),
+                                timeout=15.0, requires_heavy_work=False)
+            if result.get("success") is not True or not isinstance(result.get("incidents"), list):
+                raise RuntimeError("Incident inventory unavailable")
+            if len(result["incidents"]) > limit:
+                raise RuntimeError("Malformed incident inventory")
+            return result
+        finally:
+            client.close()
+    if op == "incident_find":
+        query = text_field(args, "query", 2000)
+        limit = args.get("limit", 100)
+        if type(limit) is not int or limit not in (25, 50, 100):
+            raise ValueError("Invalid incident result limit")
+        result = checked_post(control, "/api/agent-state/incidents", {
+            "root": explicit_root(args.get("root")), "action": "find",
+            "query": query, "limit": limit,
+        })
+        if (result.get("success") is not True or not isinstance(result.get("incidents"), list)
+                or len(result["incidents"]) > limit):
+            raise RuntimeError("Invalid negative knowledge response")
+        return result
     if op == "incident":
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
-        return checked_post(control, "/api/agent-state/incidents", {
+        cause, fix = args.get("cause", ""), args.get("fix", "")
+        if any(not isinstance(value, str) or len(value) > 4096 for value in (cause, fix)):
+            raise ValueError("Invalid incident cause or verified fix")
+        if fix.strip().casefold() == "resolved":
+            raise ValueError("Describe the verified fix rather than asserting resolution")
+        result = checked_post(control, "/api/agent-state/incidents", {
             "root": explicit_root(args.get("root")), "action": "record",
             "operation_class": text_field(args, "kind", 200),
             "message": text_field(args, "message"),
-            "root_cause": args.get("cause", ""), "verified_fix": args.get("fix", ""),
+            "root_cause": cause, "verified_fix": fix,
         })
+        if result.get("success") is not True or not isinstance(result.get("incident"), dict):
+            raise RuntimeError("Incident recording not confirmed")
+        return result
     if op == "telemetry":
         if args.get("confirmed") is not True or args.get("mode") not in {"off", "minimal", "full"}:
             raise ValueError("Explicit confirmation and valid mode required")
