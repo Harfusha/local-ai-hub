@@ -273,7 +273,7 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
 
     action = args.get("action")
     if action not in {"stage-preview", "stage-apply", "commit-staged", "commit-list", "commit-inspect",
-                      "annotate", "sequence-preview", "sequence-apply"}:
+                      "annotate", "sequence-preview", "sequence-apply", "sequence-suggest"}:
         raise ValueError("Unsupported local Git operation")
     if action in {"stage-apply", "commit-staged", "annotate", "sequence-apply"} and args.get("confirmed") is not True:
         raise ValueError("Explicit confirmation required")
@@ -284,6 +284,13 @@ def change_transaction(control: HubControl, args: dict[str, Any]) -> dict[str, A
         return CommitJournal(state).list_recent(root)
     if action == "commit-inspect":
         return CommitJournal(state).inspect(root, text_field(args, "operation_id", 32))
+    if action == "sequence-suggest":
+        from local_ai_hub.change_commit_sequence import suggest_sequence
+
+        expected = args.get("expected_revision")
+        if expected is not None and (not isinstance(expected, str) or len(expected) != 64):
+            raise ValueError("Invalid observation revision")
+        return suggest_sequence(DeterministicEngine(config).split_changes(root, None), expected)
     if action == "annotate":
         from local_ai_hub.change_ledger import ChangeLedger
 
