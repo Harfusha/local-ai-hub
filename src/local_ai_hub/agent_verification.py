@@ -1981,8 +1981,11 @@ class VerificationStore:
                 repository_revision=expected_revision, mutation_generation=expected_generation,
                 valid_owners=valid_owners,
             ) if isinstance(next_obligation, dict) else 0
+            from .execution_progress import repeated_checkpoint_count
+
             execution["progress"] = evidence_progress(
                 repeated_failure_count=repeated_failures,
+                repeated_checkpoint_count=repeated_checkpoint_count(task_state, now=current_time),
                 created_at=task_state.created_at, now=current_time,
                 active=task_state.status.value in {"active", "verifying"}, complete=is_complete,
                 observed_receipt_times=[receipt.observed_at for receipt in visible_receipts
