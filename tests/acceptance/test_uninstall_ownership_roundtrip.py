@@ -82,6 +82,9 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     shutil.copyfile(ROOT / "defaults.toml", install / "defaults.toml")
+    (install / "src" / "local_ai_hub").mkdir(parents=True)
+    shutil.copyfile(ROOT / "src" / "local_ai_hub" / "defaults.toml",
+                    install / "src" / "local_ai_hub" / "defaults.toml")
     devin_relative = setup.devin_config_dir().relative_to(home).as_posix()
     config_roots = {
         ".claude.json": "mcpServers",
