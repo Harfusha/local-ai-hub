@@ -41,7 +41,8 @@ def test_index_impact_hints_remain_bounded_and_non_authoritative():
         "likely_dependents": [{"path": "consumer.py"}, {"path": "source.py"}, {"path": "../outside.py"}],
         "suggested_tests": [{"path": "tests/test_source.py"}, {"path": "/outside.py"}],
     }
-    plan = {"success": True, "clusters": [{"files": ["source.py"]}]}
+    plan = {"success": True, "clusters": [{"group_key": "group-source", "files": ["source.py"]}],
+            "dependency_plan": {"coverage": {"complete": False}}}
     attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
     hints = plan["indexed_impact"]
     assert hints["dependent_paths"] == ["consumer.py"]
@@ -56,9 +57,40 @@ def test_index_impact_hints_remain_bounded_and_non_authoritative():
     assert plan["indexed_impact"]["freshness"] == "stale_candidates"
     assert plan["indexed_impact"]["stale_candidate_paths"] == ["consumer.py"]
     assert plan["indexed_impact"]["unknown_candidate_paths"] == ["source.py"]
+    assert plan["dependency_plan"]["unchanged_consumer_candidates"]["candidates"][0]["freshness"] == "stale_candidate"
     index.impact.return_value["root"] = "/other"
     attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
     assert plan["indexed_impact"]["status"] == "unavailable"
+
+
+def test_index_impact_adds_unchanged_consumers_as_uncertain_dependency_evidence():
+    from unittest.mock import MagicMock
+    from local_ai_hub.change_task_context import attach_index_impact
+
+    index = MagicMock()
+    index.impact.return_value = {
+        "success": True, "root": "/repo", "indexed_changed_files": 1, "truncated": False,
+        "changed_symbols": [{"name": "parse_item", "path": "src/parser.py"}],
+        "likely_dependents": [{"path": "src/consumer.py", "symbols": ["parse_item"]}],
+        "suggested_tests": [],
+        "freshness": {"status": "verified_current_candidates", "stale_paths": [], "unknown_paths": []},
+    }
+    plan = {
+        "success": True,
+        "clusters": [{"group_key": "group-parser", "files": ["src/parser.py"]}],
+        "dependency_plan": {"coverage": {"complete": False}},
+    }
+
+    attach_index_impact(SimpleNamespace(code_index=index), plan, "/repo")
+
+    evidence = plan["dependency_plan"]["unchanged_consumer_candidates"]
+    assert evidence["complete"] is False
+    assert evidence["candidates"] == [{
+        "path": "src/consumer.py", "symbols": ["parse_item"],
+        "source_group_keys": ["group-parser"], "freshness": "verified_current_candidate",
+        "certainty": "uncertain_candidate",
+    }]
+    assert plan["dependency_plan"]["coverage"]["complete"] is False
 
 
 def test_index_impact_freshness_checks_content_and_generation_without_claiming_closure():

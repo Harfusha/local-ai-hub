@@ -139,6 +139,12 @@ def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> Non
     """Offer bounded indexed consumer/test hints, not fresh dependency proof."""
     if result.get("success") is not True:
         return
+    dependency_plan = result.get("dependency_plan")
+    if isinstance(dependency_plan, dict):
+        dependency_plan["unchanged_consumer_candidates"] = {
+            "status": "unavailable", "complete": False, "candidates": [], "omitted": 0,
+            "certainty": "uncertain_candidate",
+        }
     output: dict[str, Any] = {
         "status": "unavailable", "freshness": "not_checked", "dependencies_verified": False,
         "verification_reuse_authorized": False,
@@ -200,7 +206,59 @@ def attach_index_impact(services: Any, result: dict[str, Any], root: str) -> Non
         indexed_changed_path_count=indexed if type(indexed) is int and 0 <= indexed <= len(paths) else None,
         dependent_paths=dependents[:8], dependent_paths_omitted=max(0, len(impact.get("likely_dependents", [])) - 8) if isinstance(impact.get("likely_dependents"), list) else 0,
         test_paths=tests[:8], test_paths_omitted=max(0, len(impact.get("suggested_tests", [])) - 8) if isinstance(impact.get("suggested_tests"), list) else 0,
-        input_scope="visible_change_plan_page_only",
+        input_scope="full_change_plan_scope_with_64_path_cap",
         index_scan_truncated=impact.get("truncated") is not False,
         complete=False,
     )
+    if isinstance(dependency_plan, dict):
+        changed_group_by_path = {
+            path: group.get("group_key")
+            for group in result.get("clusters", []) if isinstance(group, dict)
+            for path in group.get("files", []) if isinstance(path, str)
+        }
+        changed_symbols: dict[str, set[str]] = {}
+        for row in impact.get("changed_symbols", [])[:48] if isinstance(impact.get("changed_symbols"), list) else []:
+            if not isinstance(row, dict):
+                continue
+            name, path = row.get("name"), row.get("path")
+            group_key = changed_group_by_path.get(path) if isinstance(path, str) else None
+            if isinstance(name, str) and name and isinstance(group_key, str) and group_key:
+                changed_symbols.setdefault(name, set()).add(group_key)
+
+        freshness_status = output.get("freshness", "not_checked")
+        freshness_info = impact.get("freshness")
+        freshness_info = freshness_info if isinstance(freshness_info, dict) else {}
+        stale_values = freshness_info.get("stale_paths", [])
+        unknown_values = freshness_info.get("unknown_paths", [])
+        stale_paths = {path for path in stale_values if isinstance(path, str)} if isinstance(stale_values, list) else set()
+        unknown_paths = {path for path in unknown_values if isinstance(path, str)} if isinstance(unknown_values, list) else set()
+        consumer_candidates = []
+        rows = impact.get("likely_dependents", [])
+        rows = rows[:8] if isinstance(rows, list) else []
+        allowed_paths = set(dependents)
+        for row in rows:
+            if not isinstance(row, dict) or row.get("path") not in allowed_paths:
+                continue
+            path = row["path"]
+            symbols = row.get("symbols", [])
+            symbols = sorted({name for name in symbols if isinstance(name, str) and name in changed_symbols})[:8] if isinstance(symbols, list) else []
+            source_groups = sorted({group for name in symbols for group in changed_symbols[name]})[:8]
+            candidate_freshness = (
+                "stale_candidate" if path in stale_paths
+                else "unknown_candidate" if path in unknown_paths
+                else "verified_current_candidate" if freshness_status == "verified_current_candidates"
+                else "not_checked"
+            )
+            consumer_candidates.append({
+                "path": path, "symbols": symbols, "source_group_keys": source_groups,
+                "freshness": candidate_freshness, "certainty": "uncertain_candidate",
+            })
+        dependency_plan["unchanged_consumer_candidates"] = {
+            "status": "advisory_index_candidates",
+            "complete": False,
+            "candidates": consumer_candidates,
+            "omitted": max(0, len(impact.get("likely_dependents", [])) - len(consumer_candidates))
+            if isinstance(impact.get("likely_dependents"), list) else 0,
+            "certainty": "uncertain_candidate",
+            "scope": "full_change_plan_scope_with_64_path_cap",
+        }

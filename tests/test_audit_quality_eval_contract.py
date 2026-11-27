@@ -85,18 +85,26 @@ def test_derivative_requires_all_architecture_captures_and_preserves_query_targe
         symbols, intent = evaluator.ARCHITECTURE_TARGETS[case]
         assert ({path: list(symbols)}, intent) in graded_contracts
     assert evaluator.ARCHITECTURE_TARGETS["async-architecture"][0] == ("AsyncJobManager",)
-    assert len(evaluator.ARCHITECTURE_TARGETS["mcp-architecture"][0]) == 7
+    assert evaluator.ARCHITECTURE_TARGETS["mcp-architecture"][0] == ("_classify_mcp_operation",)
 
 
-def test_v2_contract_binds_current_explicit_test_target_and_mcp_recall_k():
+def test_v3_contract_binds_current_explicit_test_target_and_mcp_entrypoints():
     contract = evaluator.goldset_contract()
     by_case = {row["case"]: row for row in contract}
+    assert evaluator.GOLDSET_VERSION == 3
     current = by_case["explicit-test-intent"]
     assert current["query"] == "test_retired_public_guide_rejects_before_health_queries"
     assert current["expected_symbols"][current["expected_path"]] == [
         "test_retired_public_guide_rejects_before_health_queries"
     ]
+    assert by_case["mcp-entrypoint"]["expected_path"] == "src/local_ai_hub/mcp_tools_status.py"
+    assert by_case["mcp-entrypoint"]["expected_symbols"]["src/local_ai_hub/mcp_tools_status.py"] == [
+        "local_ai_status"
+    ]
     assert by_case["mcp-architecture"]["k"] == 7
+    assert by_case["mcp-architecture"]["expected_symbols"] == {
+        "src/local_ai_hub/mcp_server.py": ["_classify_mcp_operation"]
+    }
     assert evaluator.LEGACY_GOLD[0][1] == (
         "test_public_guide_uses_explicit_help_fields_without_health_queries"
     )

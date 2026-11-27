@@ -949,14 +949,14 @@ class ServiceRepositoryMixin:
             from .change_plan_artifact import publish_change_plan
 
             return publish_change_plan(result, getattr(self, "artifacts", None))
+        if mode == "details" and base is None:
+            from .change_task_context import attach_index_impact
+
+            attach_index_impact(self, result, root)
         projected = project_change_plan(
             result, mode=mode, limit=limit, offset=offset,
             delegate=self.delegate if mode == "semantic" else None, root=root,
         )
-        if mode == "details" and base is None:
-            from .change_task_context import attach_index_impact
-
-            attach_index_impact(self, projected, root)
         if mode == "summary" and projected.get("success") is True:
             projected["baseline_stored"] = remember_baseline(result, cache)
         return projected

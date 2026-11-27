@@ -11,9 +11,9 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.evaluation_quality import paired_retrieval_delta, retrieval_metrics, review_metrics
 from local_ai_hub.repo_tools import RepositoryTools
 
-GOLDSET_VERSION = 2
+GOLDSET_VERSION = 3
 GOLD = (
-    ("mcp-entrypoint", "local_ai_status", "src/local_ai_hub/mcp_server.py", "local_ai_status", "production"),
+    ("mcp-entrypoint", "local_ai_status", "src/local_ai_hub/mcp_tools_status.py", "local_ai_status", "production"),
     ("http-deadline", "RequestHeadReader", "src/local_ai_hub/http_transport.py", "RequestHeadReader", "production"),
     ("budget-failure", "BudgetUnavailableError", "src/local_ai_hub/agent_policy.py", "BudgetUnavailableError", "production"),
     ("async-owner", "AsyncJobManager", "src/local_ai_hub/async_jobs.py", "AsyncJobManager", "production"),
@@ -37,14 +37,12 @@ LEGACY_ARCHITECTURE_TARGETS = {
 ARCHITECTURE_QUERIES = (
     ("http-architecture", "HTTP server request header deadline", "src/local_ai_hub/http_transport.py"),
     ("async-architecture", "asynchronous job lifecycle cancellation ownership", "src/local_ai_hub/async_jobs.py"),
-    ("mcp-architecture", "MCP public tool entrypoints", "src/local_ai_hub/mcp_server.py"),
+    ("mcp-architecture", "MCP tool operation classification and dispatch", "src/local_ai_hub/mcp_server.py"),
 )
 ARCHITECTURE_TARGETS = {
     "http-architecture": (("RequestHeadReader",), "production"),
     "async-architecture": (("AsyncJobManager",), "production"),
-    "mcp-architecture": (("local_ai_status", "local_ai_task", "local_ai_repo",
-                          "local_ai_rag", "local_ai_coord", "local_ai_work",
-                          "local_ai_artifact"), "production"),
+    "mcp-architecture": (("_classify_mcp_operation",), "production"),
 }
 GOLD_K = {case: 5 for case, *_ in GOLD}
 ARCHITECTURE_K = {"http-architecture": 5, "async-architecture": 5, "mcp-architecture": 7}
@@ -69,7 +67,7 @@ def run(root, baseline=None, baseline_source_root=None):
     if not root.is_absolute() or not root.is_dir():
         raise ValueError("authorized absolute repository root required")
     sources, hashes = {}, {}
-    paths = sorted({path for _, _, path, _, _ in GOLD} | {
+    paths = sorted({path for _, _, path, _, _ in GOLD} | {path for _, _, path in ARCHITECTURE_QUERIES} | {
         "tests/test_audit_remediation.py", "tests/test_audit_transport_remediation.py",
     })
     for path in paths:
