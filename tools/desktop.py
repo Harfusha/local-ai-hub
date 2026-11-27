@@ -31,6 +31,8 @@ VIEWS = {
     "Work orders": "/api/live/status?light=1&scope=1h",
     "Laya": "/api/live/status?light=1&scope=1h",
     "Commands": "/api/live/status?light=1&scope=1h",
+    "Process sessions": "/api/live/status?light=1&scope=1h",
+    "Recent errors": "/api/live/status?light=1&scope=1h",
     "Models & search": "/api/live/status?light=1&scope=1h",
     "Runtime health": "/api/live/status?light=1&scope=1h",
     "Settings": "/api/config",
@@ -431,21 +433,55 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             raise ValueError("Web UI has been retired")
         dashboard_settings_patch({key: value})
         return checked_post(control, "/api/config/update", {"action": "update", "settings": {key: value}})
-    if op == "trace_detail":
+    if op in {"trace_detail", "trace_content", "trace_metrics", "trace_export"}:
         trace_id = text_field(args, "id", 200)
-        if not all(c.isalnum() or c in "_-" for c in trace_id):
+        if not all(c.isascii() and (c.isalnum() or c in "_-") for c in trace_id):
             raise ValueError("Invalid trace identifier")
+        after, before, offset = (args.get(k, 0) for k in ("after", "before", "offset"))
+        if any(type(v) is not int or not 0 <= v <= (1 << 63) - 1 for v in (after, before, offset)):
+            raise ValueError("Invalid trace cursor")
+        if before and after:
+            raise ValueError("Choose either the before or after cursor")
+        query = {"since_seq": after, "before_seq": before, "limit": 100, "max_bytes": 4_000_000}
+        suffix = ""
+        if op == "trace_content":
+            field = text_field(args, "field", 32)
+            if field not in {"request", "effective_payload", "output", "response"}:
+                if not (field.startswith("event:") and field[6:].isascii() and field[6:].isdigit()):
+                    raise ValueError("Invalid trace content field")
+            query = {"full": 1, "content_field": field, "content_offset": offset, "limit": 1}
+        elif op == "trace_metrics":
+            suffix, query = "/metrics", {}
+        elif op == "trace_export":
+            if args.get("confirmed") is not True:
+                raise ValueError("Explicit confirmation required")
+            file = Path(text_field(args, "file", 4096)).expanduser()
+            if file.exists() or file.is_symlink():
+                raise ValueError("Destination exists; choose a new filename")
+            suffix = "/export"
         client = control._client()
         try:
             if not client._online(timeout=2.0):
                 raise RuntimeError("Hub is not reachable.")
-            cursor = args.get("after", 0)
-            if type(cursor) is not int or cursor < 0:
-                raise ValueError("Invalid trace cursor")
-            result = client.get("/api/debug-traces/" + quote(trace_id, safe="") + "?" +
-                                urlencode({"since_seq": cursor, "limit": 100, "max_bytes": 4_000_000}))
-            if result.get("success") is False:
+            route = "/api/debug-traces/" + quote(trace_id, safe="") + suffix
+            result = client.get(route + "?" + urlencode(query), timeout=30.0, requires_heavy_work=False)
+            if result.get("success") is not True:
                 raise RuntimeError(str(result.get("error") or "Trace unavailable"))
+            if op == "trace_export":
+                if result.get("redacted_export") is not True:
+                    raise RuntimeError("Server did not certify redacted export")
+                raw = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+                created = False
+                try:
+                    with file.open("xb") as stream:
+                        created = True
+                        stream.write(raw)
+                except Exception:
+                    if created:
+                        file.unlink(missing_ok=True)
+                    raise
+                return {"success": True, "file": str(file.resolve()), "bytes": len(raw),
+                        "has_more": result.get("has_more"), "next_seq": result.get("next_seq")}
             return result
         finally:
             client.close()

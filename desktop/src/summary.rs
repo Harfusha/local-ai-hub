@@ -97,6 +97,23 @@ pub fn render(ui: &mut egui::Ui, view: &str, snapshot: &Value) {
             }
         });
     }
+    if view == "Commands" {
+        ui.group(|ui| {
+            ui.heading("Command runtime");
+            let command = snapshot.pointer("/runtime_stats/commands").unwrap_or(&Value::Null);
+            for (label, key) in [("Active", "active_count"), ("Executed", "executed"), ("Cache hits", "hits"), ("Cache misses", "misses"), ("Coalesced waiters", "coalesced_waiters"), ("Blocked", "blocked")] {
+                ui.label(format!("{label}: {}", crate::records::display(&command[key])));
+            }
+            if let Some(reasons) = command["blocked_by_reason"].as_object() {
+                ui.collapsing("Blocked by reason", |ui| {
+                    for (reason, count) in reasons { ui.label(format!("{reason}: {count}")); }
+                });
+            }
+        });
+    }
+    if view == "Process sessions" {
+        ui.small("An unclean exit means no clean shutdown was recorded; the cause is unknown.");
+    }
     if view == "Resident inventory" {
         ui.heading(format!("Resident model inventory: {}", resident_inventory(snapshot)));
     }

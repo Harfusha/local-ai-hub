@@ -263,3 +263,28 @@ def test_operator_mutations_and_review_digests_fail_closed(tmp_path):
     with pytest.raises(ValueError, match="digest"):
         build_argv({"name": "Knowledge batch apply", "root": str(tmp_path), "confirmed": True,
                     "fields": {"record-file": str(record), "operation-id": "op"}})
+
+
+def test_trace_export_requires_confirmed_server_redaction(tmp_path):
+    control = desktop.HubControl()
+    target = tmp_path / "trace.json"
+    args = {"id": "trace-1", "file": str(target), "confirmed": True}
+    with patch.object(desktop, "HubClient") as factory:
+        client = factory.return_value
+        client._online.return_value = True
+        client.get.return_value = {"success": True, "redacted_export": False}
+        with pytest.raises(RuntimeError, match="redacted"):
+            desktop.dispatch(control, {"op": "trace_export", "args": args})
+        assert not target.exists()
+        client.get.return_value = {"success": True, "redacted_export": True, "events": []}
+        result = desktop.dispatch(control, {"op": "trace_export", "args": args})
+        assert result["success"] and target.is_file()
+        with pytest.raises(ValueError, match="Destination exists"):
+            desktop.dispatch(control, {"op": "trace_export", "args": args})
+
+
+def test_trace_rejects_conflicting_cursors():
+    with patch.object(desktop, "HubClient") as factory:
+        with pytest.raises(ValueError, match="either"):
+            desktop.dispatch(desktop.HubControl(), {"op": "trace_detail", "args": {"id": "t", "before": 1, "after": 2}})
+        factory.assert_not_called()

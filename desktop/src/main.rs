@@ -23,7 +23,7 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
     ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Laya"]),
-    ("Service health", &["Runtime health", "Service health", "Diagnostics", "Audit"]),
+    ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Diagnostics", "Audit"]),
     ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Search workspaces"]),
@@ -156,6 +156,9 @@ struct Desktop {
     semaphore: String,
     capacity: i64,
     trace_cursor: i64,
+    trace_before: i64,
+    trace_content_field: String,
+    trace_content_offset: i64,
     task_offset: i64,
     task_query: String,
     stream_id: String,
@@ -200,7 +203,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -266,7 +269,7 @@ impl Desktop {
                         self.reveal_trace = false;
                         self.detail = None;
                         self.record_detail = None;
-                        if done.label == "Trace detail" || done.label == "Trace index" {
+                        if done.label == "Trace detail" || done.label == "Trace index" || done.label == "Trace content" || done.label == "Trace metrics" {
                             flatten(&trace::sanitize(&value), "", 0, &mut self.rows);
                         } else {
                             flatten(&value, "", 0, &mut self.rows);
@@ -352,9 +355,32 @@ impl Desktop {
                         ui.text_edit_singleline(&mut self.entity);
                         ui.label("After sequence");
                         ui.add(egui::DragValue::new(&mut self.trace_cursor).range(0..=i64::MAX));
+                        ui.label("Before sequence (0 = unset)");
+                        ui.add(egui::DragValue::new(&mut self.trace_before).range(0..=i64::MAX));
                         if ui.button("Load trace events").clicked() {
                             self.submit(ctx, "Trace detail".into(), request("trace_detail",
-                                json!({"id": self.entity, "after": self.trace_cursor})));
+                                json!({"id": self.entity, "after": self.trace_cursor, "before": self.trace_before})));
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Trace metrics").clicked() {
+                            self.submit(ctx, "Trace metrics".into(), request("trace_metrics", json!({"id": self.entity})));
+                        }
+                        ui.label("Content field");
+                        ui.text_edit_singleline(&mut self.trace_content_field);
+                        ui.label("Offset");
+                        ui.add(egui::DragValue::new(&mut self.trace_content_offset).range(0..=i64::MAX));
+                        if ui.button("Read stored content page").clicked() {
+                            self.confirm("Read sensitive locally retained content", request("trace_content",
+                                json!({"id": self.entity, "field": self.trace_content_field, "offset": self.trace_content_offset})));
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Redacted export file");
+                        ui.text_edit_singleline(&mut self.archive_path);
+                        if ui.button("Export redacted trace page").clicked() {
+                            self.confirm("Export server-redacted trace page to a new file", request("trace_export",
+                                json!({"id": self.entity, "after": self.trace_cursor, "file": self.archive_path, "confirmed": true})));
                         }
                     });
                 }
@@ -818,9 +844,25 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.raw_view, "Raw fields");
             });
             if self.rows.is_empty() { ui.label("Load this view to inspect data. No hidden screen is polled."); }
+            if self.snapshot_view == "Trace content" && !self.raw_view {
+                if let Some(page) = self.snapshot.as_ref() {
+                    ui.label(format!("Stored content: {} · offset {} · next {} · more {} · storage truncated {}",
+                        page["field"], page["offset"], page["next_offset"], page["has_more"], page["storage_truncated"]));
+                    ui.checkbox(&mut self.reveal_trace, "Reveal raw stored content (sensitive)");
+                    if self.reveal_trace {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.label(serde_json::to_string_pretty(page).unwrap_or_default());
+                        });
+                    }
+                    return;
+                }
+            }
             if self.snapshot_view == "Trace detail" && !self.raw_view {
                 if let Some(projection) = self.snapshot.as_ref().and_then(trace::trace) {
                     ui.heading("Retained trace");
+                    if let Some(snapshot) = self.snapshot.as_ref() {
+                        ui.label(format!("Page: next sequence {} · more {} · retained range {}–{} · truncated {}", snapshot["next_seq"], snapshot["has_more"], snapshot["first_retained_seq"], snapshot["last_seq"], snapshot["page_truncated"]));
+                    }
                     ui.label(format!("{} · {}", records::display(&projection.session["action"]),
                         records::display(&projection.session["state"])));
                     egui::ScrollArea::vertical().id_salt("trace_primary").show(ui, |ui| {
@@ -914,7 +956,7 @@ impl eframe::App for Desktop {
                                     let item = filtered[index];
                                     ui.horizontal(|ui| {
                                         for (col, field) in table.columns.iter().enumerate() {
-                                            let value = if self.current() == "Trace index" { records::display(&trace::sanitize(&item[*field])) } else { records::display(&item[*field]) };
+                                            let value = if self.current() == "Trace index" { records::display(&trace::sanitize(&item[*field])) } else { records::display(records::field(item, field)) };
                                             let display: String = value.chars().take(32).collect();
                                             if col == 0 {
                                                 if ui.add_sized([155.0, height], egui::Button::new(display)).clicked() { selected = Some(item.clone()); }

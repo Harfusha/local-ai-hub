@@ -13,6 +13,9 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
         "Async jobs" => (&["/async_jobs/recent", "/async_jobs/jobs", "/async_jobs/items"], &["job_id", "action", "state", "created_at", "updated_at", "error"]),
         "Work orders" => (&["/work_orchestrator/recent", "/work_orchestrator/orders", "/work_orchestrator/items"], &["work_id", "goal", "state", "updated_at", "error"]),
         "Trace index" => (&["/items"], &["trace_id", "request_id", "action", "agent", "kind", "status", "updated_at"]),
+        "Commands" => (&["/runtime_stats/commands/active"], &["command", "cwd", "class", "age_ms", "timeout_seconds"]),
+        "Process sessions" => (&["/observability/sessions"], &["session_id", "pid", "status", "started_at", "duration_seconds", "events", "cache_hit_rate", "version"]),
+        "Recent errors" => (&["/observability/recent_errors"], &["component", "operation", "safe_message", "count", "recovered_count", "last_seen"]),
         "Tasks" => (&["/tasks", "/items"], &["task_id", "goal", "status", "updated_at", "root"]),
         "Memory" => (&["/records", "/memory", "/items"], &["key", "scope", "kind", "confidence", "provenance", "created_at", "updated_at"]),
         "Search workspaces" => (&["/workspaces"], &["root", "path", "workspace", "status", "documents", "chunks"]),
@@ -27,6 +30,14 @@ pub fn records<'a>(view: &str, response: &'a Value) -> Option<Records<'a>> {
     };
     let values = paths.iter().find_map(|p| response.pointer(p).and_then(Value::as_array))?;
     Some(Records { columns, values: values.iter().take(12_000).collect() })
+}
+
+pub fn field<'a>(item: &'a Value, name: &str) -> &'a Value {
+    item.get(name).filter(|v| !v.is_null()).or_else(|| match name {
+        "goal" => item.pointer("/contract/goal"),
+        "status" => item.get("state"),
+        _ => None,
+    }).unwrap_or(&Value::Null)
 }
 
 pub fn display(value: &Value) -> String {
