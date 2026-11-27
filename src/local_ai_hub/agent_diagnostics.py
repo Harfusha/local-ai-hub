@@ -223,7 +223,9 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
         if not enabled and ((key in _DETAIL_FIELDS and not aggregate_metric and key != "routing")
                             or (str(key).startswith("_") and key not in _DOCUMENT_FIELDS)
                             or (key == "diagnostics" and isinstance(item, dict))):
-            if key == "selection_complete" and item is False:
+            if key == "request_id" and value.get("outcome_unknown") is True:
+                pass
+            elif key == "selection_complete" and item is False:
                 pass
             elif key == "stop_reason" and bool(item):
                 pass
@@ -417,14 +419,6 @@ def project_status_response(value: Any, *, enabled: bool, **kwargs: Any) -> Any:
         pressure = value.get("vram_pressure")
         if isinstance(pressure, str) and pressure in {"nominal", "moderate", "high", "critical", "unknown"}:
             projected["vram_pressure"] = pressure
-        factor = value.get("context_budget_factor")
-        if isinstance(factor, (int, float)) and not isinstance(factor, bool):
-            projected["context_budget_factor"] = factor
-        telemetry = value.get("vram_telemetry")
-        if isinstance(telemetry, dict) and set(telemetry) <= {
-            "available", "error", "sampling", "stale", "wait_timed_out",
-        }:
-            projected["vram_telemetry"] = telemetry
     dependencies = projected.get("dependency_status")
     if isinstance(dependencies, dict):
         operational = {"degraded", "status", "error", "error_type", "stale", "retryable", "available"}

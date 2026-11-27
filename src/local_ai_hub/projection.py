@@ -193,6 +193,11 @@ class AgentProjector:
                 "progressive_disclosure", "engine", "scanned_files", "cache_hit", "cache",
                 "diff_sha256", "inventory_sha256", "file_sha256", "content_hash",
                 "search_cache", "targeted", "preprocessed_hit",
+                "phase_timings_ms", "candidate_count", "candidate_count_exact", "count_exact",
+                "index_state", "index_coverage", "candidate_freshness", "stale_candidate_count",
+                "lexical_candidate_source", "lexical_count_exact", "lexical_preprocessed_candidate_count",
+                "path_hint_usage", "query_expansion_applied", "rag_candidate_count", "rag_candidate_count_exact",
+                "read_errors", "reranker", "result_source", "source_validation", "stale_candidate_reasons", "confidence_basis",
             ):
                 if key not in extra and not (task_kind == "artifact" and key == "file_sha256"):
                     data.pop(key, None)

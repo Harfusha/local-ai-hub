@@ -1853,14 +1853,22 @@ class AffinityScheduler:
             )
             return bool(self._external_gpu_reserved() or self._capacity_sharing_active() or foreground_inflight > 0 or foreground_ready or self._switching)
 
-    def background_allowed(self, *, require_switch_idle: bool = False) -> bool:
+    def background_allowed(
+        self, *, require_switch_idle: bool = False,
+        external_gpu_reserved: bool | None = None,
+        capacity_sharing_active: bool | None = None,
+    ) -> bool:
+        if external_gpu_reserved is None:
+            external_gpu_reserved = self._external_gpu_reserved()
+        if capacity_sharing_active is None:
+            capacity_sharing_active = self._capacity_sharing_active()
         with self._cond:
             now = time.monotonic()
             foreground_ready = any(
                 not j.background and j.capacity_retry_at <= now
                 for j in self._pending
             )
-            if self._external_gpu_reserved() or self._capacity_sharing_active() or self._inflight - self._inflight_background > 0 or foreground_ready:
+            if external_gpu_reserved or capacity_sharing_active or self._inflight - self._inflight_background > 0 or foreground_ready:
                 return False
             grace = self.background_switch_grace if require_switch_idle else self.background_idle_grace
             return now - self._last_foreground_activity >= grace
@@ -2591,12 +2599,13 @@ class AffinityScheduler:
 
     def _job_public(
         self, job: Job, now: float, *, state: str, position: int = 0,
-        external_blocked: bool | None = None,
+        external_gpu_blocked: bool | None = None,
     ) -> dict[str, Any]:
         wait_ms = max(0, int(((job.started_at or now) - job.created_at) * 1000))
         service_ms = max(0, int((now - job.started_at) * 1000)) if job.started_at and state == "running" else 0
         if state == "queued" and (
-            external_blocked if external_blocked is not None else self._external_gpu_blocks_scheduler()
+            self._external_gpu_blocks_scheduler()
+            if external_gpu_blocked is None else external_gpu_blocked
         ):
             wait_reason = "gpu-reservation"
         elif state == "queued" and job.admission.get("reason") == "gpu_capacity_deferred":
@@ -2625,9 +2634,9 @@ class AffinityScheduler:
         # Status is an advisory observation, never an admission decision. Read
         # external state and runtime statistics once before taking the queue lock;
         # disk or runtime stalls must not serialize scheduler progress.
-        external_reserved = self._external_gpu_reserved()
-        external_blocked = self._external_gpu_blocks_scheduler()
-        sharing_active = self._capacity_sharing_active()
+        external_gpu_reserved = self._external_gpu_reserved()
+        external_gpu_blocked = self._external_gpu_blocks_scheduler()
+        capacity_sharing_active = self._capacity_sharing_active()
         cache_stats = self._cache_stats()
         with self._cond:
             by_model: dict[str, int] = {}
@@ -2635,7 +2644,7 @@ class AffinityScheduler:
             now = time.monotonic()
             if self._internal_gpu_uncertain:
                 gpu_admission_state = "outcome_unknown"
-            elif external_blocked:
+            elif external_gpu_blocked:
                 gpu_admission_state = "external_reservation"
             elif self._background_gpu_lease:
                 gpu_admission_state = "background_lease"
@@ -2655,7 +2664,7 @@ class AffinityScheduler:
                 if len(pending_jobs) < self.status_max_items:
                     item = self._job_public(
                         job, now, state="queued", position=model_positions[job.model],
-                        external_blocked=external_blocked,
+                        external_gpu_blocked=external_gpu_blocked,
                     )
                     pending_jobs.append(item)
             inflight_jobs = [self._job_public(job, now, state="running") for job in sorted(self._inflight_jobs.values(), key=lambda j: j.started_at or j.created_at)]
@@ -2667,6 +2676,7 @@ class AffinityScheduler:
                 "global_parallel_limit": self.max_parallel,
                 "switching": self._switching,
                 "gpu_admission_state": gpu_admission_state,
+                "capacity_sharing_active": capacity_sharing_active,
                 "background_gpu_lease": self._background_gpu_lease,
                 "inflight": self._inflight,
                 "inflight_background": self._inflight_background,
@@ -2681,7 +2691,7 @@ class AffinityScheduler:
                 "inflight_jobs": inflight_jobs,
                 "active_batch_dispatched": self._active_dispatched,
                 "background_allowed": not (
-                    external_reserved or sharing_active or self._internal_gpu_uncertain
+                    external_gpu_reserved or capacity_sharing_active or self._internal_gpu_uncertain
                     or self._inflight - self._inflight_background > 0
                     or any(not j.background and j.capacity_retry_at <= now for j in self._pending)
                 ) and now - self._last_foreground_activity >= self.background_idle_grace,

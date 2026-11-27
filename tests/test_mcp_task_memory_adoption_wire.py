@@ -251,6 +251,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         + '\n[hardware]\nprofile="cpu"\nauto_tune=false\n'
           '[ollama]\nenabled=false\n[llama_cpp]\nmode="off"\n'
         + f'[telemetry]\nmode="{"full" if detailed_diagnostics else "minimal"}"\n'
+        + f'[agent_output]\ndetailed_diagnostics={str(detailed_diagnostics).lower()}\n'
         + '[mcp.response_budget.tool_tokens]\nlocal_ai_coord=3200\n', encoding="utf-8")
     bootstrap = (
         "import sys; sys.path.insert(0,sys.argv[1]); "
@@ -309,7 +310,10 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         wire_tokens = json_tokens(result.model_dump(mode="json", by_alias=True, exclude_none=True))
         requested = request.get("max_response_tokens", 3200)
         assert wire_tokens <= requested
-        assert payload["response_budget"]["returned_tokens"] == wire_tokens
+        if detailed_diagnostics:
+            assert payload["response_budget"]["returned_tokens"] == wire_tokens
+        else:
+            assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(payload)
     if return_store:
         return expected, calls, results, tasks
     return expected, calls, results
@@ -363,7 +367,7 @@ def test_repeated_task_get_delta_marks_unchanged_over_stdio(tmp_path, monkeypatc
     assert first.get("unchanged") is not True
     assert repeated["unchanged"] is True
     assert repeated["task_id"] == TASK_ID
-    assert repeated["request_id"] == calls[-1]["request_id"]
+    assert "request_id" not in repeated
     assert repeated["task"]["checkpoint"]["state_data"]["memory_context"] == (
         first["task"]["checkpoint"]["state_data"]["memory_context"]
     )
@@ -387,9 +391,9 @@ def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_
         calls, 1, {"action": "task_checkpoint"})
     assert payload["operation_not_started"] is True
     assert "request_not_sent" not in payload
-    assert payload["request_id"] == calls[-1]["request_id"]
-    assert payload["response_budget"]["returned_tokens"] == json_tokens(
-        result.model_dump(mode="json", by_alias=True, exclude_none=True)) <= 128
+    assert "request_id" not in payload
+    assert "response_budget" not in payload
+    assert json_tokens(result.model_dump(mode="json", by_alias=True, exclude_none=True)) <= 128
     task = tasks.get(TASK_ID)
     assert "memory_audit" not in task.checkpoint.state_data
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 1
@@ -414,12 +418,15 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(
     payload = results[1].structuredContent
     assert payload["success"] is True, _request_diagnostics(
         calls, 1, {"action": "task_checkpoint"})
-    assert payload["request_id"] == calls[-1]["request_id"]
+    if detailed_diagnostics:
+        assert payload["request_id"] == calls[-1]["request_id"]
+    else:
+        assert "request_id" not in payload
     assert payload["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
     if detailed_diagnostics:
         assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
     else:
-        assert "original_tokens" not in payload["response_budget"]
+        assert "response_budget" not in payload
     assert tasks.get(TASK_ID).checkpoint.state_data["memory_audit"] == audit
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 3
     assert calls[-1]["body"]["response_budget_tokens"] == 3200
@@ -458,7 +465,7 @@ def test_registered_mcp_large_checkpoint_error_keeps_mutation_flags(tmp_path, mo
     assert payload["success"] is False
     assert payload["mutation_applied"] is False
     assert payload["operation_not_started"] is True
-    assert payload["request_id"] == calls[0]["request_id"]
+    assert "request_id" not in payload
     text_payload = json.loads(results[0].content[0].text)
     assert text_payload["mutation_applied"] is False
     assert text_payload["operation_not_started"] is True
@@ -497,9 +504,9 @@ def test_stdio_reused_memory_pointer_still_delivers_complete_advice(tmp_path, mo
     expected, calls, results = _round_trip(tmp_path, [arguments, arguments], monkeypatch)
     assert len(calls) == 2
     assert calls[0]["request_id"] != calls[1]["request_id"]
-    assert results[1].structuredContent["reused"] is True
+    assert "reused" not in results[1].structuredContent
     for call, result in zip(calls, results, strict=True):
-        assert result.structuredContent["request_id"] == call["request_id"]
+        assert "request_id" not in result.structuredContent
         assert result.structuredContent["task"]["checkpoint"]["state_data"]["memory_context"] == expected
 
 
@@ -507,7 +514,7 @@ def test_stdio_default_budget_delivers_memory_without_extra_fields(tmp_path, mon
     expected, _, results = _round_trip(tmp_path, [
         {"action": "task_create", "contract": {"goal": "wire task"}}], monkeypatch)
     payload = results[0].structuredContent
-    assert payload["response_budget"]["requested_tokens"] == 3200
+    assert "response_budget" not in payload
     assert payload["task"]["checkpoint"]["state_data"]["memory_context"] == expected
 
 
@@ -529,9 +536,7 @@ def test_task_memory_original_metadata_is_canonical_across_wrappers(
         if detailed_diagnostics:
             assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
         else:
-            assert "original_tokens" not in payload["response_budget"]
-        assert payload["response_budget"]["returned_tokens"] == json_tokens(
-            result.model_dump(mode="json", by_alias=True, exclude_none=True))
+            assert "response_budget" not in payload
     if profile == "delta":
         assert "delta" in results[1].structuredContent
 
@@ -637,7 +642,7 @@ def test_task_memory_wire_cannot_succeed_with_overlong_identity_at_tiny_budget(t
     wire = {"content": [{"type": "text", "text": contents[0].text}],
             "structuredContent": structured, "isError": False}
     assert json_tokens(wire) <= 128
-    assert structured["response_budget"]["returned_tokens"] == json_tokens(wire)
+    assert "response_budget" not in structured
 
 
 def test_task_memory_wire_keeps_unchanged_when_optional_metadata_is_trimmed(tmp_path):
@@ -654,7 +659,7 @@ def test_task_memory_wire_keeps_unchanged_when_optional_metadata_is_trimmed(tmp_
     }, value)
     assert structured["success"] is True
     assert structured["unchanged"] is True
-    assert structured["reused"] is True
+    assert "reused" not in structured
     assert structured["task"]["checkpoint"]["state_data"]["memory_context"] == (
         value["task"]["checkpoint"]["state_data"]["memory_context"]
     )

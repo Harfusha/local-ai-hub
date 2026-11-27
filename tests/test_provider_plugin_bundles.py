@@ -26,7 +26,10 @@ def test_provider_skill_snapshots_keep_active_laya_and_live_schema_authority():
 
 
 def test_orchestrator_skill_discovery_description_covers_supported_providers():
-    paths = [ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md"] + [
+    source = ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    if not source.is_file():
+        source = ROOT / "plugins" / "codex" / "local-ai-hub" / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    paths = [source] + [
         ROOT / "plugins" / provider / "local-ai-hub" / "skills" / "local-ai-orchestrator" / "SKILL.md"
         for provider in PROVIDERS
     ]
@@ -46,6 +49,8 @@ def test_orchestrator_skill_discovery_description_covers_supported_providers():
 def _assert_shared_skills(plugin: Path) -> None:
     for skill in ("local-ai-orchestrator", "plan-led-work", "token-economizer"):
         source_root = ROOT / "skills" / skill
+        if not source_root.is_dir() and skill == "local-ai-orchestrator":
+            source_root = ROOT / "plugins" / "codex" / "local-ai-hub" / "skills" / skill
         for source in source_root.rglob("*"):
             if source.is_file():
                 packaged = plugin / "skills" / skill / source.relative_to(source_root)
@@ -53,14 +58,20 @@ def _assert_shared_skills(plugin: Path) -> None:
 
 
 def test_orchestrator_skill_uses_live_mcp_schema_as_capability_authority():
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    source = ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    if not source.is_file():
+        source = ROOT / "plugins" / "codex" / "local-ai-hub" / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    skill = source.read_text(encoding="utf-8")
 
     assert "The connected MCP server's current `tools/list` schema is authoritative" in skill
     assert "This bundled action list and `references/tools.md` are snapshots only" in skill
 
 
 def test_orchestrator_skill_teaches_active_laya_context_source_flow():
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    source = ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    if not source.is_file():
+        source = ROOT / "plugins" / "codex" / "local-ai-hub" / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    skill = source.read_text(encoding="utf-8")
 
     assert "Laya actively advises eligible model-route, context-budget, and retrieval-strategy decisions" in skill
     assert "evaluate_context_source" in skill

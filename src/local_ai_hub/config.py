@@ -237,6 +237,16 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(scheduler, "model_switch_failure_cooldown_seconds", minimum=1, maximum=3600)
     _number(scheduler, "idle_timeout_seconds", minimum=0, maximum=86400)
     _number(scheduler, "max_caller_wait_timeout_seconds", minimum=1, maximum=86400)
+    shared_gpu_path = scheduler.get("external_gpu_reservation_path")
+    if shared_gpu_path not in (None, ""):
+        if not isinstance(shared_gpu_path, str) or "\x00" in shared_gpu_path:
+            raise ConfigError("scheduler.external_gpu_reservation_path must be an absolute local path")
+        shared_gpu = Path(shared_gpu_path).expanduser()
+        if (not shared_gpu.is_absolute() or shared_gpu.name != "external-gpu-reservation"
+                or shared_gpu.drive.startswith("\\\\")):
+            raise ConfigError(
+                "scheduler.external_gpu_reservation_path must name the local external-gpu-reservation fence"
+            )
 
     laya = data.get("laya", {})
     if type(laya.get("enabled", True)) is not bool:

@@ -31,6 +31,27 @@ def test_review_of_fast_model_retains_fast_policy():
     assert policy.profile("fast", role="review").tier == "fast"
 
 
+def test_explicit_opencode_model_uses_its_dedicated_context_ceiling():
+    policy = ModelExecutionPolicy({
+        "models": {"general": "qwen", "opencode": "gemma4:12b-128k"},
+        "model_execution": {"opencode": {
+            "context_tokens": 16384,
+            "large_context_tokens": 32768,
+            "max_context_tokens": 32768,
+            "context_reserve_tokens": 3072,
+        }},
+    })
+
+    assert policy.tier_for("gemma4:12b-128k") == "opencode"
+    profile = policy.profile("gemma4:12b-128k", role="proxy", requested_ctx=131072, vram_free_mb=16384)
+    assert profile.tier == "opencode"
+    assert profile.num_ctx == 32768
+    assert profile.max_ctx == 32768
+
+    unknown_vram = policy.profile("gemma4:12b-128k", role="proxy", requested_ctx=131072)
+    assert unknown_vram.num_ctx == 16384
+
+
 def test_16gib_gpu_selects_high_without_overriding_explicit_preference():
     gpu = [{"vram_mb": 16 * 1024, "integrated": False}]
     assert choose_profile(gpu, 32) == "high"

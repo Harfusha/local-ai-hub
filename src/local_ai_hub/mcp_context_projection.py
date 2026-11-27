@@ -175,17 +175,26 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             not isinstance(final, dict) or final.get("delta") != expected_context_delta
         ):
             return services_module._context_delta_budget_error(safe_value, requested, reuse_key)
-        budget_meta = final.get("response_budget") if isinstance(final, dict) else None
-        if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
-            budget_meta["returned_tokens"] = services_module.json_tokens(final)
-            if services_module.json_tokens(final) > requested:
-                return services_module._context_input_error("response budget metadata exceeds max_response_tokens")
+        if isinstance(final, dict) and "response_budget" not in (extra_fields or ()):
+            final.pop("response_budget", None)
+        else:
+            budget_meta = final.get("response_budget") if isinstance(final, dict) else None
+            if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
+                budget_meta["returned_tokens"] = services_module.json_tokens(final)
+                if services_module.json_tokens(final) > requested:
+                    return services_module._context_input_error("response budget metadata exceeds max_response_tokens")
         pointer = safe_value.get("task_context_artifact_id")
         if isinstance(pointer, str) and final.get("task_context_artifact_id") != pointer:
-            return {
+            rejection = {
                 "success": False, "error": "max_response_tokens too small",
                 "next_action": "request_larger_response_budget",
-                "response_budget": {"requested_tokens": requested, "returned_tokens": 0, "rejected": True},
             }
+            if "response_budget" in (extra_fields or ()):
+                rejection["response_budget"] = {
+                    "requested_tokens": requested, "returned_tokens": 0, "rejected": True,
+                }
+            return rejection
         return final
+    if isinstance(final, dict) and "response_budget" not in (extra_fields or ()):
+        final.pop("response_budget", None)
     return services_module._normalize_deterministic(final)

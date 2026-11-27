@@ -43,6 +43,7 @@ adopt_external_block = _install_ownership_module.adopt_external_block
 assert_external_block_writable = _install_ownership_module.assert_external_block_writable
 record_external_json_key = _install_ownership_module.record_external_json_key
 assert_external_json_key_writable = _install_ownership_module.assert_external_json_key_writable
+adopt_external_json_key = _install_ownership_module.adopt_external_json_key
 record_external_json_list_item = _install_ownership_module.record_external_json_list_item
 record_external_json_container = _install_ownership_module.record_external_json_container
 record_external_file = _install_ownership_module.record_external_file
@@ -735,6 +736,41 @@ def opencode_mcp_merge(
     json_server_merge(path, servers, backup_enabled, container_key="mcp.servers")
 
 
+def _opencode_model_context_limit(
+    model_id: str,
+    models_cfg: dict[str, Any],
+    execution_cfg: dict[str, Any],
+) -> int:
+    """Return the configured Hub context ceiling for an OpenCode model catalog entry."""
+    role_models = {
+        role: value.strip() for role, value in models_cfg.items()
+        if isinstance(value, str) and value.strip()
+    }
+    if model_id == role_models.get("opencode"):
+        tier = "opencode"
+    elif model_id == role_models.get("vision"):
+        tier = "vision"
+    elif model_id in (role_models.get("heavy_code"), role_models.get("reasoning")):
+        tier = "smart"
+    elif model_id == role_models.get("background_code"):
+        tier = "background"
+    elif model_id in (role_models.get("fast_code"), role_models.get("general")):
+        tier = "fast"
+    else:
+        tier = "generic"
+
+    policy = execution_cfg.get(tier, {})
+    if not isinstance(policy, dict):
+        return 16384
+    configured = policy.get(
+        "max_context_tokens",
+        policy.get("large_context_tokens", policy.get("context_tokens", 16384)),
+    )
+    if isinstance(configured, bool) or not isinstance(configured, int) or not 4096 <= configured <= 131072:
+        return 16384
+    return configured
+
+
 def sync_opencode_plugin_config(
     path: Path,
     install_dir: Path,
@@ -742,14 +778,21 @@ def sync_opencode_plugin_config(
     cfg: dict[str, Any],
     backup_enabled: bool,
 ) -> bool:
-    """Register the local Hub plugin only when its config key is safely owned."""
+    """Register the Hub tool and receipt-gated goal plugins in OpenCode."""
     plugin_root = (install_dir / "plugins" / "opencode" / "local-ai-hub").resolve()
-    if not plugin_root.is_dir():
-        log(f"OpenCode Hub plugin source is unavailable: {plugin_root}")
+    goal_root = (install_dir / "tools" / "opencode_goal").resolve()
+    if not plugin_root.is_dir() or not (goal_root / "index.js").is_file():
+        log(f"OpenCode Hub plugin source is unavailable: {plugin_root} or {goal_root}")
         return False
     mcp_entry = build_mcp_entries(install_dir, hub_python, None, "opencode", cfg).get("local-ai")
     if not isinstance(mcp_entry, dict):
         log("OpenCode Hub plugin server config is unavailable")
+        return False
+    server_cfg = cfg.get("server", {}) if isinstance(cfg.get("server"), dict) else {}
+    hub_port = server_cfg.get("port")
+    if (server_cfg.get("bind", "127.0.0.1") != "127.0.0.1" or
+            not isinstance(hub_port, int) or isinstance(hub_port, bool) or not 1 <= hub_port <= 65535):
+        log("OpenCode goal plugin not configured because the Hub is not bound to a valid IPv4 loopback endpoint")
         return False
     environment = dict(mcp_entry.get("env", {}))
     environment["OPENCODE_SESSION"] = "1"
@@ -758,8 +801,57 @@ def sync_opencode_plugin_config(
         "command": [str(Path(mcp_entry["command"]).resolve()), *mcp_entry.get("args", [])],
         "cwd": str(Path(mcp_entry["cwd"]).resolve()),
         "environment": environment,
+        "nativeMcp": True,
     }
-    plugin_entry = {"package": str(plugin_root), "options": {"server": server}}
+    native_mcp_server = {
+        "type": "local",
+        "command": server["command"],
+        "cwd": server["cwd"],
+        "environment": environment,
+        # OpenCode's code mode exposes one bounded bridge tool instead of
+        # injecting the Hub's large MCP catalog into every model prompt.
+        "codemode": True,
+        "timeout": {"startup": 60000, "catalog": 60000},
+    }
+    desired = [
+        {"package": str(plugin_root), "options": {"server": server}},
+        {"package": str(goal_root), "options": {
+            "hubURL": f"http://127.0.0.1:{hub_port}", "actor": "opencode-local",
+        }},
+    ]
+    models_cfg = cfg.get("models", {}) if isinstance(cfg.get("models"), dict) else {}
+    preferred_model = next((models_cfg.get(role) for role in ("opencode", "general", "heavy_code", "reasoning", "fast_code")
+                            if isinstance(models_cfg.get(role), str) and models_cfg[role].strip()), None)
+    if not isinstance(preferred_model, str) or not preferred_model.strip() or len(preferred_model) > 256:
+        log("OpenCode local provider not configured because no local model role is configured")
+        return False
+    preferred_model = preferred_model.strip()
+    if any(ord(char) < 0x21 or ord(char) > 0x7E for char in preferred_model):
+        log("OpenCode local provider not configured because models.general is not a safe model ID")
+        return False
+    provider_models: dict[str, Any] = {}
+    execution_cfg = cfg.get("model_execution", {}) if isinstance(cfg.get("model_execution"), dict) else {}
+    for role in ("opencode", "general", "fast_code", "heavy_code", "reasoning"):
+        model_id = models_cfg.get(role)
+        if (not isinstance(model_id, str) or not model_id.strip() or len(model_id) > 256
+                or any(ord(char) < 0x21 or ord(char) > 0x7E for char in model_id)):
+            continue
+        model_id = model_id.strip()
+        provider_models[model_id] = {
+            "name": f"Local AI Hub / {model_id}",
+            "modelID": model_id,
+            "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
+            # Advertise the configured policy ceiling. Hub inference admission
+            # still lowers the effective context when live VRAM is unknown/low.
+            "limit": {"context": _opencode_model_context_limit(model_id, models_cfg, execution_cfg), "output": 2048},
+        }
+    desired_provider = {
+        "name": "Local AI Hub",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {"baseURL": f"http://127.0.0.1:{hub_port}/api"},
+        "headers": {"X-LocalAI-Agent": "opencode"},
+        "models": provider_models,
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     path_existed = path.exists()
     data: dict[str, Any] = {}
@@ -777,11 +869,9 @@ def sync_opencode_plugin_config(
     if current is not missing and not isinstance(current, list):
         log(f"OpenCode plugins preserved because 'plugins' is not a list: {path}")
         return False
-    if isinstance(current, list) and plugin_entry in current:
-        return True
     if current is missing:
         previous: Any = None
-        plugins = [plugin_entry]
+        plugins = list(desired)
     else:
         previous = current
         if _ACTIVE_INSTALL_ROOT is not None:
@@ -789,28 +879,201 @@ def sync_opencode_plugin_config(
                 assert_external_json_key_writable(
                     _ACTIVE_INSTALL_ROOT, path, container="", key="plugins", current_value=current,
                 )
-            except ValueError:
-                log(f"OpenCode plugins preserved; merge Hub plugin manually in {path}")
-                return False
+            except ValueError as exc:
+                if "has no ownership record" not in str(exc):
+                    log(f"OpenCode plugins preserved; merge Hub plugin manually in {path}")
+                    return False
+                try:
+                    adopt_external_json_key(
+                        _ACTIVE_INSTALL_ROOT, path, container="", key="plugins", current_value=current,
+                        consent=True, audit_reason="Install the requested OpenCode Hub route with exact rollback",
+                    )
+                except ValueError:
+                    log(f"OpenCode plugins preserved; merge Hub plugin manually in {path}")
+                    return False
         plugins = list(current)
-        package_path = str(plugin_root)
-        replace_index = next((
-            i for i, item in enumerate(plugins)
-            if isinstance(item, dict) and item.get("package") == package_path
-        ), None)
+    for plugin_entry in desired:
+        package_path = plugin_entry["package"]
+        replace_index = next((i for i, item in enumerate(plugins)
+                              if isinstance(item, dict) and item.get("package") == package_path), None)
         if replace_index is None:
             plugins.append(plugin_entry)
-        else:
+        elif plugins[replace_index] != plugin_entry:
             plugins[replace_index] = plugin_entry
-
+    desired_package_paths = {
+        os.path.normcase(os.path.normpath(entry["package"])) for entry in desired
+    }
+    retained_plugins: list[Any] = []
+    for item in plugins:
+        package = item.get("package") if isinstance(item, dict) else None
+        if isinstance(package, str):
+            normalized = os.path.normcase(os.path.normpath(package))
+            known_hub_suffixes = (
+                os.path.normcase(os.path.join("plugins", "opencode", "local-ai-hub")),
+                os.path.normcase(os.path.join("tools", "opencode_goal")),
+            )
+            recognized_hub_path = any(
+                normalized.endswith(os.sep + suffix) for suffix in known_hub_suffixes
+            )
+            if (
+                recognized_hub_path
+                and normalized not in desired_package_paths
+                and Path(package).is_absolute()
+            ):
+                try:
+                    Path(package).stat()
+                except FileNotFoundError:
+                    log(f"Removed stale OpenCode Hub plugin path: {package}")
+                    continue
+                except OSError:
+                    # Preserve paths that cannot be safely checked.
+                    pass
+        retained_plugins.append(item)
+    plugins = retained_plugins
+    # OpenCode auto-discovers Ollama independently of configured providers. Disable
+    # that route so its local inference always passes through Hub policy/admission.
+    if "-opencode.provider.ollama" not in plugins:
+        plugins.append("-opencode.provider.ollama")
     data["plugins"] = plugins
+    providers = data.get("providers", {})
+    if not isinstance(providers, dict):
+        log(f"OpenCode providers preserved because 'providers' is not an object: {path}")
+        return False
+    providers_container_created = "providers" not in data
+    local_provider_present = "local-ai-hub" in providers
+    local_provider_preimage = providers.get("local-ai-hub")
+    if _ACTIVE_INSTALL_ROOT is not None and local_provider_present:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="providers", key="local-ai-hub",
+                current_value=local_provider_preimage,
+            )
+        except ValueError:
+            log(f"OpenCode local-ai-hub provider preserved; merge manually in {path}")
+            return False
+    providers = dict(providers)
+    providers["local-ai-hub"] = desired_provider
+    data["providers"] = providers
+    mcp = data.get("mcp", {})
+    if not isinstance(mcp, dict):
+        log(f"OpenCode MCP config preserved because 'mcp' is not an object: {path}")
+        return False
+    mcp_container_created = "mcp" not in data
+    servers = mcp.get("servers", {})
+    if not isinstance(servers, dict):
+        log(f"OpenCode MCP servers preserved because 'mcp.servers' is not an object: {path}")
+        return False
+    mcp_servers_container_created = "servers" not in mcp
+    managed_mcp_present = "local-ai-hub" in servers
+    managed_mcp_preimage = servers.get("local-ai-hub")
+    if _ACTIVE_INSTALL_ROOT is not None and managed_mcp_present:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="mcp.servers", key="local-ai-hub",
+                current_value=managed_mcp_preimage,
+            )
+        except ValueError:
+            log(f"OpenCode local-ai-hub MCP server preserved; merge manually in {path}")
+            return False
+    servers = dict(servers)
+    servers["local-ai-hub"] = native_mcp_server
+    mcp = dict(mcp)
+    mcp["servers"] = servers
+    data["mcp"] = mcp
+    agents = data.get("agents", {})
+    if not isinstance(agents, dict):
+        log(f"OpenCode agents preserved because 'agents' is not an object: {path}")
+        return False
+    agents_container_created = "agents" not in data
+    managed_agent = {
+        "mode": "primary",
+        # Bound model/tool loops. OpenCode removes tools on the last step.
+        "steps": 8,
+        "permissions": [
+            {"action": action, "resource": "*", "effect": "ask"}
+            for action in ("edit", "shell", "external_directory", "webfetch", "websearch")
+        ],
+        "system": (
+            "Use Local AI Hub MCP for repository evidence, task lifecycle, and receipts. "
+            "In Code Mode discover tools with the top-level `search` function, then "
+            "call `tools[\"local-ai-hub\"].local_ai_repo(...)` directly. Read results from "
+            "`result.structuredContent ?? result`; do not guess response fields or stringify "
+            "the full result. Follow repository instructions and OpenCode permissions. "
+            "Use Hub task/checkpoint/resume/cancel actions for durable work; report missing "
+            "receipts or blocked safety gates instead of claiming completion."
+        ),
+    }
+    managed_agent_present = "local-ai-hub" in agents
+    managed_agent_preimage = agents.get("local-ai-hub")
+    if _ACTIVE_INSTALL_ROOT is not None and managed_agent_present:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="agents", key="local-ai-hub",
+                current_value=managed_agent_preimage,
+            )
+        except ValueError:
+            log(f"OpenCode local-ai-hub agent preserved; merge manually in {path}")
+            return False
+    agents = dict(agents)
+    agents["local-ai-hub"] = managed_agent
+    data["agents"] = agents
+    default_agent_preimage = data.get("default_agent")
+    if default_agent_preimage is None:
+        data["default_agent"] = "local-ai-hub"
+    model_preimage = data.get("model")
+    if model_preimage is None:
+        data["model"] = f"local-ai-hub/{preferred_model}"
+    if (current is not missing and plugins == current and local_provider_preimage == desired_provider
+            and managed_mcp_preimage == native_mcp_server and model_preimage is not None
+            and managed_agent_preimage == managed_agent and default_agent_preimage is not None):
+        return True
     backup(path, backup_enabled)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if _ACTIVE_INSTALL_ROOT is not None:
+        if not path_existed:
+            record_external_file(_ACTIVE_INSTALL_ROOT, path, path.read_bytes())
+        if providers_container_created:
+            record_external_json_container(
+                _ACTIVE_INSTALL_ROOT, path, container_path="providers", container_type="object",
+            )
+        if mcp_container_created:
+            record_external_json_container(
+                _ACTIVE_INSTALL_ROOT, path, container_path="mcp", container_type="object",
+            )
+        if mcp_servers_container_created:
+            record_external_json_container(
+                _ACTIVE_INSTALL_ROOT, path, container_path="mcp.servers", container_type="object",
+            )
+        if agents_container_created:
+            record_external_json_container(
+                _ACTIVE_INSTALL_ROOT, path, container_path="agents", container_type="object",
+            )
         record_external_json_key(
             _ACTIVE_INSTALL_ROOT, path, container="", key="plugins",
             preimage=previous, postimage=plugins,
         )
+        record_external_json_key(
+            _ACTIVE_INSTALL_ROOT, path, container="providers", key="local-ai-hub",
+            preimage=local_provider_preimage, postimage=desired_provider,
+        )
+        record_external_json_key(
+            _ACTIVE_INSTALL_ROOT, path, container="mcp.servers", key="local-ai-hub",
+            preimage=managed_mcp_preimage, postimage=native_mcp_server,
+        )
+        record_external_json_key(
+            _ACTIVE_INSTALL_ROOT, path, container="agents", key="local-ai-hub",
+            preimage=managed_agent_preimage, postimage=managed_agent,
+        )
+        if default_agent_preimage is None:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="", key="default_agent",
+                preimage=None, postimage="local-ai-hub",
+            )
+        if model_preimage is None:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container="", key="model",
+                preimage=None, postimage=data["model"],
+            )
     log(f"OpenCode Hub plugin configured: {path}")
     return True
 
@@ -868,17 +1131,24 @@ def _load_opencode_config(path: Path) -> dict[str, Any]:
     return data
 
 
-def opencode_direct_hub_mcp_configured(path: Path) -> bool:
-    """Detect the standalone Hub MCP route that duplicates the native plugin route."""
+def _opencode_direct_hub_mcp_server_name(path: Path) -> str | None:
+    """Return a recognized Hub MCP server name from an OpenCode config."""
     if not path.is_file():
-        return False
+        return None
     try:
         data = _load_opencode_config(path)
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Cannot safely inspect OpenCode config {path}: {exc}") from exc
     mcp = data.get("mcp")
     servers = mcp.get("servers") if isinstance(mcp, dict) else None
-    return isinstance(servers, dict) and "local-ai" in servers
+    if not isinstance(servers, dict):
+        return None
+    return next((name for name in ("local-ai-hub", "local-ai") if name in servers), None)
+
+
+def opencode_direct_hub_mcp_configured(path: Path) -> bool:
+    """Detect either managed Hub MCP route name in an OpenCode config."""
+    return _opencode_direct_hub_mcp_server_name(path) is not None
 
 
 def opencode_hub_mcp_paths(config_dir: Path) -> list[Path]:
@@ -1947,6 +2217,8 @@ def generate_provider_plugin_skills() -> None:
         bundle = SOURCE_ROOT / "plugins" / provider / "local-ai-hub" / "skills"
         for skill in skills:
             source = SOURCE_ROOT / "skills" / skill
+            if not source.is_dir() and skill == "local-ai-orchestrator":
+                source = SOURCE_ROOT / "plugins" / "codex" / "local-ai-hub" / "skills" / skill
             target = bundle / skill
             if not source.is_dir():
                 raise RuntimeError(f"Required provider plugin skill is missing: {source}")
@@ -3827,7 +4099,7 @@ def ensure_llama_cpp_for_setup(cfg: dict[str, Any]) -> bool:
 def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
     models: list[str] = []
     model_cfg = cfg.get("models", {})
-    for key in ["background_code", "fast_code", "heavy_code", "reasoning", "general"]:
+    for key in ["background_code", "fast_code", "heavy_code", "reasoning", "general", "opencode"]:
         model = str(model_cfg.get(key, "") or "")
         if model and model not in models:
             models.append(model)
@@ -4493,18 +4765,45 @@ def _configure_agents_impl(
                 existing_mcp_paths = opencode_hub_mcp_paths(oc_dir)
                 existing_plugin_paths = opencode_hub_plugin_paths(oc_dir)
                 if existing_mcp_paths:
-                    manual_action = (
-                        "OpenCode standalone Hub MCP already exists in "
-                        f"{', '.join(str(path) for path in existing_mcp_paths)}; "
-                        "plugin route was preserved and not added to avoid duplicate tools"
+                    refreshable_route = (
+                        len(existing_mcp_paths) == 1
+                        and existing_mcp_paths[0].suffix.lower() == ".json"
+                        and _opencode_direct_hub_mcp_server_name(existing_mcp_paths[0]) == "local-ai-hub"
+                        and (not existing_plugin_paths or existing_plugin_paths == existing_mcp_paths)
                     )
-                    manual_actions.append(manual_action)
-                    log(f"Manual agent setup required: {manual_action}")
+                    if refreshable_route:
+                        plugin_config = existing_mcp_paths[0]
+                        if not sync_opencode_plugin_config(
+                            plugin_config, install_dir, hub_python, cfg, backup_enabled,
+                        ):
+                            manual_action = f"OpenCode Hub plugin requires a manual merge in {plugin_config}"
+                            manual_actions.append(manual_action)
+                            log(f"Manual agent setup required: {manual_action}")
+                    else:
+                        manual_action = (
+                            "OpenCode standalone Hub MCP already exists in "
+                            f"{', '.join(str(path) for path in existing_mcp_paths)}; "
+                            "plugin route was preserved and not added to avoid duplicate tools"
+                        )
+                        manual_actions.append(manual_action)
+                        log(f"Manual agent setup required: {manual_action}")
                 elif existing_plugin_paths:
-                    log(
-                        "OpenCode Hub plugin already registered in "
-                        f"{', '.join(str(path) for path in existing_plugin_paths)}; preserved"
-                    )
+                    # JSON configs can be merged transactionally with per-key rollback.
+                    # Keep JSONC and multiple-config cases untouched because rewriting
+                    # them could discard comments or create a competing plugin route.
+                    if len(existing_plugin_paths) == 1 and existing_plugin_paths[0].suffix.lower() == ".json":
+                        plugin_config = existing_plugin_paths[0]
+                        if not sync_opencode_plugin_config(
+                            plugin_config, install_dir, hub_python, cfg, backup_enabled,
+                        ):
+                            manual_action = f"OpenCode Hub plugin requires a manual merge in {plugin_config}"
+                            manual_actions.append(manual_action)
+                            log(f"Manual agent setup required: {manual_action}")
+                    else:
+                        log(
+                            "OpenCode Hub plugin already registered in "
+                            f"{', '.join(str(path) for path in existing_plugin_paths)}; preserved"
+                        )
                 elif not sync_opencode_plugin_config(
                     plugin_config, install_dir, hub_python, cfg, backup_enabled,
                 ):
@@ -5183,13 +5482,16 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         )
         return 1
 
-    try:
-        # Cold starts may include managed inference/backend initialization.
-        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=420)
-    except Exception as exc:
-        log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
-        write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)
-        return 1
+    if service_required:
+        try:
+            # Cold starts may include managed inference/backend initialization.
+            run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=420)
+        except Exception as exc:
+            log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
+            write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)
+            return 1
+    else:
+        log("Skipping Hub restart because persistent service management is disabled.")
 
     agent_config_error: str | None = None
     agent_config_manual_actions: list[str] = []

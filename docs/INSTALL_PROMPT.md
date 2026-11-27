@@ -552,13 +552,10 @@ Selection guide: `local_ai_repo` for bounded repository facts and checks (includ
 Local model policy: Follow the active hardware profile and user overrides; see `docs/MODEL_CAPABILITIES.md` for foreground targets. Do not silently change the preprocessing provider. Pinned master has no Gemini preprocessing provider; agent manifests do not prove runtime support. Model pulls are opt-in; check installed models before inference. Configured routes do not prove availability, quality or performance.
 ## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈8192 tokens).
-- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
-- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
-- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If a requested response is too large, fetch a smaller artifact page/slice; do not repeat the same oversized request.
 - For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
 - If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed.
 - After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.

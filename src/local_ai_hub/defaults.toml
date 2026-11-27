@@ -96,6 +96,8 @@ heavy_code = "qwen2.5-coder:7b"
 reasoning = "qwen3.5:9b"
 general = "qwen2.5-coder:7b"
 compression_fallback = "qwen2.5-coder:1.5b"
+# Optional OpenCode-only model. Empty keeps the configured general/reasoning route.
+opencode = ""
 vision = "qwen3-vl:4b"
 context_relevance_model = "qwen2.5-coder:3b"
 embedding = "Harfusha/local-ai-hub-bge-small-en-v1-5-code"
@@ -267,10 +269,13 @@ module_batch_size = 4
 # Balanced baseline; the hardware profile overlays this before explicit user values.
 # Optional conservative per-model VRAM upper bounds for cold-start admission.
 # shortcut: measured Q4_K_M baselines at 8192 context; 3B max observed at 32768. Same-shape Qwen2 preprocessing finetunes reuse these conservative bounds; 0.5B uses the larger 1.5B bound. These aliases are configured estimates, not per-tag measurements; refresh on digest, quantization, or context changes.
-model_vram_estimates_bytes = {"qwen2.5-coder:0.5b" = 1266606406, "qwen2.5-coder-prep-v3:0.5b" = 1266606406, "qwen2.5-coder:1.5b" = 1266606406, "qwen2.5-coder-prep-v3:1.5b" = 1266606406, "qwen2.5-coder-prep-v4:3b" = 3075452435, "qwen2.5-coder:3b" = 3075452435, "qwen2.5-coder:3b-instruct-q4_K_M" = 3075452435, "qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-q4_K_M" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:7b-instruct-q4_K_M" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:14b-instruct-q4_K_M" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "qwen2.5-coder:32b-instruct-q4_K_M" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944}
+model_vram_estimates_bytes = {"qwen2.5-coder:0.5b" = 1266606406, "qwen2.5-coder-prep-v3:0.5b" = 1266606406, "qwen2.5-coder:1.5b" = 1266606406, "qwen2.5-coder-prep-v3:1.5b" = 1266606406, "qwen2.5-coder-prep-v4:3b" = 3075452435, "qwen2.5-coder:3b" = 3075452435, "qwen2.5-coder:3b-instruct-q4_K_M" = 3075452435, "qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-q4_K_M" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:7b-instruct-q4_K_M" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:14b-instruct-q4_K_M" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "qwen2.5-coder:32b-instruct-q4_K_M" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944, "gemma4:12b" = 8589934592, "gemma4:12b-128k" = 8589934592}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
+# Optional path to the shared Hub-owned external GPU reservation fence. Use only
+# when an isolated Hub state directory must participate in the same GPU ledger.
+external_gpu_reservation_path = ""
 affinity_batch_jobs = 0 # 0 = drain current-model queue first
 affinity_batch_seconds = 0 # 0 = no time-based switch while current-model jobs remain
 max_other_model_wait_seconds = 120 # anti-starvation safety valve; 0 disables it

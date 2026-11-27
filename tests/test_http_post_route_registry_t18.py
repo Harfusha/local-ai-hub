@@ -154,6 +154,7 @@ _CURRENT_ROUTE_PATHS = {
  'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
 }
 _CURRENT_ADDED_ROUTES = {
+    'post_opencode_gateway_1': {'paths': ['/api/chat/completions'], 'before': 'post_chat_1'},
     'post_updates_1': {'paths': ['/api/updates'], 'before': 'post_admin_mode_1'},
  'post_laya_decision_1': {'paths': ['/api/laya/decision'], 'before': 'post_agent_state_memory_1'},
     'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},

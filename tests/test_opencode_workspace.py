@@ -1,0 +1,552 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from local_ai_hub.opencode_workspace import (
+    UnsafeWorkspacePathError,
+    WorkspaceTransferError,
+    apply_workspace_changes,
+    create_workspace_snapshot,
+)
+
+
+def test_snapshot_applies_only_conflict_free_changes(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "keep.txt").write_text("same", encoding="utf-8")
+    (project / "edit.txt").write_text("before", encoding="utf-8")
+    (project / "remove.txt").write_text("remove", encoding="utf-8")
+
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "edit.txt").write_text("after", encoding="utf-8")
+    (stage / "remove.txt").unlink()
+    (stage / "nested").mkdir()
+    (stage / "nested" / "new.txt").write_text("new", encoding="utf-8")
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ("edit.txt", "nested/new.txt", "remove.txt")
+    assert result.conflicts == ()
+    assert (project / "edit.txt").read_text(encoding="utf-8") == "after"
+    assert not (project / "remove.txt").exists()
+    assert (project / "nested" / "new.txt").read_text(encoding="utf-8") == "new"
+    assert (project / "keep.txt").read_text(encoding="utf-8") == "same"
+
+
+def test_snapshot_conflicts_leave_other_staged_changes_unapplied(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "conflict.txt").write_text("base", encoding="utf-8")
+
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "conflict.txt").write_text("agent", encoding="utf-8")
+    (stage / "new.txt").write_text("new", encoding="utf-8")
+    (project / "conflict.txt").write_text("user", encoding="utf-8")
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ()
+    assert result.conflicts == ("conflict.txt",)
+    assert (project / "conflict.txt").read_text(encoding="utf-8") == "user"
+    assert not (project / "new.txt").exists()
+
+
+def test_snapshot_conflicts_when_source_file_was_deleted_after_capture(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "edit.txt").write_text("base", encoding="utf-8")
+
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "edit.txt").write_text("agent", encoding="utf-8")
+    (project / "edit.txt").unlink()
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ()
+    assert result.conflicts == ("edit.txt",)
+    assert not (project / "edit.txt").exists()
+
+
+def test_snapshot_conflicts_when_new_file_collides_with_source_directory(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "collision").write_text("agent", encoding="utf-8")
+    (project / "collision").mkdir()
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ()
+    assert result.conflicts == ("collision",)
+    assert (project / "collision").is_dir()
+
+
+def test_snapshot_enforces_file_limit_before_copying(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "one.txt").write_text("one", encoding="utf-8")
+    (project / "two.txt").write_text("two", encoding="utf-8")
+
+    with pytest.raises(UnsafeWorkspacePathError, match="size limit"):
+        create_workspace_snapshot(project, stage, max_files=1)
+
+    assert list(stage.iterdir()) == []
+
+
+def test_snapshot_rejects_replaced_stage_root(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "file.txt").write_text("base", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+
+    stage.rename(tmp_path / "old-stage")
+    stage.mkdir()
+    (stage / "file.txt").write_text("agent", encoding="utf-8")
+
+    with pytest.raises(UnsafeWorkspacePathError, match="identity changed"):
+        apply_workspace_changes(snapshot)
+
+
+def test_snapshot_never_copies_git_metadata_back(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    (project / ".git").mkdir(parents=True)
+    stage.mkdir()
+    (project / ".git" / "config").write_text("base", encoding="utf-8")
+
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / ".git" / "config").write_text("agent", encoding="utf-8")
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ()
+    assert result.conflicts == ()
+    assert (project / ".git" / "config").read_text(encoding="utf-8") == "base"
+
+
+def test_snapshot_rolls_back_prior_file_when_a_later_replace_fails(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "a.txt").write_text("base-a", encoding="utf-8")
+    (project / "b.txt").write_text("base-b", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "a.txt").write_text("agent-a", encoding="utf-8")
+    (stage / "b.txt").write_text("agent-b", encoding="utf-8")
+
+    calls = 0
+
+    if os.name == "nt":
+        rename = workspace._rename_handle_relative
+
+        def fail_second_rename(file_handle, parent_handle, name):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected second-file failure")
+            rename(file_handle, parent_handle, name)
+
+        monkeypatch.setattr(workspace, "_rename_handle_relative", fail_second_rename)
+    else:
+        replace = workspace.os.replace
+
+        def fail_second_replace(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected second-file failure")
+            replace(source, destination)
+
+        monkeypatch.setattr(workspace.os, "replace", fail_second_replace)
+    with pytest.raises(WorkspaceTransferError, match="rolled back"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "a.txt").read_text(encoding="utf-8") == "base-a"
+    assert (project / "b.txt").read_text(encoding="utf-8") == "base-b"
+    assert sorted(path.name for path in project.iterdir()) == ["a.txt", "b.txt"]
+
+
+def test_snapshot_retains_recovery_backup_if_rollback_fails(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "a.txt").write_text("base-a", encoding="utf-8")
+    (project / "b.txt").write_text("base-b", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "a.txt").write_text("agent-a", encoding="utf-8")
+    (stage / "b.txt").write_text("agent-b", encoding="utf-8")
+
+    calls = 0
+
+    if os.name == "nt":
+        rename = workspace._rename_handle_relative
+
+        def fail_commit_and_rollback(file_handle, parent_handle, name):
+            nonlocal calls
+            calls += 1
+            if calls in {2, 3}:
+                raise OSError("injected commit/rollback failure")
+            rename(file_handle, parent_handle, name)
+
+        monkeypatch.setattr(workspace, "_rename_handle_relative", fail_commit_and_rollback)
+    else:
+        replace = workspace.os.replace
+
+        def fail_commit_and_rollback(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls in {2, 3}:
+                raise OSError("injected commit/rollback failure")
+            replace(source, destination)
+
+        monkeypatch.setattr(workspace.os, "replace", fail_commit_and_rollback)
+    with pytest.raises(WorkspaceTransferError, match="rollback could not be confirmed") as error:
+        apply_workspace_changes(snapshot)
+
+    recovery = [Path(path) for path in error.value.recovery_paths]
+    try:
+        assert recovery
+        assert all(path.exists() for path in recovery)
+        assert any(path.read_text(encoding="utf-8") == "base-a" for path in recovery)
+    finally:
+        for path in recovery:
+            path.unlink(missing_ok=True)
+
+
+def test_new_destination_directories_are_locked_before_copyback(tmp_path: Path, monkeypatch):
+    from contextlib import contextmanager
+
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "nested").mkdir()
+    (stage / "nested" / "new.txt").write_text("new", encoding="utf-8")
+    locked = []
+
+    @contextmanager
+    def fake_tree_lock(root, *, root_handle=None):
+        def lock_directory(path):
+            locked.append(Path(path))
+
+        yield lock_directory
+
+    monkeypatch.setattr(workspace, "_lock_workspace_tree", fake_tree_lock)
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ("nested/new.txt",)
+    assert locked == [project / "nested"]
+
+
+def test_conflict_removes_new_directories_after_workspace_locks_release(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "z-conflict.txt").write_text("base", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "z-conflict.txt").write_text("agent", encoding="utf-8")
+    (stage / "nested").mkdir()
+    (stage / "nested" / "new.txt").write_text("new", encoding="utf-8")
+
+    ensure_parent_chain = workspace._ensure_parent_chain
+
+    def inject_source_conflict(root, destination):
+        created = ensure_parent_chain(root, destination)
+        if destination == project / "nested" / "new.txt":
+            (project / "z-conflict.txt").write_text("user", encoding="utf-8")
+        return created
+
+    monkeypatch.setattr(workspace, "_ensure_parent_chain", inject_source_conflict)
+
+    result = apply_workspace_changes(snapshot)
+
+    assert result.conflicts == ("z-conflict.txt",)
+    assert not (project / "nested").exists()
+
+
+def test_windows_file_identity_includes_volume_serial():
+    import local_ai_hub.opencode_workspace as workspace
+
+    first = [0, None, None, None, 10, 0, 8, 2, 3, 4]
+    other_volume = [0, None, None, None, 11, 0, 8, 2, 3, 4]
+
+    assert workspace._windows_file_identity(first) == (10, 3, 4)
+    assert workspace._windows_file_identity(other_volume) == (11, 3, 4)
+    assert workspace._windows_file_identity(first) != workspace._windows_file_identity(other_volume)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-share semantics only")
+def test_workspace_tree_lock_prevents_nested_directory_replacement(tmp_path: Path):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    nested = project / "nested"
+    project.mkdir()
+    nested.mkdir()
+    replacement = project / "replacement"
+
+    with workspace._lock_workspace_tree(project) as lock_directory:
+        with pytest.raises(OSError):
+            nested.rename(replacement)
+        created = project / "created"
+        created.mkdir()
+        lock_directory(created)
+        with pytest.raises(OSError):
+            created.rename(replacement)
+        with pytest.raises(OSError):
+            created.rmdir()
+
+    assert nested.is_dir()
+    assert created.is_dir()
+    assert not replacement.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle identity only")
+def test_workspace_tree_lock_validates_managed_root_handle(tmp_path: Path):
+    import win32api
+    import win32con
+    import win32file
+
+    from local_ai_hub.opencode_workspace import UnsafeWorkspacePathError
+    import local_ai_hub.opencode_workspace as workspace
+
+    stage = tmp_path / "stage"
+    other = tmp_path / "other"
+    stage.mkdir()
+    other.mkdir()
+
+    def open_directory(path):
+        return win32file.CreateFile(
+            str(path), 0x80,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+            None, win32con.OPEN_EXISTING,
+            0x02000000 | 0x00200000, None,
+        )
+
+    stage_handle = open_directory(stage)
+    other_handle = open_directory(other)
+    try:
+        with workspace._lock_workspace_tree(stage, root_handle=stage_handle):
+            pass
+        with pytest.raises(UnsafeWorkspacePathError, match="does not identify"):
+            with workspace._lock_workspace_tree(stage, root_handle=other_handle):
+                pass
+    finally:
+        win32api.CloseHandle(other_handle)
+        win32api.CloseHandle(stage_handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative rename only")
+def test_workspace_rename_uses_parent_handle_and_never_replaces_existing_entry(tmp_path: Path):
+    import win32api
+    import win32con
+    import win32file
+
+    import local_ai_hub.opencode_workspace as workspace
+
+    source = tmp_path / "source.txt"
+    renamed = tmp_path / "renamed.txt"
+    occupied = tmp_path / "occupied.txt"
+    contender = tmp_path / "contender.txt"
+    source.write_text("source", encoding="utf-8")
+    occupied.write_text("keep", encoding="utf-8")
+    contender.write_text("contender", encoding="utf-8")
+
+    parent_handle = win32file.CreateFile(
+        str(tmp_path), 0x80 | 0x2 | 0x40,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+        None, win32con.OPEN_EXISTING, 0x02000000 | 0x00200000, None,
+    )
+    source_handle = win32file.CreateFile(
+        str(source), 0x10000,
+        win32con.FILE_SHARE_READ,
+        None, win32con.OPEN_EXISTING, 0x00200000, None,
+    )
+    contender_handle = win32file.CreateFile(
+        str(contender), 0x10000,
+        win32con.FILE_SHARE_READ,
+        None, win32con.OPEN_EXISTING, 0x00200000, None,
+    )
+    try:
+        workspace._rename_handle_relative(source_handle, parent_handle, renamed.name)
+        with pytest.raises(OSError):
+            workspace._rename_handle_relative(contender_handle, parent_handle, occupied.name)
+    finally:
+        win32api.CloseHandle(contender_handle)
+        win32api.CloseHandle(source_handle)
+        win32api.CloseHandle(parent_handle)
+
+    assert not source.exists()
+    assert renamed.read_text(encoding="utf-8") == "source"
+    assert occupied.read_text(encoding="utf-8") == "keep"
+    assert contender.read_text(encoding="utf-8") == "contender"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative copyback only")
+def test_workspace_copyback_uses_handle_relative_rename_for_edits_additions_and_deletions(
+    tmp_path: Path, monkeypatch,
+):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "edit.txt").write_text("before", encoding="utf-8")
+    (project / "remove.txt").write_text("remove", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "edit.txt").write_text("after", encoding="utf-8")
+    (stage / "remove.txt").unlink()
+    (stage / "new.txt").write_text("new", encoding="utf-8")
+
+    rename = workspace._rename_handle_relative
+    renamed: list[str] = []
+
+    def record_rename(file_handle, parent_handle, name):
+        renamed.append(name)
+        return rename(file_handle, parent_handle, name)
+
+    monkeypatch.setattr(workspace, "_rename_handle_relative", record_rename)
+    result = apply_workspace_changes(snapshot)
+
+    assert result.applied == ("edit.txt", "new.txt", "remove.txt")
+    assert "edit.txt" in renamed and "new.txt" in renamed
+    assert "remove.txt" not in renamed
+    assert (project / "edit.txt").read_text(encoding="utf-8") == "after"
+    assert (project / "new.txt").read_text(encoding="utf-8") == "new"
+    assert not (project / "remove.txt").exists()
+    assert not any(path.name.startswith((".lah-transfer-", ".lah-backup-", ".lah-displaced-"))
+                   for path in project.iterdir())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative copyback only")
+def test_workspace_copyback_preserves_file_created_at_destination_during_commit(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "edit.txt").write_text("before", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "edit.txt").write_text("after", encoding="utf-8")
+    (stage / "new.txt").write_text("agent", encoding="utf-8")
+
+    rename = workspace._rename_handle_relative
+
+    def race_new_destination(file_handle, parent_handle, name):
+        if name == "new.txt":
+            (project / "new.txt").write_text("external", encoding="utf-8")
+        return rename(file_handle, parent_handle, name)
+
+    monkeypatch.setattr(workspace, "_rename_handle_relative", race_new_destination)
+    with pytest.raises(WorkspaceTransferError, match="rolled back"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "edit.txt").read_text(encoding="utf-8") == "before"
+    assert (project / "new.txt").read_text(encoding="utf-8") == "external"
+    assert not any(path.name.startswith((".lah-transfer-", ".lah-backup-", ".lah-displaced-"))
+                   for path in project.iterdir())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative copyback only")
+def test_workspace_copyback_rolls_back_when_old_file_disposition_fails(tmp_path: Path, monkeypatch):
+    import local_ai_hub.opencode_workspace as workspace
+
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    project.mkdir()
+    stage.mkdir()
+    (project / "a.txt").write_text("before-a", encoding="utf-8")
+    (project / "b.txt").write_text("before-b", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "a.txt").write_text("after-a", encoding="utf-8")
+    (stage / "b.txt").write_text("after-b", encoding="utf-8")
+
+    set_disposition = workspace._windows_set_delete_disposition
+    calls = 0
+
+    def fail_second_delete(file_handle, delete):
+        nonlocal calls
+        if delete:
+            calls += 1
+            if calls == 2:
+                raise OSError("injected disposition failure")
+        return set_disposition(file_handle, delete)
+
+    monkeypatch.setattr(workspace, "_windows_set_delete_disposition", fail_second_delete)
+    with pytest.raises(WorkspaceTransferError, match="rolled back"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "a.txt").read_text(encoding="utf-8") == "before-a"
+    assert (project / "b.txt").read_text(encoding="utf-8") == "before-b"
+    assert sorted(path.name for path in project.iterdir()) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")
+def test_snapshot_rejects_source_symlinks_without_reading_external_content(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    external = tmp_path / "outside.txt"
+    project.mkdir()
+    stage.mkdir()
+    external.write_text("outside", encoding="utf-8")
+    try:
+        (project / "escape.txt").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(UnsafeWorkspacePathError, match="reparse|symbolic link"):
+        create_workspace_snapshot(project, stage)
+
+    assert list(stage.iterdir()) == []
+
+
+def test_snapshot_rejects_staged_symlinks_before_copyback(tmp_path: Path):
+    project = tmp_path / "project"
+    stage = tmp_path / "stage"
+    external = tmp_path / "outside.txt"
+    project.mkdir()
+    stage.mkdir()
+    (project / "safe.txt").write_text("base", encoding="utf-8")
+    external.write_text("outside", encoding="utf-8")
+    snapshot = create_workspace_snapshot(project, stage)
+    (stage / "safe.txt").write_text("changed", encoding="utf-8")
+    try:
+        (stage / "escape.txt").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(UnsafeWorkspacePathError, match="reparse|symbolic link"):
+        apply_workspace_changes(snapshot)
+
+    assert (project / "safe.txt").read_text(encoding="utf-8") == "base"
+    assert (project / "outside.txt").exists() is False

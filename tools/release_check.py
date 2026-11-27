@@ -481,7 +481,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
 
         status = client.status(detail="brief")
         benchmark_model, benchmark_model_state = _configured_foreground_model(
-            status, installed_models, ("fast_code", "general", "heavy_code", "reasoning"),
+            status, installed_models, ("opencode", "fast_code", "general", "heavy_code", "reasoning"),
         )
         reasoning_model, reasoning_model_state = _configured_foreground_model(status, installed_models, ("heavy_code", "reasoning"))
         dependency_status = status.get("dependency_status") if isinstance(status.get("dependency_status"), dict) else {}

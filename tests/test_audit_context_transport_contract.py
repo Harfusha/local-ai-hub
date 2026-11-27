@@ -116,8 +116,11 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
                     assert json_tokens(wire) <= budget, value
                     if detailed:
                         assert value["response_budget"]["requested_tokens"] == budget
+                        assert not {"token_efficiency", "reused"}.intersection(value)
+                        if "request_id" in value:
+                            assert isinstance(value["request_id"], str) and value["request_id"]
                     else:
-                        assert "response_budget" not in value
+                        assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(value)
                     artifact_id = value.get("task_context_artifact_id")
                     if not artifact_id:
                         artifact_id = (value.get("task_context") or {}).get("artifact_id")

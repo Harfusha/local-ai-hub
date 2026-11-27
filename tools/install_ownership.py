@@ -401,6 +401,130 @@ def assert_external_json_key_writable(
     raise ValueError(f"external JSON key has no ownership record: {target}#{container}.{key}")
 
 
+def adopt_external_json_key(
+    install_dir: Path,
+    path: Path,
+    *,
+    container: str,
+    key: str,
+    current_value: Any,
+    consent: bool,
+    audit_reason: str,
+) -> bool:
+    """Adopt one user JSON key after saving its exact value for rollback."""
+    if type(consent) is not bool or not consent:
+        raise ValueError("explicit consent is required to adopt an external JSON key")
+    if not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 500:
+        raise ValueError("a bounded audit reason is required to adopt an external JSON key")
+    if not isinstance(container, str) or not isinstance(key, str) or not key:
+        raise ValueError("external JSON key identity is invalid")
+
+    root = _canonical(Path(install_dir))
+    prior = _read_valid_manifest(root)
+    if prior is None:
+        raise ValueError("ownership marker is missing")
+    target = Path(path)
+    if not target.is_absolute():
+        raise ValueError("external JSON path must be absolute")
+    target = _canonical(target)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("external JSON config must be outside the install root")
+    if _has_link_component(target):
+        raise ValueError("external JSON path must not contain a link or reparse point")
+
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("external JSON config is unavailable or invalid") from exc
+    if not isinstance(data, dict):
+        raise ValueError("external JSON config must be an object")
+    parent: Any = data
+    for segment in container.split(".") if container else []:
+        if not isinstance(parent, dict) or segment not in parent:
+            raise ValueError("external JSON key changed before adoption")
+        parent = parent[segment]
+    if not isinstance(parent, dict) or key not in parent:
+        raise ValueError("external JSON key changed before adoption")
+    actual = parent[key]
+    if _json_digest(actual) != _json_digest(current_value):
+        raise ValueError("external JSON key changed before adoption")
+
+    marker = {"container": container, "key": key}
+    matching = [entry for entry in prior["external_ownership"]
+                if entry["kind"] == "json_key" and entry["path"] == str(target)
+                and entry["owner_marker"] == marker]
+    if matching:
+        if len(matching) != 1:
+            raise ValueError("duplicate external JSON ownership records")
+        assert_external_json_key_writable(
+            root, target, container=container, key=key, current_value=actual,
+        )
+        return False
+
+    encoded = json.dumps(actual, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    if len(encoded.encode("utf-8")) > 1024 * 1024:
+        raise ValueError("external JSON rollback value exceeds the 1 MiB limit")
+    rollback_dir = root / ".ownership" / "rollback"
+    if _has_link_component(rollback_dir):
+        raise ValueError("rollback directory must not contain a link or reparse point")
+    rollback_dir.mkdir(parents=True, exist_ok=True)
+    rollback_name = _digest(f"{target}\0{container}\0{key}\0{_json_digest(actual)}") + ".json"
+    rollback_path = rollback_dir / rollback_name
+    if _is_link_or_reparse(rollback_path):
+        raise ValueError("existing JSON rollback is invalid")
+    created_rollback = False
+    if rollback_path.exists():
+        try:
+            saved = json.loads(rollback_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("existing JSON rollback is invalid") from exc
+        if _json_digest(saved) != _json_digest(actual):
+            raise ValueError("existing JSON rollback is invalid")
+    else:
+        fd, temporary_name = tempfile.mkstemp(prefix="json.", suffix=".tmp", dir=rollback_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, rollback_path)
+            created_rollback = True
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
+
+    try:
+        latest_data = json.loads(target.read_text(encoding="utf-8"))
+        latest_parent: Any = latest_data
+        for segment in container.split(".") if container else []:
+            latest_parent = latest_parent.get(segment) if isinstance(latest_parent, dict) else None
+        if (not isinstance(latest_parent, dict) or key not in latest_parent
+                or _json_digest(latest_parent[key]) != _json_digest(actual)):
+            raise ValueError("external JSON key changed during adoption")
+        entries = list(prior["external_ownership"])
+        value_digest = _json_digest(actual)
+        entries.append({
+            "path": str(target), "kind": "json_key", "owner_marker": marker,
+            "created_by_hub": False, "preimage_digest": value_digest,
+            "last_hub_written_digest": value_digest,
+            "rollback_reference": rollback_path.relative_to(root).as_posix(),
+            "adoption_reason": audit_reason.strip(),
+        })
+        write_install_manifest(root, prior["managed_paths"], entries)
+    except BaseException:
+        if created_rollback:
+            rollback_path.unlink(missing_ok=True)
+        raise
+    return True
+
+
 def record_external_json_key(
     install_dir: Path, path: Path, *, container: str, key: str,
     preimage: Any | None, postimage: Any, kind: str = "json_key",
