@@ -288,3 +288,101 @@ def test_timeline_storage_failure_is_not_an_empty_success():
 
     with pytest.raises(sqlite3.OperationalError, match="unavailable"):
         TelemetryQueryMixin.get_timeline_page(UnavailableStore(), 50, _flush=False)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or os.environ.get("LOCAL_AI_RUN_DESKTOP_LIFECYCLE_SMOKE") != "1",
+    reason="isolated Linux detached-supervisor acceptance is an explicit CI job",
+)
+def test_desktop_supervisor_lifecycle(tmp_path):
+    import socket
+    import time
+    from local_ai_hub.process_utils import process_owner_state, terminate_owned_process
+
+    # No installed user unit, production config, default ports or model servers.
+    # A real detached supervisor and its real Hub child are required.
+    home = tmp_path / "home"
+    home.mkdir()
+    state = tmp_path / "state"
+    config = tmp_path / "lifecycle.toml"
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n[server]\n"
+        + f"port = {port}\nstate_dir = " + json.dumps(str(state))
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+        + "\n[llama_cpp]\nmode = 'off'\n[observability]\nenabled = false"
+        + "\n[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false"
+        + "\n[mcp_http]\nenabled = false\n[headless]\nmanage_ollama = false"
+        + "\nstop_managed_ollama_on_stop = false\nstartup_grace_seconds = 20"
+        + "\nunhealthy_grace_seconds = 10\nhealth_check_interval_seconds = 0.5\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
+           "XDG_CACHE_HOME": str(home / ".cache"), "XDG_DATA_HOME": str(home / ".local/share"),
+           "LOCAL_AI_CONFIG": str(config)}
+    env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+
+    def call(op, **args):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools/desktop.py"), "--bridge", "--config", str(config)],
+            input=json.dumps({"op": op, "args": args}), capture_output=True,
+            text=True, encoding="utf-8", timeout=150, env=env, cwd=ROOT, check=True,
+        )
+        return json.loads(result.stdout)
+
+    def owner(role):
+        value = json.loads((state / f"{role}.owner.json").read_text(encoding="utf-8"))
+        assert process_owner_state(value, state, role) == "owned"
+        return value
+
+    def assert_stopped(owners):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if all(process_owner_state(value, state, role) == "stale" for role, value in owners.items()):
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("Previous owned supervisor or Hub identity remains live or unverified")
+        assert call("probe")["result"]["online"] is False
+        with socket.socket() as sock:
+            sock.settimeout(1)
+            assert sock.connect_ex(("127.0.0.1", port)) != 0
+
+    try:
+        assert call("probe")["result"]["online"] is False
+        started = call("lifecycle", action="start", confirmed=True)
+        assert started["ok"], started
+        assert call("probe")["result"]["online"] is True
+        first = {role: owner(role) for role in ("supervisor", "hub")}
+        repeated = call("lifecycle", action="start", confirmed=True)
+        assert repeated["ok"], repeated
+        assert all(owner(role) == value for role, value in first.items())
+        rejected = call("lifecycle", action="stop")
+        assert rejected["ok"] is False
+        assert call("probe")["result"]["online"] is True
+        restarted = call("lifecycle", action="restart", confirmed=True)
+        assert restarted["ok"], restarted
+        second = {role: owner(role) for role in ("supervisor", "hub")}
+        assert all(second[role] != value for role, value in first.items())
+        assert all(process_owner_state(value, state, role) == "stale" for role, value in first.items())
+        assert call("probe")["result"]["online"] is True
+        stopped = call("lifecycle", action="stop", confirmed=True)
+        assert stopped["ok"], stopped
+        assert_stopped(second)
+        assert (state / "service.disabled").is_file()
+        again = call("lifecycle", action="stop", confirmed=True)
+        assert again["ok"], again
+    finally:
+        # On failure, only terminate identities proven to belong to this
+        # temporary state directory; never use a listening PID alone.
+        state.mkdir(exist_ok=True)
+        (state / "service.disabled").touch()
+        for role in ("supervisor", "hub"):
+            try:
+                value = json.loads((state / f"{role}.owner.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if process_owner_state(value, state, role) == "owned":
+                assert terminate_owned_process(value, state, role, grace_seconds=5.0)
