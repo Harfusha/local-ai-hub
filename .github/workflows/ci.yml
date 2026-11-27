@@ -50,7 +50,7 @@ jobs:
       - run: pyflakes src tools
       - run: ruff check src tools tests
 
-      - run: python tools/validate_ci_selectors.py
+      - run: python tools/validate_ci_selectors.py --no-collect
 
   typing:
     runs-on: ubuntu-latest
@@ -448,6 +448,7 @@ jobs:
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install Pillow
       - run: python -c "import torch; from PIL import Image"
+      - run: python tools/validate_ci_selectors.py
       - run: python -m pytest -q tests/test_distill.py tests/test_dpo_loss.py tests/test_speculative_decoding.py tests/test_visual_diff.py
 
   package:
