@@ -5,6 +5,7 @@ from typing import Any
 
 def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
     from . import http_server as services_module
+    from .agent_task_models import ConcurrentTaskUpdateError
     if not getattr(services_module.APP, "agent_tasks", None) or not services_module.APP.agent_tasks.state_store.enabled:
         self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
     action = payload.get("action", "")
@@ -472,6 +473,10 @@ def handle_agent_state_tasks(self: Any, payload: dict[str, Any]) -> None:
                     "unit": "estimated_tokens",
                 },
             }); return
+        except PermissionError as exc:
+            self._send(403, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        except ConcurrentTaskUpdateError as exc:
+            self._send(409, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         except ValueError as exc:
             self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         except services_module.CompletionGateError as exc:
