@@ -5,29 +5,13 @@ requested feature/verification matrix, not a second project plan. The authoritat
 work plan is `.local-ai-hub/plans/plan_pr10_native_desktop.plan.json` and is
 maintained through the Local AI Hub planner API.
 
-## CI and runtime evidence at commit 6a2351f1
+## CI and runtime evidence at base commit 5738445
 
-- `feat/native-desktop-hub` is at `6a2351f1a75b232e74fa9c0e0f7e7e88dc73e149`,
-  pushed to its origin branch. `origin/master` is `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc`
-  and is an ancestor of the PR head (0 behind, 206 commits ahead).
-- Local Windows x64 verification at this commit: `cargo fmt --check`, 39 locked
-  Rust tests, and `cargo build --release --locked` passed. Focused desktop
-  smoke/control tests passed. A local window opened, but host policy
-  prevented focus; this is not interactive Windows acceptance.
-- Main CI run [46050120943](https://github.com/Harfusha/local-ai-hub/actions/runs/46050120943)
-  showed 12 jobs passed, 4 still running, and the optional release-assets job
-  skipped when inspected. Do not treat the incomplete matrix as a final receipt.
-- Native desktop run [46050121130](https://github.com/Harfusha/local-ai-hub/actions/runs/46050121130)
-  passed all four bridge jobs, Linux Xvfb smoke, and both macOS desktop targets.
-  Windows tests, release build, and packaging passed, but the visible-window
-  smoke failed before opening a window: `Wgpu(NoSuitableAdapterFound)` on
-  `windows-latest`. This hosted VM currently provides no suitable WGPU adapter;
-  repository Settings reports no self-hosted runners configured. Windows runtime
-  acceptance therefore needs a GPU-capable runner to be provisioned. See [GitHub-hosted
-  runner options](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job).
-- The PR remains a draft. Historical UI/CLI parity, full current CI, Windows
-  runtime, accessibility, security/performance audit, signed installer and
-  release acceptance remain open. No merge-readiness claim is made.
+- Local `HEAD` and `origin/feat/native-desktop-hub` are `573844566c5d748c855d596ab2232180af3aa505`; `origin/master` at `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc` is an ancestor. The parity/UI change described below is currently uncommitted on top of that base.
+- On that base, main CI run [46059714727](https://github.com/Harfusha/local-ai-hub/actions/runs/46059714727) was still in progress when checked: typing (2 jobs), lint, fast-contract, 12 platform-smoke jobs and critical coverage had completed; integration was 9/12; release asset bridge/desktop jobs were waiting. This is not a complete CI receipt.
+- Native desktop run [46059714593](https://github.com/Harfusha/local-ai-hub/actions/runs/46059714593) finished with failure. All four bridge and all four desktop jobs completed; Linux and both macOS targets passed. Windows visible-window acceptance failed before first window with `Wgpu(NoSuitableAdapterFound)` on `windows-latest`. A GPU-capable Windows runtime remains unverified.
+- Current local working-tree checks after adding Overview navigation: `cargo fmt --manifest-path desktop/Cargo.toml --check`, all 40 locked Rust tests, and Clippy with warnings denied passed. `git diff --check` found no whitespace errors (Git warned that it may convert LF to CRLF). These local checks include the uncommitted change and do not replace CI or interactive runtime acceptance.
+- Full UI/CLI parity, remaining main CI jobs, GPU-capable Windows runtime, physical interactive acceptance, accessibility, security/performance audit, signed installer and release acceptance remain open. Keep the PR draft; no merge-readiness claim is made.
 
 ## Earlier local audit snapshot — 2026-11-27, before commit 6a2351f1
 
@@ -102,7 +86,7 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 
 | Dashboard page / workflow | Desktop location | Current coverage | Acceptance verification still required |
 |---|---|---|---|
-| Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshots, recent request duration chart, health and project progress; no full workload drilldown | Compare cards, periods, health/warming/stale states and workload drilldowns |
+| Overview: live workload, health, metrics, hotspots | Overview, Hardware | Partial: endpoint snapshot, health, active-request count and duration plot; six links now open active requests, queue, running work, async jobs, work orders and runtime health | Verify click behavior in desktop runtime; compare cards, periods, health/warming/stale states and complete workload/hotspot drilldowns |
 | Requests: scheduler, active API, async jobs, work orders, history | Requests, Trace index | Partial native recent-request and trace tables, before/after event paging, metrics, opt-in stored content paging and redacted trace export, endpoint analytics | Compare filtering/paging, cancellation, retry, trace links, job failures |
 | Tasks: contracts, tasks, memory, incidents, run history, trace inspector, vision review, endpoint analytics | Tasks, Memory, Incidents | Partial scoped lists, create/get/complete/fail/transition, verification completion gate, run history with retention gaps, repository fact record/delete, incident record, bounded trace event pages | Create/complete/fail tasks with receipt gate, memory and incident forms, trajectories, trace and vision review |
 | Coordination: plans, board, dependencies, locks, semaphore | Plans, Plan board, Semaphores, File leases, Worktrees | Partial native Kanban and verified progress, plan create/update and task edit/delete with expected revision, semaphore/lease/worktree actions and briefing | Scope isolation, revision conflict, board editing, semaphores, worktree release, lease owner checks |

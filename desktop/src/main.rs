@@ -99,6 +99,24 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Project and diagnostics archives"]),
 ];
+const OVERVIEW_DRILLDOWNS: &[(&str, &str)] = &[
+    ("Active API requests", "Active requests"),
+    ("Queued work", "Scheduler queue"),
+    ("Running work", "Scheduler running"),
+    ("Async jobs", "Async jobs"),
+    ("Work orders", "Work orders"),
+    ("Health and dependencies", "Runtime health"),
+];
+
+fn view_destination(target: &str) -> Option<(usize, usize)> {
+    PAGES.iter().enumerate().find_map(|(page, (_, views))| {
+        views
+            .iter()
+            .position(|candidate| *candidate == target)
+            .map(|view| (page, view))
+    })
+}
+
 const MAINTENANCE: &[&str] = &[
     "Optimize databases",
     "Purge expired cache (7 days)",
@@ -1395,6 +1413,19 @@ impl Desktop {
         self.submit(ctx, view.into(), data);
     }
     fn operations(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.current() == "Overview" {
+            ui.heading("Workload drilldown");
+            ui.horizontal_wrapped(|ui| {
+                for &(label, target) in OVERVIEW_DRILLDOWNS {
+                    if ui.button(label).clicked() {
+                        let (page, view) =
+                            view_destination(target).expect("native drilldown target exists");
+                        self.navigate(page, view);
+                        self.refresh(ctx);
+                    }
+                }
+            });
+        }
         match self.page {
             1 => {
                 if self.current() == "Telemetry history" {
@@ -3701,6 +3732,26 @@ mod tests {
         assert!(app.busy.is_none() && app.receiver.is_none());
         assert!(app.status.contains("conflict"));
     }
+    #[test]
+    fn overview_workload_drilldowns_resolve_to_existing_native_views() {
+        let expected = [
+            ("Active API requests", "Active requests"),
+            ("Queued work", "Scheduler queue"),
+            ("Running work", "Scheduler running"),
+            ("Async jobs", "Async jobs"),
+            ("Work orders", "Work orders"),
+            ("Health and dependencies", "Runtime health"),
+        ];
+        assert_eq!(OVERVIEW_DRILLDOWNS, expected.as_slice());
+        let mut app = Desktop::new();
+        for (_, target) in OVERVIEW_DRILLDOWNS {
+            let (page, view) = view_destination(target).expect("drilldown target exists");
+            assert_eq!(PAGES[page].1[view], *target);
+            app.navigate(page, view);
+            assert_eq!(app.current(), *target);
+        }
+    }
+
     #[test]
     fn navigation_drops_cross_view_mutation_targets_and_preserves_root() {
         let mut app = Desktop::new();
