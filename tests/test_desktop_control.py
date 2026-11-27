@@ -1,4 +1,6 @@
 """Contract tests for the native desktop controller (no service or display)."""
+import io
+import zipfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -652,3 +654,82 @@ def test_operational_statistics_use_existing_light_status_endpoint(view):
         client.get.assert_called_once_with("/api/live/status?light=1&scope=window",
                                            timeout=15.0, requires_heavy_work=False)
         client.close.assert_called_once()
+
+
+def test_archive_body_reads_bounded_chunks_and_rejects_short_file():
+    raw = b"x" * 150_000
+    body = desktop.BoundedArchiveBody(io.BytesIO(raw + b"ignored"), len(raw))
+    chunks = [body.read(1_000_000), body.read(1_000_000), body.read(1_000_000)]
+    assert max(map(len, chunks)) == 65536
+    assert b"".join(chunks) == raw and body.remaining == 0
+    assert body.read() == b""
+    short = desktop.BoundedArchiveBody(io.BytesIO(b"a"), 2)
+    assert short.read() == b"a"
+    with pytest.raises(RuntimeError, match="changed during upload"):
+        short.read()
+
+
+def test_archive_import_streams_content_length_and_checks_zip(tmp_path):
+    archive = tmp_path / "fixture.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("fixture.txt", b"x" * 150_000)
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    client.config = {}
+    connection = MagicMock()
+    response = connection.getresponse.return_value
+    response.status = 200
+    response.read.return_value = b'{"success": true}'
+    seen = []
+
+    def send(method, path, body, headers):
+        assert method == "POST" and path.startswith("/api/bundle/import?")
+        assert headers["Content-Length"] == str(archive.stat().st_size)
+        assert isinstance(body, desktop.BoundedArchiveBody)
+        while chunk := body.read(8192):
+            assert len(chunk) <= 8192
+            seen.append(chunk)
+
+    connection.request.side_effect = send
+    args = {"file": str(archive), "root": str(tmp_path), "confirmed": True}
+    with patch.object(desktop.http.client, "HTTPConnection", return_value=connection):
+        result = desktop.transfer(control, "bundle_import", args)
+        assert result["success"] is True
+        assert b"".join(seen) == archive.read_bytes()
+        connection.request.reset_mock()
+        archive.write_bytes(b"PK" + b"not a zip archive" * 3)
+        with pytest.raises(ValueError, match="Invalid ZIP"):
+            desktop.transfer(control, "bundle_import", args)
+        connection.request.assert_not_called()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_export_requires_complete_valid_archive(tmp_path, valid):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as output:
+        output.writestr("fixture.txt", "test")
+    payload = buffer.getvalue() if valid else b"not a zip"
+    target = tmp_path / "export.zip"
+    control = MagicMock()
+    control._client.return_value._online.return_value = True
+    connection = MagicMock()
+    response = connection.getresponse.return_value
+    response.status = 200
+    response.getheader.side_effect = lambda key, default=None: {
+        "Content-Type": "application/zip", "Content-Length": str(len(payload)),
+        "X-Local-AI-Export-Password": "fixture-only-password",
+    }.get(key, default)
+    response.read.side_effect = [payload, b""]
+    with patch.object(desktop.http.client, "HTTPConnection", return_value=connection):
+        args = {"file": str(target), "confirmed": True}
+        if valid:
+            result = desktop.transfer(control, "diagnostics_export", args)
+            assert result["archive_password"] == "fixture-only-password"
+            assert target.read_bytes() == payload
+        else:
+            with pytest.raises(RuntimeError, match="invalid ZIP"):
+                desktop.transfer(control, "diagnostics_export", args)
+            assert not target.exists()
+    connection.close.assert_called_once()
+    control._client.return_value.close.assert_called_once()
