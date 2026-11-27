@@ -1,7 +1,7 @@
 """Unit tests for Knowledge Distillation Engine."""
 
 import pytest
-import torch
+torch = pytest.importorskip("torch", exc_type=ModuleNotFoundError)
 import torch.nn as nn
 from tools.model_training.distill import (
     DistillationConfig,
