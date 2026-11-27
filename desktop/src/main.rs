@@ -128,6 +128,12 @@ fn view_request(view: &str, root: &str, id: &str) -> Value {
 }
 // Only follow an explicit trace identifier returned by the server. A request
 // ID, task ID or job ID is not a trace ID and must never be guessed.
+fn filtered_log_lines<'a>(response: &'a Value, filter: &str) -> Option<Vec<&'a str>> {
+    let lines = response.get("lines")?.as_array()?;
+    let needle = filter.trim().to_lowercase();
+    Some(lines.iter().filter_map(Value::as_str)
+        .filter(|line| needle.is_empty() || line.to_lowercase().contains(&needle)).collect())
+}
 fn linked_trace(record: &Value) -> Option<&str> {
     record.get("trace_id").and_then(Value::as_str).filter(|id|
         !id.is_empty() && id.len() <= 200 &&
@@ -146,6 +152,7 @@ struct Desktop {
     mode: String,
     settings_draft: settings::Draft,
     metrics_period: String,
+    log_lines: i64,
     goal: String,
     criteria: String,
     memory_key: String,
@@ -225,7 +232,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_query: String::new(), task_target: "active".into(), history_cursor: 0, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -387,6 +394,7 @@ impl Desktop {
         let view = self.current();
         let data = match view {
             "Updates" => request("update_status", json!({})),
+            "Service health" => request("log_tail", json!({"lines": self.log_lines})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
             "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
             "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
@@ -984,6 +992,39 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.raw_view, "Raw fields");
             });
             if self.rows.is_empty() { ui.label("Load this view to inspect data. No hidden screen is polled."); }
+            if self.current() == "Service health" && !self.raw_view {
+                ui.heading("Operational log tail");
+                ui.horizontal_wrapped(|ui| {
+                    let before = self.log_lines;
+                    ui.add_enabled_ui(self.can_edit_context(), |ui| {
+                        egui::ComboBox::from_id_salt("log_line_count")
+                            .selected_text(format!("{} lines", self.log_lines)).show_ui(ui, |ui| {
+                            for count in [100, 250, 500] {
+                                ui.selectable_value(&mut self.log_lines, count, format!("{count} lines"));
+                            }
+                        });
+                    });
+                    if self.log_lines != before { self.refresh(ctx); }
+                    ui.small("Search response filters log lines. Logs may contain sensitive data.");
+                });
+                if let Some(snapshot) = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Service health") {
+                    if let Some(lines) = filtered_log_lines(snapshot, &self.filter) {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} matching lines", lines.len()));
+                            if ui.add_enabled(!lines.is_empty(), egui::Button::new("Copy filtered logs")).clicked() {
+                                ui.ctx().copy_text(lines.join("\n"));
+                            }
+                        });
+                        if lines.is_empty() { ui.label("No log lines match this filter."); }
+                        let height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
+                        egui::ScrollArea::both().id_salt("operational_logs")
+                            .show_rows(ui, height, lines.len(), |ui, range| {
+                                for index in range { ui.add(egui::Label::new(egui::RichText::new(lines[index]).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
+                            });
+                    } else { ui.label("Log data unavailable."); }
+                }
+                return;
+            }
             if self.snapshot_view == "Trace content" {
                 if let Some(page) = self.snapshot.as_ref().and_then(|response| response.get("content_page")) {
                     ui.label(format!("Stored content: {} · offset {} · next {} · more {} · storage truncated {}",
@@ -1330,6 +1371,14 @@ mod tests {
             assert_eq!(linked_trace(&json!({"trace_id":id})), None);
         }
         assert_eq!(linked_trace(&json!({"trace_id":123})), None);
+    }
+    #[test]
+    fn operational_log_filter_is_case_insensitive_and_missing_is_unknown() {
+        let response = json!({"lines": ["INFO ready", "ERROR timeout", "error retry"]});
+        assert_eq!(filtered_log_lines(&response, " ERROR ").unwrap(), vec!["ERROR timeout", "error retry"]);
+        assert_eq!(filtered_log_lines(&response, "").unwrap().len(), 3);
+        assert!(filtered_log_lines(&json!({}), "").is_none());
+        assert!(filtered_log_lines(&response, "absent").unwrap().is_empty());
     }
     #[test]
     fn response_paths_are_stable() {
