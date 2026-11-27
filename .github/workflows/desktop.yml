@@ -8,6 +8,7 @@ on:
       - 'tools/desktop_operator.py'
       - 'tools/desktop_smoke.py'
       - 'tests/test_desktop_control.py'
+      - 'tests/test_desktop_http_acceptance.py'
       - 'tests/test_dashboard_operational_surfaces.py'
       - 'src/local_ai_hub/http_*.py'
       - 'tools/hubctl.py'
@@ -82,4 +83,4 @@ jobs:
       - run: python tools/check_desktop_cutover.py
       - run: python -m pip install -e . pytest
       - run: python -m compileall -q tools/desktop.py tests/test_desktop_control.py
-      - run: python -m pytest tests/test_desktop_control.py tests/test_dashboard_operational_surfaces.py::test_retired_dashboard_route_returns_json_not_found tests/test_packaging_assets.py tests/test_dashboard_updates.py tests/test_audit_dashboard_setting_types.py tests/test_desktop_install.py tests/test_endpoint_stats_integration.py -q
+      - run: python -m pytest tests/test_desktop_control.py tests/test_desktop_http_acceptance.py tests/test_dashboard_operational_surfaces.py::test_retired_dashboard_route_returns_json_not_found tests/test_packaging_assets.py tests/test_dashboard_updates.py tests/test_audit_dashboard_setting_types.py tests/test_desktop_install.py tests/test_endpoint_stats_integration.py -q

@@ -21,7 +21,7 @@ def _wheel_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[HubC
     config_path = tmp_path / "config.toml"
     state_dir = tmp_path / "state"
     config_path.write_text(
-        "config_schema_version = 1\n"
+        "[local_ai_hub]\nconfig_schema_version = 1\n"
         "[server]\nport=11435\nstate_dir='" + state_dir.as_posix() + "'\n"
         "[client]\nstartup_wait_seconds=1.0\nstartup_poll_seconds=0.01\n"
         "start_lock_stale_seconds=0.01\n"

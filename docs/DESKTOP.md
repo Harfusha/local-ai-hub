@@ -24,3 +24,5 @@ Select a repository for scoped operations. Settings → Operator tools exposes a
 ## Release status
 
 The current PR is a draft. See [parity and evidence](DESKTOP_PARITY.md) for gaps and verification requirements. Passing builds do not establish complete behavioral parity.
+
+The native desktop bridge CI also exercises a real loopback Hub HTTP server in an isolated temporary installation, with local model startup disabled. The test runs the actual one-shot JSON bridge subprocess and checks scoped statistics, reset isolation, and offline behavior after shutting down the server. It does not claim to test graphical interaction or managed service startup.
