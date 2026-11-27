@@ -394,3 +394,26 @@ Remaining acceptance work (not claimed complete):
 The canonical completion gate does not prove that user intent was translated
 into complete criteria or that a model found every defect. No external host
 can be forced to continue indefinitely through MCP.
+
+
+### Audited problem dispositions
+
+Use `task_checkpoint` with `state_data.execution_problem_disposition`:
+
+```json
+{"id":"issue-1","decision_id":"review-1","action":"defer","reason":"Awaiting reproduction"}
+```
+
+Allowed actions are `defer`, `reject` and `resume`. The current authorized
+owner of a nonterminal task must submit the decision; rejection requires an
+owner different from the report author. The server stores up to 16 decisions
+per report, with server timestamps, identity, reasons and idempotent decision
+IDs. Report history survives ordinary checkpoints and checkpoint rollback.
+A disposition is not a waiver and does not remove mandatory graph nodes.
+Rejection is only classified as verified when the original resolution gate
+is satisfied and the relevant fresh receipt belongs to the deciding owner
+and postdates the rejection decision. Later stale evidence reopens the report.
+A deferred blocking report remains blocking. A rejection without proof remains
+pending; a repaired issue can still resolve independently of its rejection
+classification. The Hub identity mechanism is not separate authentication of
+the human reviewer. Inspect the full task registry for the decision history.
