@@ -1,5 +1,7 @@
 """Contract tests for the native desktop controller (no service or display)."""
 import io
+import os
+import stat
 import zipfile
 from unittest.mock import MagicMock, patch
 
@@ -727,6 +729,8 @@ def test_export_requires_complete_valid_archive(tmp_path, valid):
             result = desktop.transfer(control, "diagnostics_export", args)
             assert result["archive_password"] == "fixture-only-password"
             assert target.read_bytes() == payload
+            if os.name == "posix":
+                assert stat.S_IMODE(target.stat().st_mode) & 0o077 == 0
         else:
             with pytest.raises(RuntimeError, match="invalid ZIP"):
                 desktop.transfer(control, "diagnostics_export", args)
@@ -881,4 +885,46 @@ def test_incident_record_requires_actual_incident_receipt(tmp_path):
         with pytest.raises(RuntimeError, match="not confirmed"):
             desktop.dispatch(MagicMock(), {"op": "incident", "args": {
                 "root": str(tmp_path), "kind": "review", "message": "failure", "confirmed": True,
+            }})
+
+
+def test_task_create_sends_canonical_goal_contract_and_requires_receipt(tmp_path):
+    control = MagicMock()
+    response = {"success": True, "task": {"task_id": "task_a", "status": "planned"}}
+    with patch.object(desktop, "checked_post", return_value=response) as post:
+        assert desktop.dispatch(control, {"op": "task_create", "args": {
+            "root": str(tmp_path), "goal": "Goal", "criteria": "first\nsecond",
+            "description": "description", "scope": "branch", "risk": "critical",
+            "constraints": "stay local", "non_goals": "unrelated work",
+            "slo": '{"latency_ms": 100}', "confirmed": True,
+        }}) == response
+        post.assert_called_once_with(control, "/api/agent-state/tasks", {
+            "root": str(tmp_path.resolve()), "action": "create", "contract": {
+                "goal": "Goal", "acceptance_criteria": ["first", "second"],
+                "description": "description", "scope": "branch", "risk_profile": "critical",
+                "constraints": ["stay local"], "non_goals": ["unrelated work"],
+                "slo_profile": {"latency_ms": 100},
+            },
+        })
+
+
+@pytest.mark.parametrize("invalid", [{"scope": "system"}, {"risk": "unknown"}, {"slo": "[]"},
+    {"slo": "not JSON"}, {"constraints": []}, {"non_goals": 123}, {"confirmed": False}])
+def test_task_create_invalid_contract_never_reaches_server(tmp_path, invalid):
+    with patch.object(desktop, "checked_post") as post:
+        with pytest.raises(ValueError):
+            desktop.dispatch(MagicMock(), {"op": "task_create", "args": {
+                "root": str(tmp_path), "goal": "Goal", "confirmed": True, **invalid,
+            }})
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("task", [None, {"task_id": "wrong", "status": "waiting"},
+    {"task_id": "task_a", "status": "completed"}])
+def test_task_transition_requires_exact_task_and_target_status(tmp_path, task):
+    with patch.object(desktop, "checked_post", return_value={"success": True, "task": task}):
+        with pytest.raises(RuntimeError, match="not confirmed|unexpected status"):
+            desktop.dispatch(MagicMock(), {"op": "task", "args": {
+                "root": str(tmp_path), "id": "task_a", "action": "transition",
+                "status": "waiting", "reason": "waiting for input", "confirmed": True,
             }})
