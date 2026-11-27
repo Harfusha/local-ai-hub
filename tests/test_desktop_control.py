@@ -733,3 +733,49 @@ def test_export_requires_complete_valid_archive(tmp_path, valid):
             assert not target.exists()
     connection.close.assert_called_once()
     control._client.return_value.close.assert_called_once()
+
+
+def test_task_page_uses_server_filters_and_exact_continuation(tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    page = {"success": True, "tasks": [{"task_id": "task_a"}],
+            "offset": 50, "limit": 25, "next_offset": 51, "has_more": True,
+            "query_truncated": True}
+    client.get.return_value = page
+    result = desktop.dispatch(control, {"op": "task_page", "args": {
+        "root": str(tmp_path), "status": "waiting", "query": "a & b",
+        "limit": 25, "offset": 50,
+    }})
+    assert result == page
+    query = parse_qs(urlsplit(client.get.call_args.args[0]).query)
+    assert query["status"] == ["waiting"]
+    assert query["query"] == ["a & b"]
+    assert query["limit"] == ["25"] and query["offset"] == ["50"]
+    assert query["root"] == [str(tmp_path.resolve())]
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("patch_fields", [{"status": "unknown"}, {"limit": True}, {"limit": 1000}])
+def test_invalid_task_filters_rejected_before_transport(tmp_path, patch_fields):
+    control = MagicMock()
+    with pytest.raises(ValueError):
+        desktop.dispatch(control, {"op": "task_page", "args": {
+            "root": str(tmp_path), **patch_fields,
+        }})
+    control._client.assert_not_called()
+
+
+@pytest.mark.parametrize("bad_page", [{"next_offset": -1}, {"next_offset": True},
+    {"has_more": "true"}, {"limit": 25}, {"offset": 1}])
+def test_task_page_rejects_invalid_server_cursor(tmp_path, bad_page):
+    control = MagicMock()
+    client = control._client.return_value
+    client._online.return_value = True
+    client.get.return_value = {"success": True, "tasks": [], "offset": 0,
+                               "limit": 100, "next_offset": 0, "has_more": False, **bad_page}
+    with pytest.raises(RuntimeError, match="Malformed task page"):
+        desktop.dispatch(control, {"op": "task_page", "args": {"root": str(tmp_path)}})
+    client.close.assert_called_once()
