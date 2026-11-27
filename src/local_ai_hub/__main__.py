@@ -12,6 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="local-ai-hub",
         description="Run the Local AI Hub HTTP service or generate agent artifacts.",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--config",

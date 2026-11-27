@@ -285,3 +285,12 @@ def test_cli_stages_and_applies_only_after_semantic_review(tmp_path: Path, monke
     assert "semantic review: PASS" in output
     assert "sha256=" in output
     assert "applied: True" in output
+
+
+def test_cli_rejects_removed_direct_apply_flag():
+    from local_ai_hub import __main__ as cli
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--apply"])
+
+    assert error.value.code == 2

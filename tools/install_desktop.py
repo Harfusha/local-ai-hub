@@ -109,9 +109,11 @@ def verify_archive(raw: bytes, *, version: str, revision: str, system: str, arch
         if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in {
             "hub_version": version, "repository_revision": revision,
             "os": system, "architecture": arch, "binary": name,
-        }.items()) or type(receipt.get("format")) is not int or receipt["format"] not in (1, 2):
+        }.items()):
             raise ValueError("Desktop archive provenance mismatch")
-        expected_entries = base_entries if receipt["format"] == 1 else base_entries | set(auxiliary_limits)
+        if type(receipt.get("format")) is not int or receipt["format"] != 2:
+            raise ValueError("Only desktop archive format 2 is supported")
+        expected_entries = base_entries | set(auxiliary_limits)
         if set(entries) != expected_entries:
             raise ValueError("Desktop archive format and entries disagree")
         binary = archive.read(name)
@@ -119,13 +121,12 @@ def verify_archive(raw: bytes, *, version: str, revision: str, system: str, arch
         if not binary or receipt.get("sha256") != digest:
             raise ValueError("Desktop binary digest mismatch")
         auxiliary: dict[str, str] = {}
-        if receipt["format"] == 2:
-            for entry, limit in auxiliary_limits.items():
-                if not 0 < archive.getinfo(entry).file_size <= limit:
-                    raise ValueError("Missing or oversized desktop license/lock evidence")
-                auxiliary[entry] = hashlib.sha256(archive.read(entry)).hexdigest()
-            if receipt.get("auxiliary_sha256") != auxiliary:
-                raise ValueError("Desktop license/lock evidence digest mismatch")
+        for entry, limit in auxiliary_limits.items():
+            if not 0 < archive.getinfo(entry).file_size <= limit:
+                raise ValueError("Missing or oversized desktop license/lock evidence")
+            auxiliary[entry] = hashlib.sha256(archive.read(entry)).hexdigest()
+        if receipt.get("auxiliary_sha256") != auxiliary:
+            raise ValueError("Desktop license/lock evidence digest mismatch")
         checksum_bytes = (f"{digest}  {name}\n" + "".join(
             f"{sha}  {entry}\n" for entry, sha in sorted(auxiliary.items())
         )).encode("utf-8")

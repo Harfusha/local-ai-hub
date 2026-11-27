@@ -102,6 +102,7 @@ def inprocess_client(tmp_path, monkeypatch):
     ensure_state_version(state_dir)
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         "port = 11435\n"

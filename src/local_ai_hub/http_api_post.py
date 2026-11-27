@@ -513,6 +513,12 @@ class HttpPostHelpersMixin:
                 wire_data = services_module.project_wait_event_response(wire_data, enabled=detail_enabled)
             else:
                 wire_data = services_module.project_agent_response(wire_data, enabled=detail_enabled)
+        if isinstance(data, dict) and isinstance(wire_data, dict):
+            # Request identity and phase timings are public transport contract
+            # fields. Diagnostic projection must not erase either one.
+            for field in ("request_id", "phase_timings_ms"):
+                if field in data:
+                    wire_data[field] = data[field]
         body = raw_body if isinstance(raw_body, bytes) else services_module._json_bytes(wire_data)
         if (
             response_path in {"/api/search", "/api/repo/code-index"}

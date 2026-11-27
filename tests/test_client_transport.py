@@ -18,6 +18,7 @@ from local_ai_hub.client import HubClient
 def _client(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text(
+        "[local_ai_hub]\nconfig_schema_version=1\n\n"
         "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n"
         "[client]\nmax_request_timeout_seconds=5\n",
         encoding="utf-8",
@@ -1305,6 +1306,7 @@ def test_continue_conversation_sends_task_over_real_http_and_keeps_transcript(tm
     thread.start()
     config = tmp_path / "conversation-client.toml"
     config.write_text(
+        "[local_ai_hub]\nconfig_schema_version=1\n\n"
         f"[server]\nport={server.server_port}\nstate_dir='{(tmp_path / 'state').as_posix()}'\n"
         "[client]\nmax_request_timeout_seconds=5\n",
         encoding="utf-8",

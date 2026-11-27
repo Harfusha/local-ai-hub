@@ -7,9 +7,10 @@ maintained through the Local AI Hub planner API.
 
 ## Current local audit — 2026-11-27
 
-- `feat/native-desktop-hub` now contains `origin/master` at `8fa0dbf3` via merge
-  commit `eda8fca1`. The remote PR branch remains at `552b0ab2`; local changes
-  are not pushed yet.
+- `feat/native-desktop-hub` contains `origin/master` at `8fa0dbf3` via merge
+  commit `eda8fca1`. Fetched `origin/feat/native-desktop-hub` at
+  `5659dd0cfe2f67f30bcde6db4e249aa689ce9acb`; the remote and local commit
+  match. Current uncommitted fixes are not pushed.
 - Removed the obsolete `hubctl dashboard` alias and the launcher fallback to an
   unversioned `bin/local-ai-hub-desktop` binary. New installations use the
   versioned path; development builds use `desktop/target/release`.
@@ -20,6 +21,22 @@ maintained through the Local AI Hub planner API.
   runs only in its explicit Linux CI job). Rust formatting passed; 39 locked
   Rust unit tests and Clippy with warnings denied passed on Windows x64. The
   desktop cutover source guard and `git diff --check` passed at this revision.
+- Current Windows x64 checks: `cargo fmt --check`, 39 locked Rust tests,
+  Clippy with warnings denied, and locked release build passed. Focused
+  transport/context/mutation tests passed 112; desktop install/controller tests
+  passed 190; Caveman CLI tests passed 20.
+- `tests/test_surface_benchmarks.py` passed 94/94 after correcting two benchmark
+  cache verifiers to match their production cache keys. `release_check.py
+  --allow-installed`, `compileall` for `src/tools/tests`, `selftest.py`, and the
+  test-environment isolation module (3/3) passed.
+- Fresh critical suite: 2,050 passed, 13 skipped, 1 failed. The failure was an
+  obsolete assertion that `/dashboard` serves HTML. The test now checks the
+  retired dashboard's HTTP 404 JSON and passes focused (1/1); the critical suite
+  was not rerun after that test-only correction. The combined changed-module
+  suite passed 417/417 after updating stale config fixtures and source-location
+  assertions.
+- The recorded full Python suite (17,839 passed, 975 failed, 63 errors, 148
+  skipped) predates current fixes and is not a current full-suite receipt.
 - The PR remains a draft. Full dashboard/CLI parity, complete CI, cross-platform
   interactive runtime, installer/update migration, security/performance review,
   and release acceptance remain open. No merge-readiness claim is made.
@@ -422,8 +439,8 @@ At `48c5722`, the [Native desktop workflow](https://github.com/Harfusha/local-ai
 - Added a distinct Ollama administration view (not a replacement for the provider-neutral and resident inventories). Pull/delete are explicitly confirmed, use the canonical authenticated admin endpoint, require enabled backend and exact receipt. Delete performs fresh exact-name non-resident inventory preflight; missing /ps is unknown, never unloaded, and no VRAM value is manufactured. This preflight is not an atomic reservation against another process loading a model between requests. A real HTTP/IPC test uses a bounded local Ollama protocol fixture with no external download or inference.
 - Keyboard shortcuts F5, Command/Ctrl+F and Command/Ctrl+L, Escape cancellation, selected AccessKit label relationships, and bounded scrollable mutation confirmation now include exact model, execution, manifest and plan metadata. The confirmation excludes arbitrary image/secret payloads. This is not a complete screen-reader accessibility audit.
 - Native smoke now has Win32 owned visible window detection and macOS CoreGraphics window ownership, foreground focus via the OS, actual isolated Hub readiness, and separate idle CPU/RSS samples. CI exercises offline and online modes for all four targets; no silent skip on missing interactive session. Linux also sends real F5 keyboard input and waits for the actual live-status HTTP route. These new checks have not yet passed at the current revision; runner display/activation support is a remaining gate.
-- Instruction compression now stages candidates, prints durable manifest paths, and offers exact review, apply and restore through both the CLI and native desktop. Source eligibility, explicit repository and configured staging folder, exact manifest digest, backup/candidate/source hashes, deterministic preservation and clean advisory semantic review are checked. Apply/restore do not invoke inference or regenerate text. Native side-by-side full text review is virtualized; no write without explicit consent. Source reads are bounded. Existing atomic file replacement does not provide an OS-wide lock against unrelated concurrent editors; reload on conflicts. CLI now counts backup failures as failures. The old direct CLI --apply remains for compatibility, but is not used by the desktop.
-- Portable archive format 2 includes project LICENSE, Cargo.lock and collected upstream dependency license/notice texts and expressions from actual locked Cargo metadata. Binary and evidence digests and exact SHA256SUMS are verified; new release publication requires v2 while v1 checksummed archives remain installable. Missing upstream license texts are explicitly marked for review; this is not a legal compatibility verdict or code signature. No signing keys/certificates were available and no signed release is claimed.
+- Instruction compression stages candidates, prints durable manifest paths, and offers exact review, apply and restore through both the CLI and native desktop. Source eligibility, explicit repository and configured staging folder, exact manifest digest, backup/candidate/source hashes, deterministic preservation and clean advisory semantic review are checked. Apply/restore do not invoke inference or regenerate text. Native side-by-side full text review is virtualized; no write without explicit consent. Source reads are bounded. Existing atomic file replacement does not provide an OS-wide lock against unrelated concurrent editors; reload on conflicts. CLI counts backup failures as failures. The old direct `--apply` compression path is removed; the current CLI uses staged candidates and explicit `--apply-caveman` only after successful semantic review.
+- Portable archive format 2 includes project LICENSE, Cargo.lock and collected upstream dependency license/notice texts and expressions from actual locked Cargo metadata. Binary and evidence digests and exact SHA256SUMS are verified; the installer requires format 2 and rejects format 1. Missing upstream license texts are explicitly marked for review; this is not a legal compatibility verdict or code signature. No signing keys/certificates were available and no signed release is claimed.
 - New contract and fixture tests need completed CI at the new head. No local Cargo or direct GitHub checkout DNS; active repository planner unavailable. Remaining acceptance gates include full latest main/native CI, exact remaining historical UI/CLI parity (including policy-constrained operations), physical OS/screen-reader and registered service manager acceptance, real signed release/installer and dependency legal/security review. PR remains draft; no direct plan-store edits, merge or release publication.
 
 

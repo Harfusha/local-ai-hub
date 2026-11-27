@@ -67,7 +67,7 @@ def test_first_versioned_install_removes_unversioned_binary(files):
     assert not retired.exists()
 
 
-def test_archive_receipt_binds_platform_and_revision():
+def test_v1_archive_is_rejected_without_compatibility_path():
     import io
     import json
     import zipfile
@@ -84,11 +84,8 @@ def test_archive_receipt_binds_platform_and_revision():
         archive.writestr("README.txt", "")
         archive.writestr("SHA256SUMS", f"{receipt['sha256']}  {receipt['binary']}\n")
     raw = output.getvalue()
-    assert verify_archive(raw, version="8.2.2", revision=revision, system="Linux", arch="X64")[1] == payload
-    with pytest.raises(ValueError, match="provenance"):
-        verify_archive(raw, version="8.2.2", revision="b" * 40, system="Linux", arch="X64")
-    with pytest.raises(ValueError, match="entries|provenance"):
-        verify_archive(raw, version="8.2.2", revision=revision, system="Windows", arch="X64")
+    with pytest.raises(ValueError, match="format 2"):
+        verify_archive(raw, version="8.2.2", revision=revision, system="Linux", arch="X64")
 
 
 def test_v2_archive_binds_dependency_notices_lock_and_exact_checksums():
@@ -122,6 +119,10 @@ def test_v2_archive_binds_dependency_notices_lock_and_exact_checksums():
         return verify_archive(raw, version="8.2.2", revision="a" * 40, system="Linux", arch="X64")
 
     assert verify(make_archive(auxiliary))[0]["format"] == 2
+    with pytest.raises(ValueError, match="provenance"):
+        verify_archive(make_archive(auxiliary), version="8.2.2", revision="b" * 40, system="Linux", arch="X64")
+    with pytest.raises(ValueError, match="entries"):
+        verify_archive(make_archive(auxiliary), version="8.2.2", revision="a" * 40, system="Windows", arch="X64")
     with pytest.raises(ValueError, match="digest mismatch"):
         verify(make_archive({**auxiliary, "THIRD-PARTY-NOTICES.txt": b"tampered"}))
     with pytest.raises(ValueError, match="SHA256SUMS"):

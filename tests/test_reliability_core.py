@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import inspect
 import json
 import os
 import socket
@@ -65,7 +64,7 @@ def test_invalid_explicit_config_fails_fast(tmp_path: Path):
 
 def test_config_validates_transport_limits(tmp_path: Path):
     bad = tmp_path / "bad.toml"
-    bad.write_text('[server]\nport=70000\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
+    bad.write_text('[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=70000\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="server.port"):
         load_config(bad)
 
@@ -87,7 +86,7 @@ def test_runtime_config_sidecar_preserves_primary_config(tmp_path: Path):
 
 
 def test_mcp_resolve_imports_defaults_to_auto():
-    source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "local_ai_hub" / "mcp_tools_repo.py").read_text(encoding="utf-8")
     assert 'language: str = "auto"' in source
     assert '"language": language or "auto"' in source
 
@@ -279,7 +278,10 @@ def test_hub_client_can_probe_without_autostart(tmp_path: Path):
     port = _free_port()
     cfg = tmp_path / "client.toml"
     cfg.write_text(
-        f'''[server]
+        f'''[local_ai_hub]
+config_schema_version = 1
+
+[server]
 bind="127.0.0.1"
 port={port}
 state_dir="{(tmp_path / "state").as_posix()}"
@@ -345,11 +347,11 @@ mode="full"
         deadline=time.time()+12
         while time.time()<deadline:
             if proc.poll() is not None: break
-            status,_,_= _request(base+"/dashboard")
+            status,_,_= _request(base+"/api/status")
             if status==200: break
             time.sleep(.1)
         status,headers,html=_request(base+"/dashboard")
-        assert status==200 and b"Local AI Hub" in html
+        assert status==404 and b'"error":"Web UI removed; use Local AI Hub Desktop."' in html
         assert headers.get("X-Content-Type-Options") == "nosniff"
         assert _request(base+"/api/status")[0] == 200
         # The HTML listener can be ready while the first bounded telemetry
@@ -442,5 +444,24 @@ mode="full"
 
 
 def test_preprocessor_status_preserves_batch_progress():
-    from local_ai_hub.preprocess import ProjectPreprocessor
-    assert "batch in progress" in inspect.getsource(ProjectPreprocessor.status)
+    from local_ai_hub.preprocess_status import calculate_speed_and_eta
+
+    speed, eta, _ = calculate_speed_and_eta(
+        root="C:/synthetic/project",
+        status_str="running",
+        phase_str="files",
+        phase_pct=0.0,
+        total_files=10,
+        effective_file_cards=0,
+        rag_files=0,
+        hashed_files=0,
+        ci_count=0,
+        det_count=0,
+        source_count=0,
+        external_indexes={},
+        speed_tracker={},
+        stats_lock=None,
+        row_updated_at=None,
+    )
+    assert speed == "batch in progress"
+    assert eta == "measuring…"

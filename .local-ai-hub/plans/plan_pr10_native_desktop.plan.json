@@ -57,7 +57,7 @@
       "depends_on": [],
       "description": "Deliver every requirement in the supplied goal document, sections 1–35, including branch synchronization, complete native UI and CLI parity, system and workload views, Agent OS and knowledge workflows, project/model/telemetry features, security, performance, cross-platform runtime, installation/updater, documentation, complete validation, independent audit, and actual PR merge/post-merge verification. No runtime backward compatibility or legacy behavior; the only exception is one-time migration during update.",
       "kind": "code",
-      "next_action": "Full pytest found temporary HTTP fixtures missing required config_schema_version=1; added the current schema marker, and that production-route module now passes 8/8. Enumerate and fix remaining failures before a fresh full rerun.",
+      "next_action": "Verification: 417 changed-module tests passed; benchmark module 94/94; Caveman 20/20; release_check --allow-installed, compileall, selftest and environment isolation 3/3 passed. Critical suite prior run 2050 pass/13 skip with one obsolete dashboard assertion; updated target passes 1/1, full critical not rerun. Repo security_audit returned 33 untriaged mostly test findings and incomplete inventory due oversized docs/API_COVERAGE.json; no clean audit claim. Local model review rejected for VRAM. Next record receipts, inspect exact diff, commit/push to trigger current CI, disposition audit findings and remaining parity/release gates.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
@@ -75,7 +75,7 @@
         }
       ],
       "title": "Complete PR #10 native desktop cutover",
-      "work_phase": "implementation",
+      "work_phase": "verification",
       "work_status": "in_progress"
     },
     "task_pr10_sync_master": {

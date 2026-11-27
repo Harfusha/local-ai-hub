@@ -39,6 +39,7 @@ def _app(config_dir: Path) -> tuple[LocalAIApp, Path]:
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
         f'[server]\nstate_dir = "{(config_dir / "state").as_posix()}"\n'
         "[preprocessing]\nenabled = false\nreject_temp_projects = false\n"
         "[agent_state]\nenabled = true\n",

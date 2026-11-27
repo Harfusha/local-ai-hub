@@ -46,6 +46,9 @@ def context_http_hub(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join((
+            "[local_ai_hub]",
+            "config_schema_version = 1",
+            "",
             "[server]",
             'bind = "127.0.0.1"',
             "port = 11435",
