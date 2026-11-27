@@ -306,14 +306,16 @@ def test_caller_pagination_fields_are_preserved_in_both_output_modes(enabled):
     assert project_agent_response(distinct, enabled=enabled)["observed_match_count"] == 20
 
 
-def test_wire_budget_retains_limits_and_actual_size_without_internal_before_size():
+def test_wire_budget_is_hidden_when_diagnostics_are_disabled():
     from local_ai_hub.agent_diagnostics import project_agent_response
 
     result = {"response_budget": {"requested_tokens": 500, "returned_tokens": 100,
                                   "original_tokens": 2000, "truncated": True}}
     normal = project_agent_response(result, enabled=False)
-    assert normal["response_budget"] == {"requested_tokens": 500, "returned_tokens": 100, "truncated": True}
-    assert project_agent_response(result, enabled=True) == result
+    assert "response_budget" not in normal
+    diagnostics = project_agent_response(result, enabled=True)
+    assert diagnostics["response_budget"] == result["response_budget"]
+    assert diagnostics["truncated"] is True
 
 
 def test_generated_schemas_do_not_resurrect_retired_command_tool():

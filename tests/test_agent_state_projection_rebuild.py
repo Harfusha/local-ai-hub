@@ -329,7 +329,7 @@ def test_projection_rebuild_cli_works_for_a_clean_project(tmp_path: Path):
     ensure_agent_os_layout(root)
     state_dir = tmp_path / "hub-state"
     config = tmp_path / "config.toml"
-    repo_config = Path(__file__).parents[1] / "config.toml"
+    repo_config = Path(__file__).parents[1] / "src" / "local_ai_hub" / "defaults.toml"
     config_text = repo_config.read_text(encoding="utf-8")
     config_text, replacements = re.subn(
         r'(?m)^state_dir\s*=.*$',
