@@ -102,6 +102,17 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Value) {
             ui.label("Additional obligations exist. Inspect the full task contract.");
         }
     }
+    let knowledge = &execution["knowledge_check"];
+    if knowledge.is_object() {
+        ui.heading("Repository knowledge consistency");
+        ui.label(format!("Status: {} · blocking findings: {}", label(knowledge, "status"),
+            count(knowledge, "blocking_count").unwrap_or(0)));
+        if let Some(findings) = knowledge["findings_preview"].as_array() {
+            for finding in findings.iter().take(12) {
+                ui.small(format!("{} — {}", label(finding, "id"), label(finding, "type")));
+            }
+        }
+    }
     let problems = &execution["problems"];
     ui.heading("Problem reports");
     ui.label(format!("Open: {} · blocking: {} · resolved: {}",
