@@ -1918,10 +1918,12 @@ class VerificationStore:
         from .verified_execution import EXECUTION_KEY, consecutive_failed_verifications, evidence_progress, execution_projection
 
         if task_state is not None and EXECUTION_KEY in task_state.contract.slo_profile:
-            from .execution_problems import PROBLEM_STATE_KEY, project_problems
+            from .execution_problems import PROBLEM_STATE_KEY, problem_confirmation_dependencies, project_problems
+
+            problem_registry = task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {})
 
             problems = project_problems(
-                task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+                problem_registry,
                 satisfied=satisfied,
                 receipts={receipt.criterion: receipt for receipt in visible_receipts},
             )
@@ -1935,6 +1937,7 @@ class VerificationStore:
                 receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
                 receipt_observed_at={receipt.criterion: receipt.observed_at for receipt in visible_receipts},
                 include_verified_criteria=True,
+                confirmation_dependencies=problem_confirmation_dependencies(problem_registry),
             )
             effective = set(execution.pop("verified_criteria"))
             dependency_stale = set(execution.get("dependency_stale_criteria", []))
@@ -1947,7 +1950,7 @@ class VerificationStore:
             # A valid individual receipt is insufficient to close a problem
             # when its prerequisite chain is no longer verified.
             problems = project_problems(
-                task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+                problem_registry,
                 satisfied=satisfied,
                 receipts={receipt.criterion: receipt for receipt in visible_receipts},
             )
