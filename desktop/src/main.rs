@@ -126,6 +126,13 @@ fn view_request(view: &str, root: &str, id: &str) -> Value {
     };
     request(op, json!({"view": view, "root": root, "id": id}))
 }
+// Only follow an explicit trace identifier returned by the server. A request
+// ID, task ID or job ID is not a trace ID and must never be guessed.
+fn linked_trace(record: &Value) -> Option<&str> {
+    record.get("trace_id").and_then(Value::as_str).filter(|id|
+        !id.is_empty() && id.len() <= 200 &&
+        id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'))
+}
 struct Pending { label: String, payload: Value }
 struct Completed { label: String, result: Result<Value, String>, probe: bool, live: bool }
 struct Desktop {
@@ -358,6 +365,20 @@ impl Desktop {
         self.operator_name.clear();
         self.operator_fields.clear();
         self.filter.clear();
+    }
+    fn open_linked_trace(&mut self, ctx: &egui::Context, id: String) {
+        if !self.can_edit_context() { return; }
+        self.clear_response();
+        self.page = 1;
+        self.view = PAGES[1].1.iter().position(|view| *view == "Trace index").expect("Trace index view");
+        self.entity = id;
+        self.trace_cursor = 0;
+        self.trace_before = 0;
+        self.trace_content_offset = 0;
+        self.trace_offset = 0;
+        self.filter.clear();
+        self.submit(ctx, "Trace detail".into(), request("trace_detail",
+            json!({"id": self.entity, "after": 0, "before": 0})));
     }
     fn can_edit_context(&self) -> bool {
         self.busy.is_none() && self.pending.is_none() && !self.installation_open
@@ -1164,15 +1185,23 @@ impl eframe::App for Desktop {
                 }
             });
         });
+        let mut open_trace = None;
         if let Some(record) = &self.record_detail {
             let mut open = true;
+            let can_navigate = self.can_edit_context();
             egui::Window::new("Record detail").open(&mut open).show(ctx, |ui| {
                 let text = serde_json::to_string_pretty(record).unwrap_or_default();
                 if ui.button("Copy record").clicked() { ui.ctx().copy_text(text.clone()); }
+                if let Some(id) = linked_trace(record) {
+                    if ui.add_enabled(can_navigate, egui::Button::new("Open linked trace")).clicked() {
+                        open_trace = Some(id.to_owned());
+                    }
+                }
                 egui::ScrollArea::both().max_height(500.0).show(ui, |ui| { ui.label(text); });
             });
             if !open { self.record_detail = None; }
         }
+        if let Some(id) = open_trace { self.open_linked_trace(ctx, id); }
         if let Some(index) = self.detail {
             let mut open = true;
             if let Some(row) = self.rows.get(index) {
@@ -1292,6 +1321,15 @@ mod tests {
         assert!(app.operator_fields.is_empty());
         app.installation_open = true;
         assert!(!app.can_edit_context());
+    }
+    #[test]
+    fn trace_links_use_only_explicit_valid_trace_ids() {
+        assert_eq!(linked_trace(&json!({"trace_id":"trace_1-2","request_id":"different"})), Some("trace_1-2"));
+        assert_eq!(linked_trace(&json!({"request_id":"req_1"})), None);
+        for id in ["", "../config", "a/b", "a?b", "a b", "č"] {
+            assert_eq!(linked_trace(&json!({"trace_id":id})), None);
+        }
+        assert_eq!(linked_trace(&json!({"trace_id":123})), None);
     }
     #[test]
     fn response_paths_are_stable() {
