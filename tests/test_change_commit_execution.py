@@ -245,3 +245,24 @@ def test_shared_project_commit_policy_requires_exact_manifest_and_receipts(tmp_p
                                    preview_digest=preview["preview_digest"])
     assert not refused["success"]
     assert _git(tmp_path, "rev-parse", "HEAD") == parent
+
+
+def test_historical_context_benchmark_measures_real_commit_without_mutation(tmp_path):
+    from tools.benchmark_git_change_context import measure_history
+
+    _fixture(tmp_path)
+    _git(tmp_path, "commit", "-m", "change a")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    index = (tmp_path / ".git" / "index").read_bytes()
+    before = (tmp_path / "b").read_bytes()
+    result = measure_history(tmp_path, "HEAD~1", "HEAD")
+    assert result["workload"] == "real_committed_range"
+    assert result["inventory"]["changed_paths"] == 1
+    assert result["inventory"]["observed_paths"] == 1
+    assert result["inventory"]["explicitly_listed_paths"] == 1
+    assert result["inventory"]["patch_coverage_complete"]
+    assert result["estimated_tokens"]["raw"] > 0
+    assert result["estimated_tokens"]["compact_all_pages"] > 0
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert (tmp_path / ".git" / "index").read_bytes() == index
+    assert (tmp_path / "b").read_bytes() == before
