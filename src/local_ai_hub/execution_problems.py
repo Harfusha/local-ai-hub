@@ -251,13 +251,20 @@ def project_problems(
         disposition = decision["action"] if decision else "resume"
         if disposition == "defer" and not closed:
             deferred += 1
+        rejection_proof = confirmation if resolution else receipt
+        rejection_verified = bool(
+            decision and disposition == "reject" and closed
+            and getattr(rejection_proof, "owner", "") == decision["actor"]
+            and getattr(rejection_proof, "observed_at", 0.0) >= decision["observed_at"]
+        )
         if disposition == "reject":
-            if closed:
+            if rejection_verified:
                 rejected += 1
             else:
                 pending_rejection += 1
         if decision and len(disposition_preview) < 12:
-            disposition_preview.append({"id": report["id"], **decision, "verified": closed})
+            disposition_preview.append({"id": report["id"], **decision,
+                                        "verified": rejection_verified})
         if closed:
             resolved += 1
         else:
@@ -272,6 +279,7 @@ def project_problems(
             if len(preview) < 12:
                 preview.append({"id": report["id"], "title": report["title"],
                                 "criterion": criterion, "blocking": report["blocking"],
+                                **({"disposition": disposition} if decision else {}),
                                 **({"resolution_criterion": resolution,
                                     "resolution_status": ("awaiting_primary" if not primary_closed else
                                                           "awaiting_distinct_owner" if needs_handoff or (confirmed and not owner_confirmed) else
