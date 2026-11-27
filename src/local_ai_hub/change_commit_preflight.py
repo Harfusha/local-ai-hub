@@ -20,7 +20,7 @@ def revision_error(result: dict[str, Any], expected: str | None) -> str | None:
     return None
 
 
-def commit_preflight(result: dict[str, Any], paths: list[str] | None, expected: str | None) -> dict[str, Any]:
+def commit_preflight(result: dict[str, Any], paths: list[str] | None, expected: str | None, *, allow_untracked: bool = False) -> dict[str, Any]:
     if result.get("success") is not True:
         return result
     if result.get("comparison") is not None:
@@ -62,7 +62,10 @@ def commit_preflight(result: dict[str, Any], paths: list[str] | None, expected: 
         if status == "??":
             # A raw untracked content observation is not a prospective index
             # blob: attributes, filters and executable bits may change it.
-            if "untracked_requires_explicit_review" not in blockers:
+            atoms = change.get("atoms", [])
+            if allow_untracked and len(atoms) == 1 and atoms[0].get("scope") == "untracked" and atoms[0].get("content_kind") == "regular":
+                to_stage.append(path)
+            elif "untracked_requires_explicit_review" not in blockers:
                 blockers.append("untracked_requires_explicit_review")
         elif status[0] != " " and status[1] != " ":
             if "mixed_staged_unstaged_selection" not in blockers:
