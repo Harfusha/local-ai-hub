@@ -271,3 +271,51 @@ def test_python_import_policy_is_rejected_outside_changes_scope(tmp_path: Path):
     contract["slo_profile"]["verified_execution"]["inventory"]["include_python_imports"] = True
     with pytest.raises(ValueError, match="impact expansion requires"):
         compile_repository_contract(contract, str(tmp_path))
+
+
+def test_next_obligation_source_preview_is_exact_bounded_and_scope_fenced(tmp_path: Path):
+    import hashlib
+
+    from local_ai_hub.execution_source_context import obligation_source_context
+
+    source = tmp_path / "module.py"
+    source.write_text("x = 1\n" * 60, encoding="utf-8")
+    config = {"inventory": {"scope": "repository", "resources": ["module.py"]}}
+    execution = {"scope_check": {"complete": True}, "next_obligation": {
+        "resource": "module.py", "evidence_type": "source_review",
+    }}
+    kwargs = {"requested_root": str(tmp_path), "trusted_root": str(tmp_path)}
+    result = obligation_source_context(config, execution, **kwargs)
+    assert result is not None
+    assert result["text"] == "x = 1\n" * 40
+    assert result["total_lines"] == 60
+    assert result["file_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert obligation_source_context(config, execution, **{**kwargs, "requested_root": str(tmp_path.parent)}) is None
+    assert obligation_source_context(config, {**execution, "scope_check": {"complete": False}}, **kwargs) is None
+    assert obligation_source_context({"inventory": {"scope": "changes", "resources": ["module.py"]}}, execution, **kwargs) is None
+    assert obligation_source_context(config, {**execution, "next_obligation": {
+        "resource": "module.py", "evidence_type": "test"}}, **kwargs) is None
+    (tmp_path / ".local-ai.toml").write_text('exclude_paths = ["module.py"]\n', encoding="utf-8")
+    assert obligation_source_context(config, execution, **kwargs) is None
+
+
+def test_next_obligation_source_preview_rejects_symlink_and_unlisted_path(tmp_path: Path):
+    from local_ai_hub.execution_source_context import obligation_source_context
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("secret = 1\n", encoding="utf-8")
+    link = root / "module.py"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable")
+    config = {"inventory": {"scope": "repository", "resources": ["module.py"]}}
+    execution = {"scope_check": {"complete": True}, "next_obligation": {
+        "resource": "module.py", "evidence_type": "source_review",
+    }}
+    kwargs = {"requested_root": str(root), "trusted_root": str(root)}
+    assert obligation_source_context(config, execution, **kwargs) is None
+    execution["next_obligation"]["resource"] = "../outside.py"
+    assert obligation_source_context(config, execution, **kwargs) is None
