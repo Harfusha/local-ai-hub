@@ -32,6 +32,7 @@ class OpenCodeAdapter(BaseClientAdapter):
         prompt_cache_shield=True,
         tool_filter=_OPENCODE_TOOLS,
         mcp_surface="stdio",
+        compact_mcp_schemas=True,
     )
 
     def get_js_plugin_server_config(

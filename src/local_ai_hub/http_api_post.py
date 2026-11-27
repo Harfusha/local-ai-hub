@@ -255,6 +255,8 @@ class HttpPostHelpersMixin:
 
     def _async_delivery(self, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
         """Convert eligible long foreground work into an existing durable job when requested."""
+        if path == "/api/chat/completions":
+            return None
         if services_module.APP is None:
             return None
         action_by_path = {
@@ -372,7 +374,10 @@ class HttpPostHelpersMixin:
         }
         self._send(503, response)
 
-    def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+    def _send(
+        self, status: int, data: Any, *, headers: Mapping[str, str] | None = None,
+        raw_body: bytes | None = None, content_type: str = "application/json; charset=utf-8",
+    ) -> None:
         response_path = services_module.urlparse(str(getattr(self, "path", ""))).path
         if (
             isinstance(status, int)
@@ -452,7 +457,7 @@ class HttpPostHelpersMixin:
         )
         if isinstance(wire_data, dict) and "returned_tokens" in (wire_data.get("response_budget") or {}):
             wire_data = services_module._reconcile_existing_budget(wire_data) or wire_data
-        body = services_module._json_bytes(wire_data)
+        body = raw_body if isinstance(raw_body, bytes) else services_module._json_bytes(wire_data)
         if (
             response_path in {"/api/search", "/api/repo/code-index"}
             and int(status) < 400
@@ -559,7 +564,7 @@ class HttpPostHelpersMixin:
                 self.send_header("ETag", etag)
             else:
                 self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Connection", "close")
             self._common_headers()
             for name, value in (headers or {}).items():

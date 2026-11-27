@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id task_canonical_cleanup`.
-<!-- coverage-task-id: task_canonical_cleanup -->
+Reproduce with `python tools/surface_inventory.py --check --task-id task_opencode_max_integration`.
+<!-- coverage-task-id: task_opencode_max_integration -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -116,6 +116,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_canonic
 | HTTP POST | /api/bundle/export | confirmed | src/local_ai_hub/http_route_registry.py | op-21ec1373e039 |
 | HTTP POST | /api/bundle/import | confirmed | src/local_ai_hub/http_route_registry.py | op-e64c615a36e2 |
 | HTTP POST | /api/chat | confirmed | src/local_ai_hub/http_route_registry.py | op-168f9dbce8b8 |
+| HTTP POST | /api/chat/completions | confirmed | src/local_ai_hub/http_route_registry.py | op-eef1414d8141 |
 | HTTP POST | /api/code-intelligence/control | confirmed | src/local_ai_hub/http_route_registry.py | op-630137102c4b |
 | HTTP POST | /api/code-intelligence/query | confirmed | src/local_ai_hub/http_route_registry.py | op-ef992b94de5b |
 | HTTP POST | /api/code/ | confirmed | src/local_ai_hub/http_routes_post.py | op-9d31b4f0bf67 |

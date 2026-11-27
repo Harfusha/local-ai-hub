@@ -1,11 +1,75 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from .http_server_proxy import services_module
 
 
 class HTTPPostRoutesMixin:
+    def _handle_post_opencode_gateway(self, payload: Any) -> None:
+        """Run OpenAI chat requests only through Hub policy and scheduler."""
+        from .opencode_gateway import openai_sse, to_openai_completion, to_ollama_chat
+
+        app = services_module.APP
+        configured = app.config.get("models", {}) if isinstance(app.config, dict) else {}
+        role_keys = {"opencode", "general", "fast_code", "heavy_code", "reasoning", "background_code"}
+        configured_models = {
+            value.strip() for key, value in configured.items()
+            if key in role_keys and isinstance(value, str) and value.strip()
+        } if isinstance(configured, dict) else set()
+        try:
+            request, wants_stream = to_ollama_chat(payload, configured_models)
+        except (TypeError, ValueError) as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+            return
+        try:
+            installed_models = set(str(value) for value in app.runtime.installed_models())
+            if request["model"] not in installed_models:
+                self._send(400, {"success": False, "error": "model is not installed locally", "terminal": True, "retryable": False})
+                return
+        except Exception:
+            self._send(503, {"success": False, "error": "local model inventory unavailable", "terminal": True, "retryable": False})
+            return
+        options = request.setdefault("options", {})
+        if "num_ctx" not in options:
+            if request["model"].startswith("qwen3.5:") or request["model"].startswith("gemma4:"):
+                options["num_ctx"] = 131072
+            elif request["model"].startswith("qwen2.5-coder:"):
+                options["num_ctx"] = 32768
+        try:
+            result = app.services.proxy_request("/api/chat", request, source="proxy:opencode")
+            if isinstance(result, dict) and result.get("error") and result.get("done") is not True:
+                error = result.get("error")
+                response = {
+                    "success": False,
+                    "error": error[:240] if isinstance(error, str) else "Hub inference failed",
+                    "error_code": str(result.get("error_code", "hub_inference_error"))[:80],
+                    "terminal": True,
+                    "retryable": bool(result.get("retryable", False)),
+                }
+                admission = result.get("admission")
+                if isinstance(admission, dict):
+                    safe_fields = {"state", "reason", "retryable", "vram_available_bytes",
+                                   "vram_incremental_required_bytes", "queue_wait_ms"}
+                    response["admission"] = {key: admission[key] for key in safe_fields if key in admission}
+                self._send(503, response)
+                return
+            completion = to_openai_completion(result, request_id=f"chatcmpl-{uuid4().hex}")
+        except (TypeError, ValueError) as exc:
+            self._send(502, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+            return
+        except Exception:
+            self._send(502, {"success": False, "error": "Hub inference failed", "terminal": True, "retryable": False})
+            return
+        if wants_stream:
+            stream_options = payload.get("stream_options", {}) if isinstance(payload, dict) else {}
+            body = b"".join(openai_sse(completion, include_usage=stream_options.get("include_usage") is True))
+            self._send(200, completion, raw_body=body, content_type="text/event-stream; charset=utf-8",
+                       headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        else:
+            self._send(200, completion)
+
     def do_POST(self) -> None:
         path = services_module.urlparse(self.path).path
         post_route_ids = services_module.select_http_routes("POST", path)

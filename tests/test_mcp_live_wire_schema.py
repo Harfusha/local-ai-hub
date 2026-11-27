@@ -146,6 +146,23 @@ def test_stdio_handshake_publishes_all_registry_input_and_output_schemas(tmp_pat
             ), name
 
 
+def test_opencode_mcp_schema_keeps_action_enum_but_omits_large_conditional_union() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from local_ai_hub import mcp_server
+
+    adapter = SimpleNamespace(capabilities=SimpleNamespace(compact_mcp_schemas=True))
+    with patch.object(mcp_server, "_client_adapter", adapter):
+        schema = mcp_server._mcp_input_schema_for_client("local_ai_coord")
+
+    assert schema["properties"]["action"]["enum"] == list(mcp_server.operation_actions(
+        "local_ai_coord", mcp_server.FEATURES
+    ))
+    assert "allOf" not in schema
+    assert schema["additionalProperties"] is False
+    assert len(json.dumps(schema, separators=(",", ":"))) < 40000
+
+
 def _isolated_config(tmp_path: Path) -> tuple[Path, Path, int]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -153,6 +170,8 @@ def _isolated_config(tmp_path: Path) -> tuple[Path, Path, int]:
     state_dir = tmp_path / "hub-state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        "[local_ai_hub]\n"
+        "config_schema_version = 1\n"
         "[server]\n"
         'bind = "127.0.0.1"\n'
         f"port = {port}\n"

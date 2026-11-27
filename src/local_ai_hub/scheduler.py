@@ -12,15 +12,37 @@ import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .external_gpu_reservation import ExternalGpuReservationStore
 from .model_policy import ModelExecutionPolicy
+from .state_paths import configured_state_dir
 from .trace_context import observer
 
 
 _INVALID_EXTERNAL_RESERVATION = "invalid"
 _MAX_GPU_CAPACITY_SAMPLE_AGE_SECONDS = 5.0
+_EXTERNAL_GPU_RESERVATION_FILENAME = "external-gpu-reservation"
+
+
+def _external_gpu_reservation_path(config: Mapping[str, Any]) -> Path:
+    scheduler_cfg = config.get("scheduler", {})
+    scheduler_cfg = scheduler_cfg if isinstance(scheduler_cfg, Mapping) else {}
+    raw_shared_path = scheduler_cfg.get("external_gpu_reservation_path")
+    if raw_shared_path is None or raw_shared_path == "":
+        return configured_state_dir(config) / _EXTERNAL_GPU_RESERVATION_FILENAME
+    if not isinstance(raw_shared_path, (str, os.PathLike)) or isinstance(raw_shared_path, bool):
+        raise ValueError("scheduler.external_gpu_reservation_path must be an absolute local path")
+    path = Path(raw_shared_path).expanduser()
+    if (not path.is_absolute() or path.name != _EXTERNAL_GPU_RESERVATION_FILENAME
+            or path.drive.startswith("\\\\") or not path.parent.is_dir()):
+        raise ValueError("scheduler.external_gpu_reservation_path must name a fence under an existing local directory")
+    for entry in (path, *path.parents):
+        is_junction = getattr(entry, "is_junction", None)
+        if entry.is_symlink() or (callable(is_junction) and is_junction()):
+            raise ValueError("scheduler.external_gpu_reservation_path cannot traverse a link or junction")
+    return path.resolve()
 
 
 def _gpu_telemetry_freshness_reason(resource: Mapping[str, Any]) -> str | None:
@@ -311,13 +333,17 @@ class AffinityScheduler:
         self._foreground_preempt_hook: Callable[[], bool | None] | None = None
         self._foreground_preempting = False
         self._background_gpu_lease = False
-        server_cfg = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
-        raw_state_dir = server_cfg.get("state_dir")
         self._external_gpu_path = None
         self._external_gpu_store = None
-        if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip():
-            from .state_paths import configured_state_dir
-            self._external_gpu_path = configured_state_dir(config) / "external-gpu-reservation"
+        server_cfg = config.get("server", {}) if isinstance(config, Mapping) else {}
+        scheduler_cfg = config.get("scheduler", {}) if isinstance(config, Mapping) else {}
+        has_state_dir = isinstance(server_cfg, Mapping) and bool(server_cfg.get("state_dir"))
+        has_shared_reservation_path = (
+            isinstance(scheduler_cfg, Mapping)
+            and scheduler_cfg.get("external_gpu_reservation_path") not in (None, "")
+        )
+        if has_state_dir or has_shared_reservation_path:
+            self._external_gpu_path = _external_gpu_reservation_path(config)
             self._external_gpu_store = ExternalGpuReservationStore(self._external_gpu_path)
         self._external_gpu_token = _read_external_reservation(self._external_gpu_path) if self._external_gpu_path else None
         self._external_gpu_owned = False

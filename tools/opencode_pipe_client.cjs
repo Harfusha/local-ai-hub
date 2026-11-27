@@ -3,13 +3,14 @@
 // Experimental AppContainer-local relay. The host pipe listener and the Hub
 // router remain authoritative; this module does not provide isolation alone.
 const net = require("node:net")
+const fs = require("node:fs")
 
 const MAX_REQUEST = 4 * 1024 * 1024 + 65536
 const MAX_RESPONSE = 64 * 1024 * 1024
 const MAX_FRAME = 65536
 
 function validatePipeName(name) {
-  if (typeof name !== "string" || !/^\\\\\.\\pipe\\lah-opencode-[a-f0-9]{32}$/.test(name)) throw new Error("invalid local pipe name")
+  if (typeof name !== "string" || !/^\\\\\.\\pipe\\(?:LOCAL\\)?lah-opencode-[a-f0-9]{32}$/.test(name)) throw new Error("invalid local pipe name")
   return name
 }
 
@@ -122,13 +123,21 @@ function createBridge({ secret, connectPipe, timeoutMs = 120000 }) {
   return server
 }
 
-if (require.main === module) {
+function runCli() {
   const name = validatePipeName(process.env.LOCAL_AI_PIPE_NAME)
   const encoded = process.env.LOCAL_AI_PIPE_SECRET
   if (typeof encoded !== "string" || !/^[a-f0-9]{64}$/.test(encoded)) throw new Error("invalid bridge secret")
   delete process.env.LOCAL_AI_PIPE_SECRET
+  const portFile = process.env.LOCAL_AI_PIPE_PORT_FILE
+  delete process.env.LOCAL_AI_PIPE_PORT_FILE
   const server = createBridge({ secret: Buffer.from(encoded, "hex"), connectPipe: () => net.connect(name) })
-  server.listen(0, "127.0.0.1", () => process.stdout.write(JSON.stringify({ port: server.address().port }) + "\n"))
+  server.listen(0, "127.0.0.1", () => {
+    const port = server.address().port
+    if (portFile) fs.writeFileSync(portFile, String(port), { encoding: "ascii", flag: "wx" })
+    process.stdout.write(JSON.stringify({ port }) + "\n")
+  })
 }
 
-module.exports = { createBridge, validatePipeName }
+if (require.main === module) runCli()
+
+module.exports = { createBridge, validatePipeName, runCli }

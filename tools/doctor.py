@@ -81,7 +81,7 @@ except Exception:
     telemetry_report = {}
 models = cfg.get("models", {})
 configured_generation: list[str] = []
-for key in ("background_code", "fast_code", "heavy_code", "reasoning", "general"):
+for key in ("background_code", "fast_code", "heavy_code", "reasoning", "general", "opencode"):
     model = str(models.get(key, ""))
     if model and model not in configured_generation:
         configured_generation.append(model)

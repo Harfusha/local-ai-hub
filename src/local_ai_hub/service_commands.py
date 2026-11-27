@@ -408,9 +408,12 @@ class ServiceCommandMixin:
             input_tokens = estimate_tokens(json_dumps(promptish, ensure_ascii=False, default=str) if not isinstance(promptish, str) else promptish)
             opts = clean.get("options", {}) if isinstance(clean.get("options"), dict) else {}
             output_tokens = int(opts.get("num_predict", 0) or 0)
+            vram_free = self._available_vram_mb() if hasattr(self, "_available_vram_mb") else None
+            proxy_role = "opencode" if "opencode" in source else "proxy"
             clean, proxy_profile = self.model_policy.apply_payload(
-                model, clean, role="proxy", input_tokens=input_tokens, output_tokens=output_tokens,
+                model, clean, role=proxy_role, input_tokens=input_tokens, output_tokens=output_tokens,
                 preserve_explicit_think=True,
+                vram_free_mb=vram_free,
             )
             # Pre-flight context compaction & ceiling clamp
             if proxy_profile is not None and input_tokens > proxy_profile.prompt_budget_tokens:
