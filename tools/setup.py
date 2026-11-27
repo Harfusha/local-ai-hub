@@ -3482,7 +3482,10 @@ def copilot_hook_path() -> Path:
 
 
 def opencode_config_dirs() -> list[Path]:
-    """Return OpenCode's canonical user config root or its explicit override."""
+    """Return OpenCode's user config root, honoring XDG isolation first."""
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_config_home:
+        return [Path(xdg_config_home).expanduser() / "opencode"]
     configured = os.environ.get("OPENCODE_HOME", "").strip()
     if configured:
         return [Path(configured).expanduser()]
