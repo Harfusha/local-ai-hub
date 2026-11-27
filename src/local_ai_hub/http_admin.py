@@ -556,7 +556,9 @@ class HTTPAdminMixin:
             req = services_module.urllib.request.Request(f"{ollama_url}/api/tags")
             with services_module.urllib.request.urlopen(req, timeout=3) as resp:
                 tags_data = services_module.json.loads(resp.read().decode("utf-8"))
-            models = tags_data.get("models", [])
+            models = tags_data.get("models")
+            if not isinstance(models, list) or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"] for item in models):
+                return {"success": False, "error": "Invalid Ollama model inventory", "models": []}
             running: dict[str, services_module.Any] = {}
             running_status_available = False
             try:
@@ -585,7 +587,9 @@ class HTTPAdminMixin:
                     "size_gb": round(m.get("size", 0) / (1024**3), 2),
                     "modified_at": m.get("modified_at", ""),
                     "running": is_running,
-                    "vram_mb": round(run_info.get("size_vram", 0) / (1024**2), 1) if is_running else 0,
+                    "vram_mb": (round(run_info["size_vram"] / (1024**2), 1)
+                                if is_running and type(run_info.get("size_vram")) in (int, float)
+                                else 0 if is_running is False else None),
                 })
             return {"success": True, "models": enriched, "count": len(enriched),
                     "running_status_available": running_status_available}
