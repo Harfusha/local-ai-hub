@@ -300,13 +300,20 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "changes":
-        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect"} or args.root is None:
+        if args.sub_arg not in {None, "summary", "details", "semantic", "preflight", "pr", "release", "artifact", "delta", "commit-staged", "commit-inspect", "stage-preview", "stage-apply"} or args.root is None:
             parser.error("changes requires --root and a supported subcommand")
         if args.sub_arg == "commit-staged":
             if not args.apply or args.dry_run or args.base or not all((args.expected_revision, args.expected_tree, args.commit_message, args.changed_path)):
                 parser.error("commit-staged requires --apply, --expected-revision, --expected-tree, --commit-message and exact --changed-path values")
+        elif args.sub_arg in {"stage-preview", "stage-apply"}:
+            if args.base or not args.expected_revision or not args.changed_path:
+                parser.error("staging requires exact --expected-revision and --changed-path values")
+            if args.sub_arg == "stage-apply" and (not args.apply or args.dry_run or not args.expected_tree):
+                parser.error("stage-apply requires --apply and --expected-tree from preview")
+            if args.sub_arg == "stage-preview" and args.apply:
+                parser.error("stage-preview cannot apply")
         elif args.apply:
-            parser.error("only commit-staged accepts --apply")
+            parser.error("only commit-staged or stage-apply accepts --apply")
         if args.sub_arg == "commit-inspect" and not args.operation_id:
             parser.error("commit-inspect requires --operation-id")
         requested_mode = None
@@ -367,6 +374,21 @@ def main() -> int:
         requested_mode = None
 
     if args.action == "changes":
+        if args.sub_arg in {"stage-preview", "stage-apply"}:
+            from local_ai_hub.change_stage_execution import stage_selection
+            from local_ai_hub.deterministic import DeterministicEngine
+            from local_ai_hub.leases import ScopeLeaseStore
+            from local_ai_hub.state_paths import configured_state_dir
+
+            config = load_config(_config_arg(args.config))
+            result = stage_selection(
+                config, DeterministicEngine(config), ScopeLeaseStore(configured_state_dir(config)),
+                root=str(args.root.resolve()), paths=args.changed_path,
+                expected_revision=args.expected_revision, expected_tree=args.expected_tree,
+                apply=args.sub_arg == "stage-apply",
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("success") is True and not result.get("cleanup_unconfirmed") else 1
         if args.sub_arg == "commit-inspect":
             from local_ai_hub.change_commit_journal import CommitJournal
             from local_ai_hub.repository_scope import authorized_repository_root

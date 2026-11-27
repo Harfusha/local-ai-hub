@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import subprocess
+from unittest.mock import MagicMock
+
+from local_ai_hub.change_stage_execution import stage_selection
+
+
+def _git(root, *args):
+    return subprocess.check_output(["git", *args], cwd=root).strip().decode()
+
+
+def _fixture(root):
+    _git(root, "init")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / "a").write_text("old")
+    (root / "b").write_text("old")
+    _git(root, "add", "a", "b")
+    _git(root, "commit", "-m", "base")
+    (root / "a").write_text("new")
+    (root / "b").write_text("unrelated")
+    engine = MagicMock()
+    engine.split_changes.return_value = {
+        "success": True, "observed_change_set_id": "a" * 64, "git_visible_observation_complete": True,
+        "comparison": None, "git_snapshot_metadata": {"head": _git(root, "rev-parse", "HEAD")},
+        "clusters": [{"group_key": "a", "files": ["a"], "changes": [{"path": "a", "status": " M"}]},
+                     {"group_key": "b", "files": ["b"], "changes": [{"path": "b", "status": " M"}]}],
+    }
+    leases = MagicMock()
+    leases.claim.return_value = {"success": True, "lease_id": "lease"}
+    leases.renew.return_value = {"success": True}
+    leases.release.return_value = {"success": True}
+    return engine, leases
+
+
+def test_preview_and_apply_exact_stage(tmp_path):
+    engine, leases = _fixture(tmp_path)
+    index = tmp_path / ".git" / "index"
+    before = index.read_bytes()
+    kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64)
+    preview = stage_selection({}, engine, leases, **kwargs)
+    assert preview["success"], preview
+    assert not preview["applied"]
+    assert index.read_bytes() == before
+    tree = preview["prospective_tree_oid"]
+    denied = stage_selection({}, engine, leases, **kwargs, expected_tree="b" * len(tree), apply=True)
+    assert not denied["success"]
+    assert index.read_bytes() == before
+    result = stage_selection({}, engine, leases, **kwargs, expected_tree=tree, apply=True)
+    assert result["success"], result
+    assert result["applied"]
+    assert _git(tmp_path, "diff", "--cached", "--name-only") == "a"
+    assert _git(tmp_path, "diff", "--name-only") == "b"
+    assert _git(tmp_path, "write-tree") == tree
+    assert not (tmp_path / ".git" / "index.lock").exists()
+
+
+def test_stage_refuses_filters_and_external_lock(tmp_path):
+    engine, leases = _fixture(tmp_path)
+    kwargs = dict(root=str(tmp_path.resolve()), paths=["a"], expected_revision="a" * 64)
+    _git(tmp_path, "config", "filter.test.clean", "false")
+    assert not stage_selection({}, engine, leases, **kwargs)["success"]
+    _git(tmp_path, "config", "--unset", "filter.test.clean")
+    lock = tmp_path / ".git" / "index.lock"
+    lock.write_text("foreign")
+    assert not stage_selection({}, engine, leases, **kwargs)["success"]
+    assert lock.read_text() == "foreign"
