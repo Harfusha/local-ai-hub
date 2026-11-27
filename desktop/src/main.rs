@@ -230,6 +230,9 @@ struct Desktop {
     memory_scope_id: String,
     memory_record_id: String,
     memory_query: String,
+    memory_search_key: String,
+    memory_status: String,
+    memory_limit: i64,
     lease_owner: String,
     task_scope: String,
     task_risk: String,
@@ -313,7 +316,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), settings_draft: settings::Draft::default(), metrics_period: "process".into(), log_lines: 250, auto_log: false, last_log: Instant::now(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), memory_record_id: String::new(), memory_query: String::new(), memory_search_key: String::new(), memory_status: String::new(), memory_limit: 100, lease_owner: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), plan_draft: None, description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, trace_offset: 0, trace_kind: String::new(), trace_state: String::new(), trace_action: String::new(), trace_min_ms: 0, request_status: "all".into(), request_action: String::new(), request_sort: "created_at".into(), request_desc: true, trace_before: 0, trace_content_field: "request".into(), trace_content_offset: 0, task_offset: 0, task_back: Vec::new(), task_limit: 100, task_status: String::new(), task_query: String::new(), task_target: "active".into(), history_cursor: 0, telemetry_before: 0, telemetry_limit: 100, endpoint_scope: "all".into(), endpoint_sort: "calls".into(), endpoint_desc: true, stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), plan_status: "planned".into(), plan_query: String::new(), plan_lifecycle: String::new(), plan_limit: 100, board_plan_filter: String::new(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -478,6 +481,8 @@ impl Desktop {
         self.memory_key.clear();
         self.memory_value.clear();
         self.memory_query.clear();
+        self.memory_search_key.clear();
+        self.memory_status.clear();
         self.goal.clear();
         self.criteria.clear();
         self.reason.clear();
@@ -549,7 +554,19 @@ impl Desktop {
         };
         if let Some(field) = field { args[field] = json!(self.memory_scope_id); }
         match op {
-            "memory_find" => { args["query"] = json!(self.memory_query); }
+            "memory_find" => {
+                args["query"] = json!(self.memory_query);
+                args["key"] = json!(self.memory_search_key);
+                args["status"] = json!(self.memory_status);
+                args["limit"] = json!(self.memory_limit);
+            }
+            "memory_get" | "memory_quarantine" => {
+                args["record_id"] = json!(self.memory_record_id);
+                if op == "memory_quarantine" {
+                    args["reason"] = json!(self.reason);
+                    args["confirmed"] = json!(true);
+                }
+            }
             "memory_record" => {
                 args["key"] = json!(self.memory_key);
                 args["value"] = json!(self.memory_value);
@@ -752,17 +769,32 @@ impl Desktop {
                     });
                     if previous_scope != self.memory_scope {
                         self.memory_scope_id.clear(); self.memory_record_id.clear(); self.memory_key.clear();
-                        self.memory_value.clear(); self.clear_response();
+                        self.memory_value.clear(); self.reason.clear(); self.clear_response();
                     }
                     if matches!(self.memory_scope.as_str(), "task" | "session" | "clone" | "worktree" | "branch") {
                         ui.label(format!("Exact {} identity", self.memory_scope));
                         if ui.text_edit_singleline(&mut self.memory_scope_id).changed() {
-                            self.memory_record_id.clear(); self.memory_key.clear(); self.memory_value.clear(); self.clear_response();
+                            self.memory_record_id.clear(); self.memory_key.clear(); self.memory_value.clear(); self.reason.clear(); self.clear_response();
                         }
                     }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Server search");
-                        ui.text_edit_singleline(&mut self.memory_query);
+                        let query_changed = ui.text_edit_singleline(&mut self.memory_query).changed();
+                        ui.label("Exact key");
+                        let key_changed = ui.text_edit_singleline(&mut self.memory_search_key).changed();
+                        let previous_status = self.memory_status.clone();
+                        let previous_limit = self.memory_limit;
+                        egui::ComboBox::from_id_salt("memory_status").selected_text(if self.memory_status.is_empty() { "Any status" } else { &self.memory_status }).show_ui(ui, |ui| {
+                            for status in ["", "candidate", "active", "confirmed", "quarantined", "superseded", "rejected", "stale"] {
+                                ui.selectable_value(&mut self.memory_status, status.into(), if status.is_empty() { "Any status" } else { status });
+                            }
+                        });
+                        egui::ComboBox::from_id_salt("memory_limit").selected_text(format!("Up to {}", self.memory_limit)).show_ui(ui, |ui| {
+                            for limit in [25, 50, 100] { ui.selectable_value(&mut self.memory_limit, limit, format!("Up to {limit}")); }
+                        });
+                        if query_changed || key_changed || previous_status != self.memory_status || previous_limit != self.memory_limit {
+                            self.memory_record_id.clear(); self.reason.clear(); self.clear_response();
+                        }
                         if ui.button("Search memory").clicked() {
                             self.memory_record_id.clear(); self.clear_response(); self.refresh(ctx);
                         }
@@ -773,13 +805,25 @@ impl Desktop {
                     if ui.button("Record memory").clicked() {
                         self.confirm("Record memory", request("memory_record", self.memory_args("memory_record")));
                     }
-                    ui.label("Delete exact record ID (select a row or enter the ID)");
-                    ui.text_edit_singleline(&mut self.memory_record_id);
-                    if ui.add_enabled(!self.memory_record_id.trim().is_empty() && self.memory_scope != "worktree",
-                        egui::Button::new("Delete memory record")).clicked() {
-                        self.confirm("Delete exact scoped memory record", request("memory_delete", self.memory_args("memory_delete")));
+                    ui.label("Exact record ID (select a row or enter the ID)");
+                    if ui.text_edit_singleline(&mut self.memory_record_id).changed() { self.reason.clear(); self.clear_response(); }
+                    let selected = !self.memory_record_id.trim().is_empty();
+                    if ui.add_enabled(selected, egui::Button::new("Load exact memory record")).clicked() {
+                        self.submit(ctx, "Memory detail".into(), request("memory_get", self.memory_args("memory_get")));
                     }
-                    if self.memory_scope == "worktree" { ui.small("Worktree deletion requires an independently verified scope and is not supported here."); }
+                    ui.label("Quarantine reason");
+                    ui.text_edit_multiline(&mut self.reason);
+                    ui.horizontal_wrapped(|ui| {
+                        let mutable = selected && self.memory_scope != "worktree";
+                        if ui.add_enabled(mutable && !self.reason.trim().is_empty(), egui::Button::new("Quarantine record")).clicked() {
+                            self.confirm("Quarantine exact scoped memory record", request("memory_quarantine", self.memory_args("memory_quarantine")));
+                        }
+                        if ui.add_enabled(mutable, egui::Button::new("Delete memory record")).clicked() {
+                            self.confirm("Delete exact scoped memory record", request("memory_delete", self.memory_args("memory_delete")));
+                        }
+                    });
+                    ui.small("Results are bounded, not an exhaustive inventory. Global scope is shared; select it explicitly. Compaction and global promotion are not authorized by this HTTP endpoint.");
+                    if self.memory_scope == "worktree" { ui.small("Worktree mutations require an independently verified scope and are not supported here."); }
                     return;
                 }
                 if self.view == 2 {
