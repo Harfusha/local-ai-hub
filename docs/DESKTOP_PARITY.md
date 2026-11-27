@@ -5,12 +5,12 @@ requested feature/verification matrix, not a second project plan. The authoritat
 work plan is `.local-ai-hub/plans/plan_pr10_native_desktop.plan.json` and is
 maintained through the Local AI Hub planner API.
 
-## CI and runtime evidence for code commit ac120096
+## CI and runtime evidence for code commit 50b0752f
 
-- Snapshot: 2026-11-27. At inspection, local `HEAD` and `origin/feat/native-desktop-hub` were `ac12009652f136b40f830f955ad21f6c4d7d157a`; current `origin/master` at `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc` was an ancestor. A later documentation/planner commit may supersede these workflow runs.
-- Native desktop run [46066492598](https://github.com/Harfusha/local-ai-hub/actions/runs/46066492598) is in progress and main CI run [46066492293](https://github.com/Harfusha/local-ai-hub/actions/runs/46066492293) is queued, both for exact head `ac120096`. Neither is a completed CI receipt.
+- Snapshot: 2026-11-27. Local `HEAD` and `origin/feat/native-desktop-hub` are `50b0752f429ecd7f1b4df74ac9c68d0294057c8f`; current `origin/master` at `8fa0dbf3c411618bb1b01ea86f007ea400e52fbc` is an ancestor.
+- Native desktop run [46067339504](https://github.com/Harfusha/local-ai-hub/actions/runs/46067339504) and main CI run [46067339499](https://github.com/Harfusha/local-ai-hub/actions/runs/46067339499) are pending for exact head `50b0752f`. Neither is a completed CI receipt.
 - A prior Windows CI runtime failed before first window with `Wgpu(NoSuitableAdapterFound)`. A bounded local Windows smoke at `7471300c` did open a visible `Local AI Hub` window, report a nonzero window handle, and exit normally; no UI clicks were tested. GPU-capable runner acceptance and interactive workflows remain unverified.
-- Local checks for the `ac120096` source: all 43 locked Rust tests, Clippy with warnings denied, `cargo fmt --check`, `git diff --check`, and locked desktop build passed. Focused Python task-create contract tests passed 3/3. These do not replace CI or interactive acceptance.
+- Local checks for `50b0752f`: all 44 locked Rust tests, Clippy with warnings denied, `cargo fmt --check`, `git diff --check`, and locked desktop build passed. Focused Python task-create contract tests passed 3/3. These do not replace CI or interactive acceptance.
 - Overview shows queued/running workload counts when reported, labels server totals versus returned rows, and preserves unavailable values. Agent OS task creation serializes the canonical nested contract, line-based arrays, optional session context, and validated SLO object; invalid SLO JSON is rejected before confirmation. The mutation confirmation lists the exact nested contract and session scope. Full UI/CLI parity, platform/runtime and lifecycle acceptance, accessibility, security/performance audit, signed installer and release acceptance remain open. Keep the PR draft; no merge-readiness claim is made.
 
 ## Earlier local audit snapshot — 2026-11-27, before commit 6a2351f1

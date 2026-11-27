@@ -57,7 +57,7 @@
       "depends_on": [],
       "description": "Deliver every requirement in the supplied goal document, sections 1–35, including branch synchronization, complete native UI and CLI parity, system and workload views, Agent OS and knowledge workflows, project/model/telemetry features, security, performance, cross-platform runtime, installation/updater, documentation, complete validation, independent audit, and actual PR merge/post-merge verification. No runtime backward compatibility or legacy behavior; the only exception is one-time migration during update.",
       "kind": "code",
-      "next_action": "Agent OS task creation now uses canonical contract payload and its confirmation lists every nested contract field plus session scope. Full Rust suite 44/44, Clippy -D warnings, fmt/diff checks passed; locked build and Python task-create contract tests 3/3 also passed. Commit/push updated code and parity evidence; then continue remaining sections 1–35. CI for ac120096 is in progress and does not include the confirmation fix.",
+      "next_action": "Pushed 50b0752f with canonical Agent OS task payload and exact nested-contract confirmation. Local Rust tests 44/44, Clippy -D warnings, fmt, diff check, and locked build passed; focused Python task-create tests 3/3. CI #1299 and Native desktop #422 are pending for 50b0752f. Parity register refreshed. Continue remaining sections 1–35; keep PR draft until exact-head gates pass.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
