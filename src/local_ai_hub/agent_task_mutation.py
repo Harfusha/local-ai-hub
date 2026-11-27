@@ -54,7 +54,9 @@ class TaskMutationMixin:
             command = checkpoint.state_data[GRAPH_REVISION_KEY]
             if (type(command) is not dict or set(command) != {"expected_revision", "reason", "patch"}
                     or type(command["patch"]) is not dict
-                    or checkpoint != TaskCheckpoint(state_data={GRAPH_REVISION_KEY: command})
+                    or checkpoint.affected_paths or checkpoint.evidence_ids or checkpoint.blockers
+                    or set(checkpoint.state_data) != {GRAPH_REVISION_KEY}
+                    or (checkpoint.phase, checkpoint.next_action) not in (("", ""), ("graph_revision", "reload_contract"))
                     or capture_files or _allow_server_memory_refresh or idempotency_key):
                 raise ValueError("graph revision requires a standalone checkpoint command and revision CAS")
             return self.revise_contract(
