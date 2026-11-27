@@ -68,6 +68,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${PLUGIN_ROOT}/hooks/codex_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

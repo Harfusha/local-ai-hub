@@ -156,7 +156,7 @@ class ManagedHostInstallation:
             handler["name"] = "local-ai-hub-planner"
         events = ["SessionStart", HOSTS[self.host][1]]
         if self.host == "codex":
-            events.extend(("SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse"))
+            events.extend(("SubagentStart", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"))
         registrations: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             group: dict[str, Any] = {"hooks": [copy.deepcopy(handler)]}
@@ -544,6 +544,87 @@ def _fetch_hub_task_summary(root_path: str | Path | None) -> str:
     return ""
 
 
+def _verified_execution_stop(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """One opt-in continuation per host stop chain; never block on uncertainty.
+
+    The Hub authorizes scoped reads. Only a unique, active task in the same
+    host session is eligible. No assistant text or task-controlled strings
+    are injected into the host continuation prompt.
+    """
+    if payload.get("stop_hook_active") is not False:
+        return {}
+    if payload.get("background_tasks") or payload.get("session_crons"):
+        return {}
+    session = payload.get("session_id")
+    if not isinstance(session, str) or not session:
+        return {}
+    client = None
+    try:
+        from local_ai_hub.client import HubClient
+
+        client = HubClient(config_path=os.environ.get("LOCAL_AI_CONFIG") or None, auto_start=False)
+        if not client._online(timeout=0.25):
+            return {}
+        listed = client.post("/api/coord/task_list", {
+            "root": str(root), "status": "active", "limit": 20,
+        }, timeout=0.75)
+        if listed.get("success") is not True or listed.get("query_truncated"):
+            return {}
+        rows = listed.get("tasks")
+        if not isinstance(rows, list) or len(rows) >= 20:
+            return {}
+        matches = [
+            task for task in rows if isinstance(task, dict)
+            and isinstance(task.get("context"), dict)
+            and task["context"].get("session_id") == session
+            and task.get("status") == "active" and task.get("stale") is False
+            and task.get("repo_root") == str(root)
+        ]
+        if len(matches) != 1:
+            return {}
+        task = matches[0]
+        config = task.get("contract", {}).get("slo_profile", {}).get("verified_execution", {})
+        if not isinstance(config, dict) or config.get("host_continuation") is not True:
+            return {}
+        if task.get("checkpoint", {}).get("blockers"):
+            return {}
+        task_id = task.get("task_id")
+        if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", task_id):
+            return {}
+        result = client.post("/api/agent-state/verification", {
+            "action": "completion", "root": str(root), "task_id": task_id,
+        }, timeout=1.5)
+        completion = result.get("completion")
+        if result.get("success") is not True or not isinstance(completion, dict):
+            return {}
+        execution = completion.get("execution")
+        if not isinstance(execution, dict) or execution.get("checkpoint_blocker_count") != 0:
+            return {}
+        scope = execution.get("scope_check")
+        if scope and (not isinstance(scope, dict) or scope.get("complete") is not True):
+            return {}
+        if execution.get("progress", {}).get("status") == "no_recent_verified_evidence":
+            return {}
+        if execution.get("ready_for_completion_attempt") is True and completion.get("complete") is True:
+            reason = ("Local AI Hub has current verification evidence for the active session task. "
+                      "Recheck it and complete through the authoritative task gate if appropriate.")
+        elif completion.get("complete") is False and isinstance(execution.get("next_obligation"), dict):
+            reason = ("Local AI Hub reports outstanding mandatory work in the active session task. "
+                      "Call verify_completion and continue with the next obligation, or persist a genuine blocker.")
+        else:
+            return {}
+        return {"decision": "block", "reason": reason}
+    except Exception:
+        # Hook transport failure is not authorization to continue or prevent exit.
+        return {}
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
 def _is_repository_source_path(path: Path) -> bool:
     return path.suffix.lower() in REPO_SOURCE_SUFFIXES
 
@@ -913,8 +994,12 @@ def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[st
     if host in {"codex", "claude"}:
         valid_events.add("SubagentStart")
         valid_events.add("PermissionRequest")
+        valid_events.add("Stop")
     if event not in valid_events:
         raise ValueError("unsupported hook event")
+
+    if host in {"codex", "claude"} and event == "Stop":
+        return _verified_execution_stop(root, payload)
 
     if host in {"codex", "claude"} and event == "SessionStart":
         _trigger_repo_warmup(Path(cwd))

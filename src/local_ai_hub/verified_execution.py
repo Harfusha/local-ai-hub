@@ -153,7 +153,7 @@ def expand_declared_inventory(
 
 def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     """Validate contract metadata. Missing metadata means a mandatory independent unit."""
-    if type(raw) is not dict or set(raw) - {"version", "profile", "units", "required_dimensions", "inventory"}:
+    if type(raw) is not dict or set(raw) - {"version", "profile", "units", "required_dimensions", "inventory", "host_continuation"}:
         raise ValueError("invalid verified_execution contract")
     expanded, raw = expand_declared_inventory(criteria, raw)
     if tuple(criteria) != expanded:
@@ -165,6 +165,9 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     for criterion in criteria:
         _canonical(criterion, "criterion")
     profile = _canonical(raw.get("profile", "custom"), "profile", 64)
+    host_continuation = raw.get("host_continuation", False)
+    if type(host_continuation) is not bool:
+        raise ValueError("host_continuation must be a boolean")
     supplied = raw.get("units", {})
     if type(supplied) is not dict or set(supplied) - set(criteria):
         raise ValueError("execution units must refer to exact acceptance criteria")
@@ -203,6 +206,8 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
     normalized = {"version": 1, "profile": profile, "units": units, "required_dimensions": list(dimensions)}
     if "inventory" in raw:
         normalized["inventory"] = raw["inventory"]
+    if host_continuation:
+        normalized["host_continuation"] = True
     return normalized
 
 

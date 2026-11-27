@@ -89,6 +89,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/unit/test_verified_execution.py
+          tests/unit/test_verified_execution_host_stop.py
           tests/unit/test_execution_inventory.py
           tests/unit/test_execution_problems.py
           tests/unit/test_plan_execution.py

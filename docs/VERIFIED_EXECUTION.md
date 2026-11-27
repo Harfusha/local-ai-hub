@@ -227,6 +227,23 @@ reports. Tasks → Plan execution requests the existing read-only plan
 validation projection. Neither view changes task state or treats a ready
 preview as a completed task. The retired web dashboard is not required.
 
+## Opt-in host continuation
+
+Set `host_continuation: true` in the verified execution contract to permit
+one bounded follow-up at a natural Stop event in Codex or Claude Code
+with the managed hook installed and trusted. The hook uses authenticated
+Hub reads, requires one exact active non-stale task in the same host session
+and repository, and rechecks the canonical verification preview. It never
+injects arbitrary task text into the continuation prompt, starts the Hub,
+or blocks if status is unavailable, the scope drifted, the task is blocked,
+evidence age is excessive, background work exists, or the host is already
+continuing from a stop hook. Normal user interrupts remain host-owned.
+Other hosts retain the durable completion gate and advisory guidance.
+
+Host contracts: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Claude Code hooks](https://code.claude.com/docs/en/hooks). Native host
+acceptance is still required; hook registration is not proof of enforcement.
+
 ## Agent behavior
 
 Define measurable criteria for the intended scope. Use repository inventory

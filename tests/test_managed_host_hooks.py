@@ -40,7 +40,7 @@ def test_registration_real_schema_preserves_custom_and_rollback(tmp_path, host, 
     if host == "codex":
         assert set(config["hooks"]) == {
             "SessionStart", "UserPromptSubmit", "SubagentStart", "PreToolUse",
-            "PermissionRequest", "PostToolUse",
+            "PermissionRequest", "PostToolUse", "Stop",
         }
         assert config["hooks"]["PermissionRequest"][0]["matcher"] == "Bash|apply_patch"
     assert manager.apply(expected_revision=manager.preview()["revision"])["changed"] is False
