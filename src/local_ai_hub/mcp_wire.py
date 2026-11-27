@@ -815,6 +815,16 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
     # Full telemetry capture is internal. It must not enable diagnostics on
     # ordinary MCP responses; only explicit agent-output diagnostics do that.
     safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
+    if isinstance(safe, dict):
+        if safe.get("success") is False and isinstance(structured.get("request_id"), str):
+            safe["request_id"] = structured["request_id"][:160]
+        # Explicit context quotas carry public recovery/budget metadata. The
+        # original wire already fit; restoring these fields cannot enlarge it.
+        if (arguments.get("action") == "context_compile" and name == "local_ai_coord"
+                and type(arguments.get("max_response_tokens")) is int
+                and arguments["max_response_tokens"] > 0
+                and isinstance(structured.get("response_budget"), dict)):
+            safe["response_budget"] = services_module.copy.deepcopy(structured["response_budget"])
     if safe == structured:
         return contents, structured
     try:
