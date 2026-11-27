@@ -1832,8 +1832,11 @@ class VerificationStore:
         rows = retry_busy(_fetch_receipts, retries=5, base_delay_seconds=0.02)
 
         latest_by_criterion: dict[str, VerificationReceipt] = {}
+        recent_receipts: list[VerificationReceipt] = []
         for row in rows:
             r = _stored_receipt(row)
+            if len(recent_receipts) < 128:
+                recent_receipts.append(r)
             if r.criterion not in latest_by_criterion:
                 latest_by_criterion[r.criterion] = r
 
@@ -1912,7 +1915,7 @@ class VerificationStore:
                     audit = {}
 
         execution: dict[str, Any] = {}
-        from .verified_execution import EXECUTION_KEY, evidence_progress, execution_projection
+        from .verified_execution import EXECUTION_KEY, consecutive_failed_verifications, evidence_progress, execution_projection
 
         if task_state is not None and EXECUTION_KEY in task_state.contract.slo_profile:
             from .execution_problems import PROBLEM_STATE_KEY, project_problems
@@ -1967,7 +1970,14 @@ class VerificationStore:
             if problems["blocking_open"]:
                 execution["ready_for_completion_attempt"] = False
             is_complete = is_complete and not task_state.checkpoint.blockers and not problems["blocking_open"]
+            next_obligation = execution.get("next_obligation")
+            repeated_failures = consecutive_failed_verifications(
+                recent_receipts, criterion=next_obligation["criterion"], now=current_time,
+                repository_revision=expected_revision, mutation_generation=expected_generation,
+                valid_owners=valid_owners,
+            ) if isinstance(next_obligation, dict) else 0
             execution["progress"] = evidence_progress(
+                repeated_failure_count=repeated_failures,
                 created_at=task_state.created_at, now=current_time,
                 active=task_state.status.value in {"active", "verifying"}, complete=is_complete,
                 observed_receipt_times=[receipt.observed_at for receipt in visible_receipts
