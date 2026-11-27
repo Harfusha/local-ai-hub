@@ -643,7 +643,8 @@ def _local_ai_repo_impl(
                           "draft_summary", "summary_kind", "semantic_group_proposals", "semantic_group_scope",
                           "semantic_group_proposals_authoritative", "artifact_id", "artifact_kind", "artifact_status", "artifact_bytes", "baseline_stored", "previous_observed_change_set_id", "changed_group_count",
                           "unchanged_content_group_count", "removed_group_count", "removed_group_keys",
-                          "removed_group_keys_omitted"])
+                          "removed_group_keys_omitted", "indexed_impact", "watcher_context", "broker_postimage_context",
+                          "content_changed_group_count", "dependency_context_only_changed_group_count"])
     if action == "synthesize_rules":
         return services_module._compact(services_module.CLIENT.post("/api/repo/synthesize_rules", {
             "root": root, "limit": 10,
