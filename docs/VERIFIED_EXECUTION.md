@@ -417,3 +417,20 @@ A deferred blocking report remains blocking. A rejection without proof remains
 pending; a repaired issue can still resolve independently of its rejection
 classification. The Hub identity mechanism is not separate authentication of
 the human reviewer. Inspect the full task registry for the decision history.
+
+
+### Repeated checkpoint patterns
+
+For active or verifying structured tasks, owned checkpoints maintain a
+server-managed trace of the last eight checkpoint signatures within 15 minutes.
+The signature hashes phase, next action, affected paths, blockers and evidence
+references; it stores no source or checkpoint prose. The epoch includes the
+owner, contract revision and current receipt mapping. Duplicate idempotency
+keys do not add samples. Four occurrences of the latest pattern trigger an
+advisory warning, including alternating patterns, without waiving any
+obligation or changing completion authority. Receipt mapping changes, owner
+handoff and contract revision changes reset the epoch. The host Stop hook
+allows exit on this signal rather than forcing another automatic iteration.
+This is a bounded heuristic, not proof of stalled execution: changing
+checkpoint text may conceal repetition, and repeated checkpoints can be
+legitimate.
