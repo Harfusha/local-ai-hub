@@ -346,3 +346,38 @@ def test_verified_execution_checkpoint_pattern_is_bounded_and_resets_on_evidence
     assert repeated_checkpoint_count(task, now=109) == 0
     new_epoch = observe_checkpoint(task, checkpoint, now=110)
     assert len(new_epoch["samples"]) == 1
+
+
+def test_verified_execution_graph_steering_rejects_weakening_and_confirmation_cycles():
+    from local_ai_hub.execution_problems import record_problem
+    from local_ai_hub.execution_steering import revise_graph, revision_proof_cutoffs
+
+    contract = GoalContract("review", acceptance_criteria=("a", "b", "c"),
+                            slo_profile={"verified_execution": {"units": {
+                                "c": {"depends_on": ["b"], "evidence_type": "source_review"},
+                            }}})
+    registry = record_problem({}, {"id": "problem", "title": "problem", "criterion": "a",
+                                   "resolution_criterion": "b"},
+                              criteria=contract.acceptance_criteria, receipt_ids={},
+                              reporter="agent", now=1)
+    for patch in (
+        {"units": {"a": {"depends_on": ["c"]}}},
+        {"units": {"c": {"depends_on": []}}},
+        {"units": {"c": {"evidence_type": "test"}}},
+        {"add_criteria": ["a"]},
+        {"units": {"missing": {"priority": 1}}},
+    ):
+        with pytest.raises(ValueError):
+            revise_graph(contract, patch, problems=registry)
+    revised, retired = revise_graph(contract, {"add_criteria": ["d"],
+                                                "units": {"a": {"depends_on": ["d"]}}},
+                                    problems=registry)
+    assert revised.acceptance_criteria == ("a", "b", "c", "d")
+    assert retired == {"a", "b", "c", "d"}
+    _, retired = revise_graph(contract, {"units": {"a": {"priority": 90}}}, problems=registry)
+    assert not retired
+    assert revision_proof_cutoffs([
+        {"recorded_at": 10, "retired_criteria": ["a", "b"]},
+        {"recorded_at": 20, "retired_criteria": ["a", "c"]},
+        {"recorded_at": 30},
+    ]) == {"a": 20.0, "b": 10.0, "c": 20.0}
