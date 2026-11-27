@@ -179,6 +179,18 @@ def text_field(data: dict[str, Any], key: str, limit: int = 4096) -> str:
     return value.strip()
 
 
+def memory_scope_fields(args: dict[str, Any]) -> dict[str, Any]:
+    """Select exactly one scope; never infer a narrower identity from a key."""
+    from local_ai_hub.agent_identity import AgentScope
+    scope = AgentScope(args.get("scope", "repository")).value
+    payload = {"root": explicit_root(args.get("root")), "scope": scope}
+    field = {"task": "task_id", "session": "session_id", "clone": "clone_id",
+             "worktree": "worktree_id", "branch": "branch"}.get(scope)
+    if field:
+        payload[field] = text_field(args, field, 200)
+    return payload
+
+
 def plan_text_patch(args: dict[str, Any], *, task: bool, create: bool = False) -> dict[str, Any]:
     """Validate explicit plan fields without replacing omitted data or clipping edits."""
     result: dict[str, Any] = {}
@@ -622,17 +634,33 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         if args.get("confirmed") is not True:
             raise ValueError("Explicit confirmation required")
         if op == "lease_release":
-            return checked_post(control, "/api/leases/release", {"lease_id": text_field(args, "id", 200)})
+            root = explicit_root(args.get("root"))
+            lease_id, owner = text_field(args, "id", 200), text_field(args, "owner", 200)
+            observed = scoped_read(control, "/api/leases", root)
+            rows = observed.get("leases")
+            if not isinstance(rows, list) or not any(
+                isinstance(row, dict) and row.get("lease_id") == lease_id and row.get("owner") == owner
+                for row in rows
+            ):
+                raise ValueError("Lease and owner not present in selected repository; reload inventory")
+            result = checked_post(control, "/api/leases/release", {"lease_id": lease_id, "owner": owner})
+            if result.get("success") is not True:
+                raise RuntimeError("Lease release not confirmed")
+            return result
         if op.startswith("semaphore_"):
             payload = {"name": text_field(args, "name", 200)}
             if op == "semaphore_release":
                 payload["lease_id"] = text_field(args, "id", 200)
+                payload["owner"] = text_field(args, "owner", 200)
             else:
                 capacity = args.get("capacity", 1)
                 if type(capacity) is not int or not 1 <= capacity <= 100:
                     raise ValueError("Capacity must be 1–100")
                 payload.update({"owner": text_field(args, "id", 200), "capacity": capacity, "ttl_seconds": 300})
-            return checked_post(control, "/api/coord/" + op, payload)
+            result = checked_post(control, "/api/coord/" + op, payload)
+            if op == "semaphore_release" and result.get("released") is not True:
+                raise RuntimeError("Semaphore lease was not released; check exact owner and lease")
+            return result
         root = explicit_root(args.get("root"))
         if op.startswith("worktree_"):
             payload = {"root": root}
@@ -715,6 +743,13 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         return checked_post(control, "/api/preprocess",
                             {"root": explicit_root(args.get("root")), "action": action,
                              **({"purge_data": purge} if action == "unregister" else {})})
+    if op == "memory_find":
+        payload = memory_scope_fields(args)
+        query = args.get("query", "")
+        if not isinstance(query, str) or len(query) > 2000:
+            raise ValueError("Invalid memory search")
+        payload.update({"action": "find", "query": query, "limit": 100})
+        return checked_post(control, "/api/agent-state/memory", payload)
     if op == "task_gate":
         return checked_post(control, "/api/agent-state/verification", {
             "root": explicit_root(args.get("root")), "action": "completion",
@@ -778,21 +813,21 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                              "acceptance_criteria": [line.strip() for line in criteria.splitlines() if line.strip()],
                              "scope": scope, "risk_profile": risk}})
         if op in {"memory_record", "memory_delete"}:
-            from local_ai_hub.agent_identity import AgentScope, MemoryKind
-            scope = AgentScope(args.get("scope", "repository")).value
-            payload = {"root": root, "action": "record" if op == "memory_record" else "delete",
-                       "key": text_field(args, "key", 200), "scope": scope}
-            if scope == "task":
-                payload["task_id"] = text_field(args, "task_id", 200)
-            if scope == "session":
-                payload["session_id"] = text_field(args, "session_id", 200)
+            from local_ai_hub.agent_identity import MemoryKind
+            payload = memory_scope_fields(args)
+            payload["action"] = "record" if op == "memory_record" else "delete"
             if op == "memory_record":
+                payload["key"] = text_field(args, "key", 200)
                 raw = text_field(args, "value", 12000)
                 try:
                     value = json.loads(raw)
                 except ValueError:
                     value = raw
                 payload.update({"value": value, "kind": MemoryKind(args.get("kind", "fact")).value, "confidence": 1.0})
+            else:
+                if payload["scope"] == "worktree":
+                    raise ValueError("Worktree deletion requires a verified scope; use the authorized Hub route")
+                payload["record_id"] = text_field(args, "record_id", 200)
             return checked_post(control, "/api/agent-state/memory", payload)
         return checked_post(control, "/api/coord/plan_create", {"root": root,
             "plan_id": text_field(args, "id", 85), **plan_text_patch(args, task=False, create=True),
