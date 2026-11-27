@@ -274,6 +274,7 @@ def execution_projection(
     receipt_gate_complete: bool,
     blockers: Sequence[str] = (),
     receipt_observed_at: Mapping[str, float] | None = None,
+    include_verified_criteria: bool = False,
 ) -> dict[str, Any]:
     """Compute coverage from the canonical evaluator, never from claimed progress."""
     normalized = normalize_execution(criteria, config)
@@ -354,6 +355,8 @@ def execution_projection(
     } if inventory is not None else None)
     return {
         "version": 1, "profile": normalized["profile"],
+        **({"verified_criteria": [criterion for criterion in ordered if criterion in verified]}
+           if include_verified_criteria else {}),
         **({"inventory": inventory_summary} if inventory_summary is not None else {}),
         "coverage": {
             "total": total, "verified": len(verified),
