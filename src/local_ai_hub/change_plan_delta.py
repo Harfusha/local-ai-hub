@@ -11,7 +11,7 @@ _HEX = re.compile(r"[0-9a-f]{64}")
 _MAX_GROUPS = 256
 
 
-def _snapshot(result: dict[str, Any]) -> dict[str, str] | None:
+def _snapshot(result: dict[str, Any]) -> dict[str, dict[str, str]] | None:
     if (
         result.get("success") is not True or result.get("git_visible_observation_complete") is not True
         or result.get("comparison") is not None or result.get("inventory_scope") != "git_visible_changes"
@@ -30,11 +30,39 @@ def _snapshot(result: dict[str, Any]) -> dict[str, str] | None:
         ):
             return None
         output[key] = identity("group-observation-v1", *sorted(atoms))
-    return output
+    # A group's own atom identity does not cover changed prerequisites.
+    # Hash its reachable candidate graph as well, including cycles and
+    # unresolved keys. This is only observed dependency context, not proof.
+    edges: dict[str, list[str]] = {}
+    for group in groups:
+        key = group["group_key"]
+        deps = group.get("dependency_group_candidates", [])
+        if not isinstance(deps, list) or len(deps) > _MAX_GROUPS or any(
+            not isinstance(dep, str) or not _HEX.fullmatch(dep) for dep in deps
+        ):
+            return None
+        edges[key] = sorted(set(deps))
+    snapshot = {}
+    for key, digest in output.items():
+        reached: set[str] = set()
+        pending = [key]
+        while pending:
+            candidate = pending.pop()
+            if candidate in reached:
+                continue
+            reached.add(candidate)
+            pending.extend(edges.get(candidate, []))
+        dependency_digest = identity(
+            "group-dependency-context-v2",
+            *[identity("dependency-node-v1", node, output.get(node, "unresolved"), *edges.get(node, []))
+              for node in sorted(reached)],
+        )
+        snapshot[key] = {"content": digest, "dependencies": dependency_digest}
+    return snapshot
 
 
 def _key(root: str, revision: str) -> str:
-    return identity("change-plan-baseline-v1", root, revision)
+    return identity("change-plan-baseline-v2", root, revision)
 
 
 def remember_baseline(result: dict[str, Any], cache: Any) -> bool:
@@ -44,7 +72,7 @@ def remember_baseline(result: dict[str, Any], cache: Any) -> bool:
     if cache is None or snapshot is None or not isinstance(root, str) or not isinstance(revision, str) or not _HEX.fullmatch(revision):
         return False
     try:
-        cache.set(_key(root, revision), {"schema": 1, "groups": snapshot})
+        cache.set(_key(root, revision), {"schema": 2, "groups": snapshot})
         return True
     except Exception:
         return False
@@ -62,26 +90,32 @@ def change_delta(result: dict[str, Any], cache: Any, previous: str | None, *, li
         stored = cache.get(_key(result["root"], previous))
     except Exception:
         stored = None
-    old = stored.get("groups") if isinstance(stored, dict) and stored.get("schema") == 1 else None
+    old = stored.get("groups") if isinstance(stored, dict) and stored.get("schema") == 2 else None
     if (
         not isinstance(old, dict) or len(old) > _MAX_GROUPS
-        or any(not isinstance(k, str) or not _HEX.fullmatch(k) or not isinstance(v, str) or not _HEX.fullmatch(v)
+        or any(not isinstance(k, str) or not _HEX.fullmatch(k) or not isinstance(v, dict)
+               or set(v) != {"content", "dependencies"}
+               or any(not isinstance(digest, str) or not _HEX.fullmatch(digest) for digest in v.values())
                for k, v in old.items())
     ):
         return {"success": False, "error": "Prior baseline unavailable or invalid; refresh the full summary"}
     changed = {key for key, digest in current.items() if old.get(key) != digest}
     removed = sorted(set(old) - set(current))
-    unchanged = len(current) - len(changed)
+    content_changed = {key for key, value in current.items() if old.get(key, {}).get("content") != value["content"]}
+    dependency_only = changed - content_changed
+    unchanged = len(current) - len(content_changed)
     delta = dict(result)
     delta["clusters"] = [g for g in result["clusters"] if g["group_key"] in changed]
     delta["cluster_count"] = len(delta["clusters"])
-    # Global ordering/task metadata may change independently. Do not imply
-    # unchanged groups preserve their review, verification or dependency state.
+    # Task and verification metadata can change independently. A dependency
+    # context match is not a review or verification receipt.
     output = project_change_plan(delta, mode="summary", limit=limit, offset=offset)
     output.update({
         "projection_mode": "delta",
         "previous_observed_change_set_id": previous,
         "changed_group_count": len(changed),
+        "content_changed_group_count": len(content_changed),
+        "dependency_context_only_changed_group_count": len(dependency_only),
         "unchanged_content_group_count": unchanged,
         "removed_group_count": len(removed),
         "removed_group_keys": removed[:16],
