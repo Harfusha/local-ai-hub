@@ -288,3 +288,11 @@ def test_trace_rejects_conflicting_cursors():
         with pytest.raises(ValueError, match="either"):
             desktop.dispatch(desktop.HubControl(), {"op": "trace_detail", "args": {"id": "t", "before": 1, "after": 2}})
         factory.assert_not_called()
+
+
+@pytest.mark.parametrize("op,args", [("lifecycle", {"action": "stop"}), ("lifecycle", {"action": "restart"}), ("mode", {"mode": "active"}), ("trace_content", {"id": "trace-1", "field": "request"})])
+def test_sensitive_operator_actions_require_confirmation(op, args):
+    with patch.object(desktop, "HubClient") as factory:
+        with pytest.raises(ValueError, match="confirmation"):
+            desktop.dispatch(desktop.HubControl(), {"op": op, "args": args})
+        factory.assert_not_called()

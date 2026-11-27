@@ -445,6 +445,8 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
         query = {"since_seq": after, "before_seq": before, "limit": 100, "max_bytes": 4_000_000}
         suffix = ""
         if op == "trace_content":
+            if args.get("confirmed") is not True:
+                raise ValueError("Explicit confirmation required")
             field = text_field(args, "field", 32)
             if field not in {"request", "effective_payload", "output", "response"}:
                 if not (field.startswith("event:") and field[6:].isascii() and field[6:].isdigit()):
@@ -540,8 +542,13 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
     if op == "read":
         return control.read(text_field(args, "view", 100), args.get("root", ""))
     if op == "lifecycle":
-        return control.lifecycle(text_field(args, "action", 20))
+        action = text_field(args, "action", 20)
+        if action != "start" and args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
+        return control.lifecycle(action)
     if op == "mode":
+        if args.get("confirmed") is not True:
+            raise ValueError("Explicit confirmation required")
         return control.mode(text_field(args, "mode", 20))
     if op == "maintenance":
         if args.get("confirmed") is not True:

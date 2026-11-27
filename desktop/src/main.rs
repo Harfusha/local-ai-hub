@@ -269,7 +269,10 @@ impl Desktop {
                         self.reveal_trace = false;
                         self.detail = None;
                         self.record_detail = None;
-                        if done.label == "Trace detail" || done.label == "Trace index" || done.label == "Trace content" || done.label == "Trace metrics" {
+                        if done.label == "Trace content" {
+                            // Do not flatten arbitrary stored text into searchable or copyable rows.
+                            self.rows.clear();
+                        } else if done.label == "Trace detail" || done.label == "Trace index" || done.label == "Trace metrics" {
                             flatten(&trace::sanitize(&value), "", 0, &mut self.rows);
                         } else {
                             flatten(&value, "", 0, &mut self.rows);
@@ -305,7 +308,7 @@ impl Desktop {
         }
     }
     fn lifecycle(&mut self, ctx: &egui::Context, action: &str) {
-        let data = request("lifecycle", json!({"action": action}));
+        let data = request("lifecycle", json!({"action": action, "confirmed": true}));
         if action == "start" { self.submit(ctx, "Start Hub".into(), data); }
         else { self.confirm(&format!("{action} Hub (may interrupt active work)"), data); }
     }
@@ -372,7 +375,7 @@ impl Desktop {
                         ui.add(egui::DragValue::new(&mut self.trace_content_offset).range(0..=i64::MAX));
                         if ui.button("Read stored content page").clicked() {
                             self.confirm("Read sensitive locally retained content", request("trace_content",
-                                json!({"id": self.entity, "field": self.trace_content_field, "offset": self.trace_content_offset})));
+                                json!({"id": self.entity, "field": self.trace_content_field, "offset": self.trace_content_offset, "confirmed": true})));
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -797,7 +800,7 @@ impl eframe::App for Desktop {
                         }
                     });
                     if ui.button("Apply mode").clicked() {
-                        self.confirm("Change activity mode", request("mode", json!({"mode": self.mode})));
+                        self.confirm("Change activity mode", request("mode", json!({"mode": self.mode, "confirmed": true})));
                     }
                     if ui.button("Installation").clicked() { self.installation_open = true; }
                 });
@@ -844,7 +847,7 @@ impl eframe::App for Desktop {
                 ui.checkbox(&mut self.raw_view, "Raw fields");
             });
             if self.rows.is_empty() { ui.label("Load this view to inspect data. No hidden screen is polled."); }
-            if self.snapshot_view == "Trace content" && !self.raw_view {
+            if self.snapshot_view == "Trace content" {
                 if let Some(page) = self.snapshot.as_ref() {
                     ui.label(format!("Stored content: {} · offset {} · next {} · more {} · storage truncated {}",
                         page["field"], page["offset"], page["next_offset"], page["has_more"], page["storage_truncated"]));

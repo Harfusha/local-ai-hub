@@ -1,7 +1,7 @@
 """Install a built native desktop into an existing trusted Hub installation.
 
-No downloads, shell invocation, service lifecycle action, or system-wide write.
-Use the binary and SHA-256 receipt produced by the native desktop CI.
+Accepts a local binary or a verified, exact stable release archive. No shell
+invocation, service lifecycle action, or system-wide write.
 """
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 def install(binary: Path, root: Path, expected_sha256: str, *, version: str | None = None) -> Path:
+    from tools.update_transaction import _has_link_component
+    if _has_link_component(root):
+        raise ValueError("Installation root contains a link or junction")
     root = root.resolve(strict=True)
     if not (root / "tools/hubctl.py").is_file() or not (root / "tools/desktop.py").is_file():
         raise ValueError("Choose a trusted Local AI Hub installation containing hubctl.py and desktop.py")
@@ -38,7 +41,6 @@ def install(binary: Path, root: Path, expected_sha256: str, *, version: str | No
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise ValueError("Invalid installed release version")
         destination_dir = destination_dir / "desktop" / version
-    from tools.update_transaction import _has_link_component
     if _has_link_component(destination_dir):
         raise ValueError("Desktop directory contains a link or junction")
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -106,14 +108,14 @@ def install_release(root: Path, version: str, revision: str) -> Path:
     system, arch, name = platform_asset()
     tag = "v" + version
     release = json.loads(read_url(f"https://api.github.com/repos/{REPOSITORY}/releases/tags/{tag}", 1024 * 1024))
-    if release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not False:
+    if not isinstance(release, dict) or release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not False:
         raise ValueError("No matching published stable release")
     assets = release.get("assets")
     receipt = read_url(f"{DOWNLOAD_URL}/{tag}/{RECEIPT_NAME}", 65536)
     if hashlib.sha256(receipt).hexdigest() != _asset_digest(assets, RECEIPT_NAME):
         raise ValueError("Release receipt digest mismatch")
     wheel_receipt = json.loads(receipt)
-    if (wheel_receipt.get("repository_revision") != revision or wheel_receipt.get("success") is not True
+    if (not isinstance(wheel_receipt, dict) or wheel_receipt.get("repository_revision") != revision or wheel_receipt.get("success") is not True
             or wheel_receipt.get("smoke") != "passed"):
         raise ValueError("Release receipt does not verify the requested source revision")
     asset = f"local-ai-hub-desktop-{system}-{arch}.zip"
@@ -121,7 +123,10 @@ def install_release(root: Path, version: str, revision: str) -> Path:
     raw = read_url(f"{DOWNLOAD_URL}/{tag}/{asset}", 64 * 1024 * 1024)
     if hashlib.sha256(raw).hexdigest() != expected:
         raise ValueError("Desktop release archive digest mismatch")
-    metadata, binary = verify_archive(raw, version=version, revision=revision, system=system, arch=arch)
+    try:
+        metadata, binary = verify_archive(raw, version=version, revision=revision, system=system, arch=arch)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Invalid desktop release archive") from exc
     with tempfile.TemporaryDirectory(prefix="lah-desktop-release-") as directory:
         path = Path(directory) / name
         path.write_bytes(binary)

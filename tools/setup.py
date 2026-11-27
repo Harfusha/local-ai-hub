@@ -5537,7 +5537,16 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    if not getattr(args, "skip_desktop", False) and args.expected_revision:
+    desktop_disabled = install_dir / ".desktop-disabled"
+    if getattr(args, "skip_desktop", False):
+        try:
+            with desktop_disabled.open("x", encoding="utf-8") as marker:
+                marker.write("Headless installation requested.\n")
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            log(f"Could not persist headless preference: {exc}")
+    elif not desktop_disabled.exists() and getattr(args, "expected_revision", None):
         try:
             from tools.install_desktop import install_release
             version = tomllib.loads((install_dir / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
