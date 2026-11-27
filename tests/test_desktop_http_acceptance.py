@@ -57,7 +57,11 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         second = call("read", view="Endpoint analytics", root=str(roots[1]))
         assert first["ok"] and second["ok"], (first, second)
         assert first["result"]["root"] != second["result"]["root"]
-        assert first["result"]["items"][0]["calls"] == 1
+        def recorded(response):
+            return sum(item["calls"] for item in response["result"]["items"]
+                       if item["name"] == "test:isolated" and item["type"] == "mcp")
+        assert recorded(first) == 1
+        assert recorded(second) == 1
         rejected = call("endpoint_reset", root=str(roots[0]))
         assert rejected["ok"] is False
         reset = call("endpoint_reset", root=str(roots[0]), confirmed=True)
@@ -65,8 +69,8 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         first = call("read", view="Endpoint analytics", root=str(roots[0]))
         second = call("read", view="Endpoint analytics", root=str(roots[1]))
         assert first["ok"] and second["ok"], (first, second)
-        assert all(item["calls"] == 0 for item in first["result"]["items"])
-        assert second["result"]["items"][0]["calls"] == 1
+        assert recorded(first) == 0
+        assert recorded(second) == 1
     finally:
         if thread is not None:
             server.shutdown()

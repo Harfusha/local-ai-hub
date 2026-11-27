@@ -299,3 +299,12 @@ actual results plus hardware/OS/Rust/eframe/Python versions. No threshold claime
 - CI-generated lockfile committed (`f016c71`); macOS build and bridge checks passed on `f74beef`. Earlier revision `9f186ee` passed Rust tests and builds on Windows/macOS and the Linux build, but the Linux runtime smoke failed. Xvfb diagnostics and dependencies were corrected; latest runtime and resource evidence remains pending.
 - Operator catalog (`d205aa6`), release integration (`f93b19a`), trace/command/session UI (`b956d57`), and confirmation/headless hardening (`30ab53c`) are implementation evidence, not acceptance receipts.
 - `master` was merged through `7c42227`. Existing master CI failures were confirmed independently; the invalid linter config, optional serializer typing, and selected stale fixtures were corrected without disabling the tests. Full CI and parity remain required before merge.
+
+
+## Follow-up implementation and evidence (2026-11-27)
+
+- Added scoped task run history, nonterminal task transitions and server completion receipts, explicit endpoint resets, project purge confirmation, observed-value settings drafts and changed-field batch saves.
+- Added request filtering, scheduler queued/running records, recovery journal, trace server-side filters and bounded paging, token efficiency and circuit breaker summaries. Trace-index and run-event search use sanitized data.
+- On 96a66b3, 264 focused Python tests passed. The new real HTTP/subprocess acceptance test subsequently failed on an incorrect positional assumption about unused endpoint rows; assertions now identify the exact recorded endpoint and check both roots before and after reset. Re-run required.
+- A syntax error in the analytics column list was corrected in 9fbd6ed. Linux X11 runtime dependency correction is present; latest native matrix and resource measurements remain unverified.
+- Parallel branch updates were preserved with expected-head leases. Full behavioral parity, lifecycle and installer acceptance, and release readiness remain gates; the PR stays draft.

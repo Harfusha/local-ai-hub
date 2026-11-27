@@ -202,3 +202,16 @@ mod endpoint_filter_tests {
         assert_eq!(rows, vec![&a, &c, &b]);
     }
 }
+
+#[cfg(test)]
+mod request_filter_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn request_filters_preserve_unknown_status_and_exact_action() {
+        assert!(!request_matches(&json!({"action":"read"}), "2xx", ""));
+        assert!(request_matches(&json!({"action":"read","status_code":503}), "failed", "read"));
+        assert!(!request_matches(&json!({"action":"read","status_code":503}), "failed", "re"));
+        assert!(request_matches(&json!({"success":false}), "failed", ""));
+    }
+}
