@@ -18,10 +18,13 @@ class HttpGetMixin:
         if path == "/ready":
             self._handle_health_route(path)
             return
+        if path.rstrip("/") in {"", "/dashboard", "/favicon.ico"}:
+            self._send(404, {"success": False, "error": "Web UI removed; use Local AI Hub Desktop."})
+            return
         if services_module.APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
-        # The dashboard shell is public; loopback mode reads expose only local
+        # Loopback mode reads expose only local
         # runtime state, while mode mutations remain authenticated.
         if path == "/api/mode" and not services_module._is_loopback_peer(self):
             self._send(403, {"success": False, "error": "local_control_requires_loopback"})
@@ -29,7 +32,7 @@ class HttpGetMixin:
         elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
-        elif path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
+        elif not self._require_authorized():
             return
         if path == "/api/updates":
             self._handle_dashboard_updates()
@@ -61,7 +64,7 @@ class HttpGetMixin:
             if path.startswith("/api/debug-traces/") or path in {"/api/telemetry/timeline", "/api/logs/tail"}:
                 self._send(409, {
                     "success": False, "error_code": "detailed_diagnostics_disabled",
-                    "error": "Enable detailed diagnostics in the dashboard to read diagnostic detail.",
+                    "error": "Enable detailed diagnostics in desktop settings to read diagnostic detail.",
                     "terminal": True, "retryable": False,
                 })
                 return
@@ -119,12 +122,6 @@ class HttpGetMixin:
             get_handler_name = services_module.select_get_handler(path)
             if get_handler_name is not None:
                 getattr(self, get_handler_name)(query)
-                return
-            if path in {'/', '/dashboard'}:
-                self._handle_dashboard_route()
-                return
-            if path == '/favicon.ico':
-                self._handle_favicon_route()
                 return
             if path == "/api/mode":
                 try:
@@ -1017,8 +1014,14 @@ class HttpGetMixin:
                 pass
 
     def _handle_dashboard_updates(self, *, mutate: bool = False) -> None:
-        if self.headers.get("X-LocalAI-Client") != "dashboard" or not services_module._is_loopback_peer(self):
-            self._send(403, {"success": False, "error": "Update controls require the local dashboard."})
+        # Existing dashboard callers remain compatible until cutover; native callers
+        # must be loopback, authenticated by normal host/origin checks, and not a browser.
+        marker = self.headers.get("X-LocalAI-Client", "")
+        desktop = marker == "desktop" and not self.headers.get("Origin") and not any(
+            self.headers.get(name) for name in ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest")
+        )
+        if not services_module._is_loopback_peer(self) or not (marker == "dashboard" or desktop):
+            self._send(403, {"success": False, "error": "Update controls require the local desktop."})
             return
         controller = getattr(services_module.APP, "dashboard_updates", None)
         if controller is None:

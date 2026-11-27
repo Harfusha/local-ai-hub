@@ -7,7 +7,6 @@ from pathlib import Path
 
 from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub.preprocess import ProjectPreprocessor
-from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
 def test_preprocess_ingestion_reuse_rate():
@@ -229,14 +228,3 @@ def test_preprocessed_query_hit_rate_telemetry(tmp_path: Path):
         assert summary.get("preprocessed_query_hit_rate") == 0.5
     finally:
         telemetry.close()
-
-
-def test_dashboard_sessions_and_preprocessed_metrics():
-    assert 'id="sessionRows"' in DASHBOARD_HTML
-    assert 'id="hubHealthCard"' in DASHBOARD_HTML
-    assert "Process session &amp; restart history" in DASHBOARD_HTML
-    assert "card reuse" in DASHBOARD_HTML
-    assert "index hit" in DASHBOARD_HTML
-    assert "session_id" in DASHBOARD_HTML
-    assert "Process Session Details" in DASHBOARD_HTML
-

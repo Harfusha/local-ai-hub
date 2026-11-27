@@ -1373,15 +1373,6 @@ def test_hubctl_doctor_and_logs(monkeypatch, capsys):
     assert "Local AI Hub: Offline (stopped)" in capsys.readouterr().out
 
 
-def test_dashboard_agent_os_tab():
-    from local_ai_hub.dashboard import DASHBOARD_HTML
-    assert 'data-tab="agentos"' in DASHBOARD_HTML
-    assert 'id="agentos"' in DASHBOARD_HTML
-    assert 'loadAgentOsView' in DASHBOARD_HTML
-    assert 'renderAgentOsView' in DASHBOARD_HTML
-    assert 'agentStateCard' in DASHBOARD_HTML
-
-
 def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
     import json
     import threading

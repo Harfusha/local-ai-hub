@@ -123,15 +123,6 @@ def test_trace_store_purge_removes_all_sessions_and_events(tmp_path):
     assert store.stats()["events"] == 0
 
 
-def test_dashboard_warns_before_capture_and_exposes_purge_and_redacted_export():
-    from local_ai_hub.dashboard import DASHBOARD_HTML
-
-    assert "window.confirm(" in DASHBOARD_HTML
-    assert "detailedTelemetryToggle" in DASHBOARD_HTML
-    assert "purgeDebugTracesBtn" in DASHBOARD_HTML
-    assert "data-trace-export" in DASHBOARD_HTML
-
-
 def test_debug_trace_export_http_is_bounded_and_redacted(tmp_path, monkeypatch):
     store = DebugTraceStore(_config(tmp_path))
     trace_id = store.start(kind="api_request", action="/api/reason")
@@ -706,20 +697,6 @@ def test_recover_incomplete_traces_marks_previous_processes_interrupted(tmp_path
     assert store.detail(running)["terminal"] is True
 
 
-def test_dashboard_and_favicon_are_monitor_paths():
-    from local_ai_hub.http_server import MONITOR_PATHS
-    from local_ai_hub.dashboard import DASHBOARD_HTML
-
-    assert "/dashboard" in MONITOR_PATHS
-    assert "/favicon.ico" in MONITOR_PATHS
-    assert 'id="tracePrivacyNotice"' in DASHBOARD_HTML
-    assert "Detailed capture is off by default" in DASHBOARD_HTML
-    assert "Full inputs and outputs are captured only when enabled" in DASHBOARD_HTML
-    assert "with local access only and a separate local retention policy" in DASHBOARD_HTML
-    assert "data-trace-reveal" not in DASHBOARD_HTML
-    assert "Obsah zkrácen limitem trace úložiště" in DASHBOARD_HTML
-
-
 def test_event_count_and_session_text_caps_evict_whole_trace(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_events_per_session=3, max_session_text_bytes=1024))
     trace_id = store.start(kind="async_job")
@@ -1229,3 +1206,10 @@ def test_trace_detail_clamps_forward_cursor_without_replaying_events(tmp_path, s
     assert detail["first_retained_seq"] == 1
     assert detail["next_seq"] == min(since_seq, 2**63 - 1)
     assert detail["events"] == []
+
+
+def test_removed_browser_paths_are_not_monitor_paths():
+    from local_ai_hub.http_server import MONITOR_PATHS
+
+    assert "/dashboard" not in MONITOR_PATHS
+    assert "/favicon.ico" not in MONITOR_PATHS
