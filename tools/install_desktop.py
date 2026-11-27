@@ -82,21 +82,46 @@ def verify_archive(raw: bytes, *, version: str, revision: str, system: str, arch
     if len(raw) > 64 * 1024 * 1024:
         raise ValueError("Desktop archive exceeds 64 MiB")
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-        expected = {name, "SHA256SUMS", "README.txt", "desktop-receipt.json"}
-        if set(archive.namelist()) != expected or len(archive.namelist()) != len(expected):
+        base_entries = {name, "SHA256SUMS", "README.txt", "desktop-receipt.json"}
+        auxiliary_limits = {"LICENSE": 128 * 1024, "THIRD-PARTY-NOTICES.txt": 16 * 1024 * 1024,
+                            "Cargo.lock": 2 * 1024 * 1024}
+        entries = archive.namelist()
+        if len(entries) != len(set(entries)) or set(entries) not in (base_entries, base_entries | set(auxiliary_limits)):
             raise ValueError("Unexpected desktop archive entries")
-        if archive.getinfo(name).file_size > 32 * 1024 * 1024 or archive.getinfo("desktop-receipt.json").file_size > 8192:
+        if any(archive.getinfo(entry).is_dir() for entry in entries):
+            raise ValueError("Unexpected desktop archive directory")
+        if (archive.getinfo(name).file_size > 32 * 1024 * 1024
+                or archive.getinfo("desktop-receipt.json").file_size > 8192
+                or archive.getinfo("SHA256SUMS").file_size > 8192
+                or archive.getinfo("README.txt").file_size > 64 * 1024):
             raise ValueError("Oversized desktop archive entry")
         receipt = json.loads(archive.read("desktop-receipt.json"))
         if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in {
-            "format": 1, "hub_version": version, "repository_revision": revision,
+            "hub_version": version, "repository_revision": revision,
             "os": system, "architecture": arch, "binary": name,
-        }.items()):
+        }.items()) or type(receipt.get("format")) is not int or receipt["format"] not in (1, 2):
             raise ValueError("Desktop archive provenance mismatch")
+        expected_entries = base_entries if receipt["format"] == 1 else base_entries | set(auxiliary_limits)
+        if set(entries) != expected_entries:
+            raise ValueError("Desktop archive format and entries disagree")
         binary = archive.read(name)
         digest = hashlib.sha256(binary).hexdigest()
         if not binary or receipt.get("sha256") != digest:
             raise ValueError("Desktop binary digest mismatch")
+        auxiliary: dict[str, str] = {}
+        if receipt["format"] == 2:
+            for entry, limit in auxiliary_limits.items():
+                if not 0 < archive.getinfo(entry).file_size <= limit:
+                    raise ValueError("Missing or oversized desktop license/lock evidence")
+                auxiliary[entry] = hashlib.sha256(archive.read(entry)).hexdigest()
+            if receipt.get("auxiliary_sha256") != auxiliary:
+                raise ValueError("Desktop license/lock evidence digest mismatch")
+        checksum_bytes = (f"{digest}  {name}\n" + "".join(
+            f"{sha}  {entry}\n" for entry, sha in sorted(auxiliary.items())
+        )).encode("utf-8")
+        # Compare exact generated checksum lines; no arbitrary extraction.
+        if archive.read("SHA256SUMS") != checksum_bytes:
+            raise ValueError("Desktop SHA256SUMS disagrees with verified entries")
         return receipt, binary
 
 
