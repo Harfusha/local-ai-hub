@@ -677,22 +677,25 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
             payload.update(plan_text_patch(args, task=False))
         else:
             payload["task_id"] = text_field(args, "task_id", 200)
+            # plan_task_edit is an upsert. Fence both creation and mutations
+            # using the exact observed document and revision, so edit/move
+            # cannot accidentally create a new card with a mistyped ID.
+            current = checked_post(control, "/api/coord/plan_get",
+                                   {"root": root, "plan_id": payload["plan_id"]})
+            plan = current.get("plan")
+            if (current.get("success") is not True
+                    or current.get("file_revision") != payload["expected_revision"]
+                    or not isinstance(plan, dict) or plan.get("id") != payload["plan_id"]
+                    or not isinstance(plan.get("tasks"), dict)):
+                raise ValueError("Plan changed or unavailable; reload exact plan revision")
+            exists = payload["task_id"] in plan["tasks"]
+            if op == "plan_task_create" and exists:
+                raise ValueError("Task ID already exists; load it for editing instead")
+            if op != "plan_task_create" and not exists:
+                raise ValueError("Task ID not found in reviewed plan revision")
             if op in {"plan_task_create", "plan_task_edit"}:
                 data = plan_text_patch(args, task=True, create=op == "plan_task_create")
                 if op == "plan_task_create":
-                    # The canonical edit endpoint also supports creation. Fence
-                    # that upsert with the same reviewed revision and require a
-                    # previously absent ID so "Add" cannot reset another task.
-                    current = checked_post(control, "/api/coord/plan_get",
-                                           {"root": root, "plan_id": payload["plan_id"]})
-                    plan = current.get("plan")
-                    if (current.get("success") is not True
-                            or current.get("file_revision") != payload["expected_revision"]
-                            or not isinstance(plan, dict) or plan.get("id") != payload["plan_id"]
-                            or not isinstance(plan.get("tasks"), dict)):
-                        raise ValueError("Plan changed or unavailable; reload exact plan revision")
-                    if payload["task_id"] in plan["tasks"]:
-                        raise ValueError("Task ID already exists; load it for editing instead")
                     data.update({"kind": "code", "work_status": "planned", "depends_on": [], "clarifications": []})
                     op = "plan_task_edit"
                 payload["task_data"] = data
@@ -732,7 +735,7 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
                 if type(limit) is not int or limit not in (25, 100, 250):
                     raise ValueError("Invalid plan list limit")
                 lifecycle = args.get("lifecycle", "")
-                if lifecycle not in ("", "draft", "active", "completed", "archived", "cancelled"):
+                if lifecycle not in ("", "draft", "active", "paused", "completed", "archived", "cancelled"):
                     raise ValueError("Invalid plan lifecycle")
                 payload["limit"] = limit
                 if lifecycle:
