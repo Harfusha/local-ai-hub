@@ -404,3 +404,59 @@ def test_log_tail_does_not_present_invalid_or_disabled_data_as_empty(result):
         with pytest.raises(RuntimeError):
             desktop.dispatch(desktop.HubControl(), {"op": "log_tail", "args": {"lines": 100}})
         client.close.assert_called_once()
+
+
+def test_plan_detail_is_scoped_and_reads_canonical_route(tmp_path):
+    with patch.object(desktop, "checked_post") as post:
+        desktop.dispatch(desktop.HubControl(), {"op": "plan_detail", "args": {
+            "root": str(tmp_path), "id": "plan_1",
+        }})
+        post.assert_called_once_with(
+            post.call_args.args[0], "/api/coord/plan_get",
+            {"root": str(tmp_path.resolve()), "plan_id": "plan_1"},
+        )
+
+
+def test_plan_text_patch_does_not_overwrite_omitted_fields():
+    assert desktop.plan_text_patch({"next_action": "review"}, task=True) == {"next_action": "review"}
+    assert desktop.plan_text_patch({"description": ""}, task=False) == {"description": ""}
+    assert desktop.plan_text_patch({"blocker": ""}, task=True) == {"blocker": None}
+    assert desktop.plan_text_patch({"criteria": "one\ntwo"}, task=True) == {
+        "acceptance_criteria": ["one", "two"],
+    }
+    with pytest.raises(ValueError, match="description"):
+        desktop.plan_text_patch({"description": "a" * 12001}, task=True)
+    with pytest.raises(ValueError, match="next_action"):
+        desktop.plan_text_patch({"next_action": 1}, task=True)
+    with pytest.raises(ValueError, match="No plan fields"):
+        desktop.plan_text_patch({}, task=True)
+
+
+@pytest.mark.parametrize("existing,observed_revision", [(True, "rev"), (False, "stale")])
+def test_add_task_refuses_existing_id_or_stale_revision(tmp_path, existing, observed_revision):
+    plan = {"success": True, "file_revision": observed_revision,
+            "plan": {"id": "plan_1", "tasks": {"task_1": {}} if existing else {}}}
+    with patch.object(desktop, "checked_post", return_value=plan) as post:
+        with pytest.raises(ValueError, match="already exists|Plan changed"):
+            desktop.dispatch(desktop.HubControl(), {"op": "plan_task_create", "args": {
+                "root": str(tmp_path), "id": "plan_1", "task_id": "task_1",
+                "revision": "rev", "title": "new", "confirmed": True,
+            }})
+        assert post.call_count == 1
+        assert post.call_args.args[1] == "/api/coord/plan_get"
+
+
+def test_add_task_uses_exact_reviewed_revision_for_new_id(tmp_path):
+    plan = {"success": True, "file_revision": "rev",
+            "plan": {"id": "plan_1", "tasks": {}}}
+    with patch.object(desktop, "checked_post", side_effect=[plan, {"success": True}]) as post:
+        result = desktop.dispatch(desktop.HubControl(), {"op": "plan_task_create", "args": {
+            "root": str(tmp_path), "id": "plan_1", "task_id": "task_1",
+            "revision": "rev", "title": "new", "confirmed": True,
+        }})
+        assert result["success"] is True
+        assert post.call_count == 2
+        assert post.call_args.args[1] == "/api/coord/plan_task_edit"
+        payload = post.call_args.args[2]
+        assert payload["expected_revision"] == "rev" and payload["task_id"] == "task_1"
+        assert payload["task_data"]["title"] == "new"
