@@ -41,7 +41,7 @@ def test_verified_execution_host_stop_continues_once_for_exact_session(tmp_path,
     transport.close.assert_called_once()
 
 
-@pytest.mark.parametrize("case", ["other_session", "opt_out", "blocked", "scope", "stagnation", "repeated_failure", "owner_handoff", "offline", "background"])
+@pytest.mark.parametrize("case", ["other_session", "opt_out", "blocked", "scope", "stagnation", "repeated_failure", "checkpoint_loop", "owner_handoff", "offline", "background"])
 def test_verified_execution_host_stop_does_not_prevent_exit(tmp_path, monkeypatch, case):
     transport, task, execution, payload = _fixture(tmp_path, monkeypatch)
     if case == "other_session":
@@ -56,6 +56,8 @@ def test_verified_execution_host_stop_does_not_prevent_exit(tmp_path, monkeypatc
         execution["progress"] = {"status": "no_recent_verified_evidence"}
     elif case == "repeated_failure":
         execution["progress"] = {"status": "repeated_failed_verification"}
+    elif case == "checkpoint_loop":
+        execution["progress"] = {"status": "repeated_checkpoint_pattern"}
     elif case == "owner_handoff":
         execution["problems"] = {"owner_handoff_criteria": [execution["next_obligation"]["criterion"]]}
     elif case == "offline":
