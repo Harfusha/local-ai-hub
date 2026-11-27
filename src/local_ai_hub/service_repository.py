@@ -955,6 +955,10 @@ class ServiceRepositoryMixin:
             result, mode=mode, limit=limit, offset=offset,
             delegate=self.delegate if mode == "semantic" else None, root=root,
         )
+        if mode == "details" and base is None:
+            from .change_task_context import attach_index_impact
+
+            attach_index_impact(self, projected, root)
         if mode == "summary" and projected.get("success") is True:
             projected["baseline_stored"] = remember_baseline(result, cache)
         return projected
