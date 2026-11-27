@@ -10,6 +10,7 @@ import re
 import time
 import threading
 from collections.abc import Callable
+from typing import Any
 
 
 MAX_PIPE_FRAME_BYTES = 65_536
