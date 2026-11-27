@@ -17,7 +17,8 @@ from local_ai_hub.repo_project_incidents import build_project_incident_record
 from local_ai_hub.repo_agent_state import rebuild_agent_state_projection, ensure_agent_os_layout
 from local_ai_hub.agent_incidents import _incident_scope_key
 from local_ai_hub.agent_events import AgentStateStore
-from local_ai_hub.agent_tasks import TaskStore
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import GoalContract, TaskStore
 
 
 def test_rebuild_projection_from_canonical_git(tmp_path: Path):
@@ -498,3 +499,53 @@ def test_linked_worktree_reads_same_canonical_project_task(tmp_path: Path):
     store = TaskStore(AgentStateStore(state_dir / "agent_state.sqlite"))
     assert [item.task_id for item in store.list_tasks(repo_root=str(repo)).tasks] == ["task-linked-worktree"]
     assert [item.task_id for item in store.list_tasks(repo_root=str(linked)).tasks] == ["task-linked-worktree"]
+
+
+def test_task_reads_rebuild_projection_after_branch_switch(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+    hub = repo / ".local-ai-hub"
+    hub.mkdir()
+    (hub / ".gitignore").write_text("local/\n", encoding="utf-8")
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    (hub / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    ensure_agent_os_layout(repo)
+    subprocess.run(["git", "add", ".local-ai-hub"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "project identity"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "branch", "without-task"], cwd=repo, check=True, capture_output=True)
+
+    task = build_project_task_record(RepoKnowledgeStore(repo), {
+        "task_id": "task-branch-snapshot",
+        "status": "planned",
+        "contract": {
+            "goal": "Stay scoped to the selected branch",
+            "description": "",
+            "acceptance_criteria": ["stale branch tasks disappear after checkout"],
+            "non_goals": [], "constraints": [], "risk_profile": "normal",
+        },
+        "checkpoint": {"phase": "planned", "next_action": "run", "blockers": [], "affected_paths": []},
+    })
+    task_path = hub / "agent-os/tasks/task-branch-snapshot.json"
+    task_path.write_text(json.dumps(task) + "\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".local-ai-hub/agent-os/tasks"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "publish project task"], cwd=repo, check=True, capture_output=True)
+
+    store = TaskStore(AgentStateStore(tmp_path / "state" / "agent_state.sqlite"))
+    runtime_task = store.create(
+        GoalContract(goal="Branch-bound runtime work"),
+        ScopeContext(task_id="task-runtime-branch-snapshot"),
+        task_id="task-runtime-branch-snapshot",
+        repo_root=str(repo),
+    )
+    assert {item.task_id for item in store.list_tasks(repo_root=str(repo)).tasks} == {
+        "task-branch-snapshot", runtime_task.task_id,
+    }
+
+    subprocess.run(["git", "switch", "without-task"], cwd=repo, check=True, capture_output=True)
+    assert store.get("task-branch-snapshot", repo_root=str(repo)) is None
+    assert store.get(runtime_task.task_id, repo_root=str(repo)) is None

@@ -273,8 +273,6 @@ def main() -> int:
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
     parser.add_argument("--preview-digest", default="", help="Exact reviewed handoff export digest")
     parser.add_argument("--include-historical-verification", action="store_true", help="Include redacted historical receipt summaries in handoff export")
-    parser.add_argument("--after-task-id", default="", help="Offline migration continuation cursor")
-    parser.add_argument("--snapshot", default="", help="Expected offline task inventory snapshot")
     parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
     parser.add_argument("--base", default="", help="Base Git commit/ref for committed knowledge diff")
     parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
@@ -422,7 +420,7 @@ def main() -> int:
                 )
                 tasks = response.get("tasks")
                 if response.get("success") is not True or not isinstance(tasks, list):
-                    print(json.dumps({"success": False, "error": "Scoped legacy task inventory unavailable"}))
+                    print(json.dumps({"success": False, "error": "Scoped task inventory unavailable"}))
                     return 1
                 result = preflight_task_handoffs(
                     store, tasks[:args.limit],

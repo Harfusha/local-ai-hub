@@ -17,7 +17,7 @@ import uuid
 from .agent_tasks import TaskState, TaskStore, CheckpointResponseBudgetError, _canonical_repository_root
 from .task_memory_wire import mcp_wire_tokens
 from .agent_events import AgentEvent
-from .project_identity import project_scope_id, worktree_scope_id
+from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 
@@ -782,8 +782,9 @@ class PolicyEngine:
                     owner, status, checkpoint = task
                     scope = json.loads(checkpoint).get("state_data", {}).get("_agent_task_scope", {})
                     if (owner != actor or type(scope.get("version")) is not int
-                            or scope.get("version") != 3
+                            or scope.get("version") != 4
                             or scope.get("project_id") != project_scope_id(root)
+                            or scope.get("snapshot_id") != repository_snapshot_id(root)
                             or (owner != "canonical-git" and scope.get("worktree_id") != worktree_scope_id(root))):
                         raise PermissionError("task owner or repository scope mismatch")
                     if status not in {"planned", "active", "waiting", "blocked", "verifying", "failed"}:

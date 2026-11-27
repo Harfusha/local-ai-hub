@@ -16,13 +16,14 @@ from local_ai_hub.agent_semaphores import SemaphoreStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
 from local_ai_hub.source_slice import read_source_slice
 from local_ai_hub.swarm import execute_swarm_dag
-from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
+from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 
 def _task_scope(root):
     canonical_root = str(Path(root).resolve())
-    return {"version": 3, "project_id": project_scope_id(canonical_root),
-            "worktree_id": worktree_scope_id(canonical_root), "repo_root": canonical_root}
+    return {"version": 4, "project_id": project_scope_id(canonical_root),
+            "worktree_id": worktree_scope_id(canonical_root), "repo_root": canonical_root,
+            "snapshot_id": repository_snapshot_id(canonical_root)}
 
 
 def _acquire_semaphore_process(db_path: str, owner: str, barrier, results) -> None:

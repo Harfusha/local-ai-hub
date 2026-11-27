@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import time
+from pathlib import Path
 from typing import Any
 import unicodedata
 import uuid
@@ -24,7 +25,7 @@ from .agent_task_models import (
     _task_matches_scope,
 )
 from .json_utils import dumps as json_dumps
-from .project_identity import project_scope_id, worktree_scope_id
+from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -118,10 +119,11 @@ class TaskCoreMixin:
 
         if canonical_root:
             initial_sd["_agent_task_scope"] = {
-                "version": 3,
+                "version": 4,
                 "project_id": project_scope_id(canonical_root),
                 "worktree_id": worktree_scope_id(canonical_root),
                 "repo_root": canonical_root,
+                "snapshot_id": repository_snapshot_id(canonical_root),
             }
 
         memory_context = self._task_memory_context(
@@ -223,10 +225,25 @@ class TaskCoreMixin:
         except sqlite3.Error:
             return False
 
-    def get(self, task_id: str) -> TaskState | None:
+    def get(self, task_id: str, *, repo_root: str | None = None) -> TaskState | None:
         if not self._db_path_available():
             return None
         self._init_projection_table()
+        canonical_root: str | None = None
+        if repo_root is not None:
+            try:
+                canonical_root = _canonical_repository_root(repo_root)
+            except ValueError:
+                return None
+            project_dir = Path(canonical_root) / ".local-ai-hub"
+            if (project_dir / "project.json").is_file() and (project_dir / "agent-os").is_dir():
+                from .repo_agent_state import ensure_agent_state_projection_current
+
+                projection = ensure_agent_state_projection_current(
+                    canonical_root, Path(self.state_store.db_path).parent,
+                )
+                if projection.get("success") is not True:
+                    raise RuntimeError(projection.get("error", "Agent OS projection refresh failed"))
         def _fetch_task() -> Any:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 return con.execute(
@@ -242,7 +259,10 @@ class TaskCoreMixin:
         row = retry_busy(_fetch_task, retries=5, base_delay_seconds=0.02)
         if not row:
             return None
-        return self._row_to_state(row)
+        task = self._row_to_state(row)
+        if canonical_root is not None and not _task_matches_scope(task, canonical_root, task_id):
+            return None
+        return task
 
     @staticmethod
     def _normalize_search_text(value: Any) -> str:
@@ -468,13 +488,24 @@ class TaskCoreMixin:
         canonical_root: str | None = None
         canonical_project_id: str | None = None
         canonical_worktree_id: str | None = None
+        canonical_snapshot_id: str | None = None
         if repo_root is not None:
             try:
                 canonical_root = _canonical_repository_root(repo_root)
                 canonical_project_id = project_scope_id(canonical_root)
                 canonical_worktree_id = worktree_scope_id(canonical_root)
+                canonical_snapshot_id = repository_snapshot_id(canonical_root)
             except ValueError:
                 return TaskPage()
+            project_dir = Path(canonical_root) / ".local-ai-hub"
+            if (project_dir / "project.json").is_file() and (project_dir / "agent-os").is_dir():
+                from .repo_agent_state import ensure_agent_state_projection_current
+
+                projection = ensure_agent_state_projection_current(
+                    canonical_root, Path(self.state_store.db_path).parent,
+                )
+                if projection.get("success") is not True:
+                    raise RuntimeError(projection.get("error", "Agent OS projection refresh failed"))
         now = time.time()
         normalized_query = self._normalize_search_text(query or "")
         query_terms = [term for term in normalized_query.split() if term]
@@ -501,11 +532,12 @@ class TaskCoreMixin:
                 if canonical_root is not None:
                     where_clauses.append(
                         "json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer' "
-                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 3 "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 4 "
                         "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.project_id') = ? "
-                        "AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?)"
+                        "AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?) "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.snapshot_id') = ?"
                     )
-                    params.extend((canonical_project_id, canonical_worktree_id))
+                    params.extend((canonical_project_id, canonical_worktree_id, canonical_snapshot_id))
                 if not query_terms and not include_stale:
                     where_clauses.append(
                         "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
@@ -582,13 +614,24 @@ class TaskCoreMixin:
         canonical_root: str | None = None
         canonical_project_id: str | None = None
         canonical_worktree_id: str | None = None
+        canonical_snapshot_id: str | None = None
         if repo_root is not None:
             try:
                 canonical_root = _canonical_repository_root(repo_root)
                 canonical_project_id = project_scope_id(canonical_root)
                 canonical_worktree_id = worktree_scope_id(canonical_root)
+                canonical_snapshot_id = repository_snapshot_id(canonical_root)
             except ValueError:
                 return 0
+            project_dir = Path(canonical_root) / ".local-ai-hub"
+            if (project_dir / "project.json").is_file() and (project_dir / "agent-os").is_dir():
+                from .repo_agent_state import ensure_agent_state_projection_current
+
+                projection = ensure_agent_state_projection_current(
+                    canonical_root, Path(self.state_store.db_path).parent,
+                )
+                if projection.get("success") is not True:
+                    raise RuntimeError(projection.get("error", "Agent OS projection refresh failed"))
         def _fetch_count() -> int:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 where_clauses = []
@@ -599,11 +642,12 @@ class TaskCoreMixin:
                 if canonical_root is not None:
                     where_clauses.append(
                         "json_type(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 'integer' "
-                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 3 "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.version') = 4 "
                         "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.project_id') = ? "
-                        "AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?)"
+                        "AND (owner='canonical-git' OR json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.worktree_id') = ?) "
+                        "AND json_extract(CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END, '$.state_data._agent_task_scope.snapshot_id') = ?"
                     )
-                    params.extend((canonical_project_id, canonical_worktree_id))
+                    params.extend((canonical_project_id, canonical_worktree_id, canonical_snapshot_id))
                 if not include_stale:
                     where_clauses.append(
                         "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "

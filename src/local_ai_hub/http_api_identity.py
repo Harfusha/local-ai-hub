@@ -389,7 +389,7 @@ class HttpIdentityMixin:
         self._send(200, {"success": True, "task": result.to_dict()}); return
 
     def _request_task(self, task_id: str, root: str) -> Any | None:
-        task = services_module.APP.agent_tasks.get(task_id) if services_module.APP is not None and getattr(services_module.APP, "agent_tasks", None) else None
+        task = services_module.APP.agent_tasks.get(task_id, repo_root=root) if services_module.APP is not None and getattr(services_module.APP, "agent_tasks", None) else None
         if task is None or not self._task_matches_request(task, root):
             self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
             return None

@@ -34,3 +34,16 @@ def worktree_scope_id(repo_root: str | Path) -> str:
     """Return a local-only scope for runtime work tied to one checkout path."""
     root = Path(repo_root).expanduser().resolve(strict=True)
     return hashlib.sha256(str(root).casefold().encode("utf-8")).hexdigest()
+
+
+def repository_snapshot_id(repo_root: str | Path) -> str:
+    """Return a local fence identity for the current Git branch and HEAD."""
+    root = Path(repo_root).expanduser().resolve(strict=True)
+    from .repo_knowledge import _git_checkout_generation
+
+    generation = _git_checkout_generation(root)
+    # HEAD is the repository content snapshot. Branch and worktree paths are
+    # tracked separately for projection refresh and local ownership.
+    revision = generation[2] if generation is not None else None
+    encoded = json.dumps(revision, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

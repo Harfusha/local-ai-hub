@@ -18,7 +18,7 @@ from .agent_state_inventory import _identity, _sidecars_absent
 from .repo_knowledge import RepoKnowledgeStore, _digest_value, _encode, _path_for, validate_knowledge_file
 from .repo_knowledge_batch import preview_knowledge_batch
 from .repo_plan.schema_validation import RepoPlanValidationError
-from .project_identity import project_scope_id
+from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 _MAX_BATCH = 16
 _MAX_JSON_BYTES = 65536
@@ -482,26 +482,40 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
     if not db.exists():
         return {"status": "no_legacy_state", "project_id": project_id, "records": 0}
 
+    source_identity = _identity(db)
+    source_snapshot = _digest_value(list(source_identity))
+    if db.is_symlink() or getattr(db, "is_junction", lambda: False)() or not _sidecars_absent(db):
+        raise RepoPlanValidationError("Project state migration requires a clean offline database")
+    try:
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro&immutable=1", uri=True, timeout=1.0)) as con:
+            source_tables = {
+                str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+    except sqlite3.Error as exc:
+        raise RepoPlanValidationError("Project state migration database is unreadable") from exc
+    if _identity(db) != source_identity:
+        raise RepoPlanValidationError("Legacy project state snapshot changed during migration inventory")
+
     # Do not inspect legacy paths or databases after this project has been cut over.
     repository_roots = tuple(sorted(set(_registered_project_roots(root, project_id)) | set(
         _database_project_roots(state, root, project_id)
     )))
+    if _identity(db) != source_identity:
+        raise RepoPlanValidationError("Legacy project state snapshot changed during migration inventory")
 
     counts = {"task": 0, "memory": 0, "incident": 0}
-    plans = (
-        ("task", preview_legacy_canonical_task_batch, "after_task_id", "next_after_task_id"),
-        ("memory", preview_legacy_memory_batch, "after_record_id", "next_after_record_id"),
-        ("incident", preview_legacy_incident_batch, "after_incident_id", "next_after_incident_id"),
-    )
-    for kind, previewer, cursor_name, next_name in plans:
+    plans = tuple(plan for plan in (
+        ("task", "agent_tasks_projection", preview_legacy_canonical_task_batch, "after_task_id", "next_after_task_id"),
+        ("memory", "agent_memory_records", preview_legacy_memory_batch, "after_record_id", "next_after_record_id"),
+        ("incident", "agent_incidents", preview_legacy_incident_batch, "after_incident_id", "next_after_incident_id"),
+    ) if plan[1] in source_tables)
+    for kind, _table, previewer, cursor_name, next_name in plans:
         cursor = ""
-        expected_snapshot = ""
         while True:
             batch = previewer(
                 state, store, limit=16,
-                **{cursor_name: cursor, "expected_snapshot": expected_snapshot, "repository_roots": repository_roots},
+                **{cursor_name: cursor, "expected_snapshot": source_snapshot, "repository_roots": repository_roots},
             )
-            expected_snapshot = batch["snapshot"]
             states = batch["states"]
             blocked = [item for item in states if item["state"] not in {"review_required", "already_published", "blocked_live_attempt"}]
             if blocked:
@@ -512,7 +526,7 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
                 if not isinstance(preview, dict) or not isinstance(preview.get("preview_digest"), str):
                     raise RepoPlanValidationError(f"Project {kind} migration preview is unavailable")
                 operation = hashlib.sha256(
-                    f"project-state-v1\0{project_id}\0{kind}\0{expected_snapshot}\0{cursor}".encode("utf-8")
+                    f"project-state-v1\0{project_id}\0{kind}\0{source_snapshot}\0{cursor}".encode("utf-8")
                 ).hexdigest()
                 result = apply_knowledge_batch(
                     store, records, preview_digest=preview["preview_digest"], operation_id=operation,
@@ -528,6 +542,8 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
                 raise RepoPlanValidationError(f"Project {kind} migration pagination did not advance")
             cursor = next_cursor
 
+    if _identity(db) != source_identity:
+        raise RepoPlanValidationError("Legacy project state snapshot changed before migration cutover")
     saved["projects"][project_id] = {"status": "complete", "records": counts}
     _write_project_migration_marker(marker, saved)
     return {"status": "migrated", "project_id": project_id, "records": counts}
@@ -537,6 +553,124 @@ def _write_project_migration_marker(marker: Path, saved: dict[str, Any]) -> None
     """Persist the one-time cutover marker atomically inside local state."""
     marker.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix="project-state-migration-", suffix=".tmp", dir=marker.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(saved, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, marker)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def migrate_runtime_task_scopes_on_update(state_dir: Path | str) -> dict[str, Any]:
+    """Fence pre-cutover local task attempts during the explicit updater run."""
+    state = Path(state_dir).expanduser().resolve(strict=True)
+    marker = state / "agent_task_scope_v4_migration.json"
+    if marker.is_symlink() or getattr(marker, "is_junction", lambda: False)():
+        raise RepoPlanValidationError("Task scope migration marker is not a regular file")
+    if marker.exists():
+        try:
+            saved = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise RepoPlanValidationError("Task scope migration marker is corrupt") from exc
+        if not isinstance(saved, dict) or saved.get("schema_version") != 1:
+            raise RepoPlanValidationError("Task scope migration marker is invalid")
+        return {"status": "already_migrated", "converted": 0, "retired": 0}
+
+    db = state / "agent_state.sqlite"
+    if not db.is_file():
+        return {"status": "no_legacy_state", "converted": 0, "retired": 0}
+    if db.is_symlink() or getattr(db, "is_junction", lambda: False)() or not _sidecars_absent(db):
+        raise RepoPlanValidationError("Task scope update requires a clean offline database")
+
+    converted = 0
+    retired = 0
+    with closing(sqlite3.connect(db.as_uri() + "?mode=rw", uri=True, timeout=2.0, isolation_level=None)) as con:
+        con.execute("PRAGMA trusted_schema=OFF")
+        con.execute("BEGIN IMMEDIATE")
+        tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "agent_tasks_projection" not in tables:
+            con.commit()
+            _write_scope_migration_marker(marker, {"schema_version": 1, "converted": 0, "retired": 0})
+            return {"status": "no_scoped_tasks", "converted": 0, "retired": 0}
+        rows = con.execute(
+            "SELECT task_id,status,lease_id,heartbeat_expires_at,checkpoint "
+            "FROM agent_tasks_projection ORDER BY task_id LIMIT 10001"
+        ).fetchall()
+        if len(rows) > 10000:
+            con.rollback()
+            raise RepoPlanValidationError("Task scope update exceeds the migration bound")
+        for task_id, status, lease_id, heartbeat, checkpoint_raw in rows:
+            try:
+                checkpoint = json.loads(checkpoint_raw or "{}")
+            except (TypeError, ValueError) as exc:
+                con.rollback()
+                raise RepoPlanValidationError("Task scope update found malformed checkpoint data") from exc
+            if not isinstance(checkpoint, dict):
+                con.rollback()
+                raise RepoPlanValidationError("Task scope update found malformed checkpoint data")
+            state_data = checkpoint.get("state_data", {})
+            if not isinstance(state_data, dict):
+                con.rollback()
+                raise RepoPlanValidationError("Task scope update found malformed state data")
+            scope = state_data.get("_agent_task_scope")
+            if scope is None or (isinstance(scope, dict) and scope.get("version") == 4):
+                continue
+            if not isinstance(scope, dict) or scope.get("version") not in {2, 3}:
+                con.rollback()
+                raise RepoPlanValidationError("Task scope update found an unsupported scope contract")
+            old_root = scope.get("repo_root")
+            try:
+                if not isinstance(old_root, str) or not Path(old_root).is_absolute():
+                    raise ValueError
+                root = Path(old_root).resolve(strict=True)
+                if not root.is_dir():
+                    raise ValueError
+                scope = {
+                    "version": 4,
+                    "project_id": project_scope_id(root),
+                    "worktree_id": worktree_scope_id(root),
+                    "repo_root": str(root),
+                    "snapshot_id": repository_snapshot_id(root),
+                }
+                state_data["_agent_task_scope"] = scope
+                if status in {"planned", "active", "waiting", "verifying"}:
+                    checkpoint["blockers"] = list(checkpoint.get("blockers", []))
+                    checkpoint["blockers"].append(
+                        "Updater fenced this in-flight task; re-review it against the current Git snapshot before continuing."
+                    )
+                    status = "blocked"
+                con.execute(
+                    "UPDATE agent_tasks_projection SET status=?,lease_id='',heartbeat_expires_at=0,checkpoint=?,updated_at=? WHERE task_id=?",
+                    (status, json.dumps(checkpoint, ensure_ascii=False), time.time(), task_id),
+                )
+                converted += 1
+            except (OSError, RuntimeError, TypeError, ValueError):
+                state_data.pop("_agent_task_scope", None)
+                state_data["_retired_repository_scope"] = hashlib.sha256(
+                    str(old_root).encode("utf-8", errors="replace")
+                ).hexdigest()
+                checkpoint["blockers"] = list(checkpoint.get("blockers", []))
+                checkpoint["blockers"].append(
+                    "Updater could not verify the old checkout; task is archived as local history."
+                )
+                con.execute(
+                    "UPDATE agent_tasks_projection SET status='abandoned',lease_id='',heartbeat_expires_at=0,checkpoint=?,updated_at=? WHERE task_id=?",
+                    (json.dumps(checkpoint, ensure_ascii=False), time.time(), task_id),
+                )
+                retired += 1
+        con.commit()
+
+    _write_scope_migration_marker(marker, {"schema_version": 1, "converted": converted, "retired": retired})
+    return {"status": "migrated", "converted": converted, "retired": retired}
+
+
+def _write_scope_migration_marker(marker: Path, saved: dict[str, Any]) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix="task-scope-v4-", suffix=".tmp", dir=marker.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(saved, handle, sort_keys=True, separators=(",", ":"))

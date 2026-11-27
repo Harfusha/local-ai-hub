@@ -17,7 +17,8 @@ from .agent_incidents import _incident_scope_key
 from .repo_project_tasks import list_project_tasks
 from .repo_project_memory import list_project_memory
 from .repo_project_incidents import list_project_incidents
-from .project_identity import project_scope_id, worktree_scope_id
+from .repo_knowledge import _git_checkout_generation
+from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 AGENT_OS_SUBDIRS = ("tasks", "memory", "incidents", "handoffs", "verification")
 
@@ -47,6 +48,10 @@ def rebuild_agent_state_projection(
     """
     root = Path(repo_root).resolve(strict=True)
     try:
+        checkout_generation = _git_checkout_generation(root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"success": False, "error": f"Git checkout snapshot is unavailable: {exc}"}
+    try:
         project_id = project_scope_id(root)
         worktree_id = worktree_scope_id(root)
     except (OSError, ValueError) as exc:
@@ -74,6 +79,12 @@ def rebuild_agent_state_projection(
                 PRIMARY KEY (repo_root, record_kind, record_id)
             )"""
         )
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS project_projection_meta.snapshots (
+                repo_root TEXT PRIMARY KEY,
+                generation TEXT NOT NULL
+            )"""
+        )
         con.execute("BEGIN IMMEDIATE")
 
         # 1. Rebuild tasks projection
@@ -87,10 +98,11 @@ def rebuild_agent_state_projection(
             checkpoint = dict(payload.get("checkpoint", {}))
             checkpoint["state_data"] = {
                 "_agent_task_scope": {
-                    "version": 3,
+                    "version": 4,
                     "project_id": project_id,
                     "worktree_id": worktree_id,
                     "repo_root": str(root),
+                    "snapshot_id": repository_snapshot_id(root),
                 }
             }
             checkpoint_json = json.dumps(checkpoint, ensure_ascii=False)
@@ -124,6 +136,7 @@ def rebuild_agent_state_projection(
                 if existing_root and existing_root != str(root):
                     existing_checkpoint["state_data"]["_agent_task_scope"]["repo_root"] = str(root)
                     existing_checkpoint["state_data"]["_agent_task_scope"]["worktree_id"] = worktree_id
+                    existing_checkpoint["state_data"]["_agent_task_scope"]["snapshot_id"] = repository_snapshot_id(root)
                     try:
                         same_content = (
                             existing_project_id == project_id
@@ -375,6 +388,14 @@ def rebuild_agent_state_projection(
                     (str(root), record_kind, record_id),
                 )
 
+        if _git_checkout_generation(root) != checkout_generation:
+            con.rollback()
+            return {"success": False, "error": "Git checkout changed during projection rebuild"}
+        con.execute(
+            "INSERT OR REPLACE INTO project_projection_meta.snapshots (repo_root, generation) VALUES (?, ?)",
+            (str(root), json.dumps(checkout_generation, separators=(",", ":"))),
+        )
+
         con.commit()
 
     return {
@@ -383,6 +404,32 @@ def rebuild_agent_state_projection(
         "repo_root": str(root),
         "state_dir": str(state_dir),
     }
+
+
+def ensure_agent_state_projection_current(
+    repo_root: Path | str, state_dir: Path | str,
+) -> dict[str, Any]:
+    """Refresh a checkout projection when its branch or HEAD changed."""
+    root = Path(repo_root).resolve(strict=True)
+    try:
+        generation = _git_checkout_generation(root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"success": False, "error": f"Git checkout snapshot is unavailable: {exc}"}
+    metadata_db = Path(state_dir).resolve() / "agent_project_projection.sqlite"
+    try:
+        with closing(sqlite3.connect(str(metadata_db), timeout=2.0)) as con:
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='snapshots'"
+            ).fetchone()
+            if exists:
+                row = con.execute(
+                    "SELECT generation FROM snapshots WHERE repo_root=?", (str(root),)
+                ).fetchone()
+                if row and row[0] == json.dumps(generation, separators=(",", ":")):
+                    return {"success": True, "rebuilt": False, "repo_root": str(root)}
+    except sqlite3.Error as exc:
+        return {"success": False, "error": f"Projection snapshot lookup failed: {exc}"}
+    return rebuild_agent_state_projection(root, state_dir)
 
 
 def _ensure_projection_schema(con: sqlite3.Connection) -> None:

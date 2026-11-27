@@ -9,6 +9,7 @@ import pytest
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.agent_state_migration import (
+    migrate_runtime_task_scopes_on_update,
     migrate_project_state_on_update,
 )
 from local_ai_hub.agent_incidents import _incident_scope_key
@@ -87,6 +88,99 @@ def test_update_migration_resumes_after_a_late_blocker(tmp_path: Path):
     resumed = migrate_project_state_on_update(state_dir, root)
     assert resumed["status"] == "migrated"
     assert resumed["records"] == {"task": 0, "memory": 0, "incident": 1}
+
+
+def test_update_migration_rejects_source_change_between_record_kinds(tmp_path: Path, monkeypatch):
+    import local_ai_hub.agent_state_migration as migration
+
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    import local_ai_hub.repo_knowledge_batch as knowledge_batch
+
+    original_apply = knowledge_batch.apply_knowledge_batch
+    changed = False
+
+    def mutate_legacy_db_after_first_kind(*args, **kwargs):
+        nonlocal changed
+        result = original_apply(*args, **kwargs)
+        if not changed:
+            changed = True
+            with closing(sqlite3.connect(state_dir / "agent_state.sqlite")) as con:
+                con.execute("UPDATE agent_incidents SET attempts=attempts+1 WHERE incident_id='inc-mig-1'")
+                con.commit()
+        return result
+
+    monkeypatch.setattr(knowledge_batch, "apply_knowledge_batch", mutate_legacy_db_after_first_kind)
+    with pytest.raises(RepoPlanValidationError, match="snapshot changed"):
+        migrate_project_state_on_update(state_dir, root)
+
+    assert not (state_dir / "project_state_migration_v1.json").exists()
+    assert (root / ".local-ai-hub/agent-os/tasks/task-mig-1.json").is_file()
+    assert not (root / ".local-ai-hub/agent-os/memory/mem-mig-1.json").exists()
+    assert not (root / ".local-ai-hub/agent-os/incidents/inc-mig-1.json").exists()
+
+
+def test_update_migrates_old_runtime_task_scope_once_and_fences_active_attempt(tmp_path: Path):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".local-ai-hub/project.json"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "project identity"], check=True, capture_output=True)
+    db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        row = con.execute("SELECT checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'").fetchone()
+        checkpoint = json.loads(row[0])
+        checkpoint["state_data"]["_agent_task_scope"]["version"] = 3
+        con.execute(
+            "UPDATE agent_tasks_projection SET status='active',lease_id='old-lease',heartbeat_expires_at=9999999999,checkpoint=? WHERE task_id='task-mig-1'",
+            (json.dumps(checkpoint),),
+        )
+        con.commit()
+
+    first = migrate_runtime_task_scopes_on_update(state_dir)
+    assert first == {"status": "migrated", "converted": 1, "retired": 0}
+    with closing(sqlite3.connect(db)) as con:
+        status, lease_id, heartbeat, checkpoint_raw = con.execute(
+            "SELECT status,lease_id,heartbeat_expires_at,checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'"
+        ).fetchone()
+    migrated = json.loads(checkpoint_raw)["state_data"]["_agent_task_scope"]
+    assert status == "blocked"
+    assert not lease_id and heartbeat == 0
+    assert migrated["version"] == 4
+    assert migrated["project_id"] == "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    assert migrated["snapshot_id"]
+    assert "re-review" in json.loads(checkpoint_raw)["blockers"][-1]
+    assert migrate_runtime_task_scopes_on_update(state_dir) == {
+        "status": "already_migrated", "converted": 0, "retired": 0,
+    }
+
+
+def test_update_retires_runtime_scope_when_old_checkout_is_gone(tmp_path: Path):
+    root, _, state_dir = _setup_migration_env(tmp_path)
+    old_root = tmp_path / "removed-checkout"
+    db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        row = con.execute("SELECT checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'").fetchone()
+        checkpoint = json.loads(row[0])
+        checkpoint["state_data"]["_agent_task_scope"]["version"] = 3
+        checkpoint["state_data"]["_agent_task_scope"]["repo_root"] = str(old_root)
+        con.execute(
+            "UPDATE agent_tasks_projection SET status='active',lease_id='old-lease',heartbeat_expires_at=9999999999,checkpoint=? WHERE task_id='task-mig-1'",
+            (json.dumps(checkpoint),),
+        )
+        con.commit()
+
+    result = migrate_runtime_task_scopes_on_update(state_dir)
+    assert result == {"status": "migrated", "converted": 0, "retired": 1}
+    with closing(sqlite3.connect(db)) as con:
+        status, lease_id, heartbeat, checkpoint_raw = con.execute(
+            "SELECT status,lease_id,heartbeat_expires_at,checkpoint FROM agent_tasks_projection WHERE task_id='task-mig-1'"
+        ).fetchone()
+    retired = json.loads(checkpoint_raw)["state_data"]
+    assert status == "abandoned"
+    assert not lease_id and heartbeat == 0
+    assert "_agent_task_scope" not in retired
+    assert len(retired["_retired_repository_scope"]) == 64
 
 
 def test_update_migration_recognizes_registered_linked_worktree_roots(tmp_path: Path):

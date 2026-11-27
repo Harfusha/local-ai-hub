@@ -66,6 +66,23 @@ def test_scoped_negative_knowledge_requires_exact_repository(tmp_path: Path):
     assert store.find_negative_knowledge("scope", root=str(root_b))[0]["incident_id"] == alpha_b.incident_id
 
 
+def test_repository_incident_scope_follows_project_identity_across_checkouts(tmp_path: Path):
+    store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    checkouts = [tmp_path / "checkout-a", tmp_path / "checkout-b"]
+    for root in checkouts:
+        control = root / ".local-ai-hub"
+        control.mkdir(parents=True)
+        (control / "project.json").write_text(
+            '{"schema_version":1,"project_id":"' + project_id + '","mode":"shared"}',
+            encoding="utf-8",
+        )
+
+    incident = _capture(store, checkouts[0])
+
+    assert store.list_incidents(root=str(checkouts[1]))[0].incident_id == incident.incident_id
+
+
 def test_repository_negative_knowledge_excludes_owner_global_incidents(tmp_path: Path):
     store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
     root = tmp_path / "repo"

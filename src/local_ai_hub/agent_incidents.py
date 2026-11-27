@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
+from .project_identity import project_scope_id
 from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,19 @@ def _incident_scope_key(kind: str, value: Any) -> str:
         return ""
     if kind == "repository":
         try:
-            raw = os.path.normcase(str(Path(raw).expanduser().resolve(strict=False)))
-        except (OSError, RuntimeError, TypeError, ValueError):
-            return ""
+            raw = str(uuid.UUID(raw))
+        except (AttributeError, TypeError, ValueError):
+            try:
+                candidate = Path(raw).expanduser().resolve(strict=True)
+                if candidate.is_dir():
+                    raw = project_scope_id(candidate)
+                else:
+                    raw = os.path.normcase(str(candidate))
+            except (OSError, RuntimeError, TypeError, ValueError):
+                try:
+                    raw = os.path.normcase(str(Path(raw).expanduser().resolve(strict=False)))
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    return ""
     digest = hashlib.sha256(f"agent-incident:{kind}\0{raw}".encode("utf-8")).hexdigest()
     return digest
 

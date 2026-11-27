@@ -27,14 +27,15 @@ def _handler(headers: dict[str, str], *, method: str = "GET", path: str = "/api/
 
 
 def _task_scope(root):
-    from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
+    from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
     canonical_root = str(Path(root).resolve())
     return {
-        "version": 3,
+        "version": 4,
         "project_id": project_scope_id(canonical_root),
         "worktree_id": worktree_scope_id(canonical_root),
         "repo_root": canonical_root,
+        "snapshot_id": repository_snapshot_id(canonical_root),
     }
 
 
@@ -841,7 +842,7 @@ def test_task_lookup_is_bound_to_repository_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config=app.config,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "same-task" else None),
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task_a if task_id == "same-task" else None),
     ))
     allowed = _handler({})
     assert http_server.Handler._request_task(allowed, "same-task", str(root_a.resolve())) is task_a
@@ -896,7 +897,7 @@ def test_task_completion_rejects_missing_owner(tmp_path, monkeypatch):
     app = SimpleNamespace(
         config={"server": {"state_dir": str(tmp_path)}},
         agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda _task_id: task),
+        agent_tasks=SimpleNamespace(get=lambda _task_id, **_kwargs: task),
         agent_verification=object(),
     )
     app.agent_tasks.state_store = SimpleNamespace(enabled=True)
@@ -907,7 +908,7 @@ def test_task_completion_rejects_missing_owner(tmp_path, monkeypatch):
         app,
     )
 
-    assert responses[0][0] == 403
+    assert responses[0][0] == 403, responses[0]
     assert responses[0][1]["error_code"] == "task_owner_mismatch"
 
 
@@ -1102,7 +1103,7 @@ def test_memory_task_query_requires_existing_task_in_bound_root(tmp_path, monkey
             "allowed_roots": [str(tmp_path)],
         }},
         agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "known-task" else None),
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task if task_id == "known-task" else None),
     ))
 
     missing = _handler({})
@@ -1136,7 +1137,7 @@ def test_verification_scope_requires_existing_task_owned_by_root(tmp_path, monke
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(tmp_path)],
     }}, agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task if task_id == "task-a" else None)))
 
     allowed = _handler({})
     assert http_server.Handler._bind_task_payload(allowed, {"root": str(root_a), "task_id": "task-a"}) is True
@@ -1169,7 +1170,7 @@ def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeyp
             "allowed_roots": [str(tmp_path)],
         }},
         agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None),
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task if task_id == "task-a" else None),
         recovery=SimpleNamespace(
             lookup=lambda *_args, **_kwargs: None,
             begin=lambda *_args, **_kwargs: None,
@@ -1265,7 +1266,7 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
         agent_state=state,
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
-            get=lambda task_id: task if task_id == "task-1" else None,
+            get=lambda task_id, **_kwargs: task if task_id == "task-1" else None,
             reap_expired_heartbeats=lambda now=None, *, auto_recover=False, repo_root=None, task_id=None, response_budget_tokens=None: calls.append((
                 "reap", {"auto_recover": auto_recover, "repo_root": repo_root, "task_id": task_id}
             )) or ["task-1"],
@@ -1320,7 +1321,7 @@ def test_task_reaper_uses_authenticated_token_and_explicit_repository_root(tmp_p
         agent_state=state,
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
-            get=lambda task_id: task if task_id == "task-1" else None,
+            get=lambda task_id, **_kwargs: task if task_id == "task-1" else None,
             reap_expired_heartbeats=lambda **kwargs: calls.append(kwargs) or ["task-1"],
         ),
     )
@@ -2268,7 +2269,7 @@ def test_context_compile_binds_existing_task_root_without_changing_task_id_contr
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(root)],
     }}, agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task if task_id == "task-a" else None)))
     handler = _handler({})
     payload = {"action": "compile", "task_id": "task-a", "session_id": "session-context-real"}
 
@@ -2294,7 +2295,7 @@ def test_context_compile_rejects_foreign_or_unknown_task_before_compile(tmp_path
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(tmp_path)],
     }}, agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "task-a" else None)))
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task_a if task_id == "task-a" else None)))
 
     for payload in ({"task_id": "missing"}, {"task_id": "task-a", "root": str(root_b)}):
         handler = _handler({})
@@ -2318,7 +2319,7 @@ def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
         config={"security": {
             "allowed_roots": [str(root)],
         }},
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None),
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task if task_id == "task-a" else None),
         agent_state=SimpleNamespace(
             enabled=True,
             db_path=agent_state.db_path,
@@ -2361,7 +2362,7 @@ def test_task_blackboard_access_requires_owned_task_board(tmp_path, monkeypatch)
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
         "allowed_roots": [str(root)],
     }}, agent_state=agent_state,
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
+        agent_tasks=SimpleNamespace(get=lambda task_id, **_kwargs: task if task_id == "task-a" else None)))
 
     allowed = _handler({})
     payload = {"action": "update", "root": str(root), "task_id": "task-a", "board_id": "task:task-a"}

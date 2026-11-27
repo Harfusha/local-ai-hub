@@ -79,7 +79,7 @@ class TaskQuestionMixin:
                         document = "CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END"
                         invalid_contracts = ["NOT json_valid(checkpoint)"]
                         for path in ("$.state_data._agent_task_scope", "$.state_data.memory_context"):
-                            expected_version = 3 if path.endswith("_agent_task_scope") else 2
+                            expected_version = 4 if path.endswith("_agent_task_scope") else 2
                             checks = [
                                 f"json_type({document}, '{path}') != 'object'",
                                 f"COALESCE(json_type({document}, '{path}.{'version' if path.endswith('_agent_task_scope') else 'schema_version'}'), '') != 'integer'",
@@ -92,7 +92,8 @@ class TaskQuestionMixin:
                                     f"json_type({document}, '{path}.project_id') != 'text'",
                                     f"json_type({document}, '{path}.worktree_id') != 'text'",
                                     f"json_type({document}, '{path}.repo_root') != 'text'",
-                                    f"(SELECT COUNT(*) FROM json_each({document}, '{path}')) != 4",
+                                    f"json_type({document}, '{path}.snapshot_id') != 'text'",
+                                    f"(SELECT COUNT(*) FROM json_each({document}, '{path}')) != 5",
                                 ])
                             if path.endswith("memory_context"):
                                 checks.extend([

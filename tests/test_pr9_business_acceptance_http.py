@@ -136,6 +136,9 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
         })
         assert status == 200 and rebuilt["success"] is True
         assert rebuilt["rebuilt"] == {"tasks": 1, "memory": 1, "incidents": 1}
+        assert [item.incident_id for item in app.agent_incidents.list_incidents(root=str(root))] == [
+            "inc-billing-timeout",
+        ]
 
         status, task_result = _post(base_url, "/api/agent-state/tasks", {
             "action": "get", "root": str(root), "task_id": "task-idempotent-billing",

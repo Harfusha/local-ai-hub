@@ -6,6 +6,7 @@ from pathlib import Path
 
 import tools
 import tools.hubctl as hubctl
+import pytest
 
 
 def _invoke(monkeypatch, *args: str) -> int:
@@ -19,6 +20,19 @@ def test_hubctl_status_dispatch_reports_offline(monkeypatch, capsys):
 
     assert _invoke(monkeypatch, "status") == 0
     assert "Local AI Hub: Offline (stopped)" in capsys.readouterr().out
+
+
+def test_hubctl_rejects_removed_legacy_migration_flags(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "hubctl.py", "knowledge", "catalog", "--root", str(Path.cwd()),
+        "--after-task-id", "old-cursor", "--snapshot", "old-snapshot",
+    ])
+
+    with pytest.raises(SystemExit) as error:
+        hubctl.main()
+
+    assert error.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 def test_hubctl_start_dispatch_calls_start_and_reports_result(monkeypatch, capsys):

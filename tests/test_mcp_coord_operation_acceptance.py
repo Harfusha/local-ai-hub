@@ -16,7 +16,6 @@ from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
 from local_ai_hub.project_config import resolve_project_context
 from local_ai_hub.state_paths import configured_state_dir
-from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
 
 
 def _repository_coordination_id(root: str) -> str:
@@ -503,7 +502,6 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
         TaskCheckpoint(
             phase="baseline",
             state_data={
-                "_agent_task_scope": {"version": 3, "project_id": project_scope_id(tmp_path), "worktree_id": worktree_scope_id(tmp_path), "repo_root": str(tmp_path.resolve())},
                 "file_snapshots": {str(target): "baseline"},
             },
         ),
@@ -514,7 +512,6 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
         TaskCheckpoint(
             phase="changed",
             state_data={
-                "_agent_task_scope": {"version": 3, "project_id": project_scope_id(tmp_path), "worktree_id": worktree_scope_id(tmp_path), "repo_root": str(tmp_path.resolve())},
                 "file_snapshots": {str(target): "changed"},
             },
         ),

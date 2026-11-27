@@ -11,7 +11,7 @@ import pytest
 from local_ai_hub import app as app_module, operational_mode
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.services import LocalAIServices
-from local_ai_hub.project_identity import project_scope_id, worktree_scope_id
+from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 
 def watchdog(tmp_path, roots):
@@ -78,8 +78,9 @@ def warmup(tmp_path, monkeypatch):
         contract=SimpleNamespace(goal="Keep repository scope", acceptance_criteria=["scope"]),
         context=SimpleNamespace(session_id="chat-one"),
         checkpoint=SimpleNamespace(state_data={"_agent_task_scope": {
-            "version": 3, "project_id": project_scope_id(tmp_path),
+            "version": 4, "project_id": project_scope_id(tmp_path),
             "worktree_id": worktree_scope_id(tmp_path), "repo_root": str(tmp_path.resolve()),
+            "snapshot_id": repository_snapshot_id(tmp_path),
         }}),
     )
     instance = LocalAIServices.__new__(LocalAIServices)

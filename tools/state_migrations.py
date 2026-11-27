@@ -538,6 +538,59 @@ def _migrate_task_scopes_11_to_12(state: Path) -> None:
         raise RuntimeError("task scope migration failed verification after 11->12 conversion")
 
 
+def _task_scopes_v13(state: Path, *, migrate: bool) -> bool:
+    database = state / "agent_state.sqlite"
+    if migrate:
+        from local_ai_hub.agent_state_migration import migrate_runtime_task_scopes_on_update
+
+        migrate_runtime_task_scopes_on_update(state)
+    if not database.is_file():
+        return True
+    if database.is_symlink():
+        return False
+    try:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2.0)) as con:
+            if con.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                return False
+            tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "agent_tasks_projection" not in tables:
+                return True
+            for (raw,) in con.execute("SELECT checkpoint FROM agent_tasks_projection"):
+                try:
+                    checkpoint = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(checkpoint, dict):
+                    return False
+                state_data = checkpoint.get("state_data", {})
+                if not isinstance(state_data, dict):
+                    return False
+                scope = state_data.get("_agent_task_scope")
+                if scope is None:
+                    continue
+                if not isinstance(scope, dict):
+                    return False
+                if set(scope) != {"version", "project_id", "worktree_id", "repo_root", "snapshot_id"}:
+                    return False
+                if scope.get("version") != 4 or any(
+                    not isinstance(scope.get(key), str) or not scope[key]
+                    for key in ("project_id", "worktree_id", "repo_root", "snapshot_id")
+                ):
+                    return False
+    except (OSError, sqlite3.Error):
+        return False
+    return True
+
+
+def _state_schema_v13(state: Path) -> bool:
+    return _state_schema_v11(state) and _task_scopes_v13(state, migrate=False)
+
+
+def _migrate_task_scopes_12_to_13(state: Path) -> None:
+    if not _task_scopes_v13(state, migrate=True):
+        raise RuntimeError("task scope migration failed verification after 12->13 conversion")
+
+
 def _migrate_agent_schema_6_to_7(state: Path) -> None:
     database = state / "agent_state.sqlite"
     if database.exists():
@@ -701,6 +754,7 @@ MIGRATIONS: tuple[StateMigration, ...] = (
     StateMigration(9, 10, _migrate_laya_telemetry_9_to_10, _state_schema_v10),
     StateMigration(10, 11, _migrate_incident_placeholder_10_to_11, _state_schema_v11),
     StateMigration(11, 12, _migrate_task_scopes_11_to_12, _state_schema_v12),
+    StateMigration(12, 13, _migrate_task_scopes_12_to_13, _state_schema_v13),
 )
 
 
