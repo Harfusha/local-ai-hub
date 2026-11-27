@@ -92,7 +92,13 @@ class ChangeLedger:
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             count = db.execute("SELECT count(*) FROM change_annotations_v1 WHERE root=?", (root,)).fetchone()[0]
-            if count + len(ids) > _MAX_RETAINED:
+            # Updates of existing declarations must not consume new retention slots.
+            marks = ",".join("?" for _ in ids)
+            existing = db.execute(
+                "SELECT count(*) FROM change_annotations_v1 WHERE root=? AND actor=? AND atom IN (" + marks + ")",
+                (root, actor, *ids),
+            ).fetchone()[0]
+            if count + len(ids) - existing > _MAX_RETAINED:
                 raise ValueError("Local annotation retention limit reached")
             db.executemany("""INSERT INTO change_annotations_v1 VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(root,atom,actor) DO UPDATE SET task=excluded.task,status=excluded.status,
