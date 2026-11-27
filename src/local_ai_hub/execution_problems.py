@@ -17,7 +17,7 @@ MAX_PROBLEMS = 64
 
 
 def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
-    if type(raw) is not dict or set(raw) - {"id", "title", "criterion", "blocking", "evidence_ids"}:
+    if type(raw) is not dict or set(raw) - {"id", "title", "criterion", "blocking", "evidence_ids", "resolution_criterion"}:
         raise ValueError("invalid execution problem report")
     problem_id = _canonical(raw.get("id"), "problem id", 80)
     title = _canonical(raw.get("title"), "problem title", 240)
@@ -27,6 +27,11 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
     blocking = raw.get("blocking", True)
     if type(blocking) is not bool or (blocking and not criterion):
         raise ValueError("blocking problems require an acceptance criterion")
+    resolution = raw.get("resolution_criterion", "")
+    if ("resolution_criterion" in raw and
+            (type(resolution) is not str or not resolution or not criterion
+             or resolution == criterion or resolution not in criteria)):
+        raise ValueError("resolution criterion must be a distinct current acceptance criterion")
     evidence_ids = raw.get("evidence_ids", [])
     if type(evidence_ids) is not list or len(evidence_ids) > 8:
         raise ValueError("problem evidence references must be a bounded list")
@@ -37,6 +42,7 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
     return {
         "id": problem_id, "title": title, "criterion": criterion,
         "blocking": blocking, "evidence_ids": list(evidence_ids),
+        **({"resolution_criterion": resolution} if resolution else {}),
     }
 
 
@@ -77,7 +83,8 @@ def _validated_records(raw: Any) -> dict[str, Any]:
             raise ValueError("invalid persisted execution problem")
         report = record["report"]
         criterion = report.get("criterion", "") if type(report) is dict else ""
-        normalized = _normalize_report(report, (criterion,) if criterion else ())
+        resolution = report.get("resolution_criterion", "") if type(report) is dict else ""
+        normalized = _normalize_report(report, tuple(c for c in (criterion, resolution) if c))
         if problem_id != normalized["id"] or report != normalized:
             raise ValueError("invalid persisted execution problem identity")
         observed = record["reported_at"]
@@ -112,21 +119,37 @@ def project_problems(
         receipt = receipts.get(criterion) if criterion in valid else None
         receipt_id = getattr(receipt, "receipt_id", "")
         observation = getattr(receipt, "observed_at", 0.0)
-        closed = bool(
+        primary_closed = bool(
             receipt is not None and receipt_id
             and receipt_id != record["baseline_receipt_id"]
             and observation >= record["reported_at"]
         )
+        resolution = report.get("resolution_criterion", "")
+        confirmation = receipts.get(resolution) if resolution in valid else None
+        confirmation_id = getattr(confirmation, "receipt_id", "")
+        primary_evidence = getattr(receipt, "evidence_id", "")
+        confirmation_evidence = getattr(confirmation, "evidence_id", "")
+        confirmed = not resolution or bool(
+            confirmation is not None and confirmation_id and confirmation_id != receipt_id
+            and primary_evidence and confirmation_evidence and confirmation_evidence != primary_evidence
+            and getattr(confirmation, "observed_at", 0.0) >= max(observation, record["reported_at"])
+        )
+        closed = primary_closed and confirmed
         if closed:
             resolved += 1
         else:
             open_count += 1
             blocking += int(report["blocking"])
             if report["blocking"]:
-                blocking_criteria.add(criterion)
+                # Do not block a freshly verified primary while waiting for its
+                # confirmation, which may itself depend on the primary.
+                blocking_criteria.add(criterion if not primary_closed else resolution)
             if len(preview) < 12:
                 preview.append({"id": report["id"], "title": report["title"],
-                                "criterion": criterion, "blocking": report["blocking"]})
+                                "criterion": criterion, "blocking": report["blocking"],
+                                **({"resolution_criterion": resolution,
+                                    "resolution_status": "awaiting_confirmation" if primary_closed else "awaiting_primary"}
+                                   if resolution else {})})
     return {
         "total": len(records), "open": open_count, "resolved": resolved,
         "blocking_open": blocking, "blocking_criteria": sorted(blocking_criteria),
