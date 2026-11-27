@@ -4882,21 +4882,53 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
 
     A normal rerun preserves the config already living in the install directory.
     Passing --config is explicit replacement/import intent and therefore wins.
+    Legacy config migration is limited to an existing installation update.
     """
     if explicit is not None:
-        source = explicit.expanduser().resolve()
+        source = explicit.expanduser()
     else:
         local_config = SOURCE_ROOT / "config.toml"
         example_config = SOURCE_ROOT / "config.toml.example"
-        source = (local_config if local_config.is_file() else example_config).expanduser().resolve()
+        source = (local_config if local_config.is_file() else example_config).expanduser()
+
+    def installed_config_path(raw_config: dict[str, Any]) -> Path | None:
+        raw_setup = raw_config.get("setup", {})
+        if not isinstance(raw_setup, dict):
+            raise ValueError("config setup must be a table")
+        install_value = raw_setup.get("install_dir", "~/.local-ai-hub")
+        if not isinstance(install_value, str) or not install_value.strip() or "\x00" in install_value:
+            return None
+        return expand(install_value) / "config.toml"
+
+    def existing_install(installed_config: Path | None) -> bool:
+        if installed_config is None or installed_config.is_symlink() or not installed_config.is_file():
+            return False
+        entrypoint = installed_config.parent / "tools" / "service.py"
+        return entrypoint.is_file() and not entrypoint.is_symlink()
+
     if source.name != "config.toml.example":
-        run_config_migrations(source)
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"config source must be a regular file: {source}")
+        source = source.resolve()
+        raw = tomllib.loads(source.read_text(encoding="utf-8"))
+        installed = installed_config_path(raw)
+        if explicit is None and installed is not None and installed.is_file() and installed != source:
+            if installed.is_symlink():
+                raise ValueError(f"installed config must be a regular file: {installed}")
+            source = installed
+            raw = tomllib.loads(source.read_text(encoding="utf-8"))
+            installed = installed_config_path(raw)
+        if existing_install(installed):
+            run_config_migrations(source)
     cfg = load_hub_config(str(source))
     install_dir = expand(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub"))
-    installed = (install_dir / "config.toml").resolve()
+    installed = install_dir / "config.toml"
     if explicit is None and installed.exists() and installed != source:
+        if installed.is_symlink():
+            raise ValueError(f"installed config must be a regular file: {installed}")
         source = installed
-        run_config_migrations(source)
+        if existing_install(installed):
+            run_config_migrations(source)
         cfg = load_hub_config(str(source))
     return source, cfg, install_dir
 

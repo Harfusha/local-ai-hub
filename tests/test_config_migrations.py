@@ -94,11 +94,63 @@ def test_config_migration_converts_runtime_override_alongside_base_config(tmp_pa
     assert "debug_traces" not in migrated
 
 
-def test_setup_config_source_migrates_before_loading_runtime_config(tmp_path):
+def test_setup_does_not_migrate_legacy_config_for_fresh_install(tmp_path):
     from tools.setup import select_config_source
 
     path = tmp_path / "config.toml"
     install = tmp_path / "installed-hub"
+    path.write_text(
+        f'[setup]\ninstall_dir = "{install.as_posix()}"\n'
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        '[debug_traces]\nenabled = true\n',
+        encoding="utf-8",
+    )
+
+    original = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="config_schema_version.*updater"):
+        select_config_source(path)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("config.toml.backup-config-v0-*"))
+
+
+def test_setup_does_not_treat_a_config_file_as_an_existing_install(tmp_path):
+    from tools import setup
+
+    path = tmp_path / "config.toml"
+    install = tmp_path / "installed-hub"
+    install.mkdir()
+    (install / "config.toml").write_text(
+        f'[local_ai_hub]\nconfig_schema_version = 1\n[setup]\ninstall_dir = "{install.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    path.write_text(
+        f'[setup]\ninstall_dir = "{install.as_posix()}"\n'
+        '[debug_traces]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    original = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="config_schema_version.*updater"):
+        setup.select_config_source(path)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("config.toml.backup-config-v0-*"))
+
+
+def test_setup_config_source_migrates_only_for_an_existing_install(tmp_path):
+    from tools.setup import select_config_source
+
+    path = tmp_path / "config.toml"
+    install = tmp_path / "installed-hub"
+    install.mkdir()
+    (install / "config.toml").write_text(
+        f'[local_ai_hub]\nconfig_schema_version = 1\n[setup]\ninstall_dir = "{install.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    (install / "tools").mkdir()
+    (install / "tools" / "service.py").write_text("# existing Hub entrypoint\n", encoding="utf-8")
     path.write_text(
         f'[setup]\ninstall_dir = "{install.as_posix()}"\n'
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
@@ -112,6 +164,27 @@ def test_setup_config_source_migrates_before_loading_runtime_config(tmp_path):
     assert resolved_install == install
     assert config["telemetry"]["mode"] == "full"
     assert "debug_traces" not in tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def test_setup_does_not_migrate_when_install_target_config_is_invalid(tmp_path, monkeypatch):
+    from tools import setup
+
+    path = tmp_path / "config.toml"
+    install = tmp_path / "installed-hub"
+    install.mkdir()
+    (install / "config.toml").write_text(
+        f'[local_ai_hub]\nconfig_schema_version = 1\n[setup]\ninstall_dir = "{install.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    path.write_text('setup = "invalid"\n[debug_traces]\nenabled = true\n', encoding="utf-8")
+    original = path.read_text(encoding="utf-8")
+    monkeypatch.setattr(setup, "expand", lambda _value: install)
+
+    with pytest.raises(ValueError, match="setup.*table"):
+        setup.select_config_source(path)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("config.toml.backup-config-v0-*"))
 
 
 def test_managed_updater_migrates_before_strict_config_load(tmp_path):
