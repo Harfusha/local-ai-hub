@@ -24,7 +24,7 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Commands", &["Commands", "Worktrees"]),
     ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Laya"]),
     ("Service health", &["Runtime health", "Service health", "Diagnostics", "Audit"]),
-    ("Settings", &["Settings", "Settings — activity mode", "Updates"]),
+    ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Search workspaces"]),
 ];
@@ -169,6 +169,9 @@ struct Desktop {
     plan_status: String,
     vision_path: String,
     filter: String,
+    operator_catalog: Vec<Value>,
+    operator_name: String,
+    operator_fields: serde_json::Map<String, Value>,
     rows: Vec<Row>,
     snapshot: Option<Value>,
     snapshot_view: String,
@@ -197,7 +200,7 @@ impl Desktop {
             python_input: install.python.to_string_lossy().into_owned(),
             config_input: install.config.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             install, page: 0, view: 0, repo: String::new(), entity: String::new(),
-            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(),
+            reason: String::new(), prompt: String::new(), mode: "active".into(), feature: "status".into(), goal: String::new(), criteria: String::new(), memory_key: String::new(), memory_value: String::new(), memory_scope: "repository".into(), memory_kind: "fact".into(), memory_scope_id: String::new(), task_scope: "task".into(), task_risk: "normal".into(), incident_kind: String::new(), incident_message: String::new(), plan_title: String::new(), revision: String::new(), plan_task: String::new(), description: String::new(), archive_path: String::new(), semaphore: String::new(), capacity: 1, trace_cursor: 0, task_offset: 0, task_query: String::new(), stream_id: String::new(), event_cursor: 0, live_events: Vec::new(), auto_live: false, last_live: Instant::now(), update_version: String::new(), update_revision: String::new(), hardware_profile: "auto".into(), plan_status: "planned".into(), vision_path: String::new(), filter: String::new(), operator_catalog: Vec::new(), operator_name: String::new(), operator_fields: serde_json::Map::new(),
             rows: Vec::new(), snapshot: None, snapshot_view: String::new(), raw_view: false, reveal_trace: false, record_detail: None, visible: Vec::new(), detail: None, pending: None, busy: None,
             receiver: None, status: "Desktop ready. Check the Hub installation and service.".into(),
             service: None, last_probe: Instant::now() - Duration::from_secs(30),
@@ -268,6 +271,11 @@ impl Desktop {
                         } else {
                             flatten(&value, "", 0, &mut self.rows);
                         }
+                        if done.label == "Operator catalog" {
+                            self.operator_catalog = value["operations"].as_array().cloned().unwrap_or_default();
+                            self.operator_name.clear();
+                            self.operator_fields.clear();
+                        }
                         if done.label == "Updates" {
                             self.update_version = value.pointer("/check/target_version").and_then(Value::as_str).unwrap_or("").into();
                             self.update_revision = value.pointer("/check/revision").and_then(Value::as_str).unwrap_or("").into();
@@ -278,7 +286,7 @@ impl Desktop {
                         self.snapshot = Some(value);
                         self.snapshot_view = done.label.clone();
                         self.refilter();
-                        self.status = format!("{}: response received{}", done.label,
+                        self.status = format!("{}: {}{}", done.label, if self.snapshot.as_ref().is_some_and(|v| v["success"] == false) { "operation failed — inspect details" } else { "response received" },
                             if self.rows.len() >= MAX_ROWS { " (display capped)" } else { "" });
                         self.last_probe = Instant::now() - Duration::from_secs(30);
                     }
@@ -307,6 +315,7 @@ impl Desktop {
         let view = self.current();
         let data = match view {
             "Updates" => request("update_status", json!({})),
+            "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
             "Tasks" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
             "Vision review" => { self.status = "Choose an image and enter a prompt first.".into(); return; }
@@ -555,6 +564,7 @@ impl Desktop {
                 });
             }
             8 => {
+                if self.current() == "Operator tools" { self.operator_tools(ui, ctx); return; }
                 if self.current() == "Updates" {
                     ui.small("Managed installations only. The Hub checks the exact release candidate again before scheduling the update and restart.");
                     if ui.button("Check for updates").clicked() {
@@ -644,6 +654,67 @@ impl Desktop {
                 });
             }
             _ => {}
+        }
+    }
+    fn operator_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.small("Local CLI operations with fixed argument schemas. Offline reads do not start the Hub. Mutations require confirmation.");
+        if self.operator_catalog.is_empty() {
+            if ui.button("Load operator catalog").clicked() { self.refresh(ctx); }
+            return;
+        }
+        let previous = self.operator_name.clone();
+        egui::ComboBox::from_id_salt("operator_name").selected_text(
+            if self.operator_name.is_empty() { "Choose operation" } else { &self.operator_name }
+        ).show_ui(ui, |ui| {
+            for operation in &self.operator_catalog {
+                if let Some(name) = operation["name"].as_str() {
+                    ui.selectable_value(&mut self.operator_name, name.to_owned(), name);
+                }
+            }
+        });
+        if previous != self.operator_name { self.operator_fields.clear(); }
+        let Some(operation) = self.operator_catalog.iter().find(|v| v["name"].as_str() == Some(&self.operator_name)).cloned() else { return; };
+        if operation["requires_root"] == true { ui.label(format!("Repository: {}", if self.repo.is_empty() { "(select root above)" } else { &self.repo })); }
+        if let Some(fields) = operation["fields"].as_array() {
+            for field in fields {
+                let Some(name) = field["name"].as_str() else { continue; };
+                let label = field["label"].as_str().unwrap_or(name);
+                let value = self.operator_fields.entry(name.to_owned()).or_insert(Value::Null);
+                match field["kind"].as_str() {
+                    Some("bool") => {
+                        let mut checked = value.as_bool().unwrap_or(false);
+                        ui.checkbox(&mut checked, label);
+                        *value = json!(checked);
+                    }
+                    Some("choice") => {
+                        let mut selected = value.as_str().unwrap_or("").to_owned();
+                        ui.label(label);
+                        egui::ComboBox::from_id_salt(("operator_field", name)).selected_text(&selected).show_ui(ui, |ui| {
+                            if field["required"] != true { ui.selectable_value(&mut selected, String::new(), "(default)"); }
+                            if let Some(choices) = field["choices"].as_array() {
+                                for choice in choices.iter().filter_map(Value::as_str) {
+                                    ui.selectable_value(&mut selected, choice.to_owned(), choice);
+                                }
+                            }
+                        });
+                        *value = json!(selected);
+                    }
+                    _ => {
+                        let mut input = value.as_str().unwrap_or("").to_owned();
+                        ui.label(label);
+                        if field["kind"] == "lines" { ui.text_edit_multiline(&mut input); }
+                        else { ui.text_edit_singleline(&mut input); }
+                        *value = json!(input);
+                    }
+                }
+            }
+        }
+        if ui.button("Run selected operation").clicked() {
+            let payload = request("operator_run", json!({"name": self.operator_name,
+                "root": self.repo, "fields": self.operator_fields, "confirmed": true}));
+            let name = self.operator_name.clone();
+            if operation["requires_confirmation"] == true { self.confirm(&name, payload); }
+            else { self.submit(ctx, name, payload); }
         }
     }
     fn worktrees(&mut self, ui: &mut egui::Ui) {
@@ -907,8 +978,13 @@ impl eframe::App for Desktop {
                 ui.label(&self.pending.as_ref().unwrap().label);
                 ui.label("This operation may change Hub state. Verify the selected repository and target.");
                 let args = &self.pending.as_ref().unwrap().payload["args"];
-                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind"] {
+                for key in ["root", "id", "task_id", "action", "file", "revision", "version", "key", "status", "scope", "kind", "name"] {
                     if let Some(value) = args[key].as_str() { ui.label(format!("{key}: {value}")); }
+                }
+                if let Some(fields) = args["fields"].as_object() {
+                    ui.collapsing("Reviewed operator parameters", |ui| {
+                        for (key, value) in fields { ui.label(format!("{key}: {value}")); }
+                    });
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { decision = Some(false); }

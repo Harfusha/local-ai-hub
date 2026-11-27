@@ -288,6 +288,7 @@ def main() -> int:
     parser.add_argument("--ports", action="store_true", help="Report listeners on ports 11436, 11437, 11439; do not signal them")
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
+    parser.add_argument("--no-auto-start", action="store_true", help="Do not start Hub implicitly for knowledge operations")
     args = parser.parse_args()
     if args.action == "mode":
         if args.sub_arg is not None and args.sub_arg not in ACTIVITY_MODES:
@@ -462,7 +463,7 @@ def main() -> int:
 
                 if args.apply or not 1 <= args.limit <= 64:
                     parser.error("handoff-preflight is read-only; limit must be 1 through 64")
-                response = HubClient(config_path=_config_arg(args.config)).post(
+                response = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start).post(
                     "/api/agent-state/tasks", {
                         "action": "list", "root": str(store.root),
                         "limit": args.limit + 1, "include_stale": True,
@@ -494,7 +495,7 @@ def main() -> int:
                     from local_ai_hub.repo_knowledge import _digest_value
                     from local_ai_hub.repo_task_handoff import attach_historical_verification, attach_source_dependencies
 
-                    handoff_client = HubClient(config_path=_config_arg(args.config))
+                    handoff_client = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start)
                     response = handoff_client.get_task(args.task_id, root=target_root)
                     if response.get("success") is not True or not isinstance(response.get("task"), dict):
                         print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
@@ -544,7 +545,7 @@ def main() -> int:
                 if preview["revision"] != args.expected_revision or preview["preview_digest"] != args.preview_digest:
                     print(json.dumps({"success": False, "error": "Handoff or dependencies changed; review again"}))
                     return 1
-                result = HubClient(config_path=_config_arg(args.config)).post(
+                result = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start).post(
                     "/api/agent-state/tasks", {
                         "action": "create", "root": target_root, "task_id": args.task_id,
                         "contract": preview["contract"],
@@ -597,7 +598,7 @@ def main() -> int:
                 if not args.apply:
                     print(json.dumps({"preview": True, "contract": contract}, indent=2, ensure_ascii=False))
                     return 0
-                result = HubClient(config_path=_config_arg(args.config)).create_task(
+                result = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start).create_task(
                     contract, task_id=args.task_id, root=str(store.root),
                 )
                 print(json.dumps(result, indent=2, ensure_ascii=False))

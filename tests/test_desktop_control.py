@@ -234,3 +234,32 @@ def test_native_update_install_requires_confirmation():
     with pytest.raises(ValueError, match="confirmation"):
         desktop.dispatch(control, {"op": "update_install", "args": {"version": "1.0.0"}})
     control._client.assert_not_called()
+
+
+def test_operator_catalog_is_available_without_hub():
+    control = MagicMock()
+    result = desktop.dispatch(control, {"op": "operator_catalog"})
+    assert any(row["name"] == "Knowledge query" for row in result["operations"])
+    control._client.assert_not_called()
+
+
+def test_operator_fields_cannot_inject_cli_flags(tmp_path):
+    from tools.desktop_operator import build_argv
+    argv, _ = build_argv({"name": "Knowledge query", "root": str(tmp_path),
+                          "fields": {"query": "--apply", "limit": "12"}})
+    assert "--query=--apply" in argv
+    assert "--apply" not in argv
+    assert "--no-auto-start" in argv
+    with pytest.raises(ValueError, match="Unknown operator field"):
+        build_argv({"name": "Knowledge query", "root": str(tmp_path), "fields": {"apply": True}})
+
+
+def test_operator_mutations_and_review_digests_fail_closed(tmp_path):
+    from tools.desktop_operator import build_argv
+    with pytest.raises(ValueError, match="confirmation"):
+        build_argv({"name": "Knowledge batch apply", "root": str(tmp_path)})
+    record = tmp_path / "batch.json"
+    record.write_text('{"records":[]}', encoding="utf-8")
+    with pytest.raises(ValueError, match="digest"):
+        build_argv({"name": "Knowledge batch apply", "root": str(tmp_path), "confirmed": True,
+                    "fields": {"record-file": str(record), "operation-id": "op"}})

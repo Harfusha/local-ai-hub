@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlencode, quote
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.client import HubClient
@@ -80,7 +81,7 @@ class HubControl:
         finally:
             client.close()
 
-    def _cli(self, args: tuple[str, ...], timeout: float) -> str:
+    def _cli(self, args: tuple[str, ...], timeout: float, *, structured: bool = False) -> Any:
         env = os.environ.copy()
         if self.config is not None:
             env["LOCAL_AI_CONFIG"] = self.config
@@ -90,6 +91,16 @@ class HubControl:
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             **hidden_run_kwargs(),
         )
+        if structured:
+            output = completed.stdout.strip()
+            try:
+                report = json.loads(output)
+            except ValueError:
+                report = {"output": output[-200_000:]}
+            return {"success": completed.returncode == 0 and not (
+                        isinstance(report, dict) and report.get("success") is False),
+                    "exit_code": completed.returncode, "report": report,
+                    "stderr": completed.stderr.strip()[-4000:]}
         if completed.returncode:
             raise RuntimeError(
                 f"Hub command failed (exit {completed.returncode}): "
@@ -266,6 +277,12 @@ def dispatch(control: HubControl, request: dict[str, Any]) -> Any:
     args = request.get("args", {})
     if not isinstance(args, dict):
         raise ValueError("args must be an object")
+    if op in {"operator_catalog", "operator_run"}:
+        from tools.desktop_operator import build_argv, catalog
+        if op == "operator_catalog":
+            return catalog()
+        argv, spec = build_argv(args)
+        return control._cli(argv, timeout=spec.timeout, structured=True)
     if op in {"bundle_import", "bundle_export", "diagnostics_export"}:
         return transfer(control, op, args)
     if op == "task_page":

@@ -24,14 +24,15 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, cast
+from typing import Any, Callable, Mapping, Protocol, cast
 
 from .budget import estimate_tokens
 
 class _Orjson(Protocol):
-    OPT_SORT_KEYS: int
+    OPT_NON_STR_KEYS: int
+    JSONEncodeError: type[Exception]
 
-    def dumps(self, value: Any, *, option: int = 0) -> bytes: ...
+    def dumps(self, value: Any, *, option: int = 0, default: Callable[[Any], Any] | None = None) -> bytes: ...
 
 
 try:
