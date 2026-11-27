@@ -25,7 +25,7 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Commands", &["Commands", "Worktrees"]),
     ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Ollama management", "Benchmark", "Telemetry report", "Model statistics", "Execution profiles", "Cache layers", "Agent statistics", "Execution routes", "Laya", "Laya capture"]),
     ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Recovery journal", "Diagnostics", "Audit"]),
-    ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
+    ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools", "Instruction compression"]),
     ("Activity", &["Activity", "Agent event stream"]),
     ("Transfers", &["Project and diagnostics archives"]),
 ];
@@ -228,7 +228,7 @@ fn request(op: &str, args: Value) -> Value { json!({"op": op, "args": args}) }
 fn confirmation_items(payload: &Value) -> Vec<(String, String)> {
     let args = &payload["args"];
     [
-        "root", "id", "task_id", "execution_id", "action", "file", "revision", "version",
+        "root", "id", "task_id", "execution_id", "action", "file", "revision", "version", "manifest", "manifest_sha256",
         "key", "status", "scope", "kind", "name", "model", "mode", "stream", "session_id",
         "record_id", "owner", "clone_id", "worktree_id", "branch", "global", "purge", "capacity",
         "title", "description", "criteria", "next_action", "accountable_role", "blocker",
@@ -573,6 +573,18 @@ impl Desktop {
                         self.reveal_trace = false;
                         self.detail = None;
                         self.record_detail = None;
+                        if done.label == "Instruction review" {
+                            let valid = value["success"] == true && value["action"] == "inspect"
+                                && value["manifest_sha256"].as_str().is_some_and(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+                                && value["manifest"].as_str().is_some_and(|p| !p.is_empty());
+                            if valid {
+                                self.entity = value["manifest"].as_str().unwrap().to_owned();
+                                self.revision = value["manifest_sha256"].as_str().unwrap().to_owned();
+                            } else { self.revision.clear(); }
+                        }
+                        if matches!(done.label.as_str(), "Apply reviewed instructions" | "Restore original instructions") {
+                            self.revision.clear();
+                        }
                         if done.label == "Plan detail" {
                             self.plan_draft = PlanDraft::from_response(&value, &self.entity, &self.plan_task);
                             self.revision = if value["plan"]["id"].as_str() == Some(self.entity.as_str()) && value["success"] == true {
@@ -798,6 +810,13 @@ impl Desktop {
             "Project and diagnostics archives" => { self.status = "Select an archive operation below.".into(); return; }
             "Telemetry history" => request("timeline_page", json!({"before": self.telemetry_before, "limit": self.telemetry_limit})),
             "Operator tools" => { self.submit(ctx, "Operator catalog".into(), request("operator_catalog", json!({}))); return; }
+            "Instruction compression" => {
+                if self.entity.trim().is_empty() { self.status = "Select a staged manifest first.".into(); return; }
+                self.revision.clear();
+                self.submit(ctx, "Instruction review".into(), request("instruction_manifest",
+                    json!({"root":self.repo, "manifest":self.entity, "action":"inspect"})));
+                return;
+            }
             "Trace index" => request("trace_page", json!({"offset": self.trace_offset, "kind": self.trace_kind, "state": self.trace_state, "action": self.trace_action, "min_duration_ms": self.trace_min_ms})),
             "Tasks" | "Run history" => request("task_page", json!({"root": self.repo, "offset": self.task_offset, "limit": self.task_limit, "status": self.task_status, "query": self.task_query})),
             "Agent event stream" => request("event_page", json!({"root": self.repo, "stream": self.stream_id, "after": self.event_cursor})),
@@ -1408,6 +1427,38 @@ impl Desktop {
             }
             8 => {
                 if self.current() == "Operator tools" { self.operator_tools(ui, ctx); return; }
+                if self.current() == "Instruction compression" {
+                    ui.small("Stage generates a local candidate and semantic review without replacing source files. Inspect the exact manifest before apply or restore; the reviewed digest must match.");
+                    if ui.add_enabled(!self.repo.trim().is_empty(), egui::Button::new("Stage compressed instructions")).clicked() {
+                        self.confirm("Stage compressed instructions", request("operator_run",
+                            json!({"name":"Stage compressed instructions","root":self.repo,"fields":{},"confirmed":true})));
+                    }
+                    let label = ui.label("Manifest path from the staging output");
+                    if ui.text_edit_singleline(&mut self.entity).labelled_by(label.id).changed() {
+                        self.revision.clear(); self.clear_response();
+                    }
+                    if ui.add_enabled(!self.repo.trim().is_empty() && !self.entity.trim().is_empty(),
+                        egui::Button::new("Review staged bytes")).clicked() { self.refresh(ctx); }
+                    let status = self.snapshot.as_ref().filter(|_| self.snapshot_view == "Instruction review")
+                        .filter(|data| data["manifest_sha256"].as_str() == Some(self.revision.as_str()) &&
+                            data["manifest"].as_str() == Some(self.entity.as_str()))
+                        .and_then(|data| data["status"].as_str()).unwrap_or("");
+                    let staged = status == "staged";
+                    let applied = status == "applied";
+                    ui.horizontal_wrapped(|ui| {
+                        for (title, action, allowed) in [
+                            ("Apply reviewed instructions", "apply", staged),
+                            ("Restore original instructions", "restore", applied),
+                        ] {
+                            if ui.add_enabled(allowed && !self.revision.is_empty(), egui::Button::new(title)).clicked() {
+                                self.confirm(title, request("instruction_manifest", json!({
+                                    "root":self.repo, "manifest":self.entity, "manifest_sha256":self.revision,
+                                    "action":action,"confirmed":true})));
+                            }
+                        }
+                    });
+                    return;
+                }
                 if self.current() == "Updates" {
                     ui.small("Managed installations only. The Hub checks the exact release candidate again before scheduling the update and restart.");
                     if ui.button("Check for updates").clicked() {
@@ -1720,6 +1771,34 @@ impl Desktop {
                                 for index in range { ui.add(egui::Label::new(egui::RichText::new(lines[index]).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
                             });
                     } else { ui.label("Log data unavailable."); }
+                }
+                return;
+            }
+            if self.current() == "Instruction compression" && self.snapshot_view == "Instruction review" && !self.raw_view {
+                if let Some(receipt) = self.snapshot.as_ref() {
+                    ui.heading("Exact staged instruction review");
+                    ui.label(format!("Source: {}", records::display(&receipt["source"])));
+                    ui.label(format!("State: {} — {} bytes → {} bytes", records::display(&receipt["status"]),
+                        records::display(&receipt["original_bytes"]), records::display(&receipt["candidate_bytes"])));
+                    ui.small(format!("Manifest SHA-256: {}", records::display(&receipt["manifest_sha256"])));
+                    ui.small("Local semantic review is advisory. Compare actual text before approving; no new inference occurs on apply.");
+                    ui.columns(2, |columns| {
+                        for (index, (key, heading)) in [("original","Original"), ("candidate","Candidate")].iter().enumerate() {
+                            let ui = &mut columns[index];
+                            ui.heading(*heading);
+                            let text = receipt[*key].as_str().unwrap_or("");
+                            if ui.button("Copy text").clicked() { ui.ctx().copy_text(text.to_owned()); }
+                            let lines: Vec<&str> = text.lines().collect();
+                            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 3.0;
+                            egui::ScrollArea::both().id_salt(("instruction_review", key))
+                                .show_rows(ui, row_height, lines.len(), |ui, range| {
+                                    for line in range {
+                                        ui.add(egui::Label::new(egui::RichText::new(lines[line]).monospace())
+                                            .wrap_mode(egui::TextWrapMode::Extend));
+                                    }
+                                });
+                        }
+                    });
                 }
                 return;
             }
