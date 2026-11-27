@@ -105,8 +105,15 @@ def test_large_task_context_is_recoverable_with_exact_artifact_identity(isolated
                             "structuredContent": result.structuredContent, "isError": result.isError}
                     if result.structuredContent is None:
                         wire.pop("structuredContent")
-                    assert json_tokens(wire) <= budget, value
-                    assert not {"response_budget", "token_efficiency", "request_id", "reused"}.intersection(value)
+                    returned_tokens = json_tokens(wire)
+                    assert returned_tokens <= budget, value
+                    response_budget = value.get("response_budget")
+                    assert isinstance(response_budget, dict), value
+                    assert response_budget.get("requested_tokens") == budget, value
+                    assert response_budget.get("returned_tokens") == returned_tokens, value
+                    if "request_id" in value:
+                        assert isinstance(value["request_id"], str) and value["request_id"], value
+                    assert not {"token_efficiency", "reused"}.intersection(value)
                     artifact_id = value.get("task_context_artifact_id")
                     if not artifact_id:
                         artifact_id = (value.get("task_context") or {}).get("artifact_id")
