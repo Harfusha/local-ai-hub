@@ -245,3 +245,33 @@ def test_seeded_missing_receipt_in_maximum_inventory_prevents_completion():
     assert result["coverage"]["dependency_blocked"] == 1
     assert result["next_obligation"]["criterion"] == missing
     assert not result["ready_for_completion_attempt"]
+
+
+def test_dependency_receipt_order_invalidates_only_affected_chain():
+    criteria = ("api", "consumer", "integration", "docs")
+    config = {"units": {"consumer": {"depends_on": ["api"]},
+                        "integration": {"depends_on": ["consumer"]}}}
+    result = execution_projection(
+        criteria, config, satisfied=criteria, unsatisfied=(), stale=(),
+        receipt_ids={key: key for key in criteria}, receipt_gate_complete=True,
+        receipt_observed_at={"api": 20, "consumer": 10, "integration": 30, "docs": 5},
+    )
+    assert result["coverage"] == {
+        "total": 4, "verified": 2, "stale": 1, "unverified": 0, "dependency_blocked": 1,
+    }
+    assert result["dependency_stale_criteria"] == ["consumer"]
+    assert result["next_obligation"]["superseded_by"] == ["api"]
+    assert "verified_receipt_id" not in result["next_obligation"]
+    assert not result["ready_for_completion_attempt"]
+    refreshed = execution_projection(
+        criteria, config, satisfied=criteria, unsatisfied=(), stale=(),
+        receipt_ids={key: key for key in criteria}, receipt_gate_complete=True,
+        receipt_observed_at={"api": 20, "consumer": 40, "integration": 30, "docs": 5},
+    )
+    assert refreshed["dependency_stale_criteria"] == ["integration"]
+    complete = execution_projection(
+        criteria, config, satisfied=criteria, unsatisfied=(), stale=(),
+        receipt_ids={key: key for key in criteria}, receipt_gate_complete=True,
+        receipt_observed_at={"api": 20, "consumer": 40, "integration": 50, "docs": 5},
+    )
+    assert complete["ready_for_completion_attempt"]
