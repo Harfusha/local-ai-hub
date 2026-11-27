@@ -11,6 +11,7 @@ import subprocess
 import sqlite3
 import tempfile
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -218,12 +219,14 @@ def execute_staged_commit(
         if journal is not None:
             journal.prepare(operation_id=operation_id, root=root, branch=branch, parent=parent,
                             tree=actual_tree, candidate=candidate)
-        if commit_policy(root) != policy:
-            raise ValueError("Project commit policy changed during transaction")
-        if sequence_plan is not None and verification_manifest is not None:
-            verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
-        update_attempted = True
-        git("update-ref", "--no-deref", "-m", "Local AI Hub: approved staged commit", branch, candidate, parent)
+        guard = journal.publication_guard() if sequence_plan is not None and verification_manifest is not None and journal is not None else nullcontext()
+        with guard:
+            if commit_policy(root) != policy:
+                raise ValueError("Project commit policy changed during transaction")
+            if sequence_plan is not None and verification_manifest is not None:
+                verification_receipts = require_sequence_receipts(root, sequence_plan, verification_manifest, journal)
+            update_attempted = True
+            git("update-ref", "--no-deref", "-m", "Local AI Hub: approved staged commit", branch, candidate, parent)
         outcome = {
             "success": True, "commit_oid": candidate, "parent_oid": parent, "tree_oid": actual_tree,
             "branch": branch, "index_rewritten": False, "pushed": False,

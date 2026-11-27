@@ -338,3 +338,32 @@ def test_tree_check_failures_are_fenced_and_never_authorize_publication(tmp_path
     receipt = journal.record_tree_checks(**scope, checks=[{"exit_code": 0, "output_complete": True}],
                                          ttl=60, attempt=fresh)
     assert journal.tree_check_observation(**scope) == {"status": "current", "receipt_id": receipt}
+
+
+def test_publication_guard_excludes_receipt_revocation(tmp_path, monkeypatch):
+    import sqlite3
+
+    import pytest
+
+    from local_ai_hub.change_commit_journal import CommitJournal
+
+    journal = CommitJournal(tmp_path)
+    original_connect = journal._connect
+
+    def fast_connect():
+        db = original_connect()
+        db.execute("PRAGMA busy_timeout=25")
+        return db
+
+    monkeypatch.setattr(journal, "_connect", fast_connect)
+    scope = dict(root=str(tmp_path.resolve()), tree="a" * 40, command_id="b" * 64, environment_id="c" * 64)
+    attempt = journal.begin_tree_checks(**scope)
+    receipt = journal.record_tree_checks(**scope, checks=[{"exit_code": 0, "output_complete": True}],
+                                         ttl=60, attempt=attempt)
+    with journal.publication_guard():
+        assert journal.current_tree_checks(**scope) == receipt
+        with pytest.raises(sqlite3.OperationalError):
+            journal.begin_tree_checks(**scope)
+        assert journal.current_tree_checks(**scope) == receipt
+    journal.begin_tree_checks(**scope)
+    assert journal.current_tree_checks(**scope) is None

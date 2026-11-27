@@ -7,7 +7,8 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +146,13 @@ class CommitJournal:
         except (TypeError, ValueError):
             return None
         return row["id"]
+
+    @contextmanager
+    def publication_guard(self) -> Iterator[None]:
+        """Exclude receipt-revoking writers during final checks and branch CAS."""
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            yield
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=5.0)
