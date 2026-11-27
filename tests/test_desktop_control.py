@@ -252,6 +252,7 @@ def test_operator_catalog_is_available_without_hub():
     control = MagicMock()
     result = desktop.dispatch(control, {"op": "operator_catalog"})
     assert any(row["name"] == "Knowledge query" for row in result["operations"])
+    assert not any(row["name"].startswith("Legacy ") for row in result["operations"])
     control._client.assert_not_called()
 
 

@@ -143,7 +143,7 @@ def build_argv(args: dict[str, Any]) -> tuple[tuple[str, ...], Operation]:
             raise ValueError(f"Invalid {field.label}")
         if field.kind == "integer":
             number = int(value)
-            maximum = 16 if name.startswith("Legacy ") else 64 if name == "Handoff preflight" else 1000
+            maximum = 64 if name == "Handoff preflight" else 1000
             if not 1 <= number <= maximum:
                 raise ValueError(f"{field.label} outside allowed range")
             value = str(number)
