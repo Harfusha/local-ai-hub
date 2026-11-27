@@ -104,3 +104,25 @@ def test_preprocess_watcher_fast_path(tmp_path: Path) -> None:
 
     finally:
         prep.close()
+
+
+def test_recent_watch_events_are_root_scoped_and_expire(tmp_path):
+    import threading
+
+    # Exercise the in-memory reader without starting a filesystem observer.
+    prep = object.__new__(ProjectPreprocessor)
+    prep._dirty_lock = threading.RLock()
+    root = str((tmp_path / "repo").resolve())
+    other = str((tmp_path / "other").resolve())
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "other").mkdir()
+    now = time.time()
+    prep._recent_watch_events = {
+        (root, "app.py"): (now, "modified"),
+        (root, "old.py"): (now - 3601, "created"),
+        (other, "app.py"): (now, "deleted"),
+    }
+    assert prep.recent_change_events(root, ["app.py", "old.py"]) == {
+        "app.py": {"observed_at": now, "event": "modified"},
+    }
+    assert prep.recent_change_events(other, ["app.py"])["app.py"]["event"] == "deleted"
