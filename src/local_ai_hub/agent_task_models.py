@@ -480,14 +480,17 @@ def _preserve_checkpoint_memory_state(
 
     if PROBLEM_REPORT_KEY in merged_state_data or PROBLEM_DISPOSITION_KEY in merged_state_data:
         raise ValueError("execution problem commands must use task_checkpoint")
+    from .execution_progress import PROGRESS_STATE_KEY
+
     if not allow_server_execution_update:
-        if PROBLEM_STATE_KEY in merged_state_data and (
-            PROBLEM_STATE_KEY not in current_state_data
-            or merged_state_data[PROBLEM_STATE_KEY] != current_state_data[PROBLEM_STATE_KEY]
-        ):
-            raise ValueError("execution problem registry is server-managed")
-        if PROBLEM_STATE_KEY in current_state_data:
-            merged_state_data[PROBLEM_STATE_KEY] = current_state_data[PROBLEM_STATE_KEY]
+        for key in (PROBLEM_STATE_KEY, PROGRESS_STATE_KEY):
+            if key in merged_state_data and (
+                key not in current_state_data or merged_state_data[key] != current_state_data[key]
+            ):
+                raise ValueError("execution problem registry is server-managed" if key == PROBLEM_STATE_KEY
+                                 else "execution progress is server-managed")
+            if key in current_state_data:
+                merged_state_data[key] = current_state_data[key]
     lineage = "_portable_attempt"
     if lineage in merged_state_data and (
         lineage not in current_state_data or merged_state_data[lineage] != current_state_data[lineage]
