@@ -314,9 +314,14 @@ reports. Tasks → Plan execution requests the existing read-only plan
 validation projection. The plan preview reports observed obligation totals and
 verified partition coverage, separately from partition presence. On stable,
 exhaustive snapshots it recommends a next actionable task only when local
-plan dependencies are currently verified; unresolved cross-plan dependencies,
-blocked tasks and binding conflicts are listed separately. It does not resolve
-external plans or authorize execution. Neither view changes task state or treats a ready
+plan dependencies are currently verified. Referenced tasks in other plans of
+this same repository are resolved transitively using current canonical receipts,
+not plan status alone. The scan is shared across at most 64 tasks, 16 plans and
+a 15-second evaluation deadline; missing references, cycles, binding conflicts,
+blocked tasks and incomplete scans cannot authorize completion. All observed
+plan revisions, bindings, task states and repository revision are rechecked.
+Only the requested plan contributes to its aggregate obligation denominator;
+referenced task coverage is separate. The preview does not authorize execution. Neither view changes task state or treats a ready
 preview as a completed task. The retired web dashboard is not required.
 
 ## Opt-in host continuation
@@ -370,7 +375,7 @@ evidence age is advisory. The web dashboard is retired.
 
 Remaining acceptance work (not claimed complete):
 
-1. Semantic dependency expansion beyond explicit affected-test rules and static Python imports, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds.
+1. Semantic dependency expansion beyond explicit affected-test rules and static Python imports, independently approved exclusion policy and hierarchical plan aggregation beyond current bounds (bounded same-repository cross-plan prerequisite evaluation implemented).
 2. Authorized rejection/defer dispositions, independent reviewer authentication and
    cross-task/Git knowledge sharing for problem reports (separate ordered
    confirmation evidence and distinct authorized receipt owner are implemented).
