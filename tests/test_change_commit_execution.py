@@ -173,6 +173,20 @@ def test_exact_tree_receipts_bind_sequence_and_environment(tmp_path):
     result = verify_sequence(str(repo.resolve()), preview, manifest, journal)
     assert result["success"], result
     assert len(result["verified_steps"]) == 2
+    assert result["executed_step_count"] == 2
+    reused = verify_sequence(str(repo.resolve()), preview, manifest, journal)
+    assert reused["success"], reused
+    assert reused["reused_step_count"] == 2
+    assert reused["executed_step_count"] == 0
+    assert [s["receipt_id"] for s in reused["verified_steps"]] == [
+        s["receipt_id"] for s in result["verified_steps"]
+    ]
+    refreshed = verify_sequence(str(repo.resolve()), preview, manifest, journal, rerun=True)
+    assert refreshed["success"], refreshed
+    assert refreshed["executed_step_count"] == 2
+    assert [s["receipt_id"] for s in refreshed["verified_steps"]] != [
+        s["receipt_id"] for s in result["verified_steps"]
+    ]
     denied = execute_staged_commit({}, engine, leases, **kwargs, approved=True,
                                   preview_digest=preview["preview_digest"],
                                   verification_manifest={**manifest, "environment_id": "d" * 64})
