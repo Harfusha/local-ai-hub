@@ -1050,6 +1050,13 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 "terminal": True, "retryable": False,
                 "error": f"MCP output contract failed: {output_error}",
             }
+            # Keep validated correlation metadata for diagnostic-mode callers.
+            # Do not echo malformed output or fabricate a request identity.
+            request_id = raw.get("request_id") if isinstance(raw, dict) else None
+            if isinstance(request_id, str) and 0 < len(request_id) <= 200 and not any(
+                ord(char) < 32 or ord(char) == 127 for char in request_id
+            ):
+                payload["request_id"] = request_id
             return finalize(services_module._mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
         if isinstance(raw, (dict, list)):
             return finalize(services_module._mcp_budget_payload(name, arguments, raw))
