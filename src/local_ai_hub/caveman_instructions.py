@@ -312,6 +312,107 @@ def restore_instruction(staged: StagedInstruction) -> None:
     _safe_replace(staged.source, original)
 
 
+def _bounded_regular_bytes(path: Path, limit: int) -> bytes:
+    if _has_reparse_ancestor(path) or not path.is_file():
+        raise ValueError("Expected a regular file without symlinks or junctions")
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("Staged instruction file exceeds byte limit")
+    return data
+
+
+def reviewed_instruction_manifest(
+    manifest_path: Path, *, repository_root: Path, stage_root: Path,
+    action: str = "inspect", expected_digest: str = "",
+) -> dict[str, object]:
+    """Inspect or apply exactly one explicitly reviewed local manifest.
+
+    The manifest is not an authorization token. It must remain within the
+    configured staging directory, and its source must be an eligible file
+    under the separately selected repository root. Apply/restore never
+    regenerate candidate text or invoke a model.
+    """
+    if action not in {"inspect", "apply", "restore"}:
+        raise ValueError("Unknown staged instruction action")
+    root = Path(repository_root).expanduser().absolute()
+    staging = Path(stage_root).expanduser().absolute()
+    manifest_path = Path(manifest_path).expanduser().absolute()
+    if any(_has_reparse_ancestor(path) for path in (root, staging, manifest_path)):
+        raise ValueError("Instruction review paths cannot traverse links")
+    root = root.resolve(strict=True)
+    staging = staging.resolve(strict=True)
+    manifest_path = manifest_path.resolve(strict=True)
+    if (not root.is_dir() or not staging.is_dir()
+            or manifest_path.name != "manifest.json"
+            or manifest_path.parent.parent != staging
+            or not manifest_path.parent.name.startswith("instruction-")):
+        raise ValueError("Select an instruction manifest directly under the configured staging directory")
+    raw = _bounded_regular_bytes(manifest_path, 64 * 1024)
+    digest = _sha256(raw)
+    if action != "inspect" and (not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+                                or digest != expected_digest):
+        raise ValueError("Reviewed manifest digest changed; inspect again before applying")
+    manifest = json.loads(raw.decode("utf-8"))
+    required = {"source", "backup", "candidate", "original_sha256", "backup_sha256",
+                "candidate_sha256", "semantic_review"}
+    if not isinstance(manifest, dict) or set(manifest) != required:
+        raise ValueError("Staged instruction manifest is incomplete")
+    for key in ("source", "backup", "candidate"):
+        if type(manifest[key]) is not str or not Path(manifest[key]).is_absolute():
+            raise ValueError("Manifest requires absolute file paths")
+    for key in ("original_sha256", "backup_sha256", "candidate_sha256"):
+        if type(manifest[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", manifest[key]):
+            raise ValueError("Invalid staged instruction digest")
+    source, backup, candidate = (Path(manifest[key]) for key in ("source", "backup", "candidate"))
+    if any(_has_reparse_ancestor(path) for path in (source, backup, candidate)):
+        raise ValueError("Manifest files cannot traverse links")
+    source, backup, candidate = (path.resolve(strict=True) for path in (source, backup, candidate))
+    if (not source.is_relative_to(root) or source not in discover_instruction_files([root])
+            or source == backup or source == candidate
+            or backup != manifest_path.parent / f"original{source.suffix.lower()}"
+            or candidate != manifest_path.parent / f"candidate{source.suffix.lower()}"):
+        raise ValueError("Manifest source or staging files do not match the authorized repository and layout")
+    review = manifest["semantic_review"]
+    if (not isinstance(review, dict) or review.get("equivalent") is not True
+            or any(review.get(key) != [] for key in ("missing", "weakened", "changed", "uncertain"))):
+        raise ValueError("Manifest lacks a clean semantic review")
+    original = _bounded_regular_bytes(backup, 1024 * 1024)
+    proposed = _bounded_regular_bytes(candidate, 1024 * 1024)
+    current = _bounded_regular_bytes(source, 1024 * 1024)
+    if (_sha256(original) != manifest["original_sha256"] or _sha256(original) != manifest["backup_sha256"]
+            or _sha256(proposed) != manifest["candidate_sha256"]):
+        raise ValueError("Staged instruction contents changed after review")
+    original_text, proposed_text = original.decode("utf-8"), proposed.decode("utf-8")
+    if (not proposed_text.strip() or len(proposed) >= len(original)
+            or _protected(original_text) - _protected(proposed_text)
+            or _protected_order(original_text) != _protected_order(proposed_text)):
+        raise ValueError("Candidate failed deterministic instruction preservation")
+    current_hash = _sha256(current)
+    status = "staged" if current_hash == manifest["original_sha256"] else (
+        "applied" if current_hash == manifest["candidate_sha256"] else "source_changed")
+    if action != "inspect":
+        staged = StagedInstruction(
+            source=source, backup=backup, candidate=candidate,
+            original_sha256=manifest["original_sha256"], backup_sha256=manifest["backup_sha256"],
+            candidate_sha256=manifest["candidate_sha256"], semantic_review=review, duration_seconds=0.0,
+        )
+        if action == "apply":
+            apply_instruction(staged)
+            status = "applied"
+        else:
+            restore_instruction(staged)
+            status = "staged"
+    return {
+        "success": True, "action": action, "status": status, "source": str(source),
+        "manifest": str(manifest_path), "manifest_sha256": digest,
+        "original_sha256": manifest["original_sha256"], "candidate_sha256": manifest["candidate_sha256"],
+        "original_bytes": len(original), "candidate_bytes": len(proposed),
+        "semantic_review": review,
+        **({"original": original_text, "candidate": proposed_text} if action == "inspect" else {}),
+    }
+
+
 def restore_instruction_manifest(manifest_path: Path) -> None:
     """Restore a staged instruction from its durable manifest after hash checks."""
     manifest_path = Path(manifest_path).expanduser().absolute()
