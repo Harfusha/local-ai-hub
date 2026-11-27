@@ -63,10 +63,67 @@ def test_archive_receipt_binds_platform_and_revision():
         archive.writestr(receipt["binary"], payload)
         archive.writestr("desktop-receipt.json", json.dumps(receipt))
         archive.writestr("README.txt", "")
-        archive.writestr("SHA256SUMS", "")
+        archive.writestr("SHA256SUMS", f"{receipt['sha256']}  {receipt['binary']}\n")
     raw = output.getvalue()
     assert verify_archive(raw, version="8.2.2", revision=revision, system="Linux", arch="X64")[1] == payload
     with pytest.raises(ValueError, match="provenance"):
         verify_archive(raw, version="8.2.2", revision="b" * 40, system="Linux", arch="X64")
     with pytest.raises(ValueError, match="entries|provenance"):
         verify_archive(raw, version="8.2.2", revision=revision, system="Windows", arch="X64")
+
+
+def test_v2_archive_binds_dependency_notices_lock_and_exact_checksums():
+    import io
+    import json
+    import zipfile
+    from tools.install_desktop import verify_archive
+
+    binary = b"native executable"
+    auxiliary = {"LICENSE": b"MIT", "THIRD-PARTY-NOTICES.txt": b"upstream notices",
+                 "Cargo.lock": b"locked graph"}
+    receipt = {"format": 2, "hub_version": "8.2.2", "repository_revision": "a" * 40,
+               "os": "Linux", "architecture": "X64", "binary": "local-ai-hub-desktop",
+               "sha256": hashlib.sha256(binary).hexdigest(),
+               "auxiliary_sha256": {key: hashlib.sha256(data).hexdigest() for key, data in auxiliary.items()}}
+    sums = f"{receipt['sha256']}  {receipt['binary']}\n" + "".join(
+        f"{sha}  {key}\n" for key, sha in sorted(receipt["auxiliary_sha256"].items()))
+
+    def make_archive(entries, checksums=sums):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(receipt["binary"], binary)
+            archive.writestr("README.txt", "readme")
+            archive.writestr("SHA256SUMS", checksums)
+            archive.writestr("desktop-receipt.json", json.dumps(receipt))
+            for key, value in entries.items():
+                archive.writestr(key, value)
+        return buffer.getvalue()
+
+    def verify(raw):
+        return verify_archive(raw, version="8.2.2", revision="a" * 40, system="Linux", arch="X64")
+
+    assert verify(make_archive(auxiliary))[0]["format"] == 2
+    with pytest.raises(ValueError, match="digest mismatch"):
+        verify(make_archive({**auxiliary, "THIRD-PARTY-NOTICES.txt": b"tampered"}))
+    with pytest.raises(ValueError, match="SHA256SUMS"):
+        verify(make_archive(auxiliary, "forged checksum"))
+    with pytest.raises(ValueError, match="entries"):
+        verify(make_archive({"LICENSE": b"MIT", "Cargo.lock": b"locked graph"}))
+
+
+def test_dependency_notices_use_locked_metadata_and_actual_source_text(tmp_path):
+    from tools.package_desktop import dependency_notices
+
+    crate = tmp_path / "fixture-crate"
+    crate.mkdir()
+    (crate / "Cargo.toml").write_text("[package]", encoding="utf-8")
+    (crate / "LICENSE-MIT").write_text("Actual upstream license text", encoding="utf-8")
+    package = {"name": "fixture", "version": "1.0.0", "source": "registry+fixture",
+               "license": "MIT", "manifest_path": str(crate / "Cargo.toml"), "license_file": None}
+    metadata = {"packages": [package]}
+    lock = {"package": [{key: package[key] for key in ("name", "version", "source")}]}
+    report = dependency_notices(metadata, lock).decode("utf-8")
+    assert "fixture 1.0.0" in report and "License expression: MIT" in report
+    assert "Actual upstream license text" in report
+    with pytest.raises(ValueError, match="locked"):
+        dependency_notices(metadata, {"package": [{**lock["package"][0], "version": "2.0.0"}]})
