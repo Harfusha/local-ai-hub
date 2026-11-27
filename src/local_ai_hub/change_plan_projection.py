@@ -31,6 +31,9 @@ def project_change_plan(
         dependencies = group.get("dependency_group_candidates", [])
         item["dependency_group_candidates"] = dependencies[:8]
         item["dependency_groups_omitted"] = max(0, len(dependencies) - 8)
+        component = group.get("dependency_component_keys", [])
+        item["dependency_component_keys"] = component[:8]
+        item["dependency_component_keys_omitted"] = max(0, len(component) - 8)
         item["file_count"] = len(files)
         item["files"] = files[:6]
         item["files_omitted"] = max(0, len(files) - 6)
@@ -63,6 +66,12 @@ def project_change_plan(
             values = dependency_plan.get(field, [])
             output["dependency_plan"][field] = values[:16]
             output["dependency_plan"][field + "_omitted"] = max(0, len(values) - 16)
+        units = dependency_plan.get("candidate_commit_units", [])
+        output["dependency_plan"]["candidate_commit_units"] = [
+            {"group_keys": unit[:8], "group_keys_omitted": max(0, len(unit) - 8)}
+            for unit in units[:8]
+        ]
+        output["dependency_plan"]["candidate_commit_units_omitted"] = max(0, len(units) - 8)
     output.update({
         "clusters": page, "offset": offset, "limit": limit,
         "has_more": offset + len(page) < len(groups),
