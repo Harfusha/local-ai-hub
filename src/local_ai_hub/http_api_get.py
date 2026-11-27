@@ -21,6 +21,9 @@ class HttpGetMixin:
         if path.rstrip("/") in {"", "/favicon.ico"}:
             self._send(404, {"success": False, "error": "Route not found."})
             return
+        if not path.startswith("/api/") and path not in {"/export", "/metrics"}:
+            self._send(404, {"success": False, "error": "Route not found."})
+            return
         if services_module.APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
