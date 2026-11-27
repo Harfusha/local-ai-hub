@@ -19,7 +19,7 @@ MAX_PROBLEMS = 64
 
 
 def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
-    if type(raw) is not dict or set(raw) - {"id", "title", "criterion", "blocking", "evidence_ids", "resolution_criterion", "require_distinct_owner"}:
+    if type(raw) is not dict or set(raw) - {"id", "title", "criterion", "blocking", "evidence_ids", "resolution_criterion", "require_distinct_owner", "share_repository"}:
         raise ValueError("invalid execution problem report")
     problem_id = _canonical(raw.get("id"), "problem id", 80)
     title = _canonical(raw.get("title"), "problem title", 240)
@@ -37,6 +37,9 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
     distinct_owner = raw.get("require_distinct_owner", False)
     if type(distinct_owner) is not bool or (distinct_owner and not resolution):
         raise ValueError("distinct owner confirmation requires a resolution criterion")
+    share = raw.get("share_repository", False)
+    if type(share) is not bool:
+        raise ValueError("share_repository must be a boolean")
     evidence_ids = raw.get("evidence_ids", [])
     if type(evidence_ids) is not list or len(evidence_ids) > 8:
         raise ValueError("problem evidence references must be a bounded list")
@@ -49,6 +52,7 @@ def _normalize_report(raw: Any, criteria: Sequence[str]) -> dict[str, Any]:
         "blocking": blocking, "evidence_ids": list(evidence_ids),
         **({"resolution_criterion": resolution} if resolution else {}),
         **({"require_distinct_owner": True} if distinct_owner else {}),
+        **({"share_repository": True} if share else {}),
     }
 
 
