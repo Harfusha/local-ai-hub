@@ -33,6 +33,34 @@ def test_scheduler_status_tracks_external_reservation_fence(tmp_path):
         scheduler.close()
 
 
+@pytest.mark.parametrize("process_alive", [False, True, None])
+def test_scheduler_reaps_only_confirmed_dead_opencode_owner(tmp_path, monkeypatch, process_alive):
+    scheduler = AffinityScheduler(object(), {"server": {"state_dir": str(tmp_path)}})
+    store = scheduler._external_gpu_store
+    reservation = None
+    try:
+        reservation = store.reserve(
+            "c" * 64,
+            owner="opencode:2147483647:session-1",
+            owner_vram_budget_bytes=4 * 1024**3,
+        )
+        assert reservation is not None
+        monkeypatch.setattr(
+            "local_ai_hub.process_utils.process_is_alive",
+            lambda _pid: process_alive,
+        )
+
+        scheduler.status()
+
+        assert (store.read() is None) is (process_alive is False)
+    finally:
+        if reservation is not None:
+            current = store.read()
+            if current is not None:
+                store.release(current["token_digest"], current["generation"])
+        scheduler.close()
+
+
 def test_scheduler_status_reads_external_state_outside_condition_lock(tmp_path):
     scheduler = AffinityScheduler(object(), {"server": {"state_dir": str(tmp_path)}})
     scheduler.close()

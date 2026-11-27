@@ -65,7 +65,7 @@
         "Routing minimizes repeated reads and token use through indexed evidence, bounded artifact slices, compact responses, reuse keys, and no redundant retrieval; it respects latency and preprocessing rules.",
         "Semantic calls remain advisory where required; deterministic facts, tests, builds, security, permissions, user approval, task identity, and model capability/quality gates remain authoritative."
       ],
-      "blocker": "None - all verified; VRAM capacity and semantic review executed with req_8431a8d34e85 (qwen2.5-coder:7b, job 161, 12GB free VRAM); 14/14 provider handshake checks pass; telemetry actively recording.",
+      "blocker": "Current OpenCode checks cover the shared repository-scoped proxy Laya route and deterministic model selection only; live provider-specific Codex/Antigravity routing and production OpenCode process integration remain unverified. Do not claim this task complete.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -137,7 +137,7 @@
       "depends_on": [],
       "description": "Checkpoint 2026-11-25: Gemini CLI workspace root was trusted with explicit user approval; gemini mcp list from Hub root now reports local-ai Connected. Cursor installed native plugin refreshed to 8.1.0 and its live MCP wrapper completed initialize/tools/list with 7 tools. Handshake verifier now compares Antigravity/Cursor native plugin versions against the source release; stale Cursor 6.1.0 regression was observed failing before the fix. Focused provider/setup suite: 194 passed; release_check --allow-installed passed; full provider verifier reports all configured provider bundles current, Codex runtime current, Hub ready, and stdio handshake 7/7. GPU reservation unknown fence was released through the authorized endpoint and rechecked free. Remaining work: investigate unattributed admin.action.result 500 telemetry; do not claim active app windows reloaded from wrapper evidence. Checkpoint 2026-11-25 21:42 CET: durable inventory recovery guidance now lives in tracked src/local_ai_hub/generator.py; provider bundle parity and runtime/release version consistency are regression-tested. Bumped package/runtime/manifests/docs to 8.2.1, refreshed Gemini extension, Cursor, and Antigravity/Multigravity profiles, restarted Hub; health and doctor both report 8.2.1. Fifteen source/installed MCP launchers plus four Multigravity profiles completed initialize/tools/list with 7 tools. Focused suites passed: 251 + 125; release_check, compileall and diff-check passed. Codex global skill and active cached launcher work, but plugin cache still reports 8.2.0: plugin inventory exceeded 30s and official cache refresh failed Access denied under running Codex app. Historical 8 admin.action.result 500s remain unattributed; current 8.2.1 runtime has no failures in its active preprocessing/scheduler status. Continue only after safe Codex host cache refresh and attributable historical failure evidence.",
       "kind": "code",
-      "next_action": "Maintain verified runtime state across providers and preserve dirty working tree.",
+      "next_action": "Verify provider-specific Laya route decisions and host runtime evidence; keep OpenCode launcher fail-closed until AppContainer process, named-pipe ownership, filesystem/network boundary, and cleanup are certified.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",

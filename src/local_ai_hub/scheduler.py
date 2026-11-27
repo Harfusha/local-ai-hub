@@ -1853,14 +1853,22 @@ class AffinityScheduler:
             )
             return bool(self._external_gpu_reserved() or self._capacity_sharing_active() or foreground_inflight > 0 or foreground_ready or self._switching)
 
-    def background_allowed(self, *, require_switch_idle: bool = False) -> bool:
+    def background_allowed(
+        self, *, require_switch_idle: bool = False,
+        external_gpu_reserved: bool | None = None,
+        capacity_sharing_active: bool | None = None,
+    ) -> bool:
+        if external_gpu_reserved is None:
+            external_gpu_reserved = self._external_gpu_reserved()
+        if capacity_sharing_active is None:
+            capacity_sharing_active = self._capacity_sharing_active()
         with self._cond:
             now = time.monotonic()
             foreground_ready = any(
                 not j.background and j.capacity_retry_at <= now
                 for j in self._pending
             )
-            if self._external_gpu_reserved() or self._capacity_sharing_active() or self._inflight - self._inflight_background > 0 or foreground_ready:
+            if external_gpu_reserved or capacity_sharing_active or self._inflight - self._inflight_background > 0 or foreground_ready:
                 return False
             grace = self.background_switch_grace if require_switch_idle else self.background_idle_grace
             return now - self._last_foreground_activity >= grace
@@ -2589,10 +2597,16 @@ class AffinityScheduler:
             self._cond.notify_all()
             return True
 
-    def _job_public(self, job: Job, now: float, *, state: str, position: int = 0) -> dict[str, Any]:
+    def _job_public(
+        self, job: Job, now: float, *, state: str, position: int = 0,
+        external_gpu_blocked: bool | None = None,
+    ) -> dict[str, Any]:
         wait_ms = max(0, int(((job.started_at or now) - job.created_at) * 1000))
         service_ms = max(0, int((now - job.started_at) * 1000)) if job.started_at and state == "running" else 0
-        if state == "queued" and self._external_gpu_blocks_scheduler():
+        if state == "queued" and (
+            self._external_gpu_blocks_scheduler()
+            if external_gpu_blocked is None else external_gpu_blocked
+        ):
             wait_reason = "gpu-reservation"
         elif state == "queued" and job.admission.get("reason") == "gpu_capacity_deferred":
             wait_reason = "gpu-capacity"
@@ -2617,14 +2631,21 @@ class AffinityScheduler:
         }
 
     def status(self) -> dict[str, Any]:
+        external_gpu_reserved = self._external_gpu_reserved()
+        external_gpu_blocked = self._external_gpu_blocks_scheduler()
+        capacity_sharing_active = self._capacity_sharing_active()
+        cache_stats = self._cache_stats()
+        background_allowed = self.background_allowed(
+            external_gpu_reserved=external_gpu_reserved,
+            capacity_sharing_active=capacity_sharing_active,
+        )
         with self._cond:
             by_model: dict[str, int] = {}
             background_queued = 0
             now = time.monotonic()
-            self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 gpu_admission_state = "outcome_unknown"
-            elif self._external_gpu_blocks_scheduler():
+            elif external_gpu_blocked:
                 gpu_admission_state = "external_reservation"
             elif self._background_gpu_lease:
                 gpu_admission_state = "background_lease"
@@ -2642,7 +2663,10 @@ class AffinityScheduler:
                 background_queued += int(job.background)
                 model_positions[job.model] = model_positions.get(job.model, 0) + 1
                 if len(pending_jobs) < self.status_max_items:
-                    item = self._job_public(job, now, state="queued", position=model_positions[job.model])
+                    item = self._job_public(
+                        job, now, state="queued", position=model_positions[job.model],
+                        external_gpu_blocked=external_gpu_blocked,
+                    )
                     pending_jobs.append(item)
             inflight_jobs = [self._job_public(job, now, state="running") for job in sorted(self._inflight_jobs.values(), key=lambda j: j.started_at or j.created_at)]
             return {
@@ -2653,6 +2677,7 @@ class AffinityScheduler:
                 "global_parallel_limit": self.max_parallel,
                 "switching": self._switching,
                 "gpu_admission_state": gpu_admission_state,
+                "capacity_sharing_active": capacity_sharing_active,
                 "background_gpu_lease": self._background_gpu_lease,
                 "inflight": self._inflight,
                 "inflight_background": self._inflight_background,
@@ -2666,11 +2691,11 @@ class AffinityScheduler:
                 "pending_jobs_truncated": len(self._pending) > self.status_max_items,
                 "inflight_jobs": inflight_jobs,
                 "active_batch_dispatched": self._active_dispatched,
-                "background_allowed": self.background_allowed(),
+                "background_allowed": background_allowed,
                 "blocked_models": {m: max(0, int((until - now) * 1000)) for m, until in self._model_blocked_until.items() if until > now},
                 "last_foreground_activity_ms": max(0, int((now - self._last_foreground_activity) * 1000)),
                 "stats": dict(self._stats),
-                "cache_stats": self._cache_stats(),
+                "cache_stats": cache_stats,
             }
 
     def gpu_reservation_operation(

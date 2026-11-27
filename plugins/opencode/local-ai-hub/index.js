@@ -285,15 +285,6 @@ export function appendPostEditContext(event, context) {
   return true
 }
 
-export function appendHubContextGuidance(event) {
-  if (!Array.isArray(event?.system) || !event.tools || typeof event.tools !== "object") return false
-  const names = Object.keys(event.tools)
-  const hasHubTool = names.some(name => name.toLowerCase().includes("local_ai_"))
-  const hasCodeMode = names.some(name => name.toLowerCase() === "execute")
-  if (!hasHubTool && !hasCodeMode) return false
-  if (event.system.some(part => typeof part?.text === "string" && part.text.includes("Local AI Hub guidance:"))) return false
-  event.system.push({
-    type: "text",
 export function appendProactivePlanContext(event, planContext) {
   if (!planContext || !Array.isArray(event?.system)) return false
   if (event.system.some(part => typeof part?.text === "string" && part.text.includes("Local AI Hub Proactive Context:"))) return false

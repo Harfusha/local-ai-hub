@@ -135,3 +135,45 @@ test("goal resume reconciles a pending verification without repeating its comman
   assert.equal(result.outcomeUnknown, undefined)
   assert.equal(values.get("goal-verify:session-1").status, "settled")
 })
+
+test("goal completion calls Agent OS completion and reaches DONE only with its confirmation", async () => {
+  const calls = []
+  const { state, values, controller } = fixture(undefined, {
+    getBoundTaskImpl: async () => ({ success: true, task: { checkpoint: {} } }),
+    completeTaskImpl: async (current, options) => {
+      calls.push({ taskId: current.taskId, sessionId: options.sessionId })
+      return {
+        success: true,
+        task: {
+          task_id: current.taskId,
+          status: "completed",
+          contract: { acceptance_criteria: current.criteria },
+        },
+      }
+    },
+  })
+
+  await controller.settle({
+    id: "event-complete-1",
+    type: "session.execution.succeeded",
+    data: { sessionID: "session-1" },
+  })
+
+  assert.deepEqual(calls, [{ taskId: state.taskId, sessionId: "session-1" }])
+  assert.equal(values.get("goal:session-1").status, "DONE")
+})
+
+test("goal stays blocked when Agent OS completion verification is unavailable", async () => {
+  const { values, controller } = fixture(undefined, {
+    getBoundTaskImpl: async () => ({ success: true, task: { checkpoint: {} } }),
+    completeTaskImpl: async () => ({ success: false, verification_unavailable: true }),
+  })
+
+  await controller.settle({
+    id: "event-complete-2",
+    type: "session.execution.succeeded",
+    data: { sessionID: "session-1" },
+  })
+
+  assert.equal(values.get("goal:session-1").status, "BLOCKED")
+})

@@ -106,7 +106,11 @@ class ExternalGpuReservationStore:
         """Reap expired owned state and read scheduler metadata under one file lock."""
         with self._locked():
             record = self._read_unlocked()
-            if (record is not None and record["expires_at"] <= self._clock()
+            owner_gone = (
+                record is not None
+                and self._external_owner_process_is_gone(record.get("owner"))
+            )
+            if (record is not None and (record["expires_at"] <= self._clock() or owner_gone)
                   and not self._has_capacity_lease_for_generation_unlocked(record["generation"])):
                 reaped = self._remove_unlocked(record["generation"])
                 record = None if reaped else self._read_unlocked()
@@ -893,6 +897,27 @@ class ExternalGpuReservationStore:
         except (TypeError, ValueError):
             return False
         if pid <= 0 or thread_id <= 0:
+            return False
+        try:
+            from .process_utils import process_is_alive
+
+            return process_is_alive(pid) is False
+        except Exception:
+            return False
+
+    @staticmethod
+    def _external_owner_process_is_gone(owner: Any) -> bool:
+        """Reap only explicit OpenCode PID owners whose process is confirmed dead."""
+        if not isinstance(owner, str):
+            return False
+        parts = owner.split(":", 2)
+        if len(parts) != 3 or parts[0] != "opencode" or not parts[2]:
+            return False
+        try:
+            pid = int(parts[1])
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0:
             return False
         try:
             from .process_utils import process_is_alive
