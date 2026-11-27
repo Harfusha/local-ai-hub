@@ -105,13 +105,16 @@ def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
         raise ValueError("invalid Python import impact policy")
     all_paths = repository_resources(root) if python_imports else None
     deadline = time.monotonic() + 5.0
+    from .execution_imports import expand_import_dependents, python_import_dependents
+
     reverse: dict[str, set[str]] = {}
     if python_imports:
-        from .execution_imports import expand_import_dependents, python_import_dependents
 
         assert all_paths is not None
         reverse = python_import_dependents(root, all_paths, resources, deadline=deadline)
         resources = sorted(expand_import_dependents(resources, reverse))
+        if len(resources) > MAX_REPOSITORY_RESOURCES or time.monotonic() >= deadline:
+            raise ValueError("Python import impact exceeded resource or time limit")
     if not mapped:
         return resources
 
@@ -152,8 +155,6 @@ def _full_resources(inventory: dict[str, Any], root: str) -> list[str]:
                     raise ValueError("configured affected test pattern has no allowed inventory match")
                 impacted.update(matched)
                 if python_imports:
-                    from .execution_imports import expand_import_dependents
-
                     impacted = expand_import_dependents(impacted, reverse)
                 if len(impacted) > MAX_REPOSITORY_RESOURCES:
                     raise ValueError("Git impact inventory exceeds resource limit")
