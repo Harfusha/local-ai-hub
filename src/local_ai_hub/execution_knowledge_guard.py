@@ -48,7 +48,16 @@ def knowledge_consistency(root: str, revision: str) -> dict[str, Any]:
                 or after.get("stale") or after.get("truncated")
                 or after.get("fingerprint") != revision):
             return {**unavailable, "status": "snapshot_changed"}
-        findings = [finding for finding in audit["findings"] if finding["type"] in BLOCKING_TYPES]
+        modeled_claims = {
+            (item["record"]["kind"], item["record"]["id"]) for item in catalog["records"]
+            if item["record"]["payload"].get("layer") in ("intended", "observed")
+            and "claim_key" in item["record"]["payload"]
+        }
+        findings = [finding for finding in audit["findings"]
+                    if finding["type"] in BLOCKING_TYPES or (
+                        finding["type"] in {"stale_knowledge", "unverified_knowledge"}
+                        and (finding.get("record_kind"), finding.get("record_id")) in modeled_claims
+                    )]
         return {
             "complete": not findings, "status": "consistent" if not findings else "contradictions",
             "blocking_count": len(findings),
