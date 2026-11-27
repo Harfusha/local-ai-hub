@@ -65,7 +65,7 @@
         "Routing minimizes repeated reads and token use through indexed evidence, bounded artifact slices, compact responses, reuse keys, and no redundant retrieval; it respects latency and preprocessing rules.",
         "Semantic calls remain advisory where required; deterministic facts, tests, builds, security, permissions, user approval, task identity, and model capability/quality gates remain authoritative."
       ],
-      "blocker": "Focused provider/setup and scheduler tests pass; goal-completion and stale-PID reaper behavior have test coverage. Live OpenCode/Codex/Antigravity routing remains unverified because localhost:28894 has no listener. Gemma 4 12B is installed but not selected; Hub readiness and hubctl report different active models.",
+      "blocker": "Focused provider/setup, goal-completion, and stale-PID reaper tests pass. Live provider routing remains unverified: localhost:28894 has no listener and Ollama reports no active model; VRAM pressure unknown.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -137,7 +137,7 @@
       "depends_on": [],
       "description": "Checkpoint 2026-11-25: Gemini CLI workspace root was trusted with explicit user approval; gemini mcp list from Hub root now reports local-ai Connected. Cursor installed native plugin refreshed to 8.1.0 and its live MCP wrapper completed initialize/tools/list with 7 tools. Handshake verifier now compares Antigravity/Cursor native plugin versions against the source release; stale Cursor 6.1.0 regression was observed failing before the fix. Focused provider/setup suite: 194 passed; release_check --allow-installed passed; full provider verifier reports all configured provider bundles current, Codex runtime current, Hub ready, and stdio handshake 7/7. GPU reservation unknown fence was released through the authorized endpoint and rechecked free. Remaining work: investigate unattributed admin.action.result 500 telemetry; do not claim active app windows reloaded from wrapper evidence. Checkpoint 2026-11-25 21:42 CET: durable inventory recovery guidance now lives in tracked src/local_ai_hub/generator.py; provider bundle parity and runtime/release version consistency are regression-tested. Bumped package/runtime/manifests/docs to 8.2.1, refreshed Gemini extension, Cursor, and Antigravity/Multigravity profiles, restarted Hub; health and doctor both report 8.2.1. Fifteen source/installed MCP launchers plus four Multigravity profiles completed initialize/tools/list with 7 tools. Focused suites passed: 251 + 125; release_check, compileall and diff-check passed. Codex global skill and active cached launcher work, but plugin cache still reports 8.2.0: plugin inventory exceeded 30s and official cache refresh failed Access denied under running Codex app. Historical 8 admin.action.result 500s remain unattributed; current 8.2.1 runtime has no failures in its active preprocessing/scheduler status. Continue only after safe Codex host cache refresh and attributable historical failure evidence.",
       "kind": "code",
-      "next_action": "When the intended OpenCode/provider runtime is available, verify effective Laya advice for OpenCode, Codex, and Antigravity and attach authentic live receipts; only then close this task.",
+      "next_action": "After an OpenCode listener and model are active, verify Laya advisories in OpenCode, Codex, and Antigravity; attach live receipts before task closure.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-23-laya-full-provider-integration.md",
@@ -170,7 +170,7 @@
         "Focused tests cover changed config, routing, lifecycle/recovery, receipts, GPU fencing and sandbox behavior; final acceptance separately records a real local-model and GPU run, live client handshake, installation state, and sandbox evidence."
       ],
       "accountable_role": "primary_agent",
-      "blocker": "AppContainer session now optionally snapshots a workspace and copies back only after all owned child exits are zero and Job Object emptiness is confirmed; Windows tree locks cover existing and newly-created source directories and stage root identity. Current focused suite: 281 passed, 4 skipped. Full handle-relative write transaction, real OpenCode pipe/token cleanup, GPU admission, task receipts, and Gemma acceptance remain unverified; launcher stays fail-closed.",
+      "blocker": "Workspace snapshot/copyback is tested (281 passed, 4 skipped), but production acceptance remains blocked: no listener on 127.0.0.1:28894, Ollama has no active model, VRAM pressure unknown. Full handle-relative file transaction, live AppContainer/pipe/token cleanup, GPU admission, task receipts, and Gemma acceptance remain unverified; launcher stays fail-closed.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -191,7 +191,7 @@
       "depends_on": [],
       "description": "Dodat úplnou, nativní a bezpečnostně ověřenou integraci OpenCode s Local AI Hubem podle Superpowers specifikace a plánu; cílový model Gemma 4 12B Q4_K_M, runtime context 128k a Q4 KV pouze při živém potvrzení.",
       "kind": "code",
-      "next_action": "Close remaining Windows source/stage traversal and file-level race gaps; then restore OpenCode runtime and verify AppContainer launch, pipe/token cleanup, GPU admission, live Hub/task flow, and Gemma route before enabling the launcher.",
+      "next_action": "Close the remaining Windows file-level path-race gaps. After the OpenCode listener and an eligible model are active, verify real AppContainer launch, pipe/token cleanup, GPU admission, Hub task flow, and Gemma routing before enabling the launcher.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-25-opencode-max-integration.md",
