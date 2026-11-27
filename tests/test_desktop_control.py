@@ -316,3 +316,19 @@ def test_desktop_annotation_reobserves_exact_root(tmp_path):
         engine.return_value.split_changes.assert_called_once_with(str(tmp_path.resolve()), None)
         ledger.return_value.annotate.assert_called_once_with(engine.return_value.split_changes.return_value,
                                                              expected_revision="b" * 64, record=record)
+
+
+def test_desktop_sequence_suggestion_does_not_invoke_mutation(tmp_path):
+    control = MagicMock()
+    with patch("local_ai_hub.config.load_config", return_value={}), \
+         patch("local_ai_hub.deterministic.DeterministicEngine") as engine, \
+         patch("local_ai_hub.state_paths.configured_state_dir", return_value=tmp_path / "state"), \
+         patch("local_ai_hub.change_commit_sequence.suggest_sequence", return_value={"success": True}) as suggest, \
+         patch("local_ai_hub.change_commit_execution.execute_staged_commit") as execute:
+        result = desktop.dispatch(control, {"op": "change_transaction", "args": {
+            "root": str(tmp_path), "action": "sequence-suggest",
+        }})
+        assert result["success"]
+        engine.return_value.split_changes.assert_called_once_with(str(tmp_path.resolve()), None)
+        suggest.assert_called_once_with(engine.return_value.split_changes.return_value, None)
+        execute.assert_not_called()
