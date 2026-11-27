@@ -45,12 +45,6 @@ class HTTPPostRoutesMixin:
         except Exception:
             self._send(503, {"success": False, "error": "local model inventory unavailable", "terminal": True, "retryable": False})
             return
-        options = request.setdefault("options", {})
-        if "num_ctx" not in options:
-            if request["model"].startswith("qwen3.5:") or request["model"].startswith("gemma4:"):
-                options["num_ctx"] = 131072
-            elif request["model"].startswith("qwen2.5-coder:"):
-                options["num_ctx"] = 32768
         try:
             result = app.services.proxy_request(
                 "/api/chat", request, source="proxy:opencode",

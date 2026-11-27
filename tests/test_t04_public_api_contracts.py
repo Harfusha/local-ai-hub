@@ -120,13 +120,13 @@ def test_chat_completions_uses_only_configured_installed_models_through_hub(live
     assert seen[0][2] == "proxy:opencode"
 
 
-def test_chat_completions_accepts_explicit_opencode_model_role(live_api, monkeypatch):
+@pytest.mark.parametrize("model", ["gemma4:12b-128k", "qwen3.5:9b-nvfp4", "qwen2.5-coder:7b"])
+def test_chat_completions_accepts_explicit_opencode_model_role(live_api, monkeypatch, model):
     app, client = live_api
-    model = "gemma4:12b-128k"
     app.config.setdefault("models", {})["opencode"] = model
     monkeypatch.setattr(app.runtime, "installed_models", lambda: [model])
     seen = []
-    monkeypatch.setattr(app.services, "proxy_request", lambda endpoint, payload, *, source: (
+    monkeypatch.setattr(app.services, "proxy_request", lambda endpoint, payload, *, source, repository_root=None, model_route_requested=False: (
         seen.append((endpoint, payload, source)) or {
             "done": True, "model": model, "message": {"role": "assistant", "content": "ok"},
             "prompt_eval_count": 1, "eval_count": 1,
@@ -140,7 +140,29 @@ def test_chat_completions_accepts_explicit_opencode_model_role(live_api, monkeyp
     assert result["choices"][0]["message"]["content"] == "ok"
     assert seen[0][0] == "/api/chat"
     assert seen[0][1]["model"] == model
+    assert "num_ctx" not in seen[0][1].get("options", {})
     assert seen[0][2] == "proxy:opencode"
+
+
+def test_opencode_context_policy_uses_bounded_fallback_without_vram_evidence():
+    from local_ai_hub.model_policy import ModelExecutionPolicy
+
+    model = "gemma4:12b-128k"
+    policy = ModelExecutionPolicy({
+        "models": {"opencode": model},
+        "model_execution": {
+            "opencode": {
+                "context_tokens": 65536,
+                "large_context_tokens": 131072,
+                "max_context_tokens": 131072,
+            },
+        },
+    })
+
+    payload, profile = policy.apply_payload(model, {}, role="opencode", vram_free_mb=None)
+
+    assert payload["options"]["num_ctx"] == profile.num_ctx
+    assert profile.num_ctx <= 16384
 
 
 def test_chat_completions_rejects_remote_or_uninstalled_model_without_dispatch(live_api, monkeypatch):
