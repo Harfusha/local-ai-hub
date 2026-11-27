@@ -476,10 +476,10 @@ def _preserve_checkpoint_memory_state(
     if not allow_server_memory_refresh:
         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
     merged_state_data = dict(checkpoint.state_data)
-    from .execution_problems import PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY
+    from .execution_problems import PROBLEM_DISPOSITION_KEY, PROBLEM_REPORT_KEY, PROBLEM_STATE_KEY
 
-    if PROBLEM_REPORT_KEY in merged_state_data:
-        raise ValueError("execution problem reports must use task_checkpoint")
+    if PROBLEM_REPORT_KEY in merged_state_data or PROBLEM_DISPOSITION_KEY in merged_state_data:
+        raise ValueError("execution problem commands must use task_checkpoint")
     if not allow_server_execution_update:
         if PROBLEM_STATE_KEY in merged_state_data and (
             PROBLEM_STATE_KEY not in current_state_data
