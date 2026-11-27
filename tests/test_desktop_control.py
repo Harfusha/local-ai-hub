@@ -365,3 +365,42 @@ def test_stats_reset_unavailable_is_not_success(tmp_path):
     with patch.object(desktop, "checked_post", return_value={"success": True, "reset": False, "available": False}):
         with pytest.raises(RuntimeError, match="confirm reset"):
             desktop.dispatch(desktop.HubControl(), {"op": "endpoint_reset", "args": {"root": str(tmp_path), "confirmed": True}})
+
+
+@pytest.mark.parametrize("lines", [100, 250, 500])
+def test_log_tail_uses_fixed_endpoint_and_no_autostart(lines):
+    with patch.object(desktop, "HubClient") as factory:
+        client = factory.return_value
+        client._online.return_value = True
+        client.get.return_value = {"success": True, "lines": ["INFO ready"]}
+        result = desktop.dispatch(desktop.HubControl("config.toml"),
+                                  {"op": "log_tail", "args": {"lines": lines}})
+        assert result["lines"] == ["INFO ready"]
+        factory.assert_called_once_with(config_path="config.toml", auto_start=False)
+        client.get.assert_called_once_with(f"/api/logs/tail?lines={lines}",
+                                           timeout=15.0, requires_heavy_work=False)
+        client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("lines", [0, 501, -1, "250", True])
+def test_log_tail_rejects_unbounded_or_untyped_limits(lines):
+    with patch.object(desktop, "HubClient") as factory:
+        with pytest.raises(ValueError, match="Log tail requires"):
+            desktop.dispatch(desktop.HubControl(), {"op": "log_tail", "args": {"lines": lines}})
+        factory.assert_not_called()
+
+
+@pytest.mark.parametrize("result", [
+    {"success": False, "error": "disabled"},
+    {"success": True, "lines": "not a list"},
+    {"success": True, "lines": [None]},
+    {"success": True, "lines": ["line"] * 101},
+])
+def test_log_tail_does_not_present_invalid_or_disabled_data_as_empty(result):
+    with patch.object(desktop, "HubClient") as factory:
+        client = factory.return_value
+        client._online.return_value = True
+        client.get.return_value = result
+        with pytest.raises(RuntimeError):
+            desktop.dispatch(desktop.HubControl(), {"op": "log_tail", "args": {"lines": 100}})
+        client.close.assert_called_once()
