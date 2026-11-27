@@ -9,6 +9,7 @@ EXECUTION_KEY = "verified_execution"
 MAX_OBLIGATIONS = 512
 MAX_REPOSITORY_RESOURCES = 8000
 MAX_PREVIEW = 12
+EVIDENCE_TYPES = frozenset({"source_review", "test", "benchmark"})
 
 
 def _canonical(value: Any, label: str, limit: int = 512) -> str:
@@ -83,7 +84,7 @@ def expand_declared_inventory(
     check_names: set[str] = set()
     normalized_checks: list[dict[str, Any]] = []
     for check in checks:
-        if type(check) is not dict or set(check) - {"name", "dimension", "priority", "depends_on"}:
+        if type(check) is not dict or set(check) - {"name", "dimension", "priority", "depends_on", "evidence_type"}:
             raise ValueError("invalid inventory check")
         name = _canonical(check.get("name"), "check name", 100)
         if ":" in name or name in check_names:
@@ -100,8 +101,12 @@ def expand_declared_inventory(
             _canonical(dependency, "check dependency", 100)
         if len(set(dependencies)) != len(dependencies) or name in dependencies:
             raise ValueError("invalid check dependencies")
+        evidence = check.get("evidence_type")
+        if "evidence_type" in check and (type(evidence) is not str or evidence not in EVIDENCE_TYPES):
+            raise ValueError("unsupported check evidence_type")
         normalized_checks.append({
             "name": name, "dimension": dimension, "priority": priority,
+            **({"evidence_type": evidence} if evidence is not None else {}),
             **({"depends_on": list(dependencies)} if dependencies else {}),
         })
     if any(set(check.get("depends_on", [])) - check_names for check in normalized_checks):
@@ -116,6 +121,8 @@ def expand_declared_inventory(
         for check in normalized_checks:
             criterion = f"{check['name']}: {resource}"
             expected = {"dimension": check["dimension"], "priority": check["priority"]}
+            if "evidence_type" in check:
+                expected["evidence_type"] = check["evidence_type"]
             metadata = units.get(criterion, {})
             if type(metadata) is not dict or any(
                 key in metadata and metadata[key] != value for key, value in expected.items()
@@ -163,7 +170,7 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
         raise ValueError("execution units must refer to exact acceptance criteria")
     units: dict[str, dict[str, Any]] = {}
     for criterion, metadata in supplied.items():
-        if type(metadata) is not dict or set(metadata) - {"dimension", "depends_on", "priority"}:
+        if type(metadata) is not dict or set(metadata) - {"dimension", "depends_on", "priority", "evidence_type"}:
             raise ValueError("invalid execution unit metadata")
         dimension = _canonical(metadata.get("dimension", "general"), "dimension", 64)
         dependencies = metadata.get("depends_on", [])
@@ -177,7 +184,11 @@ def normalize_execution(criteria: Sequence[str], raw: Any) -> dict[str, Any]:
         priority = metadata.get("priority", 0)
         if type(priority) is not int or not 0 <= priority <= 100:
             raise ValueError("execution priority must be an integer from 0 to 100")
-        units[criterion] = {"dimension": dimension, "depends_on": list(dependencies), "priority": priority}
+        evidence = metadata.get("evidence_type")
+        if "evidence_type" in metadata and (type(evidence) is not str or evidence not in EVIDENCE_TYPES):
+            raise ValueError("unsupported execution unit evidence_type")
+        units[criterion] = {"dimension": dimension, "depends_on": list(dependencies), "priority": priority,
+                            **({"evidence_type": evidence} if evidence is not None else {})}
     dimensions = raw.get("required_dimensions", [])
     if type(dimensions) is not list or len(dimensions) > 64:
         raise ValueError("required_dimensions must be a bounded array")
@@ -262,6 +273,7 @@ def execution_projection(
         row: dict[str, Any] = {
             "criterion": criterion, "dimension": dimension, "status": status,
             "priority": metadata.get("priority", 0), "dependent_count": fanout[criterion],
+            **({"evidence_type": metadata["evidence_type"]} if "evidence_type" in metadata else {}),
         }
         if waiting:
             row["waiting_on"] = waiting[:MAX_PREVIEW]
@@ -300,6 +312,19 @@ def execution_projection(
         "remaining_preview": rows[:MAX_PREVIEW],
         "remaining_count": len(rows),
         "preview_truncated": len(rows) > MAX_PREVIEW,
+    }
+
+
+def contract_evidence_types(contract: Any) -> dict[str, str]:
+    """Read explicit evidence kinds from the persisted structured contract."""
+    profile = getattr(contract, "slo_profile", {})
+    config = profile.get(EXECUTION_KEY) if isinstance(profile, Mapping) else None
+    if not isinstance(config, Mapping):
+        return {}
+    return {
+        criterion: metadata["evidence_type"]
+        for criterion, metadata in config.get("units", {}).items()
+        if isinstance(metadata, Mapping) and metadata.get("evidence_type") in EVIDENCE_TYPES
     }
 
 

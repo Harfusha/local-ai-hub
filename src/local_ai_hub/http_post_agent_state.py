@@ -76,6 +76,11 @@ def handle_agent_state_verification(self: Any, payload: dict[str, Any]) -> None:
             if "receipt_id" in rcpt_data:
                 rcpt = services_module.VerificationReceipt.from_dict(rcpt_data)
             else:
+                from .verified_execution import contract_evidence_types
+
+                store = getattr(services_module.APP.agent_verification, "task_store", None)
+                task = store.get(receipt_task_id or request_task_id) if store is not None else None
+                evidence_kind = contract_evidence_types(getattr(task, "contract", None)).get(str(rcpt_data.get("criterion", "")))
                 rcpt = services_module.VerificationReceipt.create(
                     task_id=str(rcpt_data.get("task_id", "")),
                     criterion=str(rcpt_data.get("criterion", "")),
@@ -87,6 +92,7 @@ def handle_agent_state_verification(self: Any, payload: dict[str, Any]) -> None:
                     owner=self._agent() or "agent",
                     expires_at=rcpt_data.get("expires_at"),
                     details=rcpt_data.get("details"),
+                    evidence_type=evidence_kind,
                 )
             saved = services_module.APP.agent_verification.record(rcpt)
             collector = getattr(services_module.APP, "training_collector", None)

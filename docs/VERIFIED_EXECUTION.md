@@ -130,6 +130,16 @@ task without a recently validated receipt for 15 minutes is flagged
 research may take longer), does not block cancellation, and does not force an
 external agent to keep running.
 
+An inventory check or explicit unit can declare `evidence_type` as
+`source_review`, `test`, or `benchmark`. This is persisted in the contract
+and used by the canonical receipt gate, avoiding accidental classification
+from a resource path such as `tests/test_file.py`. Test and benchmark kinds
+still require command evidence. Project-mandated command rules retain their
+existing classification and proof requirements. Without an explicit kind,
+legacy criterion-name inference remains in effect.
+
+Reusable versioned examples are in `docs/examples/verified-execution-profiles.json`.
+
 ## Git change scope
 
 Use inventory `"scope": "changes"` to enumerate staged, unstaged, deleted

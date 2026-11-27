@@ -6,14 +6,16 @@
       {
         "name": "inspect correctness",
         "dimension": "correctness",
-        "priority": 80
+        "priority": 80,
+        "evidence_type": "source_review"
       },
       {
         "name": "inspect consistency",
         "dimension": "consistency",
         "depends_on": [
           "inspect correctness"
-        ]
+        ],
+        "evidence_type": "source_review"
       },
       {
         "name": "verify findings",
@@ -21,105 +23,120 @@
         "depends_on": [
           "inspect correctness",
           "inspect consistency"
-        ]
+        ],
+        "evidence_type": "source_review"
       }
     ],
     "implementation": [
       {
         "name": "define expected behavior",
         "dimension": "requirements",
-        "priority": 90
+        "priority": 90,
+        "evidence_type": "source_review"
       },
       {
         "name": "implement behavior",
         "dimension": "implementation",
         "depends_on": [
           "define expected behavior"
-        ]
+        ],
+        "evidence_type": "source_review"
       },
       {
         "name": "integration test",
         "dimension": "integration",
         "depends_on": [
           "implement behavior"
-        ]
+        ],
+        "evidence_type": "test"
       },
       {
         "name": "review documentation",
         "dimension": "documentation",
         "depends_on": [
           "implement behavior"
-        ]
+        ],
+        "evidence_type": "source_review"
       }
     ],
     "migration": [
       {
         "name": "inspect old contract",
         "dimension": "requirements",
-        "priority": 90
+        "priority": 90,
+        "evidence_type": "source_review"
       },
       {
         "name": "verify migration",
         "dimension": "migration",
         "depends_on": [
           "inspect old contract"
-        ]
+        ],
+        "evidence_type": "source_review"
       },
       {
         "name": "regression test",
         "dimension": "verification",
         "depends_on": [
           "verify migration"
-        ]
+        ],
+        "evidence_type": "test"
       }
     ],
     "research": [
       {
         "name": "inspect primary source",
         "dimension": "evidence",
-        "priority": 90
+        "priority": 90,
+        "evidence_type": "source_review"
       },
       {
         "name": "verify claims",
         "dimension": "accuracy",
         "depends_on": [
           "inspect primary source"
-        ]
+        ],
+        "evidence_type": "source_review"
       },
       {
         "name": "reconcile contradictions",
         "dimension": "consistency",
         "depends_on": [
           "verify claims"
-        ]
+        ],
+        "evidence_type": "source_review"
       }
     ],
     "optimization": [
       {
         "name": "baseline benchmark",
         "dimension": "measurement",
-        "priority": 90
+        "priority": 90,
+        "evidence_type": "benchmark"
       },
       {
         "name": "review optimization",
         "dimension": "implementation",
         "depends_on": [
           "baseline benchmark"
-        ]
+        ],
+        "evidence_type": "source_review"
       },
       {
         "name": "compare benchmark",
         "dimension": "measurement",
         "depends_on": [
           "review optimization"
-        ]
+        ],
+        "evidence_type": "benchmark"
       },
       {
         "name": "regression test",
         "dimension": "verification",
         "depends_on": [
           "review optimization"
-        ]
+        ],
+        "evidence_type": "test"
       }
     ]
   }

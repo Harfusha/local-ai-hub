@@ -661,6 +661,7 @@ def evaluate_completion_receipts(
     require_execution_provenance: bool = False,
     now: float | None = None,
     evidence_store: Any | None = None,
+    required_evidence_types: Mapping[str, str] | None = None,
 ) -> CompletionResult:
     """Apply shared receipt gates to durable tasks and work-order handoffs.
 
@@ -734,6 +735,10 @@ def evaluate_completion_receipts(
     mappings = mapped_receipt_ids or {}
 
     for criterion in criteria:
+        # Project-mandated commands retain their established evidence classification.
+        kind = (required_evidence_types or {}).get(criterion, criterion_evidence_type(criterion))
+        if criterion in rule_criteria or criterion in (configured_commands or {}):
+            kind = criterion_evidence_type(criterion)
         if criterion in unavailable_rule_criteria:
             unsatisfied.append(criterion)
             continue
@@ -776,17 +781,17 @@ def evaluate_completion_receipts(
             evidence_store=evidence_store,
         ):
             unsatisfied.append(criterion)
-        elif criterion_evidence_type(criterion) == "test" and (
+        elif kind == "test" and (
             receipt.evidence_type != "test" or not str(receipt.command_id or "").strip()
         ):
             unsatisfied.append(criterion)
         elif active_verification_rules and criterion == "lint" and not str(receipt.command_id or "").strip():
             unsatisfied.append(criterion)
-        elif criterion_evidence_type(criterion) == "benchmark" and (
+        elif kind == "benchmark" and (
             receipt.evidence_type != "benchmark" or not str(receipt.command_id or "").strip()
         ):
             unsatisfied.append(criterion)
-        elif criterion_evidence_type(criterion) == "source_review" and (
+        elif kind == "source_review" and (
             receipt.evidence_type != "source_review"
         ):
             unsatisfied.append(criterion)
@@ -1838,6 +1843,8 @@ class VerificationStore:
             if not expected_owner or receipt.owner in valid_owners
         )
         target_criteria = required_criteria
+        from .verified_execution import contract_evidence_types
+
         gated = evaluate_completion_receipts(
             task_id,
             target_criteria,
@@ -1860,6 +1867,7 @@ class VerificationStore:
             require_execution_provenance=self.require_execution_provenance,
             now=current_time,
             evidence_store=self.evidence_store,
+            required_evidence_types=contract_evidence_types(task_state.contract) if task_state else None,
         )
         if repo_bound and not has_trusted_current_revision:
             gated = CompletionResult(

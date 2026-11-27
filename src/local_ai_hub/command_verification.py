@@ -125,8 +125,6 @@ class CommandVerificationMixin:
                 return
             if not project_bound and (project_alias_required or evidence_type == "source_review"):
                 return
-            if criterion_evidence_type(criterion) != evidence_type:
-                return
             raw_tokens = shlex.split(command, posix=(os.name != "nt"))
             tokens = [token.lower() for token in raw_tokens]
             no_execution_options = {
@@ -177,6 +175,13 @@ class CommandVerificationMixin:
                     return
             task_store = self.task_store or getattr(self.verification_store, "task_store", None)
             task = task_store.get(task_id) if task_store is not None else None
+            from .verified_execution import contract_evidence_types
+
+            expected_kind = criterion_evidence_type(criterion)
+            if not project_bound and task is not None:
+                expected_kind = contract_evidence_types(getattr(task, "contract", None)).get(criterion, expected_kind)
+            if expected_kind != evidence_type:
+                return
             verified_owner = str(getattr(task, "owner", "") or "").strip()
             state_data = getattr(getattr(task, "checkpoint", None), "state_data", {}) or {}
             mutation_generation = int(state_data.get("mutation_generation", 0) or 0)

@@ -2174,3 +2174,34 @@ def test_verified_execution_problem_requires_owner_and_valid_criterion(stores):
     task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"execution_problem_report": report}))
     with pytest.raises(ValueError, match="different report"):
         task_store.checkpoint(task.task_id, TaskCheckpoint(state_data={"execution_problem_report": {**report, "title": "different"}}))
+
+
+def test_verified_execution_explicit_evidence_kind_ignores_path_names(stores):
+    task_store, verifier = stores
+    criterion = "inspect: tests/test_module.py"
+    contract = GoalContract("inspect source", slo_profile={"verified_execution": {
+        "inventory": {"resources": ["tests/test_module.py"], "checks": [
+            {"name": "inspect", "evidence_type": "source_review"},
+        ]},
+    }})
+    task = task_store.create(contract, ScopeContext(task_id="typed-evidence"), task_id="typed-evidence")
+    assert contract.acceptance_criteria == (criterion,)
+    verifier.record(receipt_for(task.task_id, criterion, evidence_type="source_review",
+                                artifact_store=verifier.artifact_store))
+    result = verifier.completion(task.task_id)
+    assert result.complete
+    assert result.execution["coverage"]["verified"] == 1
+
+
+def test_verified_execution_explicit_test_kind_requires_command(stores):
+    task_store, verifier = stores
+    contract = GoalContract("validate", acceptance_criteria=("verify",), slo_profile={
+        "verified_execution": {"units": {"verify": {"evidence_type": "test"}}},
+    })
+    task = task_store.create(contract, ScopeContext(task_id="typed-test"), task_id="typed-test")
+    verifier.record(receipt_for(task.task_id, "verify", evidence_type="source_review",
+                                artifact_store=verifier.artifact_store))
+    assert not verifier.completion(task.task_id).complete
+    verifier.record(receipt_for(task.task_id, "verify", evidence_type="test",
+                                artifact_store=verifier.artifact_store))
+    assert verifier.completion(task.task_id).complete
