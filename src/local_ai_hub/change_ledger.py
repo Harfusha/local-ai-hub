@@ -142,3 +142,35 @@ class ChangeLedger:
         plan["local_ledger"] = {"observed_atoms": len(atoms), "current_annotation_atoms": covered,
                                 "unannotated_or_stale_atoms": len(atoms) - covered,
                                 "authoritative_ownership_proven": False, "verification_reuse_authorized": False}
+
+
+def attach_watcher_candidates(plan: dict[str, Any], preprocessor: Any) -> None:
+    """Correlate recent path events with the current observation, not with an actor."""
+    root, _, atoms = _current(plan)
+    paths = sorted({path for path, _ in atoms.values()})
+    if preprocessor is None:
+        events = {}
+        available = False
+    else:
+        events = preprocessor.recent_change_events(root, paths)
+        available = isinstance(events, dict)
+        if not available:
+            events = {}
+    total = 0
+    for group in plan.get("clusters", []):
+        matched = 0
+        for change in group.get("changes", []):
+            event = events.get(change["path"])
+            if not isinstance(event, dict) or event.get("event") not in {"created", "modified", "deleted", "moved"}:
+                continue
+            observed = event.get("observed_at")
+            if type(observed) not in {int, float} or not 0 < observed <= time.time() + 1:
+                continue
+            change["watcher_candidate"] = {"event": event["event"], "observed_at": observed,
+                                           "relation": "recent_same_path_only"}
+            matched += 1
+        group["watcher_candidate_paths"] = matched
+        total += matched
+    plan["watcher_context"] = {"status": "observed" if available else "unavailable",
+                               "candidate_path_count": total, "coverage_complete": False,
+                               "authorship_proven": False, "verification_reuse_authorized": False}
