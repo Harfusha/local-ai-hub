@@ -280,6 +280,7 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
     parser.add_argument("--changed-path", action="append", default=[], help="Repository-relative path for knowledge impact (repeatable)")
     parser.add_argument("--finding-id", default="", help="Knowledge quality finding ID")
+    parser.add_argument("--problem-id", default="", help="Published verified-execution problem ID")
     parser.add_argument("--subject-digest", default="", help="Conflict subject digest from the current catalog")
     parser.add_argument("--decision", choices=["acceptable", "expected", "confirmed_issue", "false_positive", "deferred"])
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
@@ -298,8 +299,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover, legacy-task-batch, legacy-memory-batch, legacy-incident-batch or projection-rebuild")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild", "execution-publish"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover, legacy-task-batch, legacy-memory-batch, legacy-incident-batch, projection-rebuild or execution-publish")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -321,6 +322,11 @@ def main() -> int:
             parser.error("knowledge remediate requires --finding-id and --subject-digest")
         if args.sub_arg == "remediate" and args.apply and (args.dry_run or not args.task_id):
             parser.error("knowledge remediate --apply requires explicit new --task-id and no --dry-run")
+        if args.sub_arg == "execution-publish":
+            if not args.task_id or not args.problem_id or args.expected_revision is None:
+                parser.error("execution-publish requires --task-id, --problem-id and --expected-revision")
+            if args.apply and (args.dry_run or not args.preview_digest or not args.operation_id):
+                parser.error("execution-publish --apply requires reviewed --preview-digest and --operation-id")
         if args.sub_arg == "handoff-export" and not args.task_id:
             parser.error("handoff-export requires --task-id")
         if args.sub_arg == "handoff-export" and args.apply and (args.dry_run or args.expected_revision is None or not args.preview_digest):
@@ -365,6 +371,35 @@ def main() -> int:
 
         try:
             store = RepoKnowledgeStore(args.root)
+            if args.sub_arg == "execution-publish":
+                from types import SimpleNamespace
+
+                from local_ai_hub.agent_task_models import TaskState
+                from local_ai_hub.repo_knowledge_management import manage_repository_knowledge
+
+                root = str(store.root)
+                client = HubClient(config_path=_config_arg(args.config))
+                try:
+                    response = client.get_task(args.task_id, root=root)
+                finally:
+                    client.close()
+                if response.get("success") is not True or not isinstance(response.get("task"), dict):
+                    print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
+                    return 1
+                task = TaskState.from_dict(response["task"])
+                payload = {
+                    "action": "save_execution_problem" if args.apply else "preview_execution_problem",
+                    "root": root, "task_id": args.task_id, "problem_id": args.problem_id,
+                    "expected_revision": args.expected_revision,
+                    **({"preview_digest": args.preview_digest, "operation_id": args.operation_id,
+                        "apply": True} if args.apply else {}),
+                }
+                result = manage_repository_knowledge(
+                    {}, payload, authorize_operator_write=lambda: args.apply is True and not args.dry_run,
+                    task_store=SimpleNamespace(get=lambda key: task if key == task.task_id else None),
+                )
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                return 0 if result.get("success") is True else 1
             if args.sub_arg in {"batch-preview", "batch-apply", "batch-recover"}:
                 from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch, preview_knowledge_batch
 
