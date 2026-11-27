@@ -406,3 +406,61 @@ def test_ci_provider_assets_cleanup_rejects_changed_or_added_assets(tmp_path):
     cleanup(tmp_path, baseline)
     assert not asset.exists()
     assert (generated / ".gitkeep").exists()
+
+
+def test_verified_execution_knowledge_guard_detects_contradiction_and_partial_inventory(tmp_path):
+    import hashlib
+    import json
+    import subprocess
+
+    from local_ai_hub.execution_knowledge_guard import knowledge_consistency
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_state import RepoStateTracker
+
+    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    folder = tmp_path / ".local-ai-hub"
+    folder.mkdir()
+    (folder / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project, "mode": "shared",
+    }), encoding="utf-8")
+    source = tmp_path / "order.py"
+    source.write_bytes(b"paid = True\n")
+    (tmp_path / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.check_call(["git", "-C", str(tmp_path), "init"])
+    store = RepoKnowledgeStore(tmp_path)
+    evidence = [{"schema_version": 1, "path": "order.py",
+                 "content_digest": hashlib.sha256(source.read_bytes()).hexdigest(),
+                 "start_line": 1, "end_line": 1}]
+
+    def save(kind, record_id, layer, value):
+        record = {"schema_version": 1, "project_id": project, "kind": kind, "id": record_id,
+                  "payload": {"title": "Paid order", "statement": "Paid order state",
+                              "layer": layer, "claim_key": "order.paid", "claim_value": value},
+                  "provenance": {"origin_kind": "manual"}, "evidence": evidence, "relations": []}
+        return store.save(record, expected_revision="", owner="operator",
+                          idempotency_key=record_id, authorize_write=lambda: True)
+
+    def revision():
+        return RepoStateTracker({}).fingerprint(str(tmp_path), force=True)["fingerprint"]
+
+    # Track the inputs so Git fingerprints account for changes in nested files.
+    save("business_rule", "intended", "intended", True)
+    subprocess.check_call(["git", "-C", str(tmp_path), "add", "."])
+    clean = knowledge_consistency(str(tmp_path), revision())
+    assert clean["complete"] and clean["status"] == "consistent"
+    save("observation", "observed", "observed", False)
+    subprocess.check_call(["git", "-C", str(tmp_path), "add", "."])
+    result = knowledge_consistency(str(tmp_path), revision())
+    assert not result["complete"] and result["blocking_count"] == 1
+    assert result["findings_preview"][0]["type"] == "declared_claim_conflict"
+    assert not knowledge_consistency(str(tmp_path), "wrong-revision")["complete"]
+    (folder / "knowledge/observations/invalid.json").write_text("not JSON", encoding="utf-8")
+    subprocess.check_call(["git", "-C", str(tmp_path), "add", "."])
+    assert knowledge_consistency(str(tmp_path), revision())["status"] == "partial_inventory"
+
+
+def test_verified_execution_knowledge_guard_is_strict_opt_in():
+    assert normalize_execution(("a",), {"knowledge_guard": True})["knowledge_guard"] is True
+    assert "knowledge_guard" not in normalize_execution(("a",), {})
+    with pytest.raises(ValueError, match="knowledge_guard"):
+        normalize_execution(("a",), {"knowledge_guard": "true"})
