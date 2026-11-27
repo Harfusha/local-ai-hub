@@ -256,7 +256,7 @@ def test_change_plan_bridge_is_read_only_and_scoped(tmp_path):
 
 def test_change_transaction_rejects_unconfirmed_or_unknown_actions(tmp_path):
     control = MagicMock()
-    for action in ("stage-apply", "commit-staged", "arbitrary-command"):
+    for action in ("stage-apply", "commit-staged", "annotate", "sequence-apply", "sequence-verify", "arbitrary-command"):
         with pytest.raises(ValueError):
             desktop.dispatch(control, {"op": "change_transaction", "args": {
                 "action": action, "root": str(tmp_path), "confirmed": False,
@@ -277,3 +277,42 @@ def test_local_stage_preview_bridge(tmp_path):
         assert result["success"]
         assert stage.call_args.kwargs["apply"] is False
         assert stage.call_args.kwargs["paths"] == ["a.py"]
+
+
+def test_desktop_sequence_requires_existing_receipts_and_exact_preview(tmp_path):
+    control = MagicMock()
+    common = {"root": str(tmp_path), "paths": ["a.py"], "expected_revision": "a" * 64,
+              "expected_tree": "b" * 40, "sequence": [{"paths": ["a.py"], "message": "fix: a"}]}
+    with patch("local_ai_hub.config.load_config", return_value={}), \
+         patch("local_ai_hub.deterministic.DeterministicEngine"), \
+         patch("local_ai_hub.leases.ScopeLeaseStore"), \
+         patch("local_ai_hub.state_paths.configured_state_dir", return_value=tmp_path / "state"), \
+         patch("local_ai_hub.change_commit_journal.CommitJournal"), \
+         patch("local_ai_hub.change_commit_execution.execute_staged_commit", return_value={"success": True}) as execute:
+        desktop.change_transaction(control, {**common, "action": "sequence-preview"})
+        assert execute.call_args.kwargs["preview_only"] is True
+        assert execute.call_args.kwargs["approved"] is False
+        execute.reset_mock()
+        with pytest.raises(ValueError, match="receipts"):
+            desktop.change_transaction(control, {**common, "action": "sequence-apply", "confirmed": True})
+        execute.assert_not_called()
+        manifest = {"environment_id": "c" * 64, "commands": [["/trusted/python", "-m", "pytest"]]}
+        desktop.change_transaction(control, {**common, "action": "sequence-apply", "confirmed": True,
+                                             "preview_digest": "d" * 64, "verification_manifest": manifest})
+        assert execute.call_args.kwargs["verification_manifest"] == manifest
+        assert execute.call_args.kwargs["preview_digest"] == "d" * 64
+        assert execute.call_args.kwargs["approved"] is True
+
+
+def test_desktop_annotation_reobserves_exact_root(tmp_path):
+    control = MagicMock()
+    record = {"atom_ids": ["a" * 64], "actor": "operator", "task_id": "task", "status": "reviewed"}
+    with patch("local_ai_hub.config.load_config", return_value={}), \
+         patch("local_ai_hub.deterministic.DeterministicEngine") as engine, \
+         patch("local_ai_hub.state_paths.configured_state_dir", return_value=tmp_path / "state"), \
+         patch("local_ai_hub.change_ledger.ChangeLedger") as ledger:
+        desktop.change_transaction(control, {"root": str(tmp_path), "action": "annotate",
+                                             "expected_revision": "b" * 64, "record": record, "confirmed": True})
+        engine.return_value.split_changes.assert_called_once_with(str(tmp_path.resolve()), None)
+        ledger.return_value.annotate.assert_called_once_with(engine.return_value.split_changes.return_value,
+                                                             expected_revision="b" * 64, record=record)
