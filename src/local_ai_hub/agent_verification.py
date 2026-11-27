@@ -1931,12 +1931,24 @@ class VerificationStore:
                 receipt_ids={receipt.criterion: receipt.receipt_id for receipt in visible_receipts},
                 receipt_gate_complete=is_complete, blockers=task_state.checkpoint.blockers,
                 receipt_observed_at={receipt.criterion: receipt.observed_at for receipt in visible_receipts},
+                include_verified_criteria=True,
             )
+            effective = set(execution.pop("verified_criteria"))
             dependency_stale = set(execution.get("dependency_stale_criteria", []))
-            if dependency_stale:
-                satisfied = [criterion for criterion in satisfied if criterion not in dependency_stale]
+            invalidated = set(satisfied) - effective
+            if invalidated:
+                satisfied = [criterion for criterion in satisfied if criterion in effective]
                 stale = list(dict.fromkeys((*stale, *sorted(dependency_stale))))
+                unsatisfied = list(dict.fromkeys((*unsatisfied, *sorted(invalidated - dependency_stale))))
                 is_complete = False
+            # A valid individual receipt is insufficient to close a problem
+            # when its prerequisite chain is no longer verified.
+            problems = project_problems(
+                task_state.checkpoint.state_data.get(PROBLEM_STATE_KEY, {}),
+                satisfied=satisfied,
+                receipts={receipt.criterion: receipt for receipt in visible_receipts},
+            )
+            blocking_criteria = set(problems["blocking_criteria"])
             execution["problems"] = problems
             from .execution_inventory import check_repository_scope
 
