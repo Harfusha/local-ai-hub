@@ -23,7 +23,7 @@ const PAGES: &[(&str, &[&str])] = &[
     ("Coordination", &["Plans", "Plan board", "Semaphores", "File leases", "Worktrees", "Session briefing"]),
     ("Projects", &["Projects", "Project config"]),
     ("Commands", &["Commands", "Worktrees"]),
-    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Laya"]),
+    ("Models & search", &["Models & search", "Search workspaces", "Model inventory", "Resident inventory", "Benchmark", "Telemetry report", "Model statistics", "Execution profiles", "Cache layers", "Agent statistics", "Execution routes", "Laya", "Laya capture"]),
     ("Service health", &["Runtime health", "Service health", "Process sessions", "Recent errors", "Recovery journal", "Diagnostics", "Audit"]),
     ("Settings", &["Settings", "Settings — activity mode", "Updates", "Operator tools"]),
     ("Activity", &["Activity", "Agent event stream"]),
@@ -871,7 +871,7 @@ impl Desktop {
                         egui::ComboBox::from_id_salt("plan_lifecycle")
                             .selected_text(if self.plan_lifecycle.is_empty() { "All lifecycles" } else { &self.plan_lifecycle })
                             .show_ui(ui, |ui| {
-                                for lifecycle in ["", "draft", "active", "completed", "archived", "cancelled"] {
+                                for lifecycle in ["", "draft", "active", "paused", "completed", "archived", "cancelled"] {
                                     ui.selectable_value(&mut self.plan_lifecycle, lifecycle.into(),
                                         if lifecycle.is_empty() { "All lifecycles" } else { lifecycle });
                                 }
@@ -991,10 +991,11 @@ impl Desktop {
             }
             5 => { if self.current() == "Worktrees" { self.worktrees(ui); } }
             6 => {
+                if self.current() != "Benchmark" { return; }
                 ui.label("Compare automatic and high-complexity model routes (runs inference twice)");
                 ui.text_edit_multiline(&mut self.prompt);
                 if ui.button("Compare models").clicked() {
-                    self.confirm("Run two model requests", request("compare", json!({"prompt": self.prompt})));
+                    self.confirm("Run two model requests", request("compare", json!({"prompt": self.prompt, "confirmed": true})));
                 }
             }
             7 => {
@@ -1225,7 +1226,7 @@ impl eframe::App for Desktop {
                             self.view = index; self.clear_response(); self.entity.clear(); self.revision.clear();
                         }
                     }
-                    if matches!(self.current(), "Overview" | "Requests" | "Active requests" | "Async jobs" | "Work orders" | "Commands" | "Process sessions" | "Recent errors" | "Runtime health" | "Models & search" | "Laya") {
+                    if matches!(self.current(), "Overview" | "Requests" | "Active requests" | "Async jobs" | "Work orders" | "Commands" | "Process sessions" | "Recent errors" | "Runtime health" | "Models & search" | "Model statistics" | "Execution profiles" | "Cache layers" | "Agent statistics" | "Execution routes" | "Laya" | "Laya capture") {
                         let previous = self.metrics_period.clone();
                         egui::ComboBox::from_id_salt("metrics_period").selected_text(if self.metrics_period == "process" { "Since restart" } else { "Last 30 days" }).show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.metrics_period, "process".into(), "Since restart");
