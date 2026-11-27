@@ -55,7 +55,7 @@ def _resolve_commit_policy(root: str) -> tuple[dict[str, Any], list[list[str]]]:
         if not isinstance(command, CommandDefinition) or command.env_references or not command.argv:
             raise ValueError("Git commit policy requires structured argv without injected environment")
         argv = list(command.argv)
-        if not 1 <= len(argv) <= 32 or any(not arg or len(arg) > 4096 or "\\0" in arg for arg in argv):
+        if not 1 <= len(argv) <= 32 or any(not arg or len(arg) > 4096 or "\0" in arg for arg in argv):
             raise ValueError("Invalid Git commit policy argv")
         if not Path(argv[0]).is_absolute():
             if Path(argv[0]).name != argv[0] or "/" in argv[0] or "\\" in argv[0]:

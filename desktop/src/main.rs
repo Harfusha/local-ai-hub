@@ -817,7 +817,7 @@ impl Desktop {
                     ui.text_edit_multiline(&mut self.change_verification);
                     let sequence = serde_json::from_str::<Value>(&self.change_sequence).ok().filter(Value::is_array);
                     let manifest = serde_json::from_str::<Value>(&self.change_verification).ok().filter(|value| {
-                        value.is_object() && value["environment_id"].as_str().is_some_and(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b\x27a\x27..=b\x27f\x27).contains(&b)))
+                        value.is_object() && value["environment_id"].as_str().is_some_and(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
                             && value["commands"].is_array()
                     });
                     let paths: Vec<&str> = self.change_paths.lines().filter(|p| !p.is_empty()).collect();
