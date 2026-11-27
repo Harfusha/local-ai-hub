@@ -115,6 +115,30 @@ def test_desktop_bridge_roundtrip_and_scoped_reset(tmp_path, monkeypatch):
         assert task["next_action"] == "verify"
         assert foreign["result"]["plan"]["description"] == "scope-1"
         assert foreign["result"]["plan"]["tasks"] == {}
+        # The all-plan board must be usable before a card is selected.
+        board = call("plan_board", root=str(roots[0]))
+        assert board["ok"], board
+        assert any(card["task_id"] == "task_desktop"
+                   for cards in board["result"]["columns"].values() for card in cards)
+        other_board = call("plan_board", root=str(roots[1]))
+        assert other_board["ok"] and other_board["result"]["total_items"] == 0, other_board
+        listed = call("plans", root=str(roots[0]), query="scope-0", lifecycle="active", limit=25)
+        assert listed["ok"] and listed["result"]["count"] == 1, listed
+        assert listed["result"]["desktop_list_limit"] == 25
+        valid = call("plan_validate", root=str(roots[0]), id="plan_desktop")
+        assert valid["ok"] and valid["result"]["valid"] is True, valid
+        archive = dict(root=str(roots[0]), id="plan_desktop",
+                       revision=own["result"]["file_revision"])
+        assert call("plan_archive", **archive)["ok"] is False
+        assert call("plan_archive", **{**archive, "revision": revision}, confirmed=True)["ok"] is False
+        archived = call("plan_archive", **archive, confirmed=True)
+        assert archived["ok"], archived
+        own = call("plan_detail", root=str(roots[0]), id="plan_desktop")
+        foreign = call("plan_detail", root=str(roots[1]), id="plan_desktop")
+        assert own["result"]["plan"]["lifecycle"] == "archived"
+        assert foreign["result"]["plan"]["lifecycle"] == "active"
+        board = call("plan_board", root=str(roots[0]))
+        assert board["ok"] and board["result"]["total_items"] == 0, board
     finally:
         if thread is not None:
             server.shutdown()
