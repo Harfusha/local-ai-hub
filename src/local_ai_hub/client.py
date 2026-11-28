@@ -1466,7 +1466,7 @@ class HubClient:
             kwargs.pop("coordination_id", None)
             if kwargs.get("scope") == "repository":
                 kwargs.pop("scope_id", None)
-        if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
+        if act in {"incident_decision", "negative_knowledge_preview", "negative_knowledge_find"}:
             try:
                 reject_retired_tenancy_fields(kwargs)
                 record = kwargs.get("record")
@@ -1519,7 +1519,7 @@ class HubClient:
                 payload["record"] = record
             payload["action"] = mem_action
             return self.post("/api/agent-state/memory", payload)
-        if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
+        if act in {"incident_decision", "negative_knowledge_preview", "negative_knowledge_find"}:
             validation_error = validate_operation_arguments(
                 "local_ai_coord",
                 act,
@@ -1592,14 +1592,23 @@ class HubClient:
                 "laya_operation": kwargs.get("laya_operation"),
             }
             return self.post("/api/laya/decision", payload)
-        if act == "negative_knowledge_record":
+        if act == "negative_knowledge_preview":
             record = kwargs.get("record")
             if not isinstance(record, dict):
                 return {"success": False, "terminal": True, "retryable": False, "error": "record must be an object"}
-            return self.post("/api/agent-state/incidents", {
-                **record,
-                "action": "record",
-                "root": kwargs.get("root"),
+            from .repo_knowledge import RepoKnowledgeStore
+            from .repo_project_incidents import build_project_incident_record
+
+            root = kwargs.get("root")
+            try:
+                canonical = build_project_incident_record(
+                    RepoKnowledgeStore(root), record, provenance={"origin_kind": "agent_preview"},
+                )
+            except Exception as exc:
+                return {"success": False, "terminal": True, "retryable": False, "error": str(exc)}
+            return self.post("/api/repo/knowledge/manage", {
+                "action": "preview_batch", "root": root,
+                "records": [{"record": canonical, "expected_revision": ""}],
             })
         if act == "negative_knowledge_find":
             return self.post("/api/agent-state/incidents", {

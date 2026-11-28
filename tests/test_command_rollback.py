@@ -2369,11 +2369,18 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
     (tmp_path / "test_command_evidence.py").write_text(
         "def test_evidence_source():\n    assert True\n", encoding="utf-8"
     )
+    project_dir = tmp_path / ".local-ai-hub"
+    project_dir.mkdir()
+    (project_dir / "project.json").write_text(
+        '{"schema_version":1,"project_id":"608c48ba-c68d-4551-8643-4a53b57b6510","mode":"shared"}',
+        encoding="utf-8",
+    )
+    (tmp_path / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
     subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Hub test"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=tmp_path, check=True)
     subprocess.run(
-        ["git", "add", ".local-ai.toml", "test_command_evidence.py"], cwd=tmp_path, check=True
+        ["git", "add", ".gitignore", ".local-ai.toml", "test_command_evidence.py", ".local-ai-hub/project.json"], cwd=tmp_path, check=True
     )
     subprocess.run(["git", "commit", "--quiet", "-m", "initialize evidence repository"], cwd=tmp_path, check=True)
     revision = subprocess.run(

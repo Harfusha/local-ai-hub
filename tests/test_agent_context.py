@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import pytest
 
 from local_ai_hub.agent_context import (
@@ -200,7 +201,7 @@ def test_memory_preload_bounds_lazy_provider_iteration(tmp_path: Path):
     assert len([element for _, element in elements if element.source_kind == "preload_memory"]) == 2
 
 
-def test_repository_memory_context_excludes_different_repository_root(tmp_path: Path):
+def test_repository_sqlite_projection_is_never_context_authority(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     memory_store = MemoryStore(state_store)
     root = tmp_path / "repo"
@@ -227,8 +228,42 @@ def test_repository_memory_context_excludes_different_repository_root(tmp_path: 
     ))
 
     context = "\n".join(element.content for element in result.elements)
-    assert "allowed memory" in context
+    assert "allowed memory" not in context
     assert "foreign secret" not in context
+
+
+def test_context_reads_canonical_git_memory_and_ignores_old_sqlite_row(tmp_path: Path):
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_project_memory import build_project_memory_record
+
+    root = tmp_path / "repo"
+    (root / ".local-ai-hub/agent-os/memory").mkdir(parents=True)
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    (root / ".local-ai-hub/project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    store = RepoKnowledgeStore(root)
+    canonical = build_project_memory_record(store, {
+        "record_id": "mem-canonical-rule", "kind": "rule", "scope": "project",
+        "key": "billing_retry", "value": "Reuse the same idempotency key on retry",
+    })
+    (root / ".local-ai-hub/agent-os/memory/mem-canonical-rule.json").write_text(
+        json.dumps(canonical), encoding="utf-8",
+    )
+    state = AgentStateStore(tmp_path / "state.sqlite3")
+    memory = MemoryStore(state)
+    memory.record(MemoryRecord.create(
+        kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="old_projection",
+        value="stale SQLite answer", provenance={"repository_id": project_id},
+    ))
+
+    result = ContextCompiler(state, memory_store=memory).compile(ContextRequest(
+        task_id="task-1", root=str(root), coordination_id=project_id,
+    ))
+    content = "\n".join(element.content for element in result.elements)
+    assert "Reuse the same idempotency key on retry" in content
+    assert "stale SQLite answer" not in content
 
 
 def test_memory_provider_failure_degrades_to_state_context_with_warning(tmp_path: Path):
@@ -571,9 +606,7 @@ def test_stale_memory_is_excluded_from_authoritative_context(tmp_path: Path):
     )
 
     assert stale.record_id not in {element.element_id for element in context.elements}
-    assert fresh.record_id in {element.element_id for element in context.elements}
-    fresh_element = next(element for element in context.elements if element.element_id == fresh.record_id)
-    assert fresh_element.to_dict()["provenance"]["repository_revision"] == "rev-2"
+    assert fresh.record_id not in {element.element_id for element in context.elements}
 
 
 def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
@@ -746,7 +779,7 @@ def test_repository_root_aliases_match_context_scope(tmp_path: Path):
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(task_id="task-1", root=canonical_root, coordination_id="repo-a", token_budget=120)
     )
-    assert record.record_id in {element.element_id for element in context.elements}
+    assert record.record_id not in {element.element_id for element in context.elements}
 
 
 def test_unsupported_memory_scopes_require_matching_request_identity(tmp_path: Path):
@@ -824,7 +857,7 @@ def test_context_filters_before_candidate_limit_with_many_excluded_records(tmp_p
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(task_id="task-1", root=current_root, coordination_id="repo-a", token_budget=120)
     )
-    assert current.record_id in {element.element_id for element in context.elements}
+    assert current.record_id not in {element.element_id for element in context.elements}
 
 
 def test_context_drops_unsafe_memory_store_fallback(tmp_path: Path):
@@ -985,7 +1018,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
     )
     element_ids = {element.element_id for element in context.elements}
 
-    assert current_repository.record_id in element_ids
+    assert current_repository.record_id not in element_ids
     assert current_task.record_id in element_ids
     assert current_session.record_id in element_ids
     assert wrong_root.record_id not in element_ids

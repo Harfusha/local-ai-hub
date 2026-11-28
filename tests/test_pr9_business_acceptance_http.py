@@ -9,7 +9,9 @@ from urllib.request import Request, urlopen
 
 from local_ai_hub import http_server
 from local_ai_hub.app import LocalAIApp
-from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_identity import AgentScope, ScopeContext
+from local_ai_hub.agent_incidents import ToolOutcome
+from local_ai_hub.agent_memory import MemoryKind, MemoryRecord
 from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_project_incidents import build_project_incident_record
@@ -75,7 +77,7 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
     records = [
         build_project_task_record(store, {
             "task_id": "task-idempotent-billing",
-            "status": "in_progress",
+            "status": "active",
             "contract": {
                 "goal": "Prevent duplicate charges during payment retries",
                 "description": "Customer retries after a slow gateway response.",
@@ -214,7 +216,7 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
             },
         })
         assert status == 400 and uninitialized_task["success"] is False
-        assert "stable project identity" in uninitialized_task["error"]
+        assert "stable project_id" in uninitialized_task["error"]
         assert not app.agent_tasks.has_task("task-uninitialized-project")
 
         readonly_root = tmp_path / "readonly-project"
@@ -285,11 +287,66 @@ def test_real_http_publish_rebuild_and_read_business_state(tmp_path, monkeypatch
         assert status == 200 and memory_result["success"] is True, memory_result
         assert "same idempotency key" in str(memory_result)
 
+        status, unstated_scope_write = _post(base_url, "/api/agent-state/memory", {
+            "action": "record", "root": str(root),
+            "record": {"kind": "fact", "key": "must-not-infer-repository", "value": "no direct write"},
+        })
+        assert status == 409 and unstated_scope_write["success"] is False
+
+        status, legacy_write = _post(base_url, "/api/agent-state/memory", {
+            "action": "record", "root": str(root), "scope": "repository",
+            "record": {
+                "kind": "fact", "scope": "repository", "key": "must-use-git",
+                "value": "Repository facts require reviewed Git publication.",
+            },
+        })
+        assert status == 409 and legacy_write["success"] is False, legacy_write
+        with closing(connect_sqlite(app.agent_state.db_path, read_only=True)) as con:
+            assert con.execute(
+                "SELECT COUNT(*) FROM agent_memory_records WHERE key = ?", ("must-use-git",)
+            ).fetchone()[0] == 0
+        status, repository_delete = _post(base_url, "/api/agent-state/memory", {
+            "action": "delete", "root": str(root), "scope": "repository",
+            "record_id": "mem-billing-retry-rule",
+        })
+        assert status == 409 and repository_delete["success"] is False
+        status, memory_result = _get(base_url, "/api/agent-state/memory", {
+            "record_id": "mem-billing-retry-rule", "scope": "repository", "root": str(root),
+        })
+        assert status == 200 and memory_result["success"] is True, memory_result
+
+        status, legacy_incident = _post(base_url, "/api/agent-state/incidents", {
+            "action": "record", "root": str(root), "message": "unreviewed incident write",
+            "operation_class": "test", "state_revision": "fixture-rev",
+        })
+        assert status == 403 and legacy_incident["success"] is False
+
         status, incidents_result = _get(base_url, "/api/agent-state/incidents", {
             "root": str(root), "limit": 20,
         })
         assert status == 200 and incidents_result["success"] is True
         assert any(row["incident_id"] == "inc-billing-timeout" for row in incidents_result["incidents"])
+        legacy_only = app.agent_memory.record(MemoryRecord.create(
+            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
+            scope_id=project_id, key="legacy-only-key", value="SQLite-only secret",
+            provenance={"root": str(root), "repository_id": project_id},
+        ), actor="test")
+        legacy_incident = app.agent_incidents.capture(ToolOutcome(
+            tool_name="command", error="SQLite-only failure", exit_code=1,
+            repository_root=str(root),
+        ))
+        assert legacy_only is not None and legacy_incident is not None
+        status, memory_search = _get(base_url, "/api/agent-state/memory", {
+            "scope": "repository", "root": str(root), "query": "legacy-only-key",
+        })
+        assert status == 200 and memory_search["records"] == []
+        status, incident_recheck = _get(base_url, "/api/agent-state/incidents", {
+            "root": str(root), "limit": 20,
+        })
+        assert status == 200 and all(
+            row["incident_id"] != legacy_incident.incident_id
+            for row in incident_recheck["incidents"]
+        )
 
         status, query = _post(base_url, "/api/repo/knowledge/query", {
             "root": str(root), "query": "payment retry",

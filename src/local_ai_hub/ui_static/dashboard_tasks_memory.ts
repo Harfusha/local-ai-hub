@@ -466,7 +466,7 @@ function openRecordMemoryModal(){
         <div class="form-group">
           <label for="newMemVal">Memory Value *</label>
           <textarea id="newMemVal" rows="4" required placeholder="Text value or JSON object..."></textarea>
-          <span class="form-hint">Write a fact, add a note, or paste JSON.</span>
+          <span class="form-hint">Task memory stays local to its task. Publish repository knowledge through Projects → Knowledge.</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="form-group">
@@ -506,7 +506,7 @@ async function submitRecordMemory(e){
   if(!key||rawVal===undefined)return;
   let val=rawVal;
   try{val=JSON.parse(rawVal)}catch{}
-  const scope=$('newMemScope')?.value||'repository';
+  const scope=$('newMemScope')?.value||'task';
   const kind=$('newMemKind')?.value||'fact';
   const statusEl=$('recordMemStatus');
   const taskId=$('newMemTaskId')?.value?.trim();
@@ -590,70 +590,6 @@ function renderIncidentModal(i){
       <details class="raw-json"><summary>Raw Incident JSON</summary><pre>${esc(JSON.stringify(i,null,2))}</pre></details>
     </div>
   `;
-}
-
-function openRecordIncidentModal(){
-  if($('modalTitle'))$('modalTitle').textContent='Record incident';
-  if($('modalLive'))$('modalLive').textContent='';
-  if($('modalBody'))$('modalBody').innerHTML=`
-    <div class="modal-body-wrap">
-      <form class="modal-form" onsubmit="submitRecordIncident(event)">
-        <div class="form-group">
-          <label for="newIncClass">Operation *</label>
-          <input type="text" id="newIncClass" required value="indexing" placeholder="e.g. indexing, command, repository search" autofocus>
-          <span class="form-hint">Name the operation that failed. The Hub classifies the error.</span>
-        </div>
-        <div class="form-group">
-          <label for="newIncMsg">Failure Description</label>
-          <textarea id="newIncMsg" rows="2" placeholder="What symptom or exception occurred?"></textarea>
-        </div>
-        <div class="form-group">
-          <label for="newIncCause">Root Cause</label>
-          <textarea id="newIncCause" rows="2" placeholder="Why did the failure happen?"></textarea>
-        </div>
-        <div class="form-group">
-          <label for="newIncFix">Verified Fix / Prevention Rule *</label>
-          <textarea id="newIncFix" rows="3" required placeholder="Exact rule or guard to prevent this error from recurring"></textarea>
-          <span class="form-hint">Saved so future runs can avoid the same problem.</span>
-        </div>
-        <div id="recordIncStatus" class="tiny"></div>
-        <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
-          <button type="submit" class="btn warn">Record incident</button>
-        </div>
-      </form>
-    </div>
-  `;
-  if($('modalBg'))$('modalBg').classList.add('open');
-  setTimeout(()=>$('newIncClass')?.focus(),50);
-}
-
-async function submitRecordIncident(e){
-  e.preventDefault();
-  const operationClass=$('newIncClass')?.value?.trim()||'indexing';
-  const msg=$('newIncMsg')?.value?.trim()||'';
-  const rootCause=$('newIncCause')?.value?.trim()||'';
-  const verifiedFix=$('newIncFix')?.value?.trim()||'';
-  const statusEl=$('recordIncStatus');
-  if(statusEl)statusEl.textContent='Saving incident…';
-
-  try{
-    const res=await post('/api/agent-state/incidents',{
-      action:'record',
-      operation_class:operationClass,
-      message:msg,
-      root_cause:rootCause,
-      verified_fix:verifiedFix
-    });
-    if(res.success){
-      await loadAgentOsView();
-      renderIncidentModal(res.incident||{incident_id:'new',operation_class:operationClass,redacted_message:msg,root_cause:rootCause,verified_fix:verifiedFix});
-    }else{
-      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Could not save the incident.')}</span>`;
-    }
-  }catch(err){
-    if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(err.message||err)}</span>`;
-  }
 }
 
 function openCleanupModal(){

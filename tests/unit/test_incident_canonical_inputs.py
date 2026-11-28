@@ -104,11 +104,16 @@ def test_mcp_incident_actions_send_canonical_scoped_payloads(monkeypatch, tmp_pa
     _activate_coord(monkeypatch)
     client = _FakeClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
+    class Store:
+        def __init__(self, _root): pass
+        def manifest(self): return ({"project_id": "5dfda9b4-7441-4d15-9145-04d26d1ed5e4"}, "")
+    monkeypatch.setattr("local_ai_hub.repo_knowledge.RepoKnowledgeStore", Store)
     implementation = _implementation()
 
     implementation(
-        action="negative_knowledge_record", root=str(tmp_path),
-        record={"operation_class": "command", "message": "failed", "exit_code": 1},
+        action="negative_knowledge_preview", root=str(tmp_path),
+        record={"operation_class": "command", "error_class": "RuntimeError",
+                "signature_hash": "a" * 16, "resolved": False, "redacted_message": "failed"},
     )
     implementation(
         action="negative_knowledge_find", root=str(tmp_path),
@@ -123,11 +128,12 @@ def test_mcp_incident_actions_send_canonical_scoped_payloads(monkeypatch, tmp_pa
         fingerprint=FINGERPRINT, state_revision="rev-7",
     )
 
-    assert client.calls == [
-        ("post", "/api/agent-state/incidents", {
-            "operation_class": "command", "message": "failed", "exit_code": 1,
-            "action": "record", "root": str(tmp_path),
-        }),
+    assert client.calls[0][0:2] == ("post", "/api/repo/knowledge/manage")
+    preview = client.calls[0][2]
+    assert preview["action"] == "preview_batch" and preview["root"] == str(tmp_path)
+    canonical = preview["records"][0]["record"]
+    assert canonical["kind"] == "incident" and canonical["payload"]["redacted_message"] == "failed"
+    assert client.calls[1:] == [
         ("post", "/api/agent-state/incidents", {
             "action": "find", "root": str(tmp_path),
             "query": "timeout", "limit": 25,
@@ -175,7 +181,7 @@ def test_mcp_negative_knowledge_rejects_legacy_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     record_result = _implementation()(
-        action="negative_knowledge_record", root=str(tmp_path),
+        action="negative_knowledge_preview", root=str(tmp_path),
         record={"operation_class": "command", "message": "failed"}, reason="legacy",
     )
     find_result = _implementation()(
@@ -206,14 +212,19 @@ def test_sdk_coord_forwards_canonical_incident_scope_and_revision():
     )]
 
 
-def test_sdk_coord_keeps_record_scope_outside_record_object():
+def test_sdk_coord_previews_canonical_incidents_in_git(monkeypatch):
     client = object.__new__(HubClient)
     calls = []
     client.post = lambda path, payload: calls.append((path, payload)) or {"success": True}
+    class Store:
+        def __init__(self, _root): pass
+        def manifest(self): return ({"project_id": "5dfda9b4-7441-4d15-9145-04d26d1ed5e4"}, "")
+    monkeypatch.setattr("local_ai_hub.repo_knowledge.RepoKnowledgeStore", Store)
 
     HubClient.coord(
-        client, action="negative_knowledge_record",
-        record={"operation_class": "command", "message": "failed"},
+        client, action="negative_knowledge_preview",
+        record={"operation_class": "command", "error_class": "RuntimeError",
+                "signature_hash": "a" * 16, "resolved": False, "redacted_message": "failed"},
         root="C:/repo",
     )
     HubClient.coord(
@@ -221,16 +232,13 @@ def test_sdk_coord_keeps_record_scope_outside_record_object():
         root="C:/repo",
     )
 
-    assert calls == [
-        ("/api/agent-state/incidents", {
-            "operation_class": "command", "message": "failed", "root": "C:/repo",
-            "action": "record",
-        }),
-        ("/api/agent-state/incidents", {
+    assert calls[0][0] == "/api/repo/knowledge/manage"
+    assert calls[0][1]["action"] == "preview_batch"
+    assert calls[0][1]["records"][0]["record"]["kind"] == "incident"
+    assert calls[1] == ("/api/agent-state/incidents", {
             "action": "find", "query": "timeout", "limit": 25,
             "root": "C:/repo",
-        }),
-    ]
+        })
 
 
 def test_sdk_incident_actions_reject_ignored_aliases_before_dispatch():
@@ -241,7 +249,7 @@ def test_sdk_incident_actions_reject_ignored_aliases_before_dispatch():
     invalid = [
         {"action": "incident_decision", "fingerprint": FINGERPRINT, "state_revision": "r1", "revision": "old"},
         {"action": "negative_knowledge_find", "query": "timeout", "key": "old"},
-        {"action": "negative_knowledge_record", "record": {"message": "x", "reason": "old"}},
+        {"action": "negative_knowledge_preview", "record": {"message": "x", "reason": "old"}},
     ]
     for arguments in invalid:
         result = HubClient.coord(client, **arguments)
@@ -250,25 +258,26 @@ def test_sdk_incident_actions_reject_ignored_aliases_before_dispatch():
     assert calls == []
 
 
-def test_incident_record_constraints_are_action_scoped_and_windows_bounded():
+def test_incident_preview_requires_canonical_fields_and_rejects_old_aliases():
     schema = operation_parameters_schema("local_ai_coord")
     assert schema["properties"]["record"] == {"type": "object"}
     record_condition = next(
         item for item in schema["allOf"]
-        if item.get("if", {}).get("properties", {}).get("action", {}).get("const") == "negative_knowledge_record"
+        if item.get("if", {}).get("properties", {}).get("action", {}).get("const") == "negative_knowledge_preview"
     )
-    assert record_condition["then"]["properties"]["record"]["properties"]["exit_code"] == {
-        "type": "integer", "minimum": -(1 << 31), "maximum": (1 << 32) - 1,
+    record_schema = record_condition["then"]["properties"]["record"]
+    assert record_schema["required"] == ["operation_class", "error_class", "signature_hash", "resolved"]
+    canonical = {
+        "operation_class": "command", "error_class": "TimeoutError",
+        "signature_hash": "a" * 16, "resolved": False,
     }
-    for exit_code in (3221225477, -1073741819):
-        assert validate_operation_arguments("local_ai_coord", "negative_knowledge_record", {
-            "root": ".",
-            "record": {"message": "failure", "exit_code": exit_code},
-        }) is None
-    assert validate_operation_arguments("local_ai_coord", "negative_knowledge_record", {
-        "root": ".",
-        "record": {"message": "failure", "exit_code": True},
-    }) is not None
+    assert validate_operation_arguments("local_ai_coord", "negative_knowledge_preview", {
+        "root": ".", "record": canonical,
+    }) is None
+    for alias in ({"message": "failure"}, {"exit_code": 1}, {"reason": "old"}, {"fix": "old"}):
+        assert validate_operation_arguments("local_ai_coord", "negative_knowledge_preview", {
+            "root": ".", "record": {**canonical, **alias},
+        }) is not None
 
 
 def test_global_coord_record_schema_does_not_restrict_other_action_objects():

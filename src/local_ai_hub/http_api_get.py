@@ -253,17 +253,20 @@ class HttpGetMixin:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 limit = int((query.get("limit") or [100])[0])
                 resolved_raw = (query.get("resolved") or [None])[0]
-                status_raw = (query.get("status") or [None])[0]
                 request_root = (query.get("root") or [""])[0]
                 if request_root in ("all", "__all__"):
                     request_root = ""
-                if request_root:
-                    incidents = services_module.APP.agent_incidents.list_incidents(
-                        resolved=resolved_raw, limit=limit, status=status_raw, root=request_root,
-                    )
-                else:
-                    incidents = services_module.APP.agent_incidents.list_incidents(resolved=resolved_raw, limit=limit, status=status_raw)
-                self._send(200, {"success": True, "incidents": [i.to_dict() if hasattr(i, "to_dict") else i for i in incidents]}); return
+                if not request_root:
+                    self._send(400, {"success": False, "error": "canonical incident listing requires root", "terminal": True, "retryable": False}); return
+                from .http_post_agent_state import _canonical_project_incidents
+                try:
+                    incidents = _canonical_project_incidents(request_root, limit=limit)
+                except (OSError, ValueError) as exc:
+                    self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if resolved_raw is not None:
+                    resolved = str(resolved_raw).strip().lower() in {"true", "1", "yes"}
+                    incidents = [item for item in incidents if item.get("resolved") is resolved]
+                self._send(200, {"success": True, "incidents": incidents[:max(1, min(100, limit))]}); return
             if path == "/api/agent-state/memory":
                 if not getattr(services_module.APP, "agent_memory", None) or not services_module.APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -298,6 +301,17 @@ class HttpGetMixin:
                     if scope_val is None:
                         scope_val = services_module.AgentScope.GLOBAL
                     scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                    if scope_val is services_module.AgentScope.REPOSITORY:
+                        if not root_val:
+                            self._send(400, {"success": False, "error": "repository memory requires root", "terminal": True, "retryable": False}); return
+                        from .http_post_memory import _canonical_project_memory
+                        try:
+                            records = _canonical_project_memory(str(root_val), record_id=rec_id)
+                        except (OSError, ValueError) as exc:
+                            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                        if not records:
+                            self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
+                        self._send(200, {"success": True, "record": records[0]}); return
                     if scope_val is services_module.AgentScope.TASK:
                         task_id_val = scope_id_val
                     elif scope_val is services_module.AgentScope.SESSION:
@@ -361,6 +375,17 @@ class HttpGetMixin:
                 if ambiguous_scope:
                     self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
                 scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                if scope_val is services_module.AgentScope.REPOSITORY:
+                    if not root_val:
+                        self._send(400, {"success": False, "error": "repository memory requires root", "terminal": True, "retryable": False}); return
+                    from .http_post_memory import _canonical_project_memory
+                    try:
+                        records = _canonical_project_memory(
+                            str(root_val), key=str(key_val or ""), query=str(query_val or ""), limit=limit_val,
+                        )
+                    except (OSError, ValueError) as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    self._send(200, {"success": True, "records": records}); return
                 if scope_val is services_module.AgentScope.TASK:
                     task_id_val = scope_id_val
                 elif scope_val is services_module.AgentScope.SESSION:
@@ -382,7 +407,15 @@ class HttpGetMixin:
                     limit=limit_val,
                     include_all_scopes=include_all_scopes,
                 )
-                self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
+                records = [r for r in records if r.scope is not services_module.AgentScope.REPOSITORY]
+                serialized = [r.to_dict() for r in records]
+                if root_val:
+                    from .http_post_memory import _canonical_project_memory
+                    try:
+                        serialized.extend(_canonical_project_memory(str(root_val), limit=limit_val))
+                    except (OSError, ValueError) as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                self._send(200, {"success": True, "records": serialized[:limit_val]}); return
             if path == "/api/agent-state/events":
                 agent_state = getattr(services_module.APP, "agent_state", None)
                 stream_id = (query.get("stream_id") or [""])[0]

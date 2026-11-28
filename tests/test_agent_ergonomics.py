@@ -481,7 +481,7 @@ def test_checkpoint_and_incident_canonical_inputs(tmp_path: Path):
         assert chk["next_action"] == "pytest passed"
         assert chk["affected_paths"] == ["src/a.py"]
 
-        local_ai_coord(action="negative_knowledge_record", record={
+        local_ai_coord(action="negative_knowledge_preview", record={
             "message": "bug in regex", "operation_class": "ValueError", "affected_paths": ["src/re.py"],
         }, root=str(tmp_path))
         assert mock_client.post.called

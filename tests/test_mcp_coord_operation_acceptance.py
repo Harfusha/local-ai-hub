@@ -776,21 +776,26 @@ def test_local_ai_coord_negative_knowledge_find_forwards_query_and_limit(monkeyp
     )]
 
 
-def test_local_ai_coord_negative_knowledge_record_forwards_verified_fix(monkeypatch, tmp_path):
+def test_local_ai_coord_negative_knowledge_preview_forwards_verified_fix(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
+    class Store:
+        def __init__(self, _root): pass
+        def manifest(self): return ({"project_id": "5dfda9b4-7441-4d15-9145-04d26d1ed5e4"}, "")
+    monkeypatch.setattr("local_ai_hub.repo_knowledge.RepoKnowledgeStore", Store)
     record = {
-        "operation_class": "ValueError", "message": "invalid payload",
-        "root_cause": "caller omitted field", "verified_fix": "validate before retry",
+        "operation_class": "tool", "error_class": "ValueError",
+        "signature_hash": "a" * 16, "resolved": True,
+        "redacted_message": "invalid payload", "root_cause": "caller omitted field",
+        "verified_fix": "validate before retry",
     }
-    result = mcp_server.local_ai_coord(action='negative_knowledge_record', root=root, record=record)
+    result = mcp_server.local_ai_coord(action='negative_knowledge_preview', root=root, record=record)
     assert result["success"] is True
     calls = backend.calls
-    assert calls == [(
-        "/api/agent-state/incidents",
-        {**record, "action": "record", "root": root},
-        {"timeout": mcp_server._timeout("quick")},
-    )]
+    assert calls[0][0] == "/api/repo/knowledge/manage"
+    assert calls[0][1]["action"] == "preview_batch"
+    canonical = calls[0][1]["records"][0]["record"]
+    assert canonical["kind"] == "incident" and canonical["payload"]["verified_fix"] == "validate before retry"
 
 
 def test_local_ai_coord_pubsub_poll_forwards_topic_and_cursor(monkeypatch, tmp_path):
@@ -1349,22 +1354,28 @@ def test_local_ai_coord_context_compile_dispatch_with_task_id(monkeypatch, tmp_p
     assert backend.calls[0][1]["task_id"] == "task-69"
 
 
-def test_local_ai_coord_negative_knowledge_record_dispatch(monkeypatch, tmp_path):
+def test_local_ai_coord_negative_knowledge_preview_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     record = {
-        "operation_class": "ValueError", "message": "bad input",
-        "root_cause": "missing field",
+        "operation_class": "tool", "error_class": "ValueError",
+        "signature_hash": "b" * 16, "resolved": False,
+        "redacted_message": "bad input", "root_cause": "missing field",
     }
+    class Store:
+        def __init__(self, _root): pass
+        def manifest(self): return ({"project_id": "5dfda9b4-7441-4d15-9145-04d26d1ed5e4"}, "")
+    monkeypatch.setattr("local_ai_hub.repo_knowledge.RepoKnowledgeStore", Store)
     tool_result = mcp_server.local_ai_coord(
-        action="negative_knowledge_record", root=root, record=record,
+        action="negative_knowledge_preview", root=root, record=record,
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
-    assert backend.calls[0][0] == "/api/agent-state/incidents"
-    assert backend.calls[0][1]["action"] == "record"
-    assert backend.calls[0][1]["operation_class"] == "ValueError"
-    assert backend.calls[0][1]["root_cause"] == "missing field"
+    assert backend.calls[0][0] == "/api/repo/knowledge/manage"
+    assert backend.calls[0][1]["action"] == "preview_batch"
+    record = backend.calls[0][1]["records"][0]["record"]
+    assert record["payload"]["operation_class"] == "tool"
+    assert record["payload"]["root_cause"] == "missing field"
 
 
 def test_local_ai_coord_negative_knowledge_find_dispatch(monkeypatch, tmp_path):

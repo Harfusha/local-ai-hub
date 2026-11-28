@@ -316,7 +316,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | MCP action local_ai_coord | memory_promote | confirmed | src/local_ai_hub/generator.py | op-b0904bf92e19 |
 | MCP action local_ai_coord | memory_record | confirmed | src/local_ai_hub/generator.py | op-90b617e52e5c |
 | MCP action local_ai_coord | negative_knowledge_find | confirmed | src/local_ai_hub/generator.py | op-d40ecfa5c1c9 |
-| MCP action local_ai_coord | negative_knowledge_record | confirmed | src/local_ai_hub/generator.py | op-e7f297ebbc4d |
+| MCP action local_ai_coord | negative_knowledge_preview | confirmed | src/local_ai_hub/generator.py | op-e7f297ebbc4d |
 | MCP action local_ai_coord | plan_archive | confirmed | src/local_ai_hub/generator.py | op-cab729821b3e |
 | MCP action local_ai_coord | plan_bind_task | confirmed | src/local_ai_hub/generator.py | op-f722d32ece3d |
 | MCP action local_ai_coord | plan_board_view | confirmed | src/local_ai_hub/generator.py | op-89489a592e6d |

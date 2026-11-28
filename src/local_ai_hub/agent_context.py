@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, Collection, Mapping
 
 from .agent_events import AgentStateStore
-from .agent_identity import AgentScope
-from .agent_memory import MemoryStatus, MemoryStore
+from .agent_identity import AgentScope, MemoryKind
+from .agent_memory import MemoryRecord, MemoryStatus, MemoryStore
 from .context_identity import (
     ContextPathHint,
     combine_settings_digests,
@@ -349,6 +349,8 @@ def _memory_record_matches_context(record: Any, request: ContextRequest) -> bool
     if scope is AgentScope.GLOBAL:
         return True
     if scope is AgentScope.REPOSITORY:
+        if provenance.get("canonical_project_id"):
+            return bool(request.root)
         return bool(request.coordination_id) and provenance.get("repository_id") == request.coordination_id
     expected = {
         AgentScope.TASK: request.task_id, AgentScope.SESSION: request.session_id,
@@ -367,6 +369,60 @@ def _memory_record_matches_context(record: Any, request: ContextRequest) -> bool
     if not record_root:
         return scope is AgentScope.SESSION
     return normalize_context_root(record_root) == normalize_context_root(request.root)
+
+
+def _canonical_project_memory_records(request: ContextRequest, limit: int = 20) -> list[MemoryRecord]:
+    if not request.root:
+        return []
+    from .repo_knowledge import RepoKnowledgeStore
+    from .repo_project_memory import list_project_memory
+
+    try:
+        store = RepoKnowledgeStore(request.root)
+        manifest, _ = store.manifest()
+    except (OSError, ValueError):
+        return []
+    records = []
+    kind_map = {
+        "concept": MemoryKind.FACT, "fact": MemoryKind.FACT, "pattern": MemoryKind.PLAYBOOK,
+        "rule": MemoryKind.CONVENTION, "decision": MemoryKind.DECISION,
+        "negative_knowledge": MemoryKind.GOTCHA,
+    }
+    include_kinds = {str(kind).strip().lower() for kind in request.include_kinds}
+    for item in list_project_memory(request.root):
+        payload = item.get("payload", {})
+        if item.get("project_id") != manifest.get("project_id") or payload.get("quarantine_reason"):
+            continue
+        kind = kind_map.get(str(payload.get("kind", "fact")))
+        if kind is None or (include_kinds and str(payload.get("kind", "fact")) not in include_kinds
+                            and kind.value not in include_kinds):
+            continue
+        provenance = {
+            **(item.get("provenance", {}) if isinstance(item.get("provenance"), dict) else {}),
+            "repository_id": manifest["project_id"],
+            "canonical_project_id": manifest["project_id"],
+            "project_memory_kind": str(payload.get("kind", "fact")),
+        }
+        freshness = store.get("memory", str(item.get("id", ""))).get("freshness", "unknown")
+        if freshness == "stale":
+            continue
+        records.append(MemoryRecord(
+            record_id=str(item.get("id", "")), kind=kind, scope=AgentScope.REPOSITORY,
+            scope_id=manifest["project_id"], key=str(payload.get("key", "")), value=payload.get("value"),
+            confidence=float(payload.get("confidence", 1.0)), status=MemoryStatus.ACTIVE,
+            source=str(payload.get("source", "git")),
+            evidence_ids=tuple(
+                [str(ref.get("path", "")) for ref in item.get("evidence", []) if isinstance(ref, dict)]
+                + [str(value) for value in provenance.get("evidence_ids", ()) if isinstance(value, str)]
+            ),
+            sensitivity=str(payload.get("sensitivity", "internal")), provenance=provenance,
+            created_at=float(payload.get("created_at", 0.0) or 0.0),
+            updated_at=float(payload.get("updated_at", 0.0) or 0.0),
+            expires_at=float(payload["expires_at"]) if payload.get("expires_at") is not None else None,
+        ))
+        if len(records) >= max(1, min(100, limit)):
+            break
+    return records
 
 
 def _rollback_after_failure(connection: Any, *, operation: str) -> None:
@@ -661,6 +717,7 @@ class ContextCompiler:
         self,
         request: ContextRequest,
         warnings: list[dict[str, Any]],
+        canonical_project_memory: list[MemoryRecord] | None = None,
     ) -> list[tuple[int, ContextElement]]:
         settings = self._preload_config(request)
         root = Path(request.root).resolve() if request.root else None
@@ -763,7 +820,7 @@ class ContextCompiler:
                             record = next(iterator)
                         except StopIteration:
                             break
-                        if not _memory_record_matches_context(record, request):
+                        if record.scope is AgentScope.REPOSITORY or not _memory_record_matches_context(record, request):
                             continue
                         content = f"[{record.kind.value.upper()}] {record.key}: {record.value}"
                         evidence_ids = tuple(record.evidence_ids)
@@ -780,6 +837,26 @@ class ContextCompiler:
                                 provenance={"record_id": record.record_id, "evidence_ids": evidence_ids},
                             ),
                         ))
+                    memory_records = canonical_project_memory
+                    if memory_records is None:
+                        memory_records = _canonical_project_memory_records(
+                            replace(request, include_kinds=tuple(str(kind) for kind in memory_kinds)), max_memory,
+                        )
+                    memory_records = [record for record in memory_records if (
+                        record.kind.value in {str(kind) for kind in memory_kinds}
+                        or record.provenance.get("project_memory_kind") in {str(kind) for kind in memory_kinds}
+                    )]
+                    for record in memory_records[:max(0, max_memory - len(memory_elements))]:
+                        if not _memory_record_matches_context(record, request):
+                            continue
+                        content = f"[{record.kind.value.upper()}] {record.key}: {record.value}"
+                        memory_elements.append((86, ContextElement(
+                            element_id=f"preload_memory_{record.record_id}", source_kind="preload_memory",
+                            content=content, estimated_tokens=_estimate_tokens(content),
+                            reason="configured memory-kind preload", confidence=record.confidence,
+                            freshness=record.updated_at,
+                            provenance={"record_id": record.record_id, "evidence_ids": record.evidence_ids},
+                        )))
                     elements.extend(memory_elements)
                 except Exception as exc:
                     warnings.append(self._warning(
@@ -921,7 +998,15 @@ class ContextCompiler:
                     ),
                 ))
 
-        candidates.extend(self._load_preloads(request, warnings))
+        try:
+            canonical_project_memory = _canonical_project_memory_records(request, 20)
+        except Exception as exc:
+            canonical_project_memory = []
+            warnings.append(self._warning(
+                "project_memory_unavailable", "canonical project memory unavailable",
+                error=type(exc).__name__,
+            ))
+        candidates.extend(self._load_preloads(request, warnings, canonical_project_memory))
         if changed_paths_truncated and request.include_diagnostics:
             diagnostic_content = (
                 "[CONTEXT DIAGNOSTICS] changed_paths_truncated=true "
@@ -1050,6 +1135,8 @@ class ContextCompiler:
                 # filtering before its limit. Omit memory rather than allowing
                 # unrelated records to crowd out matching context.
                 records = []
+            records = [record for record in records if record.scope is not AgentScope.REPOSITORY]
+            records.extend(canonical_project_memory)
             records = [
                 record
                 for record in records
@@ -1105,14 +1192,26 @@ class ContextCompiler:
                     memory_provenance = {
                         key: value
                         for key, value in {
-                            "repository_revision": rec.repository_revision,
-                            "path_refs": list(rec.path_refs),
-                            "symbol_refs": list(rec.symbol_refs),
+                            "repository_revision": rec.provenance.get("repository_revision"),
+                            "path_refs": list(rec.provenance.get("path_refs", ())),
+                            "symbol_refs": list(rec.provenance.get("symbol_refs", ())),
                             "related_task": rec.related_task,
                             "evidence_ids": list(rec.evidence_ids),
                         }.items()
                         if value not in (None, [], ())
                     }
+                    if rec.provenance.get("canonical_project_id"):
+                        memory_provenance.update({
+                            "canonical_project_id": rec.provenance["canonical_project_id"],
+                            "project_memory_kind": rec.provenance["project_memory_kind"],
+                            "scope_id": rec.scope_id,
+                            "sensitivity": rec.sensitivity,
+                            "expires_at": rec.expires_at,
+                            "key": rec.key,
+                            "value": rec.value,
+                            "source": rec.source,
+                            "volatile": bool(rec.provenance.get("volatile", False)),
+                        })
                     candidates.append((
                         70,
                         ContextElement(
@@ -1153,39 +1252,50 @@ class ContextCompiler:
                 ))
 
         # 4. Negative knowledge / incidents (priority: 60 / 50)
-        if (self.incident_store is not None and isinstance(request.root, str)
+        if (isinstance(request.root, str)
                 and request.root == request.root.strip() and "\x00" not in request.root
                 and is_rooted_path(request.root)):
-            incidents = self.incident_store.list_incidents(limit=10, root=request.root)
+            try:
+                from .repo_knowledge import RepoKnowledgeStore
+                from .repo_project_incidents import list_project_incidents
+                project_store = RepoKnowledgeStore(request.root)
+                manifest, _ = project_store.manifest()
+                incidents = [item for item in list_project_incidents(request.root)
+                             if item.get("project_id") == manifest.get("project_id")][:10]
+            except (OSError, ValueError):
+                incidents = []
             for inc in incidents:
-                if inc.ignored:
+                payload = inc.get("payload", {})
+                if payload.get("ignored"):
                     continue
-                if inc.has_verified_fix():
-                    inc_content = f"[VERIFIED FIX] {inc.error_class}: {inc.verified_fix}"
+                if payload.get("resolved") and payload.get("verified_fix"):
+                    inc_content = f"[VERIFIED FIX] {payload.get('error_class', '')}: {payload['verified_fix']}"
                     candidates.append((
                         60,
                         ContextElement(
-                            element_id=inc.incident_id,
+                            element_id=str(inc.get("id", "")),
                             source_kind="incident_fix",
                             content=inc_content,
                             estimated_tokens=_estimate_tokens(inc_content),
                             reason="verified resolution for prior error",
-                            confidence=inc.confidence,
-                            freshness=inc.updated_at,
+                            confidence=float(payload.get("confidence", 0.9)),
+                            freshness=float(payload.get("updated_at", 0.0) or 0.0),
+                            provenance=inc.get("provenance", {}),
                         ),
                     ))
-                elif not inc.is_resolved():
-                    inc_content = f"[NEGATIVE KNOWLEDGE] Prior failure {inc.error_class}: {inc.redacted_message}"
+                elif not payload.get("resolved"):
+                    inc_content = f"[NEGATIVE KNOWLEDGE] Prior failure {payload.get('error_class', '')}: {payload.get('redacted_message', '')}"
                     candidates.append((
                         50,
                         ContextElement(
-                            element_id=inc.incident_id,
+                            element_id=str(inc.get("id", "")),
                             source_kind="incident",
                             content=inc_content,
                             estimated_tokens=_estimate_tokens(inc_content),
                             reason="preventing repeat failure",
                             confidence=0.9,
-                            freshness=inc.updated_at,
+                            freshness=float(payload.get("updated_at", 0.0) or 0.0),
+                            provenance=inc.get("provenance", {}),
                         ),
                     ))
 

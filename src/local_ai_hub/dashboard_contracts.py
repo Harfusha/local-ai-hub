@@ -40,6 +40,7 @@ def memory_scope_options(*, include_all: bool = True, selected: str = "") -> str
     return ('<option value="">All scopes</option>' if include_all else '') + "".join(
         f'<option value="{escape(scope.value, quote=True)}"{" selected" if scope.value == selected else ""}>{escape(scope.value.title())}</option>'
         for scope in AgentScope
+        if include_all or scope is not AgentScope.REPOSITORY
     )
 
 

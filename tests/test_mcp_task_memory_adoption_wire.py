@@ -117,14 +117,14 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         state_store = AgentStateStore(tmp_path / "real-agent-state.sqlite3")
         tasks = TaskStore(state_store)
         memory_store = MemoryStore(state_store)
-        from task_memory_support import repository_memory_id
-        repository_id = repository_memory_id(repo, state_store)
-        memory_store.record(replace(MemoryRecord.create(
-            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=repository_id,
+        record = replace(MemoryRecord.create(
+            kind=MemoryKind.FACT, scope=AgentScope.TASK, scope_id=TASK_ID,
             key="renderer cache", value="Renderer cache uses the current theme revision",
-            source="user", status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(repo), "repository_id": repository_id, "version": "v1"},
-        ), record_id="mem_store_wire"), actor="user")
+            source="human_instruction", status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(repo), "repository_id": repository_id,
+                        "task_id": TASK_ID, "version": "v1"},
+        ), record_id="mem_store_wire")
+        memory_store.record(record, actor="user")
         tasks.set_memory_adoption(memory_store=memory_store,
             context_compiler=ContextCompiler(state_store, task_store=tasks, memory_store=memory_store))
 
@@ -154,7 +154,9 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                     action = body["action"]
                     if action == "create":
                         task = tasks.create(GoalContract(goal="Verify renderer cache theme revision"),
-                            ScopeContext(repository_id=repository_id, task_id=TASK_ID), task_id=TASK_ID,
+                            ScopeContext(repository_id=repository_id, task_id=TASK_ID,
+                                         session_id="session-wire", clone_id="clone-wire",
+                                         worktree_id="worktree-wire", branch="test"), task_id=TASK_ID,
                             repo_root=str(repo), actor="wire-owner")
                     elif action == "checkpoint":
                         try:
@@ -342,7 +344,7 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
         assert [item["id"] for item in context["items"]] == ["mem_store_wire"]
         assert "Cite used memory IDs" in context["instruction"]
         assert context["items"][0]["origin"] == "memory_store"
-        assert context["items"][0]["scope"] == "repository"
+        assert context["items"][0]["scope"] == "task"
         assert context["items"][0]["version"] == "v1"
         assert "expires_at" in context["items"][0]["validity"]
         assert json_tokens(context) == context["estimated_tokens"] <= 512

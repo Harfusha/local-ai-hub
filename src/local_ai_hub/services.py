@@ -620,53 +620,6 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
             logger.error("Unexpected consistency decision failure (%s)", type(exc).__name__)
             return True, False
 
-    def _guard_existing_approval(self, request: ConsistencyRequest) -> bool:
-        store = getattr(self.consistency_guard, "memory_store", None)
-        finder = getattr(store, "find", None)
-        if not callable(finder) or not request.task_id:
-            return False
-        try:
-            from .agent_identity import AgentScope
-            from .agent_memory import MemoryStatus
-            from .project_config import resolve_project_context
-
-            project = resolve_project_context(request.root, configured_state_dir(self.config, create=False))
-            repository_id = project.coordination_id
-            if (
-                not isinstance(repository_id, str) or not repository_id
-                or repository_id != repository_id.strip() or "\x00" in repository_id
-            ):
-                return False
-            records = finder(
-                root=request.root, repository_id=repository_id,
-                scope=AgentScope.REPOSITORY, scope_id=repository_id,
-                status=MemoryStatus.CONFIRMED,
-                limit=12, semantic=False,
-            )
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Consistency approval lookup unavailable (%s)", type(exc).__name__)
-            return False
-        except Exception as exc:
-            logger.error("Unexpected consistency approval lookup failure (%s)", type(exc).__name__)
-            return False
-        for record in records or ():
-            kind = getattr(getattr(record, "kind", None), "value", getattr(record, "kind", ""))
-            scope = getattr(getattr(record, "scope", None), "value", getattr(record, "scope", ""))
-            status = getattr(getattr(record, "status", None), "value", getattr(record, "status", ""))
-            value = getattr(record, "value", {})
-            provenance = getattr(record, "provenance", {}) or {}
-            if (
-                kind != "decision" or scope != "repository" or status != "confirmed"
-                or getattr(record, "scope_id", None) != repository_id
-                or not isinstance(provenance, dict)
-                or provenance.get("repository_id") != repository_id
-                or provenance.get("related_task") != request.task_id
-            ):
-                continue
-            if isinstance(value, dict) and value.get("approved") is True:
-                return True
-        return False
-
     def preflight_guard_task_state(self, request: ConsistencyRequest) -> dict[str, Any] | None:
         """Reject unavailable guarded task state before repository retrieval starts."""
         store = getattr(self.consistency_guard, "task_store", None)
@@ -702,10 +655,10 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
             }
         return None
 
-    def _guard_task_state(self, request: ConsistencyRequest, warnings: tuple[GuardWarning, ...], revision: str) -> tuple[str, bool]:
+    def _guard_task_state(self, request: ConsistencyRequest, warnings: tuple[GuardWarning, ...], revision: str) -> tuple[str, bool, bool]:
         store = getattr(self.consistency_guard, "task_store", None)
         if store is None or not request.task_id or not callable(getattr(store, "get", None)):
-            return "", False
+            return "", False, False
         try:
             state = store.get(request.task_id)
         except Exception as exc:
@@ -716,7 +669,7 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
         boundary = tuple(item for item in warnings if item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"})
         checkpoint_data = getattr(getattr(state, "checkpoint", None), "state_data", {}) or {}
         checkpoint_approval = checkpoint_data.get("approval") or checkpoint_data.get("approved") or checkpoint_data.get("coordinator_decision")
-        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request) or self._guard_truthy(checkpoint_approval)
+        approved = self._guard_truthy(request.approval) or self._guard_truthy(checkpoint_approval)
         if boundary and not approved and status == "active":
             warning_ids = tuple(dict.fromkeys(evidence_id for item in boundary for evidence_id in item.evidence_ids))[:24]
             try:
@@ -753,7 +706,11 @@ class LocalAIServices(ServiceGenerationMixin, ServiceDelegationMixin, ServiceRep
             refreshed = store.get(request.task_id)
             refreshed_status = getattr(getattr(refreshed, "status", None), "value", getattr(refreshed, "status", ""))
             refreshed_status = str(refreshed_status)
-            return refreshed_status, bool(refreshed_status.lower() == "waiting" or (boundary and not approved))
+            return (
+                refreshed_status,
+                bool(refreshed_status.lower() == "waiting" or (boundary and not approved)),
+                approved,
+            )
         except Exception as exc:
             raise RuntimeError("refreshed context task state could not be read") from exc
 

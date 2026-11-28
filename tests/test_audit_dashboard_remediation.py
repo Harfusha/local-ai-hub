@@ -74,7 +74,7 @@ def test_dashboard_memory_options_match_the_canonical_enums():
     modal = re.search(r"function openRecordMemoryModal\(\)\{.*?innerHTML=`(.*?)`;", DASHBOARD_HTML, re.S)
     assert modal, "record-memory modal template must remain inspectable"
     parser.feed(modal.group(1))
-    assert parser.values["newMemScope"] == {scope.value for scope in AgentScope}
+    assert parser.values["newMemScope"] == {scope.value for scope in AgentScope if scope is not AgentScope.REPOSITORY}
     assert parser.values["newMemKind"] == {kind.value for kind in MemoryKind}
 
 

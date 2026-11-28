@@ -21,9 +21,7 @@ from local_ai_hub.agent_consistency import (
     ReuseCandidate,
 )
 from local_ai_hub.agent_tasks import GoalContract
-from local_ai_hub.project_config import resolve_project_context
 from local_ai_hub.repo_tools import RepositoryTools
-from local_ai_hub.state_paths import configured_state_dir
 from local_ai_hub.telemetry import TelemetryStore
 
 
@@ -738,22 +736,20 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
     assert saved.symbol_refs == ("UserService",)
     assert saved.related_task == request.task_id
     assert "tenant" not in saved.provenance
-    expected_repository_id = resolve_project_context(
-        repository,
-        configured_state_dir(repository_tools.config, create=False),
-    ).coordination_id
-    assert expected_repository_id
-    assert saved.provenance["repository_id"] == expected_repository_id
+    assert saved.scope.value == "task"
+    assert saved.scope_id == request.task_id
+    assert saved.provenance["task_id"] == request.task_id
     assert saved.expires_at is not None
     assert "secret source" not in json.dumps(saved.to_dict())
 
     assert [
         record.record_id
         for record in memory.find(
-            scope="repository",
+            scope="task",
+            scope_id=request.task_id,
             key=saved.key,
             root=str(repository),
-            repository_id=saved.provenance["repository_id"],
+            task_id=request.task_id,
             semantic=False,
         )
     ] == [saved.record_id]

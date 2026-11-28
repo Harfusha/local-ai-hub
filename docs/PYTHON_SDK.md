@@ -126,7 +126,7 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `task_*` | `POST /api/agent-state/tasks`; body: `action` plus action arguments. |
 | `memory_*`, `relation_*` | `POST /api/agent-state/memory`; body: `action` plus action arguments. |
 | `memo_put`, `memo_get`, `memo_search`, `memo_delete` | `POST /api/memory/put` (`root`, `key`, `value`, `ttl_seconds`); `/api/memory/get` (`root`, `key`); `/api/memory/search` (`root`, `query`, `limit`); `/api/memory/delete` (`root`, `key`). |
-| `incident_decision`, `negative_knowledge_record`, `negative_knowledge_find` | `POST /api/agent-state/incidents`; body: action and action fields. |
+| `incident_decision`, `negative_knowledge_preview`, `negative_knowledge_find` | `POST /api/agent-state/incidents`; body: action and action fields. |
 | `context_compile` | `POST /api/agent-state/context`; body: action, task ID, token budget, changed paths, root, and optional context fields. |
 | `verify_receipt`, `verify_completion` | `POST /api/agent-state/verification`; body: action, receipt or task ID, and optional root. |
 | `claim`, `claim_batch` | `POST /api/leases/claim_batch`; body: `owner`, `root`, `paths`, optional `ttl_seconds`, `purpose`. Owner identifies the actual task or execution. |

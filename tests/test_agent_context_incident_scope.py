@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
+import uuid
+
 from local_ai_hub.agent_context import ContextCompiler, ContextRequest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
@@ -23,6 +28,33 @@ def test_compiler_limits_incidents_to_root_and_requires_verified_resolution(tmp_
     ))
     assert unresolved is not None and verified is not None and foreign is not None
     incidents.resolve(verified.incident_id, verified_fix="validated repair")
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_project_incidents import build_project_incident_record
+
+    subprocess.run(["git", "init", str(root_a)], check=True, capture_output=True)
+    config = root_a / ".local-ai-hub"
+    incident_dir = config / "agent-os" / "incidents"
+    incident_dir.mkdir(parents=True)
+    (config / "project.json").write_text(json.dumps({
+        "schema_version": 1,
+        "project_id": str(uuid.uuid5(uuid.NAMESPACE_URL, str(root_a.resolve()))),
+        "mode": "shared",
+    }), encoding="utf-8")
+    store = RepoKnowledgeStore(root_a)
+    canonical = (
+        build_project_incident_record(store, {
+            "incident_id": unresolved.incident_id, "operation_class": "command",
+            "error_class": "RuntimeError", "signature_hash": hashlib.sha256(b"unresolved").hexdigest(),
+            "resolved": False, "redacted_message": "local failure",
+        }),
+        build_project_incident_record(store, {
+            "incident_id": verified.incident_id, "operation_class": "command",
+            "error_class": "RuntimeError", "signature_hash": hashlib.sha256(b"verified").hexdigest(),
+            "resolved": True, "redacted_message": "verified failure", "verified_fix": "validated repair",
+        }),
+    )
+    for record in canonical:
+        (incident_dir / f"{record['id']}.json").write_text(json.dumps(record), encoding="utf-8")
     compiler = ContextCompiler(state, incident_store=incidents)
     scoped = compiler.compile(ContextRequest(task_id="task", root=str(root_a)))
     elements = {element.element_id: element for element in scoped.elements}

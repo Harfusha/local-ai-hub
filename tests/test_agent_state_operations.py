@@ -136,12 +136,12 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
     with app_with_agent_state(tmp_path / "app1") as app1:
         rec = MemoryRecord.create(
             kind=MemoryKind.FACT,
-            scope=AgentScope.REPOSITORY,
+            scope=AgentScope.TASK,
             key="repo_fact",
             value={"architecture": "modular"},
-            scope_id="repo1",
+            scope_id="task-repo1",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(repository_root), "repository_id": "fixture-repository-id"},
+            provenance={"root": str(repository_root)},
         )
         saved = app1.agent_memory.record(rec, actor="user")
         bundle_bytes = app1.export_bundle(
@@ -156,9 +156,8 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
         assert res["success"] is True
         assert res["restored_records"] == 1
         found = app2.agent_memory.find(
-            scope=AgentScope.REPOSITORY,
-            scope_id="repo1",
-            repository_id="fixture-repository-id",
+            scope=AgentScope.TASK,
+            scope_id="task-repo1",
             root=str(repository_root),
             key="repo_fact",
         )
@@ -182,10 +181,10 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
         record = replace(
             MemoryRecord.create(
                 kind=MemoryKind.FINDING,
-                scope=AgentScope.REPOSITORY,
+                scope=AgentScope.TASK,
                 key="metadata-rich",
                 value={"answer": 42},
-                scope_id="repo-7",
+                scope_id="task-7",
                 confidence=0.63,
                 status=MemoryStatus.CONFIRMED,
                 source="reviewer",
@@ -207,14 +206,11 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
         result = app2.import_bundle(bundle_bytes)
         assert result["success"] is True
         restored = app2.agent_memory.get(
-            saved.record_id, scope=AgentScope.REPOSITORY,
-            scope_id=saved.scope_id,
-            root=str(tmp_path / "repo"), repository_id="fixture-repository-id",
+            saved.record_id, scope=AgentScope.TASK, scope_id="task-7", root=str(repository_root)
         )
         assert restored is not None
         expected_provenance = dict(provenance)
-        expected_provenance["root"] = repository_root.as_posix()
-        expected_provenance["source_root"] = str(repository_root)
+        expected_provenance["root"] = str(repository_root)
         assert restored.provenance == expected_provenance
         assert restored.confidence == 0.63
         assert restored.evidence_ids == ("evidence-1", "evidence-2")
@@ -231,71 +227,21 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
     target_repo = tmp_path / "target-repo"
     source_repo.mkdir()
     target_repo.mkdir()
-    expiry = time.time() + 3600
-    provenance = {
-        "root": str(source_repo),
-        "repository_id": resolve_project_context(
-            source_repo, tmp_path / "source-app" / "state"
-        ).coordination_id,
-        "repository_revision": "rev-project",
-        "path_refs": ["src/project.py"],
-        "symbol_refs": ["Project.run"],
-        "related_task": "task-project",
-    }
     with app_with_agent_state(tmp_path / "source-app") as app1:
-        record = replace(
-            MemoryRecord.create(
-                kind=MemoryKind.CONTRACT_MAPPING,
-                scope=AgentScope.REPOSITORY,
-                key="project-metadata",
-                value={"contract": "preserve"},
-                scope_id="repo-project",
-                confidence=0.71,
-                status=MemoryStatus.CONFIRMED,
-                source="project-reviewer",
-                evidence_ids=("project-evidence",),
-                sensitivity="normal",
-                provenance=provenance,
-                expires_at=expiry,
-            ),
-            contradicts_record_id="project-old",
-            supersedes_record_id="project-older",
-        )
-        saved = app1.agent_memory.record(record, actor="user")
-        bundle_bytes = app1.export_bundle(
-            str(source_repo), agent_state_record_ids=[saved.record_id],
-            agent_state_contexts={saved.record_id: memory_export_context(saved)},
-        )
-
-    with app_with_agent_state(tmp_path / "target-app") as app2:
-        result = app2.import_bundle(bundle_bytes, str(target_repo))
-        assert result["success"] is True
-        restored = app2.agent_memory.get(
-            saved.record_id, scope=AgentScope.REPOSITORY,
-            scope_id=saved.scope_id,
-            root=str(target_repo), repository_id=resolve_project_context(target_repo, Path(app2.agent_state.db_path).parent).coordination_id,
-        )
-        assert restored is not None
-        expected_provenance = dict(provenance)
-        expected_provenance["root"] = target_repo.as_posix()
-        expected_provenance["repository_id"] = resolve_project_context(
-            target_repo, tmp_path / "target-app" / "state"
-        ).coordination_id
-        expected_provenance["source_root"] = str(source_repo)
-        assert restored.provenance == expected_provenance
-        assert restored.confidence == 0.71
-        assert restored.evidence_ids == ("project-evidence",)
-        assert restored.source == "project-reviewer"
-        assert restored.sensitivity == "normal"
-        assert restored.expires_at == expiry
-        assert restored.status is MemoryStatus.CONFIRMED
-        assert restored.contradicts_record_id == "project-old"
-        assert restored.supersedes_record_id == "project-older"
-        context = app2.agent_context.compile(
-            ContextRequest(task_id="task-project", root=str(target_repo), token_budget=400,
-                           coordination_id=resolve_project_context(target_repo, Path(app2.agent_state.db_path).parent).coordination_id)
-        )
-        assert saved.record_id in {element.element_id for element in context.elements}
+        record = app1.agent_memory.record(MemoryRecord.create(
+            kind=MemoryKind.CONTRACT_MAPPING,
+            scope=AgentScope.REPOSITORY,
+            key="project-metadata",
+            value={"contract": "preserve"},
+            scope_id="repo-project",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(source_repo)},
+        ), actor="user")
+        with pytest.raises(BundleValidationError, match="not found"):
+            app1.export_bundle(
+                str(source_repo), agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: memory_export_context(record)},
+            )
 
 
 def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
@@ -320,7 +266,7 @@ def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
             ),
             actor="user",
         )
-        with pytest.raises(BundleValidationError, match="repository root"):
+        with pytest.raises(BundleValidationError, match="Git-owned"):
             app.export_bundle(
                 str(source_repo), agent_state_record_ids=[record.record_id],
                 agent_state_contexts={record.record_id: memory_export_context(record)},
@@ -351,8 +297,6 @@ def test_project_bundle_rejects_repository_memory_without_root(tmp_path: Path):
 
 
 def test_project_bundle_import_rejects_repository_memory_without_root(tmp_path: Path):
-    import hashlib
-
     source_repo = tmp_path / "source-repo"
     target_repo = tmp_path / "target-repo"
     source_repo.mkdir()
@@ -372,37 +316,14 @@ def test_project_bundle_import_rejects_repository_memory_without_root(tmp_path: 
             ),
             actor="user",
         )
-        raw = app1.export_bundle(
-            str(source_repo), agent_state_record_ids=[record.record_id],
-            agent_state_contexts={record.record_id: memory_export_context(record)},
-        )
-
-    with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
-        payload = json.loads(zf.read("bundle.json"))
-    payload["agent_state_records"][0]["data"]["provenance"] = {}
-    records_canonical = json.dumps(
-        payload["agent_state_records"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    payload["agent_state_records_sha256"] = hashlib.sha256(records_canonical).hexdigest()
-    all_state_canonical = json.dumps(
-        {"agent_state_records": payload["agent_state_records"], "tables": payload["tables"]},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    payload["tables_sha256"] = hashlib.sha256(all_state_canonical).hexdigest()
-    modified = io.BytesIO()
-    with zipfile.ZipFile(modified, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
-
-    with app_with_agent_state(tmp_path / "target-app") as app2:
-        result = app2.import_bundle(modified.getvalue(), str(target_repo))
-        assert result["success"] is False
-        assert "provenance root" in result["error"]
-        assert app2.agent_memory.get(record.record_id) is None
+        with pytest.raises(BundleValidationError, match="Git-owned"):
+            app1.export_bundle(
+                str(source_repo), agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: memory_export_context(record)},
+            )
 
 
-def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
+def test_standalone_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
     source_repo = tmp_path / "source-repo"
     target_repo = tmp_path / "target-repo"
     source_repo.mkdir()
@@ -411,39 +332,36 @@ def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
         record = app1.agent_memory.record(
             MemoryRecord.create(
                 kind=MemoryKind.FINDING,
-                scope=AgentScope.REPOSITORY,
+                scope=AgentScope.TASK,
                 key="tamper-check",
                 value="original",
-                scope_id="repo-tamper",
+                scope_id="task-tamper",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo), "repository_id": resolve_project_context(
-                                source_repo, tmp_path / "source-app" / "state"
-                            ).coordination_id,
-                            "path_refs": ["src/tamper.py"]},
+                provenance={"root": str(source_repo)},
             ),
             actor="user",
         )
         raw = app1.export_bundle(
-            str(source_repo), agent_state_record_ids=[record.record_id],
+            agent_state_record_ids=[record.record_id],
             agent_state_contexts={record.record_id: memory_export_context(record)},
         )
 
     with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
         payload = json.loads(zf.read("bundle.json"))
-    payload["agent_state_records"][0]["data"]["value"] = "tampered"
+    payload["records"][0]["data"]["value"] = "tampered"
     modified = io.BytesIO()
     with zipfile.ZipFile(modified, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
 
     with app_with_agent_state(tmp_path / "target-app") as app2:
-        result = app2.import_bundle(modified.getvalue(), str(target_repo))
+        result = app2.import_bundle(modified.getvalue())
         assert result["success"] is False
         assert result["error"] == "bundle integrity check failed"
         assert app2.agent_memory.get(record.record_id) is None
 
 
-@pytest.mark.parametrize("removed_key", ["agent_state_records", "agent_state_records_sha256", "both"])
-def test_project_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Path, removed_key: str):
+@pytest.mark.parametrize("removed_key", ["records", "records_sha256", "both"])
+def test_standalone_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Path, removed_key: str):
     source_repo = tmp_path / "source-repo"
     target_repo = tmp_path / "target-repo"
     source_repo.mkdir()
@@ -452,26 +370,25 @@ def test_project_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Pat
         record = app1.agent_memory.record(
             MemoryRecord.create(
                 kind=MemoryKind.FINDING,
-                scope=AgentScope.REPOSITORY,
+                scope=AgentScope.TASK,
                 key="removal-check",
                 value="original",
+                scope_id="task-removal",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo), "repository_id": resolve_project_context(
-                                source_repo, tmp_path / "source-app" / "state"
-                            ).coordination_id},
+                provenance={"root": str(source_repo)},
             ),
             actor="user",
         )
         raw = app1.export_bundle(
-            str(source_repo), agent_state_record_ids=[record.record_id],
+            agent_state_record_ids=[record.record_id],
             agent_state_contexts={record.record_id: memory_export_context(record)},
         )
 
     with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
         payload = json.loads(zf.read("bundle.json"))
     if removed_key == "both":
-        payload.pop("agent_state_records")
-        payload.pop("agent_state_records_sha256")
+        payload.pop("records")
+        payload.pop("records_sha256")
     else:
         payload.pop(removed_key)
     modified = io.BytesIO()
@@ -479,7 +396,7 @@ def test_project_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Pat
         zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
 
     with app_with_agent_state(tmp_path / f"target-app-{removed_key}") as app2:
-        result = app2.import_bundle(modified.getvalue(), str(target_repo))
+        result = app2.import_bundle(modified.getvalue())
         assert result["success"] is False
         assert result["error"] == "bundle integrity check failed"
 
@@ -517,12 +434,12 @@ def test_bundle_requires_exact_current_application_version(tmp_path: Path):
     with app_with_agent_state(tmp_path / "source") as app:
         rec = MemoryRecord.create(
             kind=MemoryKind.FACT,
-            scope=AgentScope.REPOSITORY,
+            scope=AgentScope.TASK,
             key="version_contract",
             value="current-only",
-            scope_id="repo1",
+            scope_id="task-version",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path / "source" / "repo"), "repository_id": "fixture-repository-id"},
+            provenance={"root": str(tmp_path / "source" / "repo")},
         )
         saved = app.agent_memory.record(rec, actor="user")
         raw = app.export_bundle(
@@ -573,12 +490,8 @@ def test_t08_root_export_repository_without_record_context(tmp_path: Path):
             status=MemoryStatus.CONFIRMED,
             provenance={"root": str(repository_root), "repository_id": repository_id},
         ), actor="user")
-        bundle = source.export_bundle(str(repository_root), agent_state_record_ids=[record.record_id])
-    with app_with_agent_state(tmp_path / "target") as target:
-        assert target.import_bundle(bundle)["success"] is True
-        restored = target.agent_memory.get(record.record_id,
-            scope=AgentScope.REPOSITORY, root=str(repository_root), repository_id=repository_id)
-        assert restored is not None and restored.value == "verified"
+        with pytest.raises(BundleValidationError, match="Git-owned"):
+            source.export_bundle(str(repository_root), agent_state_record_ids=[record.record_id])
 
 
 def test_t08_root_export_global_with_project_root(tmp_path: Path):

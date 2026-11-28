@@ -26,6 +26,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
     assert isinstance(coordination_id, str) and coordination_id
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         "\n[telemetry]\nmode = \"full\"\n",
@@ -124,7 +125,8 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
 
         assert result["success"] is True
         assert result["task_context"]["complete"] is True
-        assert "repository fresh value" in result["task_context"]["text"]
+        assert "repository fresh value" not in result["task_context"]["text"]
+        assert "repository evidence" in result["task_context"]["text"]
         assert "old changed-path value" not in result["task_context"]["text"]
         assert "session-b private value" not in result["task_context"]["text"]
         assert len(result["task_context"]["text"]) <= 128 * 4
@@ -182,7 +184,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
         assert unavailable["stop_code"] == "context_task_context_incomplete"
         assert "Resume scoped context task" in unavailable["task_context"]["text"]
         assert unavailable["task_context"]["repository"]["degraded"] is True
-        assert any(
+        assert not any(
             element["element_id"] == safe.record_id
             for element in result["task_context"]["agent_state"]["elements"]
         )

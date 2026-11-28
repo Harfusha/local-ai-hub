@@ -10,6 +10,7 @@ import queue
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from .agent_identity import AgentScope, ScopeContext
@@ -342,14 +343,7 @@ class TaskMemoryMixin:
             if callable(find_records):
                 try:
                     expired_found = False
-                    queries = [
-                        {"scope": AgentScope.GLOBAL},
-                        {
-                            "scope": AgentScope.REPOSITORY,
-                            "repository_id": coordination_id or None,
-                            "root": root or None,
-                        },
-                    ]
+                    queries = [{"scope": AgentScope.GLOBAL}]
                     for query in queries:
                         for status in ("active", "confirmed"):
                             self._check_memory_deadline(deadline, cancelled)
@@ -395,8 +389,31 @@ class TaskMemoryMixin:
             }
             scoped_records_by_id: dict[str, Any] = {}
             if compiled_memory_ids:
+                canonical_records = {}
+                for element in elements:
+                    record_id = str(getattr(element, "element_id", "") or "").strip()
+                    provenance = getattr(element, "provenance", {})
+                    if (record_id in compiled_memory_ids and isinstance(provenance, Mapping)
+                            and provenance.get("canonical_project_id")):
+                        canonical_records[record_id] = SimpleNamespace(
+                            record_id=record_id,
+                            kind=SimpleNamespace(value=str(provenance.get("project_memory_kind", "fact"))),
+                            scope=SimpleNamespace(value="repository"),
+                            scope_id=str(provenance.get("scope_id", "")),
+                            key=str(provenance.get("key", "")),
+                            value=provenance.get("value"),
+                            status="active", confidence=float(getattr(element, "confidence", 1.0)),
+                            source=str(provenance.get("source", "git")),
+                            sensitivity=str(provenance.get("sensitivity", "internal")),
+                            expires_at=provenance.get("expires_at"),
+                            provenance={**dict(provenance), "repository_id": str(provenance["canonical_project_id"])},
+                            evidence_ids=tuple(provenance.get("evidence_ids", ())),
+                            created_at=0.0, updated_at=float(getattr(element, "freshness", 0.0)),
+                        )
+                scoped_records_by_id.update(canonical_records)
+                remaining_ids = compiled_memory_ids - set(canonical_records)
                 find_for_context = getattr(memory_store, "find_for_context", None)
-                if callable(find_for_context):
+                if remaining_ids and callable(find_for_context):
                     try:
                         scoped_records = find_for_context(
                             root=root,
@@ -409,15 +426,15 @@ class TaskMemoryMixin:
                             limit=20,
                         )
                         self._check_memory_deadline(deadline, cancelled)
-                        scoped_records_by_id = {
+                        scoped_records_by_id.update({
                             str(getattr(record, "record_id", "") or "").strip(): record
                             for record in scoped_records
                             if str(getattr(record, "record_id", "") or "").strip()
-                            in compiled_memory_ids
-                        }
+                            in remaining_ids
+                        })
                     except Exception:
                         warnings.append({"code": "memory_scoped_lookup_unavailable"})
-                else:
+                elif remaining_ids:
                     warnings.append({"code": "memory_scoped_lookup_unavailable"})
             self._check_memory_deadline(deadline, cancelled)
             for element in elements:
@@ -443,12 +460,15 @@ class TaskMemoryMixin:
                     if expires_at is not None and float(expires_at) <= time.time():
                         continue
                     sensitivity = str(getattr(record, "sensitivity", "normal") or "normal").strip().lower()
-                    if sensitivity not in {"normal", "low", "public"}:
+                    if sensitivity not in {"normal", "low", "public", "internal"}:
                         continue
                     if "tenant" in provenance or "tenant_key" in provenance:
                         raise ValueError("retired memory provenance requires offline conversion")
                     if scope == "repository":
-                        if not coordination_id or provenance.get("repository_id") != coordination_id:
+                        if provenance.get("canonical_project_id"):
+                            if not root:
+                                continue
+                        elif not coordination_id or provenance.get("repository_id") != coordination_id:
                             continue
                     elif scope != "global":
                         expected_scope_ids = {
@@ -518,7 +538,10 @@ class TaskMemoryMixin:
                         warnings.append({"code": "memory_relevance_unavailable"})
                     self._check_memory_deadline(deadline, cancelled)
                     ranked.append((score, index, item))
-                items = [item for _, _, item in sorted(ranked, key=lambda entry: (-entry[0], entry[1]))]
+                items = [
+                    item for score, _, item in sorted(ranked, key=lambda entry: (-entry[0], entry[1]))
+                    if score > 0
+                ]
             selected_items = []
             for item in items:
                 remaining_tokens = token_budget - used_tokens
@@ -530,73 +553,53 @@ class TaskMemoryMixin:
                 used_tokens += item_tokens
             items = selected_items
 
-            incident_store = self.incident_store
-            if root and incident_store is not None:
-                finder = getattr(incident_store, "find_negative_knowledge", None)
-                if callable(finder):
-                    try:
-                        incidents = finder(contract.goal, limit=3, root=root)
+            if root:
+                try:
+                    from .repo_knowledge import RepoKnowledgeStore
+                    from .repo_project_incidents import list_project_incidents
+
+                    project_store = RepoKnowledgeStore(root)
+                    manifest, _ = project_store.manifest()
+                    goal_terms = {word.casefold() for word in contract.goal.split() if len(word) > 2}
+                    incidents = []
+                    for incident in list_project_incidents(root):
+                        if incident.get("project_id") != manifest.get("project_id"):
+                            continue
+                        payload = incident.get("payload", {})
+                        detail = str(payload.get("verified_fix") or payload.get("root_cause")
+                                     or payload.get("redacted_message") or "").strip()
+                        if not detail:
+                            continue
+                        searchable = f"{payload.get('error_class', '')} {detail}".casefold()
+                        score = sum(1 for word in goal_terms if word in searchable)
+                        if goal_terms and not score:
+                            continue
+                        incidents.append((score, incident, payload, detail))
+                    incidents.sort(key=lambda row: (-row[0], str(row[1].get("id", ""))))
+                    for _, incident, payload, detail in incidents[:3]:
                         self._check_memory_deadline(deadline, cancelled)
-                        for incident in incidents[:3]:
-                            self._check_memory_deadline(deadline, cancelled)
-                            if not isinstance(incident, Mapping):
-                                continue
-                            incident_id = str(incident.get("incident_id", "") or "").strip()
-                            provenance = incident.get("provenance")
-                            if not incident_id or not isinstance(provenance, Mapping):
-                                continue
-                            if not provenance.get("repository_key"):
-                                continue
-                            expires_at = incident.get("expires_at")
-                            if "expires_at" not in incident:
-                                getter = getattr(incident_store, "get", None)
-                                if not callable(getter):
-                                    warnings.append({"code": "negative_knowledge_invalid"})
-                                    continue
-                                full = getter(incident_id)
-                                self._check_memory_deadline(deadline, cancelled)
-                                if full is None or getattr(full, "repository_key", "") != provenance["repository_key"]:
-                                    continue
-                                expires_at = getattr(full, "expires_at", None)
-                            try:
-                                expires_at = float(expires_at) if expires_at is not None else None
-                                if expires_at is not None and (not math.isfinite(expires_at) or expires_at <= time.time()):
-                                    continue
-                            except (TypeError, ValueError, OverflowError):
-                                warnings.append({"code": "negative_knowledge_invalid"})
-                                continue
-                            detail = str(
-                                incident.get("verified_fix") or incident.get("root_cause")
-                                or incident.get("redacted_message") or ""
-                            ).strip()
-                            if not detail:
-                                continue
-                            content = f"[NEGATIVE KNOWLEDGE] {str(incident.get('error_class', ''))[:100]}: {detail[:700]}"
-                            remaining_tokens = token_budget - used_tokens
-                            if remaining_tokens <= 0:
-                                break
-                            content = content[:remaining_tokens * 4].rstrip()
-                            item_tokens = self._memory_token_count(content)
-                            if item_tokens > remaining_tokens:
-                                continue
-                            items.append({
-                                "id": incident_id,
-                                "origin": "incident_store",
-                                "content": content,
-                                "source": "incident_store",
-                                "scope": "repository",
-                                "scope_id": "",
-                                "status": "active",
-                                "version": str(incident.get("state_revision", "") or "")[:128],
-                                "validity": {"updated_at": float(incident.get("updated_at", 0.0) or 0.0), "expires_at": expires_at},
-                                "confidence": float(incident.get("confidence", 0.0) or 0.0),
-                                "volatile": True,
-                                "provenance": dict(provenance),
-                                "estimated_tokens": item_tokens,
-                            })
-                            used_tokens += item_tokens
-                    except Exception:
-                        warnings.append({"code": "negative_knowledge_unavailable"})
+                        content = f"[NEGATIVE KNOWLEDGE] {str(payload.get('error_class', ''))[:100]}: {detail[:700]}"
+                        remaining_tokens = token_budget - used_tokens
+                        if remaining_tokens <= 0:
+                            break
+                        content = content[:remaining_tokens * 4].rstrip()
+                        item_tokens = self._memory_token_count(content)
+                        items.append({
+                            "id": str(incident.get("id", "")), "origin": "git_incident",
+                            "content": content, "source": "git_incident", "scope": "repository",
+                            "scope_id": str(manifest.get("project_id", "")), "status": "active",
+                            "version": str(incident.get("provenance", {}).get("repository_revision", ""))[:128],
+                            "validity": {"updated_at": float(payload.get("updated_at", 0.0) or 0.0),
+                                         "expires_at": payload.get("expires_at")},
+                            "confidence": float(payload.get("confidence", 0.9)), "volatile": False,
+                            "provenance": dict(incident.get("provenance", {})),
+                            "estimated_tokens": item_tokens,
+                        })
+                        used_tokens += item_tokens
+                except (OSError, ValueError):
+                    pass
+                except Exception:
+                    warnings.append({"code": "negative_knowledge_unavailable"})
             self._check_memory_deadline(deadline, cancelled)
             if not items and not warnings:
                 return None

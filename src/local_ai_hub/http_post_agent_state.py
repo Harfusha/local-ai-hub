@@ -3,12 +3,39 @@ from __future__ import annotations
 from typing import Any
 
 
+def _canonical_project_incidents(root: str, query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    from .repo_knowledge import RepoKnowledgeStore
+    from .repo_project_incidents import list_project_incidents
+
+    store = RepoKnowledgeStore(root)
+    manifest, _ = store.manifest()
+    normalized_query = query.casefold().strip()
+    results: list[dict[str, Any]] = []
+    for record in list_project_incidents(root):
+        if record.get("project_id") != manifest.get("project_id"):
+            continue
+        payload = record.get("payload", {})
+        searchable = " ".join(str(payload.get(field, "")) for field in (
+            "error_class", "redacted_message", "root_cause", "verified_fix",
+        ))
+        if normalized_query and normalized_query not in searchable.casefold():
+            continue
+        results.append({
+            "incident_id": record.get("id"), "project_id": record.get("project_id"),
+            **payload, "provenance": record.get("provenance", {}),
+            "freshness": store.get("incident", str(record.get("id", "")), verify_sources=False).get("freshness", "unknown"),
+        })
+        if len(results) >= max(1, min(100, limit)):
+            break
+    return results
+
+
 def handle_agent_state_incidents(self: Any, payload: dict[str, Any]) -> None:
     from . import http_server as services_module
     if not getattr(services_module.APP, "agent_incidents", None) or not services_module.APP.agent_incidents.state_store.enabled:
         self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
     action = payload.get("action", "")
-    if action not in {"decision", "record", "find"}:
+    if action not in {"decision", "find"}:
         self._send(403, {"success": False, "error": "incident action requires a scoped mutation contract", "terminal": True, "retryable": False}); return
     if action == "decision":
         fp = services_module.IncidentFingerprint.from_dict(payload["fingerprint"])
@@ -19,40 +46,16 @@ def handle_agent_state_incidents(self: Any, payload: dict[str, Any]) -> None:
             root=str(payload.get("root", "")),
         )
         self._send(200, {"success": True, "decision": decision.to_dict()}); return
-    if action == "record":
-        root_cause = payload.get("root_cause", "")
-        verified_fix = payload.get("verified_fix", "")
-        if str(verified_fix).strip().casefold() == "resolved":
-            self._send(400, {
-                "success": False,
-                "error": "verified_fix must describe a verified fix",
-                "terminal": True,
-                "retryable": False,
-            }); return
-        msg = payload.get("message", "")
-        op = payload.get("operation_class", "agent")
-        rev = payload.get("state_revision", "")
-        evidence_ids = tuple(payload.get("evidence_ids", ()))
-        aff_paths = tuple(payload.get("affected_paths", ()))
-        outcome = services_module.ToolOutcome(
-            tool_name=op, error=msg or "recorded incident", exit_code=payload.get("exit_code", 1),
-            state_revision=rev, evidence_ids=evidence_ids,
-            metadata={"root_cause": root_cause, "verified_fix": verified_fix},
-            affected_paths=aff_paths,
-            repository_root=str(payload.get("root", "")),
-        )
-        inc = services_module.APP.agent_incidents.capture(outcome)
-        if inc and verified_fix:
-            inc = services_module.APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix, root_cause=root_cause or None)
-        self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
     if action == "find":
-        query = payload["query"]
-        limit_val = payload.get("limit", 100)
-        scoped = services_module.APP.agent_incidents.find_negative_knowledge(
-            query,
-            limit=limit_val,
-            root=payload["root"],
-        )
+        root = str(payload.get("root", "")).strip()
+        if not root:
+            self._send(400, {"success": False, "error": "canonical incident lookup requires root", "terminal": True, "retryable": False}); return
+        try:
+            scoped = _canonical_project_incidents(
+                root, str(payload.get("query", "")), int(payload.get("limit", 100)),
+            )
+        except (OSError, ValueError) as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         self._send(200, {"success": True, "negative_knowledge": scoped, "incidents": scoped}); return
 
 def handle_agent_state_verification(self: Any, payload: dict[str, Any]) -> None:

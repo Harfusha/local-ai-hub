@@ -70,7 +70,7 @@ _SAFE_TOOL_ACTIONS = frozenset({
     # coord actions
     "task_create", "task_get", "task_checkpoint", "task_complete", "task_fail",
     "task_list", "ask", "answer", "memory_record", "memory_get", "memory_find", "context_compile",
-    "verify_receipt", "verify_completion", "negative_knowledge_record",
+    "verify_receipt", "verify_completion", "negative_knowledge_preview",
     "negative_knowledge_find", "lease_acquire", "lease_renew", "lease_release",
     "memo_record", "memo_search",
     # rag actions

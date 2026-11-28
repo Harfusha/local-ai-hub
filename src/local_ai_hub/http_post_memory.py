@@ -1,6 +1,48 @@
 from __future__ import annotations
 
+import json
 from typing import Any
+
+
+def _canonical_project_memory(root: str, *, record_id: str = "", key: str = "", query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    from .repo_knowledge import RepoKnowledgeStore
+    from .repo_project_memory import list_project_memory, load_project_memory
+
+    store = RepoKnowledgeStore(root)
+    manifest, _ = store.manifest()
+    records = (
+        [load_project_memory(root, record_id)]
+        if record_id
+        else list_project_memory(root)
+    )
+    matches: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("project_id") != manifest.get("project_id"):
+            continue
+        payload = record.get("payload", {})
+        value = payload.get("value")
+        rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if key and payload.get("key") != key:
+            continue
+        if query and query.casefold() not in f"{payload.get('key', '')} {rendered}".casefold():
+            continue
+        status = "quarantined" if payload.get("quarantine_reason") else "active"
+        item = store.get("memory", str(record.get("id", "")))
+        memory = {
+            "record_id": record.get("id"), "kind": payload.get("kind", "fact"),
+            "scope": "repository", "scope_id": manifest["project_id"],
+            "key": payload.get("key", ""), "value": value,
+            "status": status, "confidence": payload.get("confidence", 1.0),
+            "source": payload.get("source", ""), "sensitivity": payload.get("sensitivity", "internal"),
+            "provenance": record.get("provenance", {}),
+            "evidence_ids": [ref.get("path", "") for ref in record.get("evidence", []) if isinstance(ref, dict)],
+            "expires_at": payload.get("expires_at"), "freshness": item.get("freshness", "unknown"),
+            "authority": item.get("authority", "repository_declaration"),
+        }
+        matches.append(memory)
+        if len(matches) >= max(1, min(100, limit)):
+            break
+    return matches
 
 
 def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
@@ -94,6 +136,13 @@ def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
                 resolved_scope_id,
                 payload.get("task_id") or rec_data.get("task_id"),
             )
+            if scope_val is services_module.AgentScope.REPOSITORY:
+                self._send(409, {
+                    "success": False,
+                    "error": "repository memory must be published through /api/repo/knowledge/manage",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
             raw_status = rec_data.get("status")
             status_val = None
             if raw_status:
@@ -190,6 +239,16 @@ def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
         if scope_val is None:
             scope_val = services_module.AgentScope.GLOBAL
         scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+        if scope_val is services_module.AgentScope.REPOSITORY:
+            if not root_val:
+                self._send(400, {"success": False, "error": "repository memory requires root", "terminal": True, "retryable": False}); return
+            try:
+                records = _canonical_project_memory(str(root_val), record_id=str(payload.get("record_id", "")))
+            except (OSError, ValueError) as exc:
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+            if not records:
+                self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
+            self._send(200, {"success": True, "record": records[0]}); return
         if scope_val is services_module.AgentScope.TASK:
             task_id_val = scope_id_val
         elif scope_val is services_module.AgentScope.SESSION:
@@ -248,6 +307,13 @@ def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
             self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
         if scope_val is None:
             scope_val = services_module.AgentScope.GLOBAL
+        if scope_val is services_module.AgentScope.REPOSITORY:
+            self._send(409, {
+                "success": False,
+                "error": "repository memory must be changed through /api/repo/knowledge/manage",
+                "terminal": True,
+                "retryable": False,
+            }); return
         if scope_val is services_module.AgentScope.WORKTREE:
             self._send(403, {"success": False, "error": "worktree-scoped memory delete requires verified worktree scope", "terminal": True, "retryable": False}); return
         bound_scope_id = self._bound_memory_scope_id(
@@ -315,6 +381,16 @@ def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
         if ambiguous_scope:
             self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
         scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+        if scope_val is services_module.AgentScope.REPOSITORY:
+            if not root_val:
+                self._send(400, {"success": False, "error": "repository memory requires root", "terminal": True, "retryable": False}); return
+            try:
+                records = _canonical_project_memory(
+                    str(root_val), key=key_val or "", query=query_val or "", limit=limit_val,
+                )
+            except (OSError, ValueError) as exc:
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+            self._send(200, {"success": True, "records": records}); return
         if scope_val is services_module.AgentScope.TASK:
             task_id_val = scope_id_val
         elif scope_val is services_module.AgentScope.SESSION:
@@ -397,6 +473,8 @@ def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
         target_scope = services_module.AgentScope.parse(target_scope_str, default=None)
         if not target_scope:
             self._send(400, {"success": False, "error": f"invalid target scope '{target_scope_str}'", "terminal": True, "retryable": False}); return
+        if (identity or {}).get("scope") is services_module.AgentScope.REPOSITORY or target_scope is services_module.AgentScope.REPOSITORY:
+            self._send(409, {"success": False, "error": "repository memory is Git-owned and cannot be promoted through SQLite", "terminal": True, "retryable": False}); return
         record_id_val = str(payload.get("record_id", "")).strip()
         if not record_id_val or not self._get_bound_memory_record(payload, record_id_val):
             self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
@@ -425,6 +503,8 @@ def handle_agent_state_memory(self: Any, payload: dict[str, Any]) -> None:
         identity, identity_error = _memory_mutation_identity()
         if identity_error:
             self._send(400, {"success": False, "error": identity_error, "terminal": True, "retryable": False}); return
+        if (identity or {}).get("scope") is services_module.AgentScope.REPOSITORY:
+            self._send(409, {"success": False, "error": "repository memory is Git-owned and cannot be changed through SQLite", "terminal": True, "retryable": False}); return
         reason = str(payload.get("reason", "manual quarantine"))
         record_id_val = str(payload.get("record_id", "")).strip()
         if not record_id_val or not self._get_bound_memory_record(payload, record_id_val):

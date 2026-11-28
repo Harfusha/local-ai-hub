@@ -212,24 +212,20 @@ def test_explicit_task_context_rejects_foreign_identity_before_retrieval(isolate
     assert retrievals == []
 
 
-def test_repository_memory_defaults_remain_isolated_with_two_active_chats(isolated_hub):
+def test_repository_memory_direct_write_is_blocked_for_two_active_chats(isolated_hub):
     _app, roots, post, _retrievals = isolated_hub
-    stored = []
     for index, root in enumerate(roots):
         status, result = post("/api/agent-state/memory", {
             "root": str(root), "action": "record",
             "record": {"kind": "fact", "key": "isolation-marker",
                        "value": f"repository-{index}-private-value"},
         })
-        assert status == 200 and result["success"] is True, result
-        assert result["record"]["scope"] == "repository"
-        stored.append(result["record"])
-    assert stored[0]["scope_id"] != stored[1]["scope_id"]
+        assert status == 409 and result["success"] is False, result
     for index, root in enumerate(roots):
         status, found = post("/api/agent-state/memory", {
             "root": str(root), "action": "find", "scope": "repository",
             "query": "isolation-marker", "semantic": False, "limit": 10,
         })
         assert status == 200 and found["success"] is True, found
-        assert [record["record_id"] for record in found["records"]] == [stored[index]["record_id"]]
+        assert found["records"] == []
         assert f"repository-{1 - index}-private-value" not in json.dumps(found)

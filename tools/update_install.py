@@ -169,11 +169,9 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
         project_migration = None
         project_manifest = install / ".local-ai-hub" / "project.json"
         git_marker = install / ".git"
-        legacy_db = state / "agent_state.sqlite"
         if (
             state.is_dir()
             and (project_manifest.is_file() or git_marker.exists() or git_marker.is_symlink())
-            and (project_manifest.is_file() or legacy_db.exists())
         ):
             from local_ai_hub.agent_state_migration import migrate_project_state_on_update
 

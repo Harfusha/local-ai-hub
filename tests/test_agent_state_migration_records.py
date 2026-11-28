@@ -556,3 +556,30 @@ def test_real_repository_update_hook_has_a_published_project_identity(tmp_path: 
     result = setup_module.migrate_release_state(tmp_path, create_backup=False)
 
     assert result["project_state_migration"]["status"] == "no_legacy_state"
+
+
+def test_release_update_bootstraps_old_git_checkout_without_legacy_database(tmp_path: Path, monkeypatch):
+    root = tmp_path / "old-checkout"
+    root.mkdir()
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "old checkout"], check=True, capture_output=True)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    from tools import setup as setup_module
+
+    monkeypatch.setattr(setup_module, "SOURCE_ROOT", root)
+    monkeypatch.setattr(setup_module, "run_state_migrations", lambda *args, **kwargs: {"status": "current", "backups": []})
+    monkeypatch.setattr(setup_module, "apply_embedding_reset", lambda *args, **kwargs: {"status": "not_required"})
+    monkeypatch.setattr(setup_module, "discard_stale_migration_artifacts", lambda *args, **kwargs: [])
+
+    result = setup_module.migrate_release_state(state_dir, create_backup=False)
+
+    manifest = json.loads((root / ".local-ai-hub" / "project.json").read_text(encoding="utf-8"))
+    assert result["project_state_migration"]["status"] == "no_legacy_state"
+    assert str(uuid.UUID(manifest["project_id"])) == manifest["project_id"]
+    assert project_scope_id(root) == manifest["project_id"]

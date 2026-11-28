@@ -485,7 +485,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             "error": "context decision could not be persisted", "context": "", "evidence": [],
         }
     try:
-        task_status, waiting = self._guard_task_state(request, warnings, revision)
+        task_status, waiting, task_approved = self._guard_task_state(request, warnings, revision)
     except Exception as exc:
         return {
             "success": False, "terminal": True, "retryable": False,
@@ -493,7 +493,7 @@ def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "ada
             "error": f"context task state unavailable: {type(exc).__name__}",
             "context": "", "evidence": [],
         }
-    approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request)
+    approved = self._guard_truthy(request.approval) or task_approved
     if str(task_status).lower() == "waiting":
         approved = False
     result = dict(base)

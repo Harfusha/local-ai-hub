@@ -513,7 +513,7 @@ def test_taskless_context_pack_cache_identity_includes_repository_root(monkeypat
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -567,7 +567,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         "\n[telemetry]\nmode = \"full\"\n",
         encoding="utf-8",
@@ -579,6 +579,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         "success": True,
         "context": "bounded test context",
         "evidence": [],
+        "context_pack": {"contract": {"goal": "logs timeouts"}},
     }
     resolved_project = {"digest": "a" * 64}
     original_project_resolver = project_config.resolve_project_context
@@ -671,7 +672,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         )
         assert status == 200
         assert phase_only["success"] is True
-        assert phase_only["context_pack"]["contract"]["goal"] == "logs timeouts"
+        assert phase_only["adaptive_context_pack"]["contract"]["goal"] == "logs timeouts"
         assert phase_only["query"] == "logs timeouts"
 
         hybrid_calls = []
@@ -689,7 +690,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         status, adaptive = post({"root": str(tmp_path), "query": "route repair", "mode": "adaptive", "max_tokens": 512})
         assert status == 200
         assert hybrid_calls[-1]["quality_first"] is True
-        assert adaptive["retrieval"]["backend_states"]["deterministic"] == "used"
+        assert "retrieval" not in adaptive
         assert adaptive["warnings"] == route_warnings
         assert hybrid_budgets[-1] == 512
 
@@ -1670,7 +1671,7 @@ def test_context_http_preflights_guard_task_and_returns_bounded_failure(tmp_path
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )

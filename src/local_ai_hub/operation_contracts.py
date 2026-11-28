@@ -18,21 +18,18 @@ MAX_EVENT_SEQUENCE = (1 << 63) - 1
 _INCIDENT_RECORD_SCHEMA = {
     "type": "object",
     "properties": {
-        "root_cause": {"type": "string", "maxLength": 4096},
-        "verified_fix": {"type": "string", "maxLength": 4096},
-        "message": {"type": "string", "maxLength": 4096},
-        "operation_class": {"type": "string", "maxLength": 160},
-        "exit_code": {"type": "integer", "minimum": -(1 << 31), "maximum": (1 << 32) - 1},
-        "state_revision": {"type": "string", "maxLength": 256},
-        "evidence_ids": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}},
-        "affected_paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
-        "description": {"type": "string", "maxLength": 4096},
-        "error_class": {"type": "string", "maxLength": 160},
-        "category": {"type": "string", "maxLength": 160},
-        "paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
-        "reason": {"type": "string", "maxLength": 4096},
-        "fix": {"type": "string", "maxLength": 4096},
+        "incident_id": {"type": "string", "maxLength": 128},
+        "operation_class": {"type": "string", "enum": ["agent", "command", "tool", "mcp", "verification"]},
+        "error_class": {"type": "string", "minLength": 1, "maxLength": 128},
+        "signature_hash": {"type": "string", "pattern": "^[0-9a-f]{16,64}$"},
+        "resolved": {"type": "boolean"},
+        "redacted_message": {"type": "string", "maxLength": 1500},
+        "root_cause": {"type": "string", "maxLength": 1500},
+        "verified_fix": {"type": "string", "maxLength": 1500},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "affected_paths": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 512}},
     },
+    "required": ["operation_class", "error_class", "signature_hash", "resolved"],
     "additionalProperties": False,
 }
 REPO_PIPELINE_MUTATING_ACTIONS = frozenset({
@@ -264,7 +261,7 @@ _COORD_ACTIONS = (
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
     "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
     "memory_promote", "memory_delete", "context_compile",
-    "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
+    "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_preview", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease",
     "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync",
@@ -483,7 +480,7 @@ _ACTION_SCOPED_FIELDS = {
         "approver": frozenset(),
         "target_scope": frozenset({"memory_promote"}),
         "record_id": frozenset({"memory_get", "memory_delete", "memory_promote"}),
-        "record": frozenset({"negative_knowledge_record"}),
+        "record": frozenset({"negative_knowledge_preview"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -923,7 +920,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "simulate_merge": ("root", "source_branch", "target_branch"),
             "curate_dataset": ("root", "output_path", "min_receipts", "format", "laya_operation"),
             "laya_decision": ("root", "laya_operation"),
-            "negative_knowledge_record": ("root", "record"),
+            "negative_knowledge_preview": ("root", "record"),
             "negative_knowledge_find": ("root", "query", "limit"),
             "incident_decision": ("root", "fingerprint", "state_revision"),
             "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
@@ -1007,7 +1004,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "swarm_status": ("swarm_id",),
             "swarm_cancel": ("swarm_id",),
             "simulate_merge": ("source_branch",),
-            "negative_knowledge_record": ("root", "record"),
+            "negative_knowledge_preview": ("root", "record"),
             "negative_knowledge_find": ("root", "query"),
             "incident_decision": ("root", "fingerprint"),
             "wait_for_event": ("topic",),
@@ -1042,7 +1039,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "swarm_status": ("swarm_id",),
             "swarm_cancel": ("swarm_id",),
             "simulate_merge": ("source_branch",),
-            "negative_knowledge_record": ("root",),
+            "negative_knowledge_preview": ("root",),
             "negative_knowledge_find": ("root", "query"),
             "incident_decision": ("root", "fingerprint"),
             "wait_for_event": ("topic",),
@@ -2277,10 +2274,10 @@ def _cached_operation_parameters_schema(
                 },
             },
         })
-    if tool == "local_ai_coord" and "negative_knowledge_record" in available_actions:
+    if tool == "local_ai_coord" and "negative_knowledge_preview" in available_actions:
         parameters.setdefault("allOf", []).append({
             "if": {
-                "properties": {selector_field: {"const": "negative_knowledge_record"}},
+                "properties": {selector_field: {"const": "negative_knowledge_preview"}},
                 "required": [selector_field],
             },
             "then": {"properties": {"record": deepcopy(_INCIDENT_RECORD_SCHEMA)}},
@@ -2592,10 +2589,10 @@ def validate_operation_arguments(
         limit = arguments.get("limit", 100)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             return "limit must be an integer from 1 to 100 for action='negative_knowledge_find'"
-    if tool == "local_ai_coord" and action in {"negative_knowledge_record", "incident_decision"}:
-        field = "record" if action == "negative_knowledge_record" else "fingerprint"
+    if tool == "local_ai_coord" and action in {"negative_knowledge_preview", "incident_decision"}:
+        field = "record" if action == "negative_knowledge_preview" else "fingerprint"
         if field in arguments:
-            nested_schema = _INCIDENT_RECORD_SCHEMA if action == "negative_knowledge_record" else properties[field]
+            nested_schema = _INCIDENT_RECORD_SCHEMA if action == "negative_knowledge_preview" else properties[field]
             nested_error = _validate_nested_schema(arguments[field], nested_schema, field, action)
             if nested_error:
                 return nested_error

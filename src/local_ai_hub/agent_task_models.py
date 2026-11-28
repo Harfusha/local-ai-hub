@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 import math
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -445,10 +446,20 @@ def _validate_checkpoint_memory_context(
         or requested_state_data["_agent_task_scope"] != current_state_data["_agent_task_scope"]
     ):
         raise ValueError("Cannot checkpoint: _agent_task_scope is server-managed and cannot be modified")
-    if "repo_root" in requested_state_data and (
-        requested_state_data["repo_root"] != current_state_data.get("repo_root")
-    ):
-        raise ValueError("Cannot checkpoint: repo_root is server-managed and cannot be modified")
+    if "repo_root" in requested_state_data:
+        current_root = current_state_data.get("repo_root")
+        if current_root is None:
+            scope = current_state_data.get("_agent_task_scope")
+            if isinstance(scope, Mapping):
+                current_root = scope.get("repo_root")
+        try:
+            same_root = os.path.normcase(_canonical_repository_root(requested_state_data["repo_root"])) == os.path.normcase(
+                _canonical_repository_root(current_root)
+            )
+        except (TypeError, ValueError):
+            same_root = False
+        if not same_root:
+            raise ValueError("Cannot checkpoint: repo_root is server-managed and cannot be modified")
     current_worktree = current_state_data.get("worktree")
     requested_worktree = requested_state_data.get("worktree")
     if isinstance(requested_worktree, Mapping):

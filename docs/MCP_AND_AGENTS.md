@@ -125,7 +125,7 @@ Conversation history is process-memory only: it expires after inactivity and dis
 ## Agent Operating System projection
  
 When `[agent_state].enabled` is active, the compact MCP surface projects durable agent operating system state without adding new tools:
-- `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `ask`, `answer`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_record`, `negative_knowledge_find`, `incident_decision`.
+- `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `ask`, `answer`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_preview`, `negative_knowledge_find`, `incident_decision`.
 - `context_compile`, `verify_receipt`, and `verify_completion` belong to `local_ai_coord`; `local_ai_repo` does not expose them.
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="brief"` for compact Hub and local-model readiness.

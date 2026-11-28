@@ -77,6 +77,10 @@ class AppBundleMixin:
                 if rec is not None:
                     scope_val = getattr(rec.scope, "value", rec.scope)
                     status_val = getattr(rec.status, "value", rec.status)
+                    if scope_val == "repository" or scope_val == AgentScope.REPOSITORY:
+                        raise BundleValidationError(
+                            "repository memory is Git-owned and cannot be exported from SQLite"
+                        )
                     if (scope_val == "global" or scope_val == AgentScope.GLOBAL) and status_val not in ("active", "confirmed", MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
                         raise BundleValidationError(f"disallowed scope: unapproved global record {rid}")
                     record_data = rec.to_dict()
@@ -456,6 +460,8 @@ class AppBundleMixin:
                         if not isinstance(record_data["scope"], str):
                             return None, "memory scope must be a canonical string"
                         scope_value = AgentScope.parse(record_data["scope"]).value
+                        if scope_value == "repository":
+                            return None, "repository memory is Git-owned and cannot be imported from a bundle"
                         provenance = record_data["provenance"]
                         if not isinstance(provenance, dict):
                             return None, "memory provenance must be an object"

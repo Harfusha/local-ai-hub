@@ -75,55 +75,32 @@ def _services(tmp_path, monkeypatch, store, namespace="repository-current"):
     return service, request
 
 
-def test_service_decision_uses_canonical_repository_scope_and_confirmed_status(tmp_path, monkeypatch):
+def test_service_decision_is_task_scoped_and_never_reuses_repository_approval(tmp_path, monkeypatch):
     memory = MemoryStore(AgentStateStore(tmp_path / "memory.sqlite3"))
     service, request = _services(tmp_path, monkeypatch, memory)
 
     assert service._guard_decision(request, "revision-current", reason="approved change", approval=True) == (True, True)
     records = memory.find(
-        scope=AgentScope.REPOSITORY, scope_id="repository-current",
-        repository_id="repository-current", semantic=False,
+        root=request.root, scope=AgentScope.TASK, scope_id=request.task_id,
+        task_id=request.task_id, semantic=False,
     )
     assert len(records) == 1
     record = records[0]
     assert record.status is MemoryStatus.CONFIRMED
-    assert record.provenance["repository_id"] == "repository-current"
-    assert record.provenance["related_task"] == request.task_id
+    assert record.scope is AgentScope.TASK
+    assert record.provenance["task_id"] == request.task_id
     assert record.repository_revision == "revision-current"
-    assert service._guard_existing_approval(request) is True
+    assert not hasattr(service, "_guard_existing_approval")
 
 
-@pytest.mark.parametrize("namespace", [None, "", " padded", "bad\x00identity"])
-def test_service_decision_never_falls_back_to_unbound_repository_scope(tmp_path, monkeypatch, namespace):
+def test_service_decision_does_not_require_project_identity(tmp_path, monkeypatch):
     writes = []
     store = SimpleNamespace(record=lambda record, **options: writes.append((record, options)) or record)
-    service, request = _services(tmp_path, monkeypatch, store, namespace)
+    service, request = _services(tmp_path, monkeypatch, store, namespace="")
 
-    assert service._guard_decision(request, "revision-current", approval=True) == (True, False)
-    assert writes == []
-
-
-def test_approval_lookup_type_error_does_not_retry_without_root(tmp_path, monkeypatch, caplog):
-    calls = []
-    foreign = SimpleNamespace(
-        kind="decision", value={"approved": True},
-        provenance={"related_task": "task-current", "repository_id": "foreign"},
-    )
-
-    def find(**options):
-        calls.append(options)
-        if "root" in options:
-            raise TypeError("private storage payload must not enter logs")
-        return [foreign]
-
-    service, request = _services(tmp_path, monkeypatch, SimpleNamespace(find=find))
-
-    assert service._guard_existing_approval(request) is False
-    assert len(calls) == 1
-    assert calls[0]["scope_id"] == "repository-current"
-    assert calls[0]["repository_id"] == "repository-current"
-    assert "TypeError" in caplog.text
-    assert "private storage payload" not in caplog.text
+    assert service._guard_decision(request, "revision-current", approval=True) == (True, True)
+    assert writes[0][0].scope is AgentScope.TASK
+    assert writes[0][0].scope_id == request.task_id
 
 
 def test_decision_type_error_does_not_retry_without_actor_and_idempotency(tmp_path, monkeypatch):

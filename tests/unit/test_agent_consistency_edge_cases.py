@@ -59,9 +59,6 @@ def test_memory_value_sanitizes_nan_inf_and_cycles() -> None:
 def test_record_finding_and_metadata_preserve_single_string_paths_and_evidence(tmp_path: Path, monkeypatch) -> None:
     from dataclasses import replace
     from types import SimpleNamespace
-    from local_ai_hub import project_config
-
-    monkeypatch.setattr(project_config, "resolve_project_context", lambda *args: SimpleNamespace(coordination_id="project-test"))
     recorded = []
 
     class FakeMemoryStore:
@@ -78,7 +75,7 @@ def test_record_finding_and_metadata_preserve_single_string_paths_and_evidence(t
     req = guard._request_from_metadata(None, root=str(tmp_path), changed_paths="src/app.py")
     assert req is not None
     assert req.changed_paths == ("src/app.py",)
-    req = replace(req, session_id="chat-test")
+    req = replace(req, task_id="task-test", session_id="chat-test")
 
     rec = guard.record_finding(
         req,
@@ -90,6 +87,8 @@ def test_record_finding_and_metadata_preserve_single_string_paths_and_evidence(t
         retention_seconds=float("nan"),
     )
     assert rec is not None
+    assert rec.scope.value == "task"
+    assert rec.scope_id == "task-test"
     assert rec.evidence_ids == ("ev-single-1",)
     assert rec.path_refs == ("src/app.py",)
     assert rec.symbol_refs == ("my_func",)

@@ -6,7 +6,7 @@ let agentOsTaskLoadGeneration=0,agentOsTaskPageLoading=false;
 let agentOsHasMore=false,agentOsQueryTruncated=false,agentOsCountScope=null;
 const agentOsTaskPageSize=100;
 function setAgentOsScopeReady(ready){
-  ['agentOsCreateTaskBtn','agentOsRecordMemBtn','agentOsRecordIncBtn','agentOsCleanup'].forEach(id=>{if($(id))$(id).disabled=!ready});
+  ['agentOsCreateTaskBtn','agentOsRecordMemBtn','agentOsCleanup'].forEach(id=>{if($(id))$(id).disabled=!ready});
 }
 async function loadAgentOsView({appendTasks=false}={}){
   if(appendTasks&&(agentOsTaskPageLoading||!agentOsHasMore||agentOsQueryTruncated))return;
@@ -32,8 +32,10 @@ async function loadAgentOsView({appendTasks=false}={}){
     fetchDashboardJson(`/api/agent-state/tasks?limit=${agentOsTaskPageSize}&offset=${requestOffset}&include_stale=true`,{cache:'no-store',unscoped:isAll})
   ];
   if(!appendTasks){
-    promises.push(fetchDashboardJson('/api/agent-state/memory',{cache:'no-store',unscoped:isAll}));
-    promises.push(fetchDashboardJson('/api/agent-state/incidents',{cache:'no-store',unscoped:isAll}));
+    const rootQuery=selectedRoot?`?root=${encodeURIComponent(selectedRoot)}`:'';
+    promises.push(fetchDashboardJson(`/api/agent-state/memory${rootQuery}`,{cache:'no-store',unscoped:isAll}));
+    promises.push(isAll?Promise.resolve({incidents:[]}):fetchDashboardJson(
+      `/api/agent-state/incidents?root=${encodeURIComponent(selectedRoot)}`,{cache:'no-store'}));
   }
   const results=await Promise.allSettled(promises);
   if(loadGeneration!==agentOsTaskLoadGeneration||($('agentOsRoot')?.value?.trim()||'')!==rootVal){
@@ -241,5 +243,4 @@ $('agentOsCreateTaskBtn')?.addEventListener('click',openCreateTaskModal);
 $('agentOsRecordMemBtn')?.addEventListener('click',openRecordMemoryModal);
 
 // Record Incident Modal
-$('agentOsRecordIncBtn')?.addEventListener('click',openRecordIncidentModal);
 

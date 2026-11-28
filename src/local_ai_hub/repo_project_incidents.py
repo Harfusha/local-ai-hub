@@ -166,3 +166,34 @@ def list_project_incidents(repo_root: Path | str, *, resolved_only: bool = False
             except Exception:
                 continue
     return records
+
+
+def find_project_incidents(
+    repo_root: Path | str, *, query: str = "", affected_paths: list[str] | tuple[str, ...] = (),
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Find canonical project incidents by bounded text and changed-path matches."""
+    store = RepoKnowledgeStore(repo_root)
+    manifest, _ = store.manifest()
+    query_tokens = set(re.findall(r"[a-z0-9]+", query.casefold().replace("_", " "))) - {
+        "test", "tests", "pytest", "python", "command", "run", "error", "failed",
+    }
+    changed = {str(path).replace("\\", "/").casefold() for path in affected_paths}
+    ranked = []
+    for record in list_project_incidents(repo_root):
+        if record.get("project_id") != manifest.get("project_id"):
+            continue
+        payload = record.get("payload", {})
+        searchable = " ".join(str(payload.get(field, "")) for field in (
+            "error_class", "redacted_message", "root_cause", "verified_fix",
+        )).casefold().replace("_", " ")
+        shared_terms = query_tokens & set(re.findall(r"[a-z0-9]+", searchable))
+        path_match = bool(changed.intersection(
+            str(path).replace("\\", "/").casefold() for path in payload.get("affected_paths", [])
+        ))
+        query_match = bool(shared_terms)
+        if (query_tokens or changed) and not (query_match or path_match):
+            continue
+        ranked.append((len(shared_terms) + int(path_match), str(record.get("id", "")), record))
+    ranked.sort(key=lambda row: (-row[0], row[1]))
+    return [record for _, _, record in ranked[:max(1, min(100, limit))]]

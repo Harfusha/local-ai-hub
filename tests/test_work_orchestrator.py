@@ -187,9 +187,10 @@ def init_repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (local_hub / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "a.txt").write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "a.txt", ".local-ai-hub"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore", "a.txt", ".local-ai-hub"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "init"], check=True)
     return root
 
@@ -918,7 +919,7 @@ def test_integrated_profile_contains_notebook_safe_limits():
     assert p["preprocessing"]["idle_grace_seconds"] == 30.0
     assert p["code_intelligence"]["max_sessions_per_backend"] == 2
     assert p["headless"]["max_sessions_per_backend"] == 2
-    assert p["debug_traces"]["max_bytes"] == 134217728
+    assert "debug_traces" not in p
     assert p["work_orchestrator"]["max_pending_work_orders"] == 8
     assert p["work_orchestrator"]["worker_idle_seconds"] == 30
 

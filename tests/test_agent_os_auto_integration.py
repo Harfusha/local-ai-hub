@@ -24,10 +24,18 @@ def _init_test_repo(root: Path) -> str:
     (root / ".local-ai.toml").write_text(
         '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n', encoding="utf-8"
     )
+    control = root / ".local-ai-hub"
+    control.mkdir()
+    (control / "project.json").write_text(json.dumps({
+        "schema_version": 1,
+        "project_id": "e56f2b8e-4f49-4ddd-bf51-a604f2c5ab01",
+        "mode": "shared",
+    }), encoding="utf-8")
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
     subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "Hub test"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=root, check=True)
-    subprocess.run(["git", "add", ".test-marker", ".local-ai.toml"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".test-marker", ".local-ai.toml", ".local-ai-hub"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "initialize fixture repository"], cwd=root, check=True)
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
@@ -169,8 +177,26 @@ def test_command_broker_requires_explicit_task_binding_and_captures_incident(tmp
 def test_http_memory_defaults_to_repository_scope_without_implicit_task_context(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+    root = tmp_path / "repo"
+    root.mkdir()
+    control = root / ".local-ai-hub"
+    control.mkdir()
+    (control / "project.json").write_text(json.dumps({
+        "schema_version": 1,
+        "project_id": "b8075df8-9f84-4a87-95d3-387a074be146",
+        "mode": "shared",
+    }), encoding="utf-8")
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Hub test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".local-ai-hub"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initialize project identity"], cwd=root, check=True)
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(f"""
+[local_ai_hub]
+config_schema_version = 1
+
 [server]
 bind = "127.0.0.1"
 port = 11497
@@ -193,7 +219,7 @@ allowed_roots = ["{tmp_path.as_posix()}"]
     thread.start()
 
     def post_json(endpoint: str, data: dict) -> dict:
-        data = {"root": str(tmp_path), **data}
+        data = {"root": str(root), **data}
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}{endpoint}",
             data=json.dumps(data).encode("utf-8"),
@@ -209,25 +235,22 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             raise AssertionError(exc.read().decode("utf-8", errors="replace")) from exc
 
     try:
-        # 1. Create memory record with kind=fact, NO scope specified
-        mem_res = post_json(
-            "/api/agent-state/memory",
-            {
-                "action": "record",
-                "record": {
-                    "kind": "fact",
-                    "key": "framework_choice",
-                    "value": "FastAPI v2",
+        # Project memory has no runtime SQLite write path.
+        with pytest.raises(AssertionError) as retired_write:
+            post_json(
+                "/api/agent-state/memory",
+                {
+                    "action": "record",
+                    "record": {
+                        "kind": "fact",
+                        "key": "framework_choice",
+                        "value": "FastAPI v2",
+                    },
                 },
-            },
-        )
-        assert mem_res["success"] is True
-        record = mem_res["record"]
-        # Must default to repository scope, not task!
-        assert record["scope"] == "repository"
-        assert record["key"] == "framework_choice"
+            )
+        assert json.loads(str(retired_write.value))["status_code"] == 409
 
-        # 2. Create active task
+        # Create active task in the migrated Git-identified checkout.
         task_res = post_json(
             "/api/agent-state/tasks",
             {

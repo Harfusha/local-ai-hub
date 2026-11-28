@@ -377,8 +377,6 @@ def test_dashboard_modal_forms_and_actions_defined() -> None:
         "async function submitCreateTask(",
         "function openRecordMemoryModal(",
         "async function submitRecordMemory(",
-        "function openRecordIncidentModal(",
-        "async function submitRecordIncident(",
         "function openCleanupModal(",
         "async function executeCleanupAction(",
         "function openRegisterProjectModal(",
@@ -421,7 +419,7 @@ def test_dashboard_buttons_rewired_to_custom_modals() -> None:
     # Agent OS buttons rewired to custom modals
     assert "$('agentOsCreateTaskBtn')?.addEventListener('click',openCreateTaskModal);" in DASHBOARD_HTML
     assert "$('agentOsRecordMemBtn')?.addEventListener('click',openRecordMemoryModal);" in DASHBOARD_HTML
-    assert "$('agentOsRecordIncBtn')?.addEventListener('click',openRecordIncidentModal);" in DASHBOARD_HTML
+    assert "agentOsRecordIncBtn" not in DASHBOARD_HTML
     assert "$('agentOsCleanup')?.addEventListener('click',openCleanupModal);" in DASHBOARD_HTML
 
     # Project buttons rewired

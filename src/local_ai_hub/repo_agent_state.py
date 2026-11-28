@@ -168,6 +168,7 @@ def rebuild_agent_state_projection(
             existing = con.execute(
                 "SELECT checkpoint, owner, contract FROM agent_tasks_projection WHERE task_id=?", (task_id,)
             ).fetchone()
+            owned = None
             if existing:
                 try:
                     existing_checkpoint = json.loads(existing[0] or "{}")
@@ -191,16 +192,32 @@ def rebuild_agent_state_projection(
                     existing_checkpoint["state_data"]["_agent_task_scope"]["worktree_id"] = worktree_id
                     existing_checkpoint["state_data"]["_agent_task_scope"]["snapshot_id"] = repository_snapshot_id(root)
                     try:
+                        existing_checkpoint_fields = {
+                            key: value for key, value in existing_checkpoint.items() if key != "state_data"
+                        }
+                        canonical_checkpoint_fields = {
+                            key: value for key, value in checkpoint_projection.items() if key != "state_data"
+                        }
                         same_content = (
                             existing_project_id == project_id
                             and json.loads(existing[2] or "{}") == json.loads(contract_json)
-                                and existing_checkpoint == checkpoint_projection
+                            and existing_checkpoint_fields == canonical_checkpoint_fields
                         )
                     except (TypeError, ValueError):
                         same_content = False
                     if not same_content:
                         con.rollback()
                         return {"success": False, "error": f"Conflicting task revision across checkouts: {task_id}"}
+                if owned and existing_project_id == project_id:
+                    local_state_data = existing_checkpoint.get("state_data", {})
+                    if isinstance(local_state_data, dict):
+                        refreshed_state_data = dict(local_state_data)
+                        refreshed_state_data["_agent_task_scope"] = checkpoint_data["state_data"]["_agent_task_scope"]
+                        if "repo_root" in refreshed_state_data:
+                            refreshed_state_data["repo_root"] = str(root)
+                        checkpoint_data["state_data"] = refreshed_state_data
+                        checkpoint_projection = TaskCheckpoint.from_dict(checkpoint_data).to_dict()
+                        checkpoint_json = json_dumps(checkpoint_projection)
             con.execute(
                 """INSERT INTO agent_tasks_projection (
                     task_id, status, contract, checkpoint, context, owner, lease_id, receipts,

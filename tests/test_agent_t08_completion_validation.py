@@ -21,17 +21,24 @@ from local_ai_hub.command_broker import CommandBroker
 
 def _task_with_memory(tmp_path, task_id: str, monkeypatch, *, audited: bool = True):
     repository_root = tmp_path.resolve()
+    project_dir = repository_root / ".local-ai-hub"
+    project_dir.mkdir()
+    (project_dir / "project.json").write_text(
+        '{"schema_version":1,"project_id":"608c48ba-c68d-4551-8643-4a53b57b6510","mode":"shared"}',
+        encoding="utf-8",
+    )
     (repository_root / ".local-ai.toml").write_text(
         '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n',
         encoding="utf-8",
     )
+    (repository_root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
     (repository_root / "test_completion.py").write_text(
         "def test_completion_evidence():\n    assert True\n", encoding="utf-8"
     )
     subprocess.run(["git", "init", "--quiet"], cwd=repository_root, check=True)
     subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repository_root, check=True)
     subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repository_root, check=True)
-    subprocess.run(["git", "add", ".local-ai.toml", "test_completion.py"], cwd=repository_root, check=True)
+    subprocess.run(["git", "add", ".gitignore", ".local-ai.toml", "test_completion.py"], cwd=repository_root, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt fixture"], cwd=repository_root, check=True)
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repository_root, check=True, text=True, capture_output=True

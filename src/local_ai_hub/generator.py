@@ -576,7 +576,7 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 
 ### 5. Negative Knowledge & Incident Avoidance
 - **Record failed approach or incident:**
-  Use `negative_knowledge_record` with the explicit root and a verified `record` object; do not substitute generic key/value fields.
+  Use `negative_knowledge_preview` with the explicit root and canonical incident fields; it prepares a Git candidate and never publishes or writes SQLite state.
 - **Check before repeating a failed operation:**
   `local_ai_coord(action="negative_knowledge_find", root="ABSOLUTE_REPOSITORY_ROOT", query="timeout")`
 

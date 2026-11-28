@@ -33,6 +33,7 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     state_dir.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n\n'
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
         '\n[security]\n'

@@ -24,6 +24,10 @@ from local_ai_hub.services import AgentStateStore
 def test_environment(tmp_path):
     plans_dir = tmp_path / ".local-ai-hub" / "plans"
     plans_dir.mkdir(parents=True)
+    (tmp_path / ".local-ai-hub" / "project.json").write_text(
+        '{"schema_version":1,"project_id":"608c48ba-c68d-4551-8643-4a53b57b6510","mode":"shared"}',
+        encoding="utf-8",
+    )
     intents_dir = tmp_path / ".local-ai-hub" / "local" / "intents"
     storage = RepoPlanStorage(tmp_path, intents_dir=intents_dir)
 

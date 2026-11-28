@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Mapping
 import hashlib
 import os
@@ -737,32 +739,34 @@ class CommandRunMixin:
                 except Exception:
                     pass
 
-            if self.incident_store is not None and not expected_no_match:
+            if not expected_no_match:
                 try:
+                    from .repo_project_incidents import find_project_incidents
                     target_paths = set(diag_paths)
                     for cp in state.get("changed_paths", []):
                         target_paths.add(str(cp))
-                    # Historical incidents are actionable only when the current
-                    # command failed; successful runs must not emit stale alarms.
-                    if target_paths and not result.get("success") and not result.get("cancelled"):
-                        regs = self.incident_store.find_regressions(
-                            list(target_paths),
-                            root=cwd,
-                            state_revision=str(state.get("fingerprint") or ""),
-                        )
-                        if regs:
-                            result["regression_warnings"] = regs
                     search_query = command
                     if not result.get("success") and result.get("error_distillation"):
                         search_query = f"{command} {result['error_distillation']}"
-                    pitfalls = self.incident_store.find_negative_knowledge(query=search_query, limit=3, root=cwd)
+                    pitfalls = find_project_incidents(
+                        cwd, query=search_query, affected_paths=tuple(target_paths), limit=3,
+                    )
                     if pitfalls:
                         result["known_pitfalls"] = [
-                            {"incident_id": p.get("incident_id"), "root_cause": p.get("root_cause"), "verified_fix": p.get("verified_fix")}
-                            for p in pitfalls if p.get("root_cause") or p.get("verified_fix")
+                            {
+                                "incident_id": p.get("id"),
+                                "root_cause": p.get("payload", {}).get("root_cause"),
+                                "verified_fix": p.get("payload", {}).get("verified_fix"),
+                            }
+                            for p in pitfalls
+                            if p.get("payload", {}).get("root_cause") or p.get("payload", {}).get("verified_fix")
                         ]
-                except Exception:
+                except (OSError, ValueError):
                     pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Canonical incident lookup unavailable (%s)", type(exc).__name__,
+                    )
 
             raw = dict(result)
             uncertain_outcome = any(

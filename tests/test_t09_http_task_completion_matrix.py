@@ -126,6 +126,12 @@ def test_task_completion_http_receipt_and_memory_matrix(
     task_id = f"task-t09-{case}"
     project_root = tmp_path / "repo"
     project_root.mkdir()
+    project_dir = project_root / ".local-ai-hub"
+    project_dir.mkdir()
+    (project_dir / "project.json").write_text(
+        '{"schema_version":1,"project_id":"608c48ba-c68d-4551-8643-4a53b57b6510","mode":"shared"}',
+        encoding="utf-8",
+    )
     session_id = f"session-{task_id}"
     (project_root / ".local-ai.toml").write_text(
         '[commands]\ntest = "python -B -m pytest -p no:cacheprovider -q tests/test_contract.py"\n'
@@ -134,7 +140,9 @@ def test_task_completion_http_receipt_and_memory_matrix(
         encoding="utf-8",
     )
     (project_root / "tests").mkdir()
-    (project_root / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n", encoding="utf-8")
+    (project_root / ".gitignore").write_text(
+        "__pycache__/\n.pytest_cache/\n.local-ai-hub/local/\n", encoding="utf-8"
+    )
     (project_root / "tests/test_contract.py").write_text("def test_contract():\n    assert True\n", encoding="utf-8")
     (project_root / "src").mkdir()
     (project_root / "src/__init__.py").write_text("", encoding="utf-8")
@@ -194,6 +202,12 @@ def test_task_completion_http_receipt_and_memory_matrix(
             app.agent_tasks,
             "_task_memory_context",
             lambda _task_id, _contract, _context, **_kwargs: memory_context,
+        )
+    else:
+        monkeypatch.setattr(
+            app.agent_tasks,
+            "_task_memory_context",
+            lambda *_args, **_kwargs: None,
         )
     app.agent_tasks.create(
         GoalContract(

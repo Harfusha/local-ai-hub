@@ -28,7 +28,7 @@ def _incident_probe(steps: list[dict[str, str]]) -> dict:
 const elements = {
   agentOsRoot:{value:''}, agentOsRepoSelect:{value:''},
   agentOsCreateTaskBtn:{}, agentOsRecordMemBtn:{},
-  agentOsRecordIncBtn:{}, agentOsCleanup:{}
+  agentOsCleanup:{}
 };
 const $=id=>elements[id];
 const requests=[],views=[];
@@ -69,33 +69,30 @@ function renderAgentOsView(){
     return json.loads(result.stdout)
 
 
-def test_incidents_switch_repository_custom_root_and_global_without_search_query():
+def test_incidents_switch_repository_and_custom_root_without_search_query():
     repo = "C:/repo with spaces/#one"
     custom = "C:/another/repository"
     result = _incident_probe([
         {"repo": repo},
         {"repo": repo, "root": custom},
-        {},
     ])
     requests = [r for r in result["requests"] if r["path"].endswith("/incidents")]
     assert requests == [
         {"path": "/api/agent-state/incidents", "root": root, "method": "GET", "body": None}
-        for root in (repo, custom, None)
+        for root in (repo, custom)
     ]
     assert [view["incidents"] for view in result["views"]] == [
-        [{"incident_id": "incident-" + root}] for root in (repo, custom, "all")
+        [{"incident_id": "incident-" + root}] for root in (repo, custom)
     ]
     assert all(view["errors"] == {} for view in result["views"])
-    assert [view["createDisabled"] for view in result["views"]] == [False, False, True]
+    assert [view["createDisabled"] for view in result["views"]] == [False, False]
 
 
 @pytest.mark.parametrize("all_value", ["", "all", "__all__"])
 def test_incidents_all_repositories_does_not_add_a_root_or_post(all_value):
     result = _incident_probe([{"repo": all_value}])
-    request = next(r for r in result["requests"] if r["path"].endswith("/incidents"))
-    assert request == {
-        "path": "/api/agent-state/incidents", "root": None, "method": "GET", "body": None,
-    }
+    assert not any(r["path"].endswith("/incidents") for r in result["requests"])
+    assert result["views"][0]["incidents"] == []
     assert result["views"][0]["errors"] == {}
 
 
@@ -127,32 +124,10 @@ def test_incident_search_accepts_an_explicit_nonempty_query():
     })
 
 
-def test_record_incident_form_sends_canonical_operation_class():
-    node = shutil.which("node")
-    assert node, "Node.js is required to execute the incident form"
-    start = DASHBOARD_HTML.index("async function submitRecordIncident(")
-    runtime = DASHBOARD_HTML[start:DASHBOARD_HTML.index("function openCleanupModal(", start)]
-    script = r"""
-const fields={newIncClass:{value:'indexing'},newIncMsg:{value:'Index unavailable'},
-  newIncCause:{value:'Missing file'},newIncFix:{value:'Check the file first'},recordIncStatus:{}};
-const $=id=>fields[id],esc=String;
-let recorded;
-async function post(path,payload){recorded={path,payload};return {success:true,incident:{}}}
-async function loadAgentOsView(){}
-function renderIncidentModal(){}
-""" + runtime + r"""
-(async()=>{await submitRecordIncident({preventDefault(){}});console.log(JSON.stringify(recorded))})()
-.catch(e=>{console.error(e);process.exitCode=1});
-"""
-    result = subprocess.run([node], input=script, text=True, encoding="utf-8",
-        capture_output=True, check=True, timeout=5, **hidden_run_kwargs())
-    recorded = json.loads(result.stdout)
-    assert recorded["path"] == "/api/agent-state/incidents"
-    payload = recorded["payload"]
-    assert payload == {"action": "record", "operation_class": "indexing",
-        "message": "Index unavailable", "root_cause": "Missing file",
-        "verified_fix": "Check the file first"}
-    Handler._validate_payload(recorded["path"], dict(payload, root="C:/repository"))
+def test_dashboard_has_no_direct_incident_write_control():
+    assert "agentOsRecordIncBtn" not in DASHBOARD_HTML
+    assert "function submitRecordIncident(" not in DASHBOARD_HTML
+    assert "function openRecordIncidentModal(" not in DASHBOARD_HTML
 
 
 @pytest.mark.parametrize(("status", "expected"), [
@@ -164,7 +139,7 @@ def test_incident_detail_renders_saved_status_without_reference_errors(status, e
     node = shutil.which("node")
     assert node, "Node.js is required to execute the incident detail"
     start = DASHBOARD_HTML.index("function renderIncidentModal(")
-    runtime = DASHBOARD_HTML[start:DASHBOARD_HTML.index("function openRecordIncidentModal(", start)]
+    runtime = DASHBOARD_HTML[start:DASHBOARD_HTML.index("function openCleanupModal(", start)]
     incident = {"incident_id": "inc_fixture", "operation_class": "indexing",
         "error_class": "CommandExecutionError", "status": status,
         "ignored": status == "ignored", "verified_fix": "Check the file first"}

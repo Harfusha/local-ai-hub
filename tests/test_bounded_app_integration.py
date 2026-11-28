@@ -738,7 +738,7 @@ def test_task_bound_rollback_conflict_preserves_foreign_change_and_barrier(tmp_p
     app = LocalAIApp(str(config))
     try:
         store = app.work_orchestrator.verification_store.task_store
-        task = store.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+        task = store.create(GoalContract(goal="change", acceptance_criteria=("preserve foreign change",)), ScopeContext(task_id="task"),
                             task_id="task", actor="owner", repo_root=str(root))
         store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
         calls = []

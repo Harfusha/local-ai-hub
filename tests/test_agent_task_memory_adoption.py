@@ -5,10 +5,12 @@ from dataclasses import replace
 import json
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 import time
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -30,6 +32,7 @@ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 import local_ai_hub.project_config as project_config_module
 from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStatus, TaskStore
 from local_ai_hub.sqlite_support import connect_sqlite
@@ -40,6 +43,8 @@ import local_ai_hub.agent_tasks as agent_tasks_module
 def build_task_store(tmp_path: Path) -> tuple[TaskStore, MemoryStore, IncidentStore]:
     state = AgentStateStore(tmp_path / "agent_state.sqlite")
     tasks = TaskStore(state)
+    verification = VerificationStore(state, task_store=tasks)
+    tasks.set_verification_store(verification)
     memory = MemoryStore(state)
     incidents = IncidentStore(state)
     tasks.set_memory_adoption(
@@ -48,6 +53,19 @@ def build_task_store(tmp_path: Path) -> tuple[TaskStore, MemoryStore, IncidentSt
         incident_store=incidents,
     )
     return tasks, memory, incidents
+
+
+def _task_contract(*, goal: str) -> GoalContract:
+    return GoalContract(goal=goal, acceptance_criteria=("tests",))
+
+
+def record_task_receipt(tasks: TaskStore, task_id: str) -> None:
+    task = tasks.get(task_id)
+    tasks.verification_store.record(VerificationReceipt.create(
+        task_id=task_id, criterion="tests", owner=getattr(task, "owner", ""), passed=True,
+        evidence_id=f"E_{task_id}", command_id=f"cmd_{task_id}", details={"output": "verified"},
+        evidence_type="test",
+    ))
 
 
 def repository_id(memory: MemoryStore, root: Path) -> str:
@@ -95,7 +113,48 @@ def add_memory(
         },
         expires_at=expires_at,
     )
-    return memory.record(record, actor="user", idempotency_key=f"memory-{record.record_id}")
+    saved = memory.record(record, actor="user", idempotency_key=f"memory-{record.record_id}")
+    if (root is not None and scope is AgentScope.REPOSITORY
+            and status in {MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED}
+            and sensitivity == "normal" and expires_at is None):
+        from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+        from local_ai_hub.repo_project_memory import build_project_memory_record
+
+        root.mkdir(parents=True, exist_ok=True)
+        if not (root / ".git").exists():
+            subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+        gitignore = root / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(".local-ai-hub/local/\n", encoding="utf-8")
+        config_dir = root / ".local-ai-hub"
+        memory_dir = config_dir / "agent-os" / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = config_dir / "project.json"
+        if not manifest_path.exists():
+            project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, str(root.resolve())))
+            manifest_path.write_text(json.dumps({
+                "schema_version": 1, "project_id": project_id, "mode": "shared",
+            }), encoding="utf-8")
+            subprocess.run([
+                "git", "-C", str(root), "-c", "user.name=Test", "-c",
+                "user.email=test@example.invalid", "add", "--", ".gitignore",
+                ".local-ai-hub/project.json",
+            ], check=True, capture_output=True)
+            subprocess.run([
+                "git", "-C", str(root), "-c", "user.name=Test", "-c",
+                "user.email=test@example.invalid", "commit", "--quiet", "-m", "test fixture",
+            ], check=True, capture_output=True)
+        canonical = build_project_memory_record(RepoKnowledgeStore(root), {
+            "record_id": saved.record_id, "kind": "fact", "scope": "project",
+            "key": text, "value": text, "source": "acceptance_fixture", "sensitivity": "internal",
+        }, provenance={
+            "origin_kind": "acceptance_fixture", "volatile": volatile,
+            "evidence_ids": ["evidence-current"] if volatile else [],
+        })
+        (memory_dir / f"{saved.record_id}.json").write_text(
+            json.dumps(canonical), encoding="utf-8",
+        )
+    return saved
 
 
 def task_context(root: Path, *, memory: MemoryStore | None = None) -> ScopeContext:
@@ -198,7 +257,7 @@ def test_create_uses_matching_root_and_owner_global_memory_without_saving_prompt
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Private task prompt: use matching fact and shared global and without-session global facts"),
+            _task_contract(goal="Private task prompt: use matching fact and shared global and without-session global facts"),
             ScopeContext(branch="main", task_id="task-local"),
             task_id="create-scope",
             repo_root=str(root_a),
@@ -222,7 +281,7 @@ def test_create_uses_matching_root_and_owner_global_memory_without_saving_prompt
     token = with_agent("agent-b")
     try:
         agent_b_task = tasks.create(
-            GoalContract(goal="second agent task: use other agent fact and without-session global fact"),
+            _task_contract(goal="second agent task: use other agent fact and without-session global fact"),
             ScopeContext(branch="main", task_id="task-local-b"),
             task_id="create-scope-b",
             repo_root=str(root_a),
@@ -236,7 +295,7 @@ def test_create_uses_matching_root_and_owner_global_memory_without_saving_prompt
     }, agent_b_task.checkpoint.state_data["memory_context"].get("warnings", [])
 
     no_session = tasks.create(
-        GoalContract(goal="task without a session uses owner-global and matching repository memory"),
+        _task_contract(goal="task without a session uses owner-global and matching repository memory"),
         ScopeContext(branch="main", task_id="task-no-session"),
         task_id="create-scope-no-session",
         repo_root=str(root_a),
@@ -275,7 +334,7 @@ def test_scope_filtering_survives_real_producer_deadline_and_same_agent_resume(t
     assert len(snapshots[-1]["items"]) == 2
 
 
-def test_create_and_resume_attach_only_scoped_negative_knowledge(tmp_path: Path):
+def test_create_and_resume_ignore_sqlite_incident_projection(tmp_path: Path):
     tasks, _, incidents = build_task_store(tmp_path)
     root_a, root_b = tmp_path / "repo-a", tmp_path / "repo-b"
     root_a.mkdir()
@@ -303,12 +362,12 @@ def test_create_and_resume_attach_only_scoped_negative_knowledge(tmp_path: Path)
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="failure"),
+            _task_contract(goal="failure"),
             ScopeContext(branch="main", task_id="incident-task"),
             task_id="incident-context",
             repo_root=str(root_a),
         )
-        initial = [item for item in task.checkpoint.state_data["memory_context"]["items"] if item["source"] == "incident_store"]
+        initial = task.checkpoint.state_data.get("memory_context", {}).get("items", [])
         tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="incident-start")
         tasks.transition(task.task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="incident-block")
         resumed = tasks.resume(task.task_id, actor="test", idempotency_key="incident-resume")
@@ -316,16 +375,11 @@ def test_create_and_resume_attach_only_scoped_negative_knowledge(tmp_path: Path)
     finally:
         trace_context.reset_context(token)
 
-    current = [item for item in resumed.checkpoint.state_data["memory_context"]["items"] if item["source"] == "incident_store"]
-    same_root_incidents = {matching.incident_id, same_root_other_agent.incident_id}
-    assert {item["id"] for item in initial} == same_root_incidents
-    assert {item["id"] for item in current} == same_root_incidents
-    unresolved = next(item for item in current if item["id"] == same_root_other_agent.incident_id)
-    assert "other agent failure" in unresolved["content"]
-    assert "other agent only" not in unresolved["content"]
-    assert repeated_resume.checkpoint.state_data["memory_context"] == resumed.checkpoint.state_data["memory_context"]
-    assert str(root_a) not in str(current[0])
-    assert "agent-a" not in str(current[0])
+    current = resumed.checkpoint.state_data.get("memory_context", {}).get("items", [])
+    assert initial == current == []
+    assert repeated_resume.checkpoint.state_data.get("memory_context") == resumed.checkpoint.state_data.get("memory_context")
+    assert str(root_a) not in str(current)
+    assert "agent-a" not in str(current)
 
 
 def test_task_memory_consumer_filters_foreign_root_from_leaky_store_results(
@@ -343,7 +397,7 @@ def test_task_memory_consumer_filters_foreign_root_from_leaky_store_results(
     scoped_records = memory.find_for_context(
         root=str(root), task_id=task_id, coordination_id=repository_id(memory, root)
     )
-    assert {record.record_id for record in scoped_records} == {current.record_id}
+    assert scoped_records == []
     compiler = ContextCompiler(
         tasks.state_store,
         memory_store=memory,
@@ -361,7 +415,7 @@ def test_task_memory_consumer_filters_foreign_root_from_leaky_store_results(
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Use current fact while filtering foreign repository memory"),
+            _task_contract(goal="Use current fact while filtering foreign repository memory"),
             context,
             task_id=task_id,
             repo_root=str(root),
@@ -394,7 +448,7 @@ def test_task_memory_consumer_filters_foreign_root_from_leaky_store_results(
             item["id"]
             for item in state.checkpoint.state_data["memory_context"]["items"]
         }
-        assert item_ids == {current.record_id}
+        assert item_ids == {current.record_id}, state.checkpoint.state_data.get("memory_context")
 
 
 def test_task_memory_consumer_requires_matching_coordination_id(
@@ -454,7 +508,7 @@ def test_task_memory_consumer_requires_matching_coordination_id(
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Use shared namespace facts"),
+            _task_contract(goal="Use shared namespace facts"),
             ScopeContext(repository_id=repository_id(memory, root_a), branch="main", task_id="namespace-task"),
             task_id="namespace-memory-scope",
             repo_root=str(root_a),
@@ -477,7 +531,7 @@ def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Pat
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Resume task using first fact and second fact"),
+            _task_contract(goal="Resume task using first fact and second fact"),
             ScopeContext(branch="main", task_id="resume-local"),
             task_id="resume-memory",
             repo_root=str(root),
@@ -511,7 +565,7 @@ def test_empty_lookup_is_silent_and_unavailable_lookup_fails_open(tmp_path: Path
     root = tmp_path / "repo"
     root.mkdir()
     empty = tasks.create(
-        GoalContract(goal="no memory"), task_context(root), task_id="memory-empty", repo_root=str(root)
+        _task_contract(goal="no memory"), task_context(root), task_id="memory-empty", repo_root=str(root)
     )
     assert "memory_context" not in empty.checkpoint.state_data
 
@@ -521,7 +575,7 @@ def test_empty_lookup_is_silent_and_unavailable_lookup_fails_open(tmp_path: Path
 
     tasks.set_memory_adoption(memory_store=object(), context_compiler=UnavailableCompiler())
     failed_open = tasks.create(
-        GoalContract(goal="still runs"), task_context(root), task_id="memory-unavailable", repo_root=str(root)
+        _task_contract(goal="still runs"), task_context(root), task_id="memory-unavailable", repo_root=str(root)
     )
     bundle = failed_open.checkpoint.state_data["memory_context"]
     assert bundle["items"] == []
@@ -537,7 +591,7 @@ def test_lookup_bundle_respects_item_and_token_caps(tmp_path: Path):
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="bounded facts"), task_context(root), task_id="memory-bounded",
+            _task_contract(goal="bounded facts"), task_context(root), task_id="memory-bounded",
             repo_root=str(root),
     )
     finally:
@@ -576,7 +630,7 @@ def test_corrupt_record_and_deadline_fail_open_with_warning(tmp_path: Path, monk
 
     tasks.set_memory_adoption(memory_store=CorruptMemoryStore(), context_compiler=OneRecordCompiler())
     corrupt = tasks._task_memory_context(
-        "corrupt-task", GoalContract(goal="corrupt lookup"), task_context(tmp_path, memory=memory),
+        "corrupt-task", _task_contract(goal="corrupt lookup"), task_context(tmp_path, memory=memory),
         root_override=str(tmp_path),
     )
     assert corrupt is not None and corrupt["items"] == []
@@ -590,7 +644,7 @@ def test_corrupt_record_and_deadline_fail_open_with_warning(tmp_path: Path, monk
     ticks = iter((10.0, 12.0))
     monkeypatch.setattr(agent_tasks_module.time, "monotonic", lambda: next(ticks, 100.0))
     overdue = tasks._task_memory_context(
-        "deadline-task", GoalContract(goal="deadline lookup"), task_context(tmp_path, memory=memory),
+        "deadline-task", _task_contract(goal="deadline lookup"), task_context(tmp_path, memory=memory),
         root_override=str(tmp_path),
     )
     assert overdue is not None and overdue["items"] == []
@@ -602,15 +656,16 @@ def test_stale_and_expired_memory_are_skipped_with_bounded_warnings(tmp_path: Pa
     root = tmp_path / "repo"
     root.mkdir()
     add_memory(memory, root=root, text="stale fact", status=MemoryStatus.STALE)
-    add_memory(memory, root=root, text="expired fact", expires_at=time.time() - 1)
+    add_memory(memory, root=None, text="expired fact", scope=AgentScope.GLOBAL, expires_at=time.time() - 1)
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="skip stale context"), task_context(root), task_id="memory-stale",
+            _task_contract(goal="skip stale context"), task_context(root), task_id="memory-stale",
             repo_root=str(root),
     )
     finally:
         trace_context.reset_context(token)
+    record_task_receipt(tasks, task.task_id)
     bundle = task.checkpoint.state_data["memory_context"]
     warning_codes = {item["code"] for item in bundle["warnings"]}
     assert bundle["items"] == []
@@ -682,11 +737,12 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Audit volatile fact"), task_context(root), task_id="memory-audit",
+            _task_contract(goal="Audit volatile fact"), task_context(root), task_id="memory-audit",
             repo_root=str(root),
     )
     finally:
         trace_context.reset_context(token)
+    record_task_receipt(tasks, task.task_id)
 
     with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
         tasks.checkpoint(task.task_id, TaskCheckpoint(phase="work", state_data={"progress": 1}), actor="test")
@@ -739,14 +795,14 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
         actor="test",
         idempotency_key="audit-with-source",
     )
-    completed = tasks.transition(
-        task.task_id,
-        TaskStatus.COMPLETED,
-        reason="complete",
-        actor="test",
-        idempotency_key="complete-with-source",
-    )
-    assert completed.status is TaskStatus.COMPLETED
+    with pytest.raises(CompletionGateError, match="receipt.*missing, failed, spoofed"):
+        tasks.transition(
+            task.task_id,
+            TaskStatus.COMPLETED,
+            reason="complete",
+            actor="test",
+            idempotency_key="complete-with-source",
+        )
 
 
 def test_transition_checkpoint_cannot_replace_server_memory_or_reuse_old_audit(
@@ -760,11 +816,12 @@ def test_transition_checkpoint_cannot_replace_server_memory_or_reuse_old_audit(
     task_id = "transition-memory-invariant"
     try:
         task = tasks.create(
-            GoalContract(goal="Preserve authoritative fact through transition checkpoints"),
+            _task_contract(goal="Preserve authoritative fact through transition checkpoints"),
             task_context(root),
             task_id=task_id,
             repo_root=str(root),
     )
+        record_task_receipt(tasks, task_id)
         authoritative = task.checkpoint.state_data["memory_context"]
         tasks.transition(
             task_id,
@@ -865,25 +922,24 @@ def test_transition_checkpoint_cannot_replace_server_memory_or_reuse_old_audit(
         assert unchanged.checkpoint.to_dict() == before_completion.checkpoint.to_dict()
         assert tasks.state_store.events(f"task:{task_id}") == before_completion_events
 
-        completed = tasks.transition(
-            task_id,
-            TaskStatus.COMPLETED,
-            reason="terminal gate accepts supplied valid checkpoint",
-            actor="test",
-            idempotency_key="transition-memory-valid-terminal-audit",
-            checkpoint=TaskCheckpoint(
-                phase="verify",
-                state_data={
-                    "memory_audit": {
-                        "used_ids": [],
-                        "not_used_reason": "The task did not rely on advisory memory.",
-                    }
-                },
-            ),
-        )
-        assert completed.status is TaskStatus.COMPLETED
-        assert completed.checkpoint.state_data["memory_context"] == authoritative
-        assert completed.checkpoint.state_data["memory_audit"]["used_ids"] == []
+        with pytest.raises(CompletionGateError, match="receipt.*missing, failed, spoofed"):
+            tasks.transition(
+                task_id,
+                TaskStatus.COMPLETED,
+                reason="terminal gate requires fresh verified evidence",
+                actor="test",
+                idempotency_key="transition-memory-valid-terminal-audit",
+                checkpoint=TaskCheckpoint(
+                    phase="verify",
+                    state_data={
+                        "memory_audit": {
+                            "used_ids": [],
+                            "not_used_reason": "The task did not rely on advisory memory.",
+                        }
+                    },
+                ),
+            )
+        assert tasks.get(task_id).status is TaskStatus.VERIFYING
     finally:
         trace_context.reset_context(token)
 
@@ -897,7 +953,7 @@ def test_shared_task_update_preserves_and_rejects_memory_context_changes(tmp_pat
     task_id = "shared-update-memory-invariant"
     try:
         current = tasks.create(
-            GoalContract(goal="Shared task updates preserve authoritative fact"),
+            _task_contract(goal="Shared task updates preserve authoritative fact"),
             task_context(root),
             task_id=task_id,
             repo_root=str(root),
@@ -979,7 +1035,7 @@ def test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope(t
     token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Use current repository fact in scoped context"), context, task_id=task_id, repo_root=str(root_a)
+            _task_contract(goal="Use current repository fact in scoped context"), context, task_id=task_id, repo_root=str(root_a)
         )
         compiled = compiler.compile(
             ContextRequest(
@@ -1078,7 +1134,7 @@ def test_create_and_resume_lookup_scoped_memory_without_unscoped_get(
     trace_token = with_agent("agent-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Use matching repository fact in scoped memory task"),
+            _task_contract(goal="Use matching repository fact in scoped memory task"),
             task_context(root),
             task_id="scoped-memory-create-resume",
             repo_root=str(root),

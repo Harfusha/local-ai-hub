@@ -327,33 +327,40 @@ def test_e2e_negative_knowledge_retry_decision(tmp_path: Path):
 
 def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: Path):
     from local_ai_hub import trace_context
-    from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_project_memory import build_project_memory_record, memory_file_path
 
     app = app_with_agent_state(tmp_path)
-    root = tmp_path / "repo"
-    root.mkdir()
+    root, _ = make_trusted_repository(tmp_path, "")
     from local_ai_hub.project_config import resolve_project_context
     repository_id = resolve_project_context(root, Path(app.agent_state.db_path).parent).coordination_id
     assert app.agent_tasks.state_store is app.agent_memory.state_store
+    store = RepoKnowledgeStore(root)
 
-    def record_memory(key: str, idempotency_key: str) -> MemoryRecord:
-        record = MemoryRecord.create(
-            kind=MemoryKind.FACT,
-            scope=AgentScope.REPOSITORY,
-            scope_id=repository_id,
-            key=key,
-            value=key,
-            status=MemoryStatus.CONFIRMED,
-            source="user",
-            provenance={"root": str(root), "repository_id": repository_id},
-        )
-        return app.agent_memory.record(record, actor="user", idempotency_key=idempotency_key)
+    def record_memory(key: str, record_id: str) -> dict:
+        record = build_project_memory_record(store, {
+            "record_id": record_id, "kind": "fact", "scope": "project",
+            "key": key, "value": key, "source": "user",
+        }, provenance={"origin_kind": "acceptance_fixture", "version": record_id})
+        path = memory_file_path(root, record_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", str(path.relative_to(root))], check=True)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "--quiet", "-m", record_id],
+                       check=True)
+        return record
 
-    first = record_memory("matching parser fact", "app-memory-first")
+    first = record_memory("matching parser fact", "mem-app-memory-first")
+    from local_ai_hub.agent_context import ContextRequest, _canonical_project_memory_records
+    canonical = _canonical_project_memory_records(
+        ContextRequest(task_id="app-memory-task", root=str(root), coordination_id=repository_id)
+    )
+    assert [record.record_id for record in canonical] == [first["id"]]
     token = trace_context.set_context(agent="agent-a", request_id="req-a", trace_id="trace-a")
     try:
         task = app.agent_tasks.create(
-            GoalContract(goal="matching parser fact"),
+            GoalContract(goal="matching parser fact", acceptance_criteria=("Use relevant project memory",)),
             ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-task"),
             task_id="app-memory-task",
             repo_root=str(root),
@@ -361,7 +368,7 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
         initial_ids = {
             item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]
         }
-        assert initial_ids == {first.record_id}
+        assert initial_ids == {first["id"]}
 
         app.agent_tasks.transition(
             task.task_id,
@@ -377,14 +384,14 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
             actor="test",
             idempotency_key="app-memory-block",
         )
-        later = record_memory("matching parser follow-up", "app-memory-later")
+        later = record_memory("matching parser follow-up", "mem-app-memory-later")
         resumed = app.agent_tasks.resume(
             task.task_id, actor="test", idempotency_key="app-memory-resume"
         )
         resumed_ids = {
             item["id"] for item in resumed.checkpoint.state_data["memory_context"]["items"]
         }
-        assert resumed_ids == {first.record_id, later.record_id}
+        assert resumed_ids == {first["id"], later["id"]}
 
         app.agent_tasks.checkpoint(
             task.task_id,
@@ -399,21 +406,12 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
             item["id"] for item in stored.checkpoint.state_data["memory_context"]["items"]
         } == resumed_ids
 
-        completed = app.agent_tasks.complete(
-            task.task_id,
-            reason="task completed before confirming its learning",
-            actor="test",
-            idempotency_key="app-memory-complete",
-        )
-        assert completed.status is TaskStatus.COMPLETED
-
         learned = record_memory(
             "confirmed post-task learning sentinel",
-            "app-memory-post-task-learning",
+            "mem-app-memory-post-task-learning",
         )
-        assert learned.status is MemoryStatus.CONFIRMED
         follow_up = app.agent_tasks.create(
-            GoalContract(goal="confirmed post-task learning sentinel"),
+            GoalContract(goal="confirmed post-task learning sentinel", acceptance_criteria=("Use relevant project memory",)),
             ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-follow-up"),
             task_id="app-memory-follow-up",
             repo_root=str(root),
@@ -423,7 +421,7 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
         }
         # The follow-up needs the confirmed learning, not unrelated parser facts.
         # Require exact IDs so relevance filtering cannot silently add noise.
-        assert follow_up_ids == {learned.record_id}
+        assert follow_up_ids == {learned["id"]}
     finally:
         trace_context.reset_context(token)
         app.close()

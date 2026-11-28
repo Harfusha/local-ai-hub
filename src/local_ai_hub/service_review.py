@@ -147,14 +147,26 @@ class ServiceReviewMixin:
                     det_hint += f"- [{bc.get('type')}] {bc.get('symbol')} in {bc.get('file')}: {bc.get('description')}\n"
 
         regressions: list[dict[str, Any]] = []
-        incident_store = getattr(self, "incident_store", None)
         from .process_utils import is_rooted_path
         regression_root = args.get("root")
-        if incident_store is not None and diff.get("changed_files") and isinstance(regression_root, str) and is_rooted_path(regression_root):
+        if diff.get("changed_files") and isinstance(regression_root, str) and is_rooted_path(regression_root):
             try:
-                found = incident_store.find_regressions(diff["changed_files"], root=regression_root)
-                if isinstance(found, list):
-                    regressions = [r for r in found if isinstance(r, dict)]
+                from .repo_project_incidents import find_project_incidents
+
+                found = find_project_incidents(
+                    regression_root, affected_paths=diff["changed_files"], limit=10,
+                )
+                regressions = [
+                    {
+                        "incident_id": item.get("id"),
+                        "error_class": item.get("payload", {}).get("error_class"),
+                        "affected_paths": item.get("payload", {}).get("affected_paths", []),
+                        "verified_fix": item.get("payload", {}).get("verified_fix"),
+                    }
+                    for item in found
+                    if item.get("payload", {}).get("resolved") is True
+                    and item.get("payload", {}).get("verified_fix")
+                ]
             except Exception:
                 regressions = []
         if regressions:

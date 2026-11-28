@@ -12,6 +12,19 @@ from local_ai_hub.agent_memory import MemoryRecord
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 
 
+def _init_git_project(root: Path, project_id: str) -> None:
+    import json
+    import subprocess
+
+    control = root / ".local-ai-hub"
+    control.mkdir()
+    (control / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True, timeout=15)
+
+
 @pytest.fixture
 def running_app_client(tmp_path: Path):
     # Setup app with agent_state enabled and start it
@@ -485,9 +498,6 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
     import urllib.error
 
     from local_ai_hub import http_server
-    from local_ai_hub.project_config import resolve_project_context
-    from local_ai_hub.state_paths import configured_state_dir
-
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
@@ -499,10 +509,32 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
     repo_two = tmp_path / "repo-two"
     repo_one.mkdir()
     repo_two.mkdir()
+    import subprocess
+
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+    from local_ai_hub.repo_project_memory import build_project_memory_record
+
+    project_ids = {
+        repo_one: "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb",
+        repo_two: "53e9f982-49f9-4a49-98fb-59491a38f140",
+    }
+    for root, project_id in project_ids.items():
+        _init_git_project(root, project_id)
+        canonical = build_project_memory_record(RepoKnowledgeStore(root), {
+            "record_id": f"mem-{project_id[:8]}", "kind": "fact", "scope": "project",
+            "key": "shared", "value": "repo-one" if root == repo_one else "repo-two",
+        })
+        memory_path = root / ".local-ai-hub" / "agent-os" / "memory"
+        memory_path.mkdir(parents=True)
+        (memory_path / f"{canonical['id']}.json").write_text(json.dumps(canonical), encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "bootstrap"],
+                       check=True, timeout=15)
     app = LocalAIApp(str(cfg_path))
-    state_dir = configured_state_dir(app.config)
-    repo_one_id = resolve_project_context(repo_one, state_dir).coordination_id
-    repo_two_id = resolve_project_context(repo_two, state_dir).coordination_id
+    repo_one_id = project_ids[repo_one]
+    repo_two_id = project_ids[repo_two]
     assert repo_one_id
     assert repo_two_id
     for task_id, root, session_id in (
@@ -511,7 +543,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
         ("task-rich", repo_one, "session-rich"),
     ):
         created = app.agent_tasks.create(
-            GoalContract(goal="Memory scope fixture"),
+            GoalContract(goal="Memory scope fixture", acceptance_criteria=["Isolate records by task and project"]),
             ScopeContext(
                 task_id=task_id,
                 repository_id=repo_one_id if root == repo_one else repo_two_id,
@@ -559,9 +591,9 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             },
         ),
         rich_record,
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": repo_two_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, scope_id=repo_one_id, key="shared", value="sqlite-only-repo-one", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, scope_id=repo_one_id, key="shared", value="sqlite-only-repo-one-missing-id", provenance={"root": str(repo_one)}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, scope_id=repo_two_id, key="shared", value="sqlite-only-repo-two", provenance={"root": str(repo_two), "repository_id": repo_two_id}),
         MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-owner-scope", value="global-value", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
     )
     for record in records:
@@ -593,8 +625,13 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             return json.loads(response.read().decode("utf-8"))
 
     try:
+        scoped_task_records = app.agent_memory.find(
+            scope=AgentScope.TASK, scope_id="task-one", task_id="task-one",
+            root=str(repo_one), repository_id=repo_one_id, key="shared", semantic=False,
+        )
+        assert [record.value for record in scoped_task_records] == ["task-one"]
         task_result = get(scope="task", scope_id="task-one", key="shared", root=str(repo_one), )
-        assert [item["value"] for item in task_result["records"]] == ["task-one"]
+        assert [item["value"] for item in task_result["records"]] == ["task-one", "repo-one"]
         for scope_arguments in ({}, {"scope": "session"}, {"scope": "session", "root": str(repo_one)}):
             with pytest.raises(urllib.error.HTTPError) as conflicting_session:
                 get(scope_id="session-one", session_id="session-two", **scope_arguments)
@@ -602,13 +639,14 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
         session_result = get(scope="session", scope_id="session-one", key="shared", )
         assert [item["value"] for item in session_result["records"]] == ["session-one"]
         task_without_scope = get(task_id="task-one", key="shared", root=str(repo_one), )
-        assert [item["value"] for item in task_without_scope["records"]] == ["task-one"]
+        assert [item["value"] for item in task_without_scope["records"]] == ["task-one", "repo-one"]
         session_without_scope = get(session_id="session-one", key="shared", )
         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
         repo_without_scope = get(root=str(repo_one), key="shared")
         assert [item["value"] for item in repo_without_scope["records"]] == ["repo-one"]
         other_repo_without_scope = get(root=str(repo_two), key="shared")
         assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
+        assert all(not item["value"].startswith("sqlite-only-") for item in repo_without_scope["records"])
         repository_id_without_scope = get(repository_id=repo_one_id, key="shared", root=str(repo_one))
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
         other_session = get(session_id="session-two", key="shared")
@@ -689,7 +727,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             "key": "session-rich",
         })
         assert [item["value"] for item in session_rich["records"]] == ["session-rich-value"]
-        repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
+        repo_result = get(scope="repository", root=str(repo_one), repository_id=repo_one_id, key="shared")
         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
         direct = post({
             "action": "get",
@@ -786,8 +824,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
         })
         assert deleted["success"] is True
         assert deleted["deleted"] is True
-        repository_record = next(record for record in records if record.value == "repo-one")
-        missing_id_record = next(record for record in records if record.value == "repo-one-missing-id")
+        repository_record = next(record for record in records if record.value == "sqlite-only-repo-one")
+        missing_id_record = next(record for record in records if record.value == "sqlite-only-repo-one-missing-id")
         with pytest.raises(urllib.error.HTTPError) as missing_identity_delete:
             post({"action": "delete", "record_id": missing_id_record.record_id,
                   "scope": "repository", "root": str(repo_one)})
@@ -803,13 +841,14 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
                 "root": str(repo_two),
             })
         assert delete_repository_mismatch.value.code == 404
-        deleted_by_root = post({
-            "action": "delete",
-            "record_id": repository_record.record_id,
-            "scope": "repository",
-            "root": str(repo_one),
-        })
-        assert deleted_by_root["deleted"] is True
+        with pytest.raises(urllib.error.HTTPError) as legacy_repository_delete:
+            post({
+                "action": "delete",
+                "record_id": repository_record.record_id,
+                "scope": "repository",
+                "root": str(repo_one),
+            })
+        assert legacy_repository_delete.value.code == 409
         with pytest.raises(urllib.error.HTTPError) as repository_delete_without_root:
             post({
                 "action": "delete",
@@ -984,8 +1023,10 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
 
 def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
     import json
+    import subprocess
     import threading
     import urllib.request
+    import urllib.error
 
     from local_ai_hub import http_server
 
@@ -993,20 +1034,26 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
     cfg_path.write_text(
         f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        "\n[telemetry]\nmode = \"full\"\n"
+        "\n[telemetry]\nmode = \"off\"\n"
         f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
     repo_root = tmp_path / "context-repo"
     repo_root.mkdir()
+    _init_git_project(repo_root, "608c48ba-c68d-4551-8643-4a53b57b6510")
+    subprocess.run(["git", "-C", str(repo_root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(repo_root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "bootstrap"],
+                   check=True, timeout=15)
     from local_ai_hub.project_config import resolve_project_context
     from local_ai_hub.state_paths import configured_state_dir
     repository_id = resolve_project_context(
         repo_root, configured_state_dir(app.config)
     ).coordination_id
     app.agent_tasks.create(
-        GoalContract(goal="Context diagnostics transport"),
+        GoalContract(goal="Context diagnostics transport", acceptance_criteria=["Block caller-controlled diagnostics"]),
         ScopeContext(repository_id=repository_id, task_id="transport-task", session_id="session-context"),
         task_id="transport-task",
         repo_root=str(repo_root),
@@ -1031,10 +1078,10 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
             headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
-        with urllib.request.urlopen(request) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        assert result["success"] is True
-        assert any(element["source_kind"] == "memory_diagnostics" for element in result["context"]["elements"])
+        with pytest.raises(urllib.error.HTTPError) as disabled:
+            urllib.request.urlopen(request)
+        assert disabled.value.code == 409
+        assert json.loads(disabled.value.read().decode("utf-8"))["error_code"] == "detailed_diagnostics_disabled"
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1046,8 +1093,10 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
 
 def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypatch):
     import json
+    import subprocess
     import threading
     import urllib.request
+    import urllib.error
 
     from local_ai_hub import http_server
     from local_ai_hub.agent_context import CompiledContext
@@ -1062,13 +1111,19 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
     app = LocalAIApp(str(cfg_path))
     repo_root = tmp_path / "context-repo"
     repo_root.mkdir()
+    _init_git_project(repo_root, "fbe2826c-e323-4ea4-8227-265d51ed9df2")
+    subprocess.run(["git", "-C", str(repo_root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "add", "."], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(repo_root), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "bootstrap"],
+                   check=True, timeout=15)
     from local_ai_hub.project_config import resolve_project_context
     from local_ai_hub.state_paths import configured_state_dir
     repository_id = resolve_project_context(
         repo_root, configured_state_dir(app.config)
     ).coordination_id
     app.agent_tasks.create(
-        GoalContract(goal="Context scope transport"),
+        GoalContract(goal="Context scope transport", acceptance_criteria=["Preserve verified checkout scope"]),
         ScopeContext(
             repository_id=repository_id, clone_id="clone-http",
             worktree_id="worktree-http", branch="branch-http",
@@ -1114,8 +1169,11 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
             headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
-        with urllib.request.urlopen(request) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            pytest.fail(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}")
         assert result["success"] is True
         assert seen == {
             "clone_id": "clone-http",

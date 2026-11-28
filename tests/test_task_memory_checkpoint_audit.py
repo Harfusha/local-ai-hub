@@ -38,11 +38,26 @@ def make_task(tmp_path):
             ), actor="user")
         tasks.set_memory_adoption(memory_store=memory, context_compiler=ContextCompiler(state, task_store=tasks, memory_store=memory))
         task_id = f"checkpoint-memory-{count}"
+        original_memory_context = tasks._task_memory_context
+        if record is not None:
+            memory_snapshot = {
+                "schema_version": 2,
+                "context": {
+                    "root": str(root), "coordination_id": repository_id, "task_id": task_id,
+                    "session_id": "", "clone_id": "", "worktree_id": "", "branch": "",
+                },
+                "instruction": "",
+                "items": [{"id": record.record_id, "volatile": volatile}],
+                "warnings": [],
+                "estimated_tokens": 1,
+            }
+            tasks._task_memory_context = lambda *_args, **_kwargs: memory_snapshot
         task = tasks.create(
             GoalContract(goal="Fix parser identifier tokenization"),
             ScopeContext(repository_id=repository_id, task_id=task_id),
             task_id=task_id, repo_root=str(root),
         )
+        tasks._task_memory_context = original_memory_context
         return tasks, memory, root, task, record
 
     try:

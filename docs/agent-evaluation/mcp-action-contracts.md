@@ -331,7 +331,7 @@ The table lists every declared property and its schema-level type/default/constr
 | local_ai_coord | limit | integer; minimum=1; maximum=1000; default=1000 | pubsub_poll, negative_knowledge_find, board_item_list, plan_list, task_sync, memory_find |
 | local_ai_coord | contract | object | shared/handler-defined |
 | local_ai_coord | checkpoint | object | shared/handler-defined |
-| local_ai_coord | record | object | negative_knowledge_record |
+| local_ai_coord | record | object | negative_knowledge_preview |
 | local_ai_coord | fingerprint | object; additionalProperties=false | shared/handler-defined |
 | local_ai_coord | tool_outcome | object | shared/handler-defined |
 | local_ai_coord | focus | array; items(string) | shared/handler-defined |
@@ -535,7 +535,7 @@ Fields use action metadata: required, non-empty, allowed (if explicitly restrict
 | local_ai_coord.memory_promote | root, scope, record_id, target_scope | root, scope, record_id, target_scope | root, scope, record_id, target_scope, scope_id, task_id, session_id, clone_id, worktree_id, branch | root:string default=.; session_id:string maxLength=256 | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_coord.memory_record | root, scope, key, value | root, scope, key | root, scope, key, value, kind, status, confidence, ttl_seconds, session_id | root:string default=.; confidence:['number', 'null'] maximum=1; session_id:string maxLength=256 | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_coord.negative_knowledge_find | root, query | root, query | root, query, limit | root:string default=.; limit:integer minimum=1 maximum=1000 default=1000 | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
-| local_ai_coord.negative_knowledge_record | root, record | root | root, record | root:string default=. | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
+| local_ai_coord.negative_knowledge_preview | root, record | root | root, record | root:string default=. | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_coord.record_native_receipt | task_id, criterion, command_id | task_id, criterion, command_id | root, task_id, criterion, command_id | root:string default=. | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_coord.session_briefing | none | none | root, session_id, include | root:string default=.; session_id:string maxLength=256; include:array items(string) | agent_os | read_only; retry=True; idem=True; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_coord.verify_completion | task_id | task_id | root, task_id, repository_revision | root:string default=. | agent_os | coordination_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |

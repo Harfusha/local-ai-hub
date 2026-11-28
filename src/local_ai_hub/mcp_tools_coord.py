@@ -364,7 +364,7 @@ def local_ai_coord(
             tuple(services_module.CoordAction.__args__),
             "Unscoped memory maintenance and relations remain private until explicit repository scope is supported.",
         )
-    if action in {"negative_knowledge_record", "negative_knowledge_find", "incident_decision"}:
+    if action in {"negative_knowledge_preview", "negative_knowledge_find", "incident_decision"}:
         try:
             if not isinstance(root, str) or not root.strip() or root != root.strip() or not services_module.is_rooted_path(root):
                 raise services_module.RepositoryScopeError(
@@ -410,7 +410,7 @@ def local_ai_coord(
             "action": "import", "events": events,
         }, timeout=services_module._timeout("quick")), "status")
     incident_legacy_values: dict[str, dict[str, services_module.Any]] = {
-        "negative_knowledge_record": {
+        "negative_knowledge_preview": {
             "key": key, "value": value, "query": query, "reason": reason, "status": status,
             "record_id": record_id, "tool_outcome": tool_outcome, "fingerprint": fingerprint,
             "state_revision": state_revision, "limit": limit,
@@ -567,7 +567,7 @@ def local_ai_coord(
             "task": task, "task_id": task_id, "key": key, "value": value,
             "query": query, "status": status, "target_scope": target_scope,
         },
-        "negative_knowledge_record": {
+        "negative_knowledge_preview": {
             "key": key, "value": value, "query": query, "reason": reason,
             "status": status, "record_id": record_id, "tool_outcome": tool_outcome,
             "fingerprint": fingerprint, "state_revision": state_revision,
@@ -590,7 +590,7 @@ def local_ai_coord(
         for value in legacy_coord_values[action].values()
     ):
         return services_module.contract_error(f"action='{action}' accepts only canonical fields", status_code=400)
-    if action in {"negative_knowledge_record", "incident_decision"} and limit is not None:
+    if action in {"negative_knowledge_preview", "incident_decision"} and limit is not None:
         return services_module.contract_error(f"limit is not valid for action='{action}'", status_code=400)
     if receipt is not None and action != "verify_receipt":
         return services_module.contract_error("receipt is only valid for action='verify_receipt'", status_code=400)
@@ -652,7 +652,7 @@ def local_ai_coord(
             "laya_operation": laya_operation,
         },
         "laya_decision": {"root": root, "laya_operation": laya_operation},
-        "negative_knowledge_record": {"root": root, "record": record},
+        "negative_knowledge_preview": {"root": root, "record": record},
         "negative_knowledge_find": {
             "root": root, "query": query,
             "limit": 100 if limit is None else limit,
@@ -971,24 +971,20 @@ def local_ai_coord(
             "action": "export", "task_id": task_id, "root": root,
             "format": "markdown" if format is None else format,
         }, timeout=services_module._timeout("quick")), "verify")
-    if action == "negative_knowledge_record":
-        rec = dict(record) if isinstance(record, dict) else {}
-        if "paths" in rec and "affected_paths" not in rec:
-            rec["affected_paths"] = rec.pop("paths")
-        if "description" in rec and "message" not in rec:
-            rec["message"] = rec.pop("description")
-        if "reason" in rec and "root_cause" not in rec:
-            rec["root_cause"] = rec.pop("reason")
-        if "fix" in rec and "verified_fix" not in rec:
-            rec["verified_fix"] = rec.pop("fix")
-        if "error_class" in rec and "operation_class" not in rec:
-            rec["operation_class"] = rec.pop("error_class")
-        if paths and "affected_paths" not in rec:
-            rec["affected_paths"] = paths
-        if reason and "root_cause" not in rec:
-            rec["root_cause"] = reason
-        return services_module._compact(services_module.CLIENT.post("/api/agent-state/incidents", {
-            **rec, "action": "record", "root": root,
+    if action == "negative_knowledge_preview":
+        try:
+            from .repo_knowledge import RepoKnowledgeStore
+            from .repo_project_incidents import build_project_incident_record
+
+            incident = dict(record) if isinstance(record, dict) else {}
+            canonical = build_project_incident_record(
+                RepoKnowledgeStore(root), incident, provenance={"origin_kind": "agent_preview"},
+            )
+        except Exception as exc:
+            return services_module.contract_error(str(exc), status_code=400)
+        return services_module._compact(services_module.CLIENT.post("/api/repo/knowledge/manage", {
+            "action": "preview_batch", "root": root,
+            "records": [{"record": canonical, "expected_revision": ""}],
         }, timeout=services_module._timeout("quick")), "task_memory")
     if action == "negative_knowledge_find":
         return services_module._compact(services_module.CLIENT.post("/api/agent-state/incidents", {

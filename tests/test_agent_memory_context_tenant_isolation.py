@@ -99,7 +99,7 @@ def test_owner_global_memory_is_available_without_repository_context(tmp_path: P
 
 
 @pytest.mark.parametrize("seed_projections", [False, True])
-def test_context_compiler_preserves_actual_repository_and_task_scope(tmp_path: Path, seed_projections):
+def test_context_compiler_excludes_sqlite_repository_memory(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
     root = tmp_path / "repo"
@@ -129,14 +129,13 @@ def test_context_compiler_preserves_actual_repository_and_task_scope(tmp_path: P
         if element.source_kind == "memory_record"
     }
     assert memory_ids == {
-        records["repo_current"].record_id,
         records["task_current"].record_id,
         records["global"].record_id,
     }
 
 
 @pytest.mark.parametrize("seed_projections", [False, True])
-def test_task_create_and_resume_keep_repository_and_global_memory(tmp_path: Path, seed_projections):
+def test_task_create_and_resume_keep_global_without_sqlite_repository_memory(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     tasks = TaskStore(state)
     memory = MemoryStore(state)
@@ -165,7 +164,6 @@ def test_task_create_and_resume_keep_repository_and_global_memory(tmp_path: Path
         for record in records.values():
             memory.record(record, actor="user")
     expected = {
-        records["repo_current"].record_id,
         records["global_one"].record_id,
         records["global_two"].record_id,
     }

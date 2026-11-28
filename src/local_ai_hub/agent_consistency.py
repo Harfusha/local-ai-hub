@@ -849,8 +849,6 @@ class AgentConsistencyGuard:
         try:
             from .agent_identity import AgentScope
             from .agent_memory import MemoryKind, MemoryRecord, MemoryStatus
-            from .project_config import resolve_project_context
-            from .state_paths import configured_state_dir
 
             memory_kind = kind if isinstance(kind, MemoryKind) else MemoryKind(str(kind).lower())
             bounded_evidence = tuple(dict.fromkeys(_text(item, 200) for item in _tuple(evidence_ids, 24) if _text(item, 200)))[:24]
@@ -860,12 +858,7 @@ class AgentConsistencyGuard:
             repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
             if not repository_root:
                 return None
-            project = resolve_project_context(
-                repository_root,
-                configured_state_dir(getattr(self.repository_tools, "config", {}), create=False),
-            )
-            repository_id = project.coordination_id
-            if not isinstance(repository_id, str) or not repository_id or repository_id != repository_id.strip() or "\x00" in repository_id:
+            if not task:
                 return None
             root_token = hashlib.sha256(repository_root.encode("utf-8", "replace")).hexdigest()[:16]
             stable = _redact_memory_text(stable_key, 240) or hashlib.sha256(
@@ -878,7 +871,7 @@ class AgentConsistencyGuard:
             expires_at = now + min(retention, float(_MEMORY_RETENTION_SECONDS))
             provenance = {
                 "root": repository_root[:400],
-                "repository_id": repository_id,
+                "task_id": task,
                 "guard": "agent_consistency",
                 "phase": _text(request_obj.phase if request_obj else phase, 80),
                 "stable_key": stable,
@@ -890,8 +883,8 @@ class AgentConsistencyGuard:
             )
             record = MemoryRecord.create(
                 kind=memory_kind,
-                scope=AgentScope.REPOSITORY,
-                scope_id=repository_id,
+                scope=AgentScope.TASK,
+                scope_id=task,
                 key=record_key,
                 value=_memory_value(value),
                 confidence=max(0.0, min(1.0, _safe_float(confidence, 1.0))),

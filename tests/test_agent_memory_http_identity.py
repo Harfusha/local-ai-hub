@@ -20,7 +20,7 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.app import LocalAIApp
 
 
-def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_path, monkeypatch):
+def test_http_repository_memory_is_git_owned_and_global_identity_stays_scoped(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"
@@ -119,7 +119,7 @@ def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_pa
             ).fetchone()[0]
         assert after_invalid_record == before_invalid_record
 
-        status, saved_record = post({
+        status, rejected_repository_write = post({
             "action": "record",
             "root": str(repo_a),
             "scope": "repository",
@@ -127,23 +127,13 @@ def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_pa
             "value": "writer-session-bound",
             "session_id": "session-prompt-101",
         })
-        assert status == 200
-        assert saved_record["record"]["scope"] == "repository"
-        assert saved_record["record"]["provenance"]["root"] == str(repo_a.resolve())
-        assert saved_record["record"]["provenance"]["repository_id"] == repo_a.name
-        assert saved_record["record"]["provenance"]["session_id"] == "session-prompt-101"
-        record_id = saved_record["record"]["record_id"]
-        for invalid_mutation in (
-            {"action": "delete", "scope": "repository", "record_id": record_id},
-            {"action": "promote", "scope": "repository", "record_id": record_id, "target_scope": "branch"},
-        ):
-            status, invalid_response = post(invalid_mutation)
-            assert status == 400
-            assert invalid_response["success"] is False
+        assert status == 409
+        assert rejected_repository_write["terminal"] is True
+        assert rejected_repository_write["retryable"] is False
         with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as connection:
             assert connection.execute(
-                "SELECT 1 FROM agent_memory_records WHERE record_id = ?", (record_id,)
-            ).fetchone() is not None
+                "SELECT COUNT(*) FROM agent_memory_records"
+            ).fetchone()[0] == before_invalid_record
 
         global_payload = {
             "action": "get",

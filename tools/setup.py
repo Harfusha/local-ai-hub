@@ -356,8 +356,10 @@ def migrate_release_state(state_dir: Path, *, create_backup: bool = True) -> dic
     """Run the one-time project cutover, ordered state migrations, and v8 vector reset."""
     project_migration: dict[str, Any] | None = None
     project_manifest = SOURCE_ROOT / ".local-ai-hub" / "project.json"
-    legacy_db = state_dir / "agent_state.sqlite"
-    if state_dir.is_dir() and (project_manifest.is_file() or legacy_db.exists()):
+    git_marker = SOURCE_ROOT / ".git"
+    if state_dir.is_dir() and (
+        project_manifest.is_file() or git_marker.exists() or git_marker.is_symlink()
+    ):
         from local_ai_hub.agent_state_migration import migrate_project_state_on_update
 
         project_migration = migrate_project_state_on_update(state_dir, SOURCE_ROOT)

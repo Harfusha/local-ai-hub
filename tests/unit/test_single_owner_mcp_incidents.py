@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.parametrize("value", [None, "", False, "former-owner"])
 @pytest.mark.parametrize("action", [
-    "incident_decision", "negative_knowledge_record", "negative_knowledge_find",
+    "incident_decision", "negative_knowledge_preview", "negative_knowledge_find",
 ])
 def test_mcp_rejects_retired_tenant_before_dispatch(monkeypatch, tmp_path, action, value):
     from local_ai_hub import mcp_server
@@ -31,7 +31,7 @@ def test_mcp_rejects_retired_tenant_before_dispatch(monkeypatch, tmp_path, actio
 
 
 @pytest.mark.parametrize("action", [
-    "incident_decision", "negative_knowledge_record", "negative_knowledge_find",
+    "incident_decision", "negative_knowledge_preview", "negative_knowledge_find",
 ])
 def test_incidents_do_not_substitute_current_directory_for_explicit_root(monkeypatch, action):
     from local_ai_hub import mcp_server
