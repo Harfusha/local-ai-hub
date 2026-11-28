@@ -30,6 +30,10 @@ from local_ai_hub.operation_contracts import (
 TOOL = "local_ai_artifact"
 
 
+def test_legacy_board_adoption_is_not_a_runtime_coord_action():
+    assert "plan_adopt_legacy_board" not in operation_actions("local_ai_coord")
+
+
 def test_session_briefing_requires_canonical_repository_scope():
     schema = operation_input_schema("local_ai_coord", "session_briefing")
     assert "root" in schema["required"]

@@ -57,7 +57,7 @@
       ],
       "description": "Finish process/rule extraction, query and task context, findings lifecycle, review/remediation, UI/API/CLI surfaces, Laya gates, and provider workflow integration.",
       "kind": "code",
-      "next_action": "Finish remaining KI/UPS business workflows and provider/UI/Laya parity; validate all V4-E and UPS scenarios. Runtime legacy board adoption is removed; broader E2E and migration gates remain open.",
+      "next_action": "Current source and MCP operation contract omit plan_adopt_legacy_board; regression test passes. The connected running MCP still advertises/accepts that action, so live installation/schema is stale. After shared main checkout owner releases it, install/restart the verified candidate and confirm action is absent; continue exhaustive runtime legacy-reader audit and V4-E/UPS business/provider/UI/Laya scenarios.",
       "order": 2,
       "spec_refs": [
         {
