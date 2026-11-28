@@ -73,6 +73,8 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     install = tmp_path / "install"
     home.mkdir()
     install.mkdir()
+    (install / "defaults.toml").write_bytes((ROOT / "defaults.toml").read_bytes())
+    (install / "src" / "local_ai_hub").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setattr(setup, "get_user_homes", lambda: [home])
@@ -82,7 +84,6 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     config_roots = {
         ".claude.json": "mcpServers",
         ".gemini/settings.json": "mcpServers",
-        ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
         "AppData/Roaming/devin/mcp_config.json": "mcpServers",
@@ -169,5 +170,5 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     assert antigravity_settings["userSettings"]["globalPermissionGrants"]["block"] == ["mcp(local-ai/local_ai_repo)"]
     assert antigravity_settings["foreign"] == {"keep": True}
     hooks_path = home / ".gemini" / "config" / "hooks.json"
-    assert "local-ai-hub" not in json.loads(hooks_path.read_text(encoding="utf-8"))
+    assert not hooks_path.exists()
     assert not (hooks_path.parent / ("local-ai-hook.cmd" if sys.platform == "win32" else "local-ai-hook.sh")).exists()
