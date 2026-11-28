@@ -145,7 +145,7 @@
       "depends_on": [],
       "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
       "kind": "code",
-      "next_action": "Fixed Windows \\u005c\\u005c?\\u005c extended-path mismatch in repo-plan confinement comparison while preserving resolved symlink checks. 142 targeted migration, stable identity, repo-knowledge, MCP, linked-worktree, and updater tests pass; independent-process concurrent workspace bootstrap test passes. Continue full V4-E/UPS real-clone divergence, checkout-churn, and recovery scenarios.",
+      "next_action": "Critical ownership gap confirmed in live candidate source: app_runtime still constructs SQLite AgentStateStore, TaskStore, MemoryStore, IncidentStore, VerificationStore, BlackboardStore, ContextCompiler and LearningStore; repo_project_tasks.py is an unconnected Git-backed helper (indexed callers=0). This violates Git-only durable ownership and the no-runtime-legacy requirement. Implement canonical task/memory/incident consumers with SQLite limited to rebuildable local attempts/projections, or remove unsupported runtime persistence; then prove old data is read only by update migration. Identity, old checkout migration, linked worktree, and cross-process CAS focused scenarios pass, but do not call the cutover complete.",
       "order": 1,
       "spec_refs": [
         {
@@ -178,7 +178,7 @@
       ],
       "description": "Run the full acceptance matrix from actual clones and the supported UI/adapters; fix all defects and verify CI, performance, security, docs, and full tests.",
       "kind": "operation",
-      "next_action": "Latest focused run: 142 passed, 1 skipped across project identity, updater migration, repo knowledge, MCP, schema, workspace, linked-worktree E2E; new synchronized two-process project bootstrap test also passes. Release check, selftest, and compileall pass. Remaining: complete V4-E01-E18/E2E-UPS freshness/divergence/recovery, safe live runtime install/schema verification, diagnose prior full-suite result (18,015 passed, 928 failed, 70 errors), then final candidate verification.",
+      "next_action": "Fresh targeted scenarios: cross-process plan CAS, two real-clone semantic-conflict handling (both divergence variants), and update migration of an old checkout all pass (4 passed). Spec §40.3 says storage inventory remains incomplete; §40.4 says no complete V4-E/UPS E2E acceptance is established. Also reconcile plan's UPS-01–14 count with spec's UPS-001–018. Continue inventory and missing end-to-end cases; prior full suite still has 18,015 passed, 928 failed, 70 errors.",
       "order": 3,
       "spec_refs": [
         {
