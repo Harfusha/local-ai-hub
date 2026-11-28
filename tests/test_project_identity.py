@@ -55,3 +55,9 @@ def test_git_checkout_requires_update_migrated_project_manifest(tmp_path: Path):
         json.dumps({"schema_version": 1, "project_id": project_id}), encoding="utf-8"
     )
     assert project_scope_id(checkout) == project_id
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "--local", "local-ai-hub.project-id", str(uuid4())],
+        check=True, capture_output=True,
+    )
+    with pytest.raises(ValueError, match="conflicts with project manifest"):
+        project_scope_id(checkout)

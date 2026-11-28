@@ -316,11 +316,18 @@ class RepoKnowledgeStore:
     ) -> dict[str, Any]:
         """Explicit initial identity creation; never adopt or overwrite an identity."""
         self._require_local_journal_ignored()
+        from .project_identity import persist_git_project_id, read_git_project_id
+
+        existing_id = read_git_project_id(self.root)
+        if existing_id is not None and existing_id != project_id:
+            raise RepoPlanValidationError("Git project identity conflicts with requested project_id")
         data = _encode({"schema_version": 1, "project_id": project_id, "mode": mode})
-        return self.storage.save_knowledge_file(
+        saved = self.storage.save_knowledge_file(
             _MANIFEST, data, expected_revision="", owner=owner,
             idempotency_key=idempotency_key, lease_check_fn=authorize_write,
         )
+        persist_git_project_id(self.root, project_id)
+        return saved
 
     def read_epoch(self) -> str:
         return self.storage.knowledge_read_epoch()

@@ -145,7 +145,7 @@
       "depends_on": [],
       "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
       "kind": "code",
-      "next_action": "Update path now runs project-state one-time migration for its Git checkout; no-origin enrollment/relocation, concurrent bootstrap, linked worktree and offline-conflict focused suites pass (84 tests). Continue branch-churn and full V4-E/UPS acceptance; full suite reported 18,015 passed, 928 failed, 70 errors and must be triaged.",
+      "next_action": "Branch-churn identity anchor persists canonical project_id in local Git config, survives old commits and linked worktrees, and rejects manifest/config conflicts. Final focused suite passed: 84 tests after conflict guard; compileall, pyflakes, release check, and diff check passed. Continue V4-E01-E18/E2E-UPS real clone/UI/provider scenarios and full-suite triage; prior full run remains 18,015 passed, 928 failed, 70 errors.",
       "order": 1,
       "spec_refs": [
         {

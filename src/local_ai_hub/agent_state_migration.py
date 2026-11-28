@@ -19,7 +19,10 @@ from .agent_state_inventory import _identity, _sidecars_absent
 from .repo_knowledge import RepoKnowledgeStore, _encode, _path_for, validate_knowledge_file
 from .repo_knowledge_batch import preview_knowledge_batch
 from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError
-from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
+from .project_identity import (
+    persist_git_project_id, project_scope_id, read_git_project_id,
+    repository_snapshot_id, worktree_scope_id,
+)
 
 _MAX_BATCH = 16
 _MAX_JSON_BYTES = 65536
@@ -603,8 +606,8 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
         origin = _git_origin_identity(root)
         # Without a remote, independent clones cannot be identified safely; enroll this checkout once.
         project_id = (
-            str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-ai-hub-project:{origin}"))
-            if origin else str(uuid.uuid4())
+            read_git_project_id(root)
+            or (str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-ai-hub-project:{origin}")) if origin else str(uuid.uuid4()))
         )
         try:
             store.bootstrap(
@@ -625,6 +628,10 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
                 ) from exc
     manifest, _ = store.manifest()
     project_id = manifest["project_id"]
+    try:
+        persist_git_project_id(root, project_id)
+    except ValueError as exc:
+        raise RepoPlanValidationError("Git project identity conflicts with project manifest") from exc
     marker = state / "project_state_migration_v1.json"
     if marker.is_symlink() or getattr(marker, "is_junction", lambda: False)():
         raise RepoPlanValidationError("Project state migration marker is not a regular file")

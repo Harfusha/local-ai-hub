@@ -99,6 +99,10 @@ def test_update_bootstraps_old_checkout_without_origin_and_identity_survives_rel
     subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
                     "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m",
                     "old checkout"], check=True, capture_output=True)
+    old_revision = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     state_dir = tmp_path / "state"
     state_dir.mkdir()
 
@@ -114,6 +118,13 @@ def test_update_bootstraps_old_checkout_without_origin_and_identity_survives_rel
     subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
                     "user.email=fixture@example.invalid", "commit", "-m",
                     "publish project identity"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(checkout), "switch", "--detach", old_revision], check=True, capture_output=True)
+    assert not (checkout / ".local-ai-hub/project.json").exists()
+    assert project_scope_id(checkout) == project_id
+    linked = tmp_path / "linked-old-checkout"
+    subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked), old_revision], check=True, capture_output=True)
+    assert project_scope_id(linked) == project_id
+    subprocess.run(["git", "-C", str(checkout), "switch", "-"], check=True, capture_output=True)
     relocated = tmp_path / "relocated-checkout"
     subprocess.run(["git", "clone", str(checkout), str(relocated)], check=True, capture_output=True)
     relocated_state = tmp_path / "relocated-state"
