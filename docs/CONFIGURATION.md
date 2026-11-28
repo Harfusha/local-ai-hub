@@ -10,9 +10,11 @@ The HTTP server accepts loopback peers only and binds to `127.0.0.1`. Hub API cr
 
 ## Telemetry and trace detail
 
-`[telemetry].mode` is the single detail control: `off` disables persisted telemetry, `minimal` keeps aggregate request counts and fatal errors, and `full` enables detailed traces and endpoint latency data. The dashboard writes the canonical `telemetry.mode` setting (`full` or `minimal`). Trace retention and size limits, including `max_list_limit`, also live under `[telemetry]`.
+`[telemetry].mode` is the single detail control: `off` disables persisted telemetry, `minimal` keeps aggregate request counts and fatal errors, and `full` enables detailed traces and endpoint latency data. The native desktop writes the canonical `telemetry.mode` setting (`full` or `minimal`). Trace retention and size limits, including `max_list_limit`, also live under `[telemetry]`.
 
 The retired `[debug_traces]` and `[observability.debug_traces]` tables are converted during setup/update into `[telemetry]`; each changed config is first copied to a verified adjacent backup. Runtime config loading rejects these retired tables. Run the installer/update before starting a config that still contains them.
+
+The retired `features.dashboard` flag is removed during the one-time setup/update migration and retained in the verified recovery copy. Runtime config loading rejects it. The native desktop is the only supported user interface.
 
 ## Hardware
 

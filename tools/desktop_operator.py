@@ -39,6 +39,8 @@ LIMIT = Field("limit", "Maximum records (1–1000)", "integer")
 TASK = Field("task-id", "Task ID", required=True)
 REVISION = Field("expected-revision", "Expected revision (empty for create)", required=True, allow_empty=True)
 RECORD = Field("record-file", "Local JSON record or batch file", "file", True)
+MANIFEST = Field("manifest", "Reviewed manifest.json", "file", True)
+MANIFEST_DIGEST = Field("manifest-sha256", "Reviewed manifest digest (SHA-256)", required=True)
 OP_ID = Field("operation-id", "Stable operation ID")
 REQUIRED_OP = Field("operation-id", "Stable operation ID", required=True)
 DIGEST = Field("preview-digest", "Reviewed preview digest", required=True)
@@ -66,9 +68,9 @@ OPERATIONS: dict[str, Operation] = {
     "Cleanup agent state and inspect ports": Operation(("cleanup", "--ports"), mutation=True, timeout=120),
     "Optimize offline databases": Operation(("cleanup", "--vacuum"), mutation=True, timeout=600),
     "Stage compressed instructions": Operation(("compress-instructions",), (Field("model", "Optional model"),), mutation=True, root=True, timeout=720, json_output=False),
-    # Applying compressed instructions via CLI generates another candidate rather
-    # than applying the exact reviewed bytes. Keep this out of desktop until
-    # the underlying CLI offers a revision/digest-bound apply contract.
+    "Review staged instructions": Operation(("compress-instructions", "review-staged"), (MANIFEST,), root=True),
+    "Apply reviewed instructions": Operation(("compress-instructions", "apply-staged"), (MANIFEST, MANIFEST_DIGEST), mutation=True, root=True),
+    "Restore staged instructions": Operation(("compress-instructions", "restore-staged"), (MANIFEST, MANIFEST_DIGEST), mutation=True, root=True),
     "Knowledge catalog": Operation(("knowledge", "catalog"), root=True),
     "Knowledge query": Operation(("knowledge", "query"), (QUERY, LIMIT), root=True),
     "Knowledge validate": Operation(("knowledge", "validate"), root=True),

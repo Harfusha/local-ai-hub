@@ -78,7 +78,7 @@ lifecycle and desktop lifecycle remain separate. Closing during operations
 is blocked to avoid interrupting a mutation.
 
 CI: .github/workflows/desktop.yml builds and runs Rust tests on Ubuntu 22.04, Windows and macOS, runs focused bridge/HTTP/packaging tests, and measures first window and 60 seconds of idle RSS/CPU under Linux Xvfb/software OpenGL with Hub absent. Linux baseline was pinned after a real CI artifact required GLIBC_2.43 and could not launch on the available older runtime. Native binaries
-are unsigned portable builds. Cargo.lock is committed from a successful CI resolution (390 packages); CI uses --locked. Stable release publication requires native verification and validated four-platform ZIP receipts. Versioned binary installation is integrated into setup/update, with persistent headless opt-out. Full runtime portability, GPU/driver behavior and resource consumption remain unverified.
+are unsigned portable builds. Cargo.lock is committed from a successful CI resolution; CI uses --locked. Stable release publication requires native verification and validated four-platform ZIP receipts. Versioned binary installation is integrated into setup/update, with persistent headless opt-out. Full runtime portability, GPU/driver behavior and resource consumption remain unverified.
 
 ## Page-level parity matrix
 
@@ -95,7 +95,7 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 | Commands | Commands, Worktrees | Partial running command table, counters, blocked-reason breakdown, record detail and scoped worktree actions; no broker execution form | Running/blocked command drilldown, approved broker actions, worktrees; never bypass policy |
 | Models & search | Search workspaces, Hardware, Overview | Partial snapshots, model inventory, benchmark and telemetry report, two-route comparison | Model compare, runtime inventory, statistics, profiles, cache, agents, route/token/latency metrics, evals, benchmarks, Laya, embedding/rerank, optimization |
 | Service health | Service health, Diagnostics, toolbar | Partial log tail/doctor + start/stop/restart, process-session and error tables, encrypted diagnostics export in Transfers | Counters, fingerprints, circuits, crash journal, process history, export/password, log search/copy, actual service lifecycle |
-| Settings | Settings — activity mode, toolbar | Partial typed configuration draft from server values, batch-save changed overrides, activity mode, separate live telemetry mode, override reset | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures |
+| Settings | Settings — activity mode, Instruction compression, toolbar | Partial typed configuration draft from server values, batch-save changed overrides, activity mode, separate live telemetry mode, override reset; instruction stage, native manifest picker, side-by-side exact-byte review, digest-bound apply/restore | Typed full config forms, validation, redaction, persistence, reset/restart-required and partial failures; verify instruction workflow in native runtime |
 | Transfers | Transfers | Partial bounded ZIP export/import and encrypted diagnostics export with returned password | Export/import ZIP, scope, password, integrity, failure and cancellation |
 | Activity | Activity | Partial bounded event snapshot and focus-only SSE follow with cursor/deduplication | Cursor, filters, SSE, pause, stale/reconnect and detail modals |
 | Global control menu | Toolbar / maintenance selector | Partial: mode, DB optimization, expired cache, stale agent cleanup, detailed telemetry toggle/purge, stats purge, global preprocessing | Detailed telemetry consent and purge, stats purge, preprocessing pause/resume, diagnostic results and failure states |
@@ -106,9 +106,11 @@ error semantics of the browser UI are covered. No row is runtime-verified yet.
 ## CLI entrypoint inventory
 
 The following commands were extracted from the current `tools/hubctl.py` argparse
-registry. Subcommands/flags still need full contract inventory. All existing
-commands are retained. The "candidate" column identifies the current desktop
-surface or the required future surface, not a completed implementation.
+registry. Subcommands/flags still need full contract inventory. Every supported
+user or operator capability must map to a native page or bounded typed operation
+catalog. Do not carry forward retired aliases or legacy runtime behavior. The
+"candidate" column identifies the current desktop surface or required future
+surface, not a completed implementation.
 
 | CLI command | Candidate desktop surface | Verification / status |
 |---|---|---|
@@ -131,8 +133,7 @@ surface or the required future surface, not a completed implementation.
 | `pause` | Activity mode selector; explicit confirmation | Implemented surface (not all flags); real integration and acceptance pending |
 | `resume` | Activity mode selector; explicit confirmation | Implemented surface (not all flags); real integration and acceptance pending |
 | `mode` | Activity mode selector | Controller present; run focused tests and real CLI/API integration |
-| `caveman-compress` | Operator tools: stage candidates; digest-bound review/apply/restore from manifest; direct `--apply` removed | Implemented surface (not all flags); real integration and acceptance pending |
-| `compress-instructions` | Operator tools: stage candidates; digest-bound review/apply/restore from manifest; direct `--apply` removed | Implemented surface (not all flags); real integration and acceptance pending |
+| `compress-instructions` | Instruction compression + typed Operator tools: stage; review, digest-bound apply and restore exact staged manifest; direct `--apply` removed | Catalog argv contracts covered; native runtime acceptance pending |
 | `client` | Operator tools: status/detect/preview/inject/remove/config | Implemented surface (not all flags); real integration and acceptance pending |
 | `knowledge` | Operator tools: typed catalog, query, audit, validation, mutations, batches, migration and handoff | Implemented surface (not all flags); real integration and acceptance pending |
 

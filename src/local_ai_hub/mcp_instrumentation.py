@@ -497,9 +497,13 @@ def _instrumented_tool(services_module: Any = None):
             call_event_id = uuid.uuid4().hex
             try:
                 result = fn(*args, **kwargs)
-            except Exception:
+            except Exception as exc:
                 duration_ms = (time.monotonic() - started) * 1000
-                services_module._record_adoption(fn.__name__, arguments, None, duration_ms, failed=True, event_id=call_event_id)
+                failure_reason = services_module._adoption_reason(exc)
+                services_module._record_adoption(
+                    fn.__name__, arguments, None, duration_ms,
+                    failed=True, failure_reason=failure_reason, event_id=call_event_id,
+                )
                 pending = services_module._PENDING_MCP_ACCOUNTING.get()
                 if pending is None:
                     services_module._record_tool_accounting(tool_name=fn.__name__, arguments=arguments, response={"success": False},

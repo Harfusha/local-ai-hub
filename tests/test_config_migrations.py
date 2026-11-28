@@ -13,6 +13,7 @@ def test_config_migration_moves_legacy_trace_settings_and_keeps_recovery_copy(tm
     path = tmp_path / "config.toml"
     original = (
         "# operator note\n[server]\nstate_dir = \"state\"\n\n"
+        "[features]\ndashboard = true\nvision = false\n\n"
         "[telemetry]\nmode = \"minimal\"\n\n"
         "[debug_traces]\nenabled = true\nmax_sessions = 17\nmax_bytes = 4096\n"
     )
@@ -28,9 +29,54 @@ def test_config_migration_moves_legacy_trace_settings_and_keeps_recovery_copy(tm
     assert migrated["telemetry"]["max_sessions"] == 17
     assert migrated["telemetry"]["max_bytes"] == 4096
     assert migrated["local_ai_hub"]["config_schema_version"] == 1
+    assert migrated["features"] == {"vision": False}
     assert "debug_traces" not in migrated
     assert "operator note" in path.read_text(encoding="utf-8")
     assert run_config_migrations(path)["status"] == "current"
+
+
+def test_update_migration_removes_retired_dashboard_feature_once_from_both_configs(tmp_path):
+    path = tmp_path / "config.toml"
+    runtime = tmp_path / "config.runtime.toml"
+    original = (
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
+        "[features]\ndashboard = true\nvision = false\n"
+    )
+    runtime_original = (
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
+        "[features]\ndashboard = true\n"
+    )
+    path.write_text(original, encoding="utf-8")
+    runtime.write_text(runtime_original, encoding="utf-8")
+
+    result = run_config_migrations(path)
+
+    assert result["status"] == "migrated"
+    assert [Path(backup).read_text(encoding="utf-8") for backup in result["backups"]] == [
+        original,
+        runtime_original,
+    ]
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["features"] == {"vision": False}
+    assert "dashboard" not in tomllib.loads(runtime.read_text(encoding="utf-8"))["features"]
+    assert run_config_migrations(path)["status"] == "current"
+
+
+def test_runtime_rejects_retired_dashboard_feature_until_update_migrates_it(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[local_ai_hub]\nconfig_schema_version = 1\n\n"
+        "[features]\ndashboard = true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"features\.dashboard.*retired"):
+        load_config(path, probe_hardware=False)
+
+
+def test_default_configs_do_not_reintroduce_retired_dashboard_feature():
+    root = Path(__file__).resolve().parents[1]
+    for path in (root / "defaults.toml", root / "src/local_ai_hub/defaults.toml"):
+        assert "dashboard" not in tomllib.loads(path.read_text(encoding="utf-8"))["features"]
 
 
 def test_config_migration_maps_nested_trace_table_and_respects_explicit_storage_limits(tmp_path):

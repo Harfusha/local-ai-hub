@@ -636,7 +636,6 @@ code_intelligence = true # Serena / Serena backends
 preprocessing = true # background idle project warmup
 subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
-dashboard = true # legacy compatibility flag; browser UI retired
 work_orchestrator = true # whole-task DAG execution and verified handoff (local_ai_work)
 bounded_local_work = true # allow bounded work submission on high/max profile
 enriched_search = true # source-enriched repository search

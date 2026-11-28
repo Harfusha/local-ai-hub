@@ -273,6 +273,40 @@ def test_operator_fields_cannot_inject_cli_flags(tmp_path):
         build_argv({"name": "Knowledge query", "root": str(tmp_path), "fields": {"apply": True}})
 
 
+@pytest.mark.parametrize(("name", "subcommand", "digest", "mutation"), [
+    ("Review staged instructions", "review-staged", False, False),
+    ("Apply reviewed instructions", "apply-staged", True, True),
+    ("Restore staged instructions", "restore-staged", True, True),
+])
+def test_instruction_manifest_operations_are_scoped_and_digest_bound(tmp_path, name, subcommand, digest, mutation):
+    from tools.desktop_operator import build_argv
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    fields = {"manifest": str(manifest)}
+    if digest:
+        fields["manifest-sha256"] = "a" * 64
+    argv, operation = build_argv({"name": name, "root": str(tmp_path), "fields": fields,
+                                  "confirmed": mutation})
+
+    assert argv[:2] == ("compress-instructions", subcommand)
+    assert "--root=" + str(tmp_path.resolve()) in argv
+    assert "--manifest=" + str(manifest.resolve()) in argv
+    assert ("--manifest-sha256=" + "a" * 64 in argv) is digest
+    assert operation.mutation is mutation
+    assert operation.root is True
+
+
+def test_instruction_manifest_apply_requires_fresh_review_digest(tmp_path):
+    from tools.desktop_operator import build_argv
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="digest"):
+        build_argv({"name": "Apply reviewed instructions", "root": str(tmp_path),
+                    "fields": {"manifest": str(manifest)}, "confirmed": True})
+
+
 def test_operator_mutations_and_review_digests_fail_closed(tmp_path):
     from tools.desktop_operator import build_argv
     with pytest.raises(ValueError, match="confirmation"):

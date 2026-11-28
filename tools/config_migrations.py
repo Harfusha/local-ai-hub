@@ -101,6 +101,17 @@ def _remove_tables(lines: list[str], names: set[str]) -> None:
             del lines[start:end]
 
 
+def _remove_table_key(lines: list[str], table: str, key: str) -> None:
+    for name, start, end in _section_ranges(lines):
+        if name != table:
+            continue
+        for index in range(start + 1, end):
+            match = _KEY_LINE.match(lines[index])
+            if match and match.group(2) == key:
+                del lines[index]
+                return
+
+
 def _migrate_v0_to_v1(text: str, data: dict[str, Any], path: Path) -> str:
     sections = _section_ranges(text.splitlines(keepends=True))
     unsupported = [name for name, _start, _end in sections
@@ -137,6 +148,7 @@ def _migrate_v0_to_v1(text: str, data: dict[str, Any], path: Path) -> str:
     for name, value in updates.items():
         _set_table_value(lines, "telemetry", name, value)
     _remove_tables(lines, _LEGACY_TABLES)
+    _remove_table_key(lines, "features", "dashboard")
     _set_table_value(lines, "local_ai_hub", "config_schema_version", CURRENT_CONFIG_VERSION)
     migrated = "".join(lines)
     verified = _parse(migrated, path)
@@ -147,12 +159,27 @@ def _migrate_v0_to_v1(text: str, data: dict[str, Any], path: Path) -> str:
         raise ConfigMigrationError("config migration did not remove every retired debug_traces table")
     if verified.get("local_ai_hub", {}).get("config_schema_version") != CURRENT_CONFIG_VERSION:
         raise ConfigMigrationError("config migration did not write the current schema version")
+    if isinstance(verified.get("features"), dict) and "dashboard" in verified["features"]:
+        raise ConfigMigrationError("config migration did not remove the retired features.dashboard flag")
     return migrated
 
 
-def _backup(path: Path) -> Path:
+def _remove_retired_dashboard_feature(text: str, data: dict[str, Any], path: Path) -> str:
+    features = data.get("features", {})
+    if not isinstance(features, dict):
+        raise ConfigMigrationError("config migration requires [features] to be a table")
+    lines = text.splitlines(keepends=True)
+    _remove_table_key(lines, "features", "dashboard")
+    migrated = "".join(lines)
+    verified = _parse(migrated, path)
+    if isinstance(verified.get("features"), dict) and "dashboard" in verified["features"]:
+        raise ConfigMigrationError("config migration did not remove the retired features.dashboard flag")
+    return migrated
+
+
+def _backup(path: Path, source_version: int) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = path.with_name(f"{path.name}.backup-config-v0-{stamp}")
+    backup = path.with_name(f"{path.name}.backup-config-v{source_version}-{stamp}")
     shutil.copy2(path, backup)
     if backup.read_bytes() != path.read_bytes():
         backup.unlink(missing_ok=True)
@@ -182,14 +209,20 @@ def _migrate_config_file(config_path: Path | str) -> dict[str, Any]:
     has_legacy = "debug_traces" in data or (
         isinstance(data.get("observability"), dict) and "debug_traces" in data["observability"]
     )
+    features = data.get("features", {})
+    has_retired_dashboard = isinstance(features, dict) and "dashboard" in features
     if raw_version == CURRENT_CONFIG_VERSION:
         if has_legacy:
             raise ConfigMigrationError("current config schema contains retired debug_traces tables; config unchanged")
-        return {"status": "current", "version": CURRENT_CONFIG_VERSION, "backups": []}
-    migrated = _migrate_v0_to_v1(text, data, path)
+        if has_retired_dashboard:
+            migrated = _remove_retired_dashboard_feature(text, data, path)
+        else:
+            return {"status": "current", "version": CURRENT_CONFIG_VERSION, "backups": []}
+    else:
+        migrated = _migrate_v0_to_v1(text, data, path)
     backup: Path | None = None
     try:
-        backup = _backup(path)
+        backup = _backup(path, raw_version)
         mode = path.stat().st_mode
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent,
                                          prefix=f".{path.name}.migrate-", delete=False) as stream:

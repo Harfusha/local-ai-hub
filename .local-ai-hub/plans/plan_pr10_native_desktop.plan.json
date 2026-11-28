@@ -57,7 +57,7 @@
       "depends_on": [],
       "description": "Deliver every requirement in the supplied goal document, sections 1–35, including branch synchronization, complete native UI and CLI parity, system and workload views, Agent OS and knowledge workflows, project/model/telemetry features, security, performance, cross-platform runtime, installation/updater, documentation, complete validation, independent audit, and actual PR merge/post-merge verification. No runtime backward compatibility or legacy behavior; the only exception is one-time migration during update.",
       "kind": "code",
-      "next_action": "The critical marker run on Windows reproduced two release-inventory failures (1864 passed, 13 skipped): runtime Pillow was missing from release constraints. Pinned pillow==12.3.0; tests/test_audit_release_inventory.py 9/9 and release_check --allow-installed pass. Native Rust: 44 tests, fmt, clippy and release build pass; cutover guard passes. Windows smoke creates its window but cannot foreground it in disconnected session 1; Linux/macOS native jobs pass. Commit/push pin and plan; verify fresh-head CI; continue remaining CLI/UI parity and all 35 sections. Keep draft; no merge yet.",
+      "next_action": "Dokončeny a lokálně ověřeny jednorázové migrace `features.dashboard` v config.toml/config.runtime.toml včetně verified backupů; runtime starý klíč odmítá. Sjednoceny CPU/integrated/low modelové routy s dokumentovanými rolemi (3B quick/preprocess odděleně, 7B ordinary, 9B hardest) a aktualizována matice/testy; fokální konfigurace 72/72, cutover guard i release_check --allow-installed prošly. Zůstávají otevřené: plná dashboard/CLI parity a interaktivní UI/runtime/platform, bezpečnostní scan incomplete, independent review async outcome_unknown, přesný-head CI, instalační/signing akceptace, externí full suite PID 49244 (zatím běží), commit/push/PR update/merge/post-merge. Připravit ověřený commit do draft PR, potom spustit aktuální CI a pokračovat v parity/acceptance.",
       "spec_refs": [
         {
           "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
@@ -75,7 +75,7 @@
         }
       ],
       "title": "Complete PR #10 native desktop cutover",
-      "work_phase": "implementation",
+      "work_phase": "verification",
       "work_status": "in_progress"
     },
     "task_pr10_sync_master": {

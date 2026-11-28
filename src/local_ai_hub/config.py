@@ -121,6 +121,9 @@ def validate_config(data: dict[str, Any]) -> None:
         raise ConfigError("[observability] must be a TOML table")
     if "debug_traces" in observability:
         raise ConfigError("[observability.debug_traces] is retired; update Local AI Hub to migrate it into [telemetry]")
+    features = data.get("features", {})
+    if isinstance(features, dict) and "dashboard" in features:
+        raise ConfigError("features.dashboard is retired; run the Local AI Hub updater to remove it")
 
     for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag", "worker_pool", "training_capture"):
         if name in data and not isinstance(data[name], dict):
@@ -484,7 +487,7 @@ def _toml_key(key: str) -> str:
 
 
 def _dump_toml_tables(data: dict[str, Any]) -> str:
-    """Serialize the small dashboard runtime-override document.
+    """Serialize the small desktop runtime-override document.
 
     This intentionally supports only scalar/list values and nested tables. It is not a
     general TOML writer; the user's primary config file is never rewritten.
@@ -516,7 +519,7 @@ def runtime_override_path(config_path: str | os.PathLike[str]) -> Path:
 
 
 def save_runtime_overrides(config_path: str | os.PathLike[str], patch: dict[str, Any], *, reset: bool = False) -> Path:
-    """Atomically persist dashboard-managed overrides without rewriting config.toml."""
+    """Atomically persist desktop-managed overrides without rewriting config.toml."""
     target = runtime_override_path(config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with exclusive_file_update(target):

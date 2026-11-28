@@ -190,7 +190,8 @@ def test_direct_and_http_accounting_share_one_endpoint_event(tmp_path, monkeypat
 
     state = tmp_path / "state"
     config = tmp_path / "config.toml"
-    config.write_text(f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n', encoding="utf-8")
+    config.write_text(f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
+                      '[observability]\nenabled = true\n[telemetry]\nmode = "full"\n', encoding="utf-8")
     app = LocalAIApp(str(config))
     previous = http_server.APP
     http_server.APP = app
@@ -236,9 +237,10 @@ def test_actual_mcp_call_and_http_report_count_once_without_inference(tmp_path, 
     root = init_repo(tmp_path)
     state = tmp_path / "state"
     config = tmp_path / "config.toml"
-    config.write_text(f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
+    config.write_text(f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
                       f'[security]\nallowed_roots = ["{root.as_posix()}"]\n'
-                      '[ollama]\nenabled = false\n[observability]\nenabled = true\n', encoding="utf-8")
+                      '[ollama]\nenabled = false\n[observability]\nenabled = true\n'
+                      '[telemetry]\nmode = "full"\n', encoding="utf-8")
     app = LocalAIApp(str(config))
     previous = http_server.APP
     http_server.APP = app
@@ -246,7 +248,7 @@ def test_actual_mcp_call_and_http_report_count_once_without_inference(tmp_path, 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     client_config = tmp_path / "client.toml"
-    client_config.write_text(f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
+    client_config.write_text(f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
                              f'state_dir = "{state.as_posix()}"\n', encoding="utf-8")
     client = mcp_server._MCPHubClientAdapter(HubClient(config_path=str(client_config), auto_start=False))
     delivered = threading.Event()
@@ -300,7 +302,7 @@ def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatc
 
     state = tmp_path / "state"
     config = tmp_path / "config.toml"
-    config.write_text(f'[server]\nstate_dir = "{state.as_posix()}"\nauto_start_ollama = false\n'
+    config.write_text(f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nstate_dir = "{state.as_posix()}"\nauto_start_ollama = false\n'
         '[ollama]\nenabled = false\n[smart_ollama]\nenabled = false\n'
         '[observability]\nenabled = false\n[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false\n'
         '[hardware]\nprofile = "balanced"\n'
@@ -335,7 +337,7 @@ def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatc
     try:
         def call(model):
             return asyncio.run(mcp_server.mcp.call_tool("local_ai_task", {"action": "second_opinion",
-                "task": "Check this conclusion", "candidate": "A bounded candidate", "model": model, "complexity": "fast",
+                "question": "Check this conclusion", "candidate": "A bounded candidate", "model": model, "complexity": "fast",
                 "max_response_tokens": 1600}))[1]
         allowed = call("qwen2.5-coder:7b")
         assert allowed["success"] is True, allowed.get("error", allowed)

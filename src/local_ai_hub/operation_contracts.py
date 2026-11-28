@@ -1133,7 +1133,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "output_path": {"type": "string", "default": "training_dataset.jsonl"},
             "min_receipts": {"type": "integer", "default": 1},
             "laya_operation": {"type": ["object", "null"], "default": None,
-                "description": "Explicit Laya operation. laya_decision supports taskless request advisory operations with repository-scoped verified evidence and server-derived baseline. curate_dataset remains for supervised candidate lifecycle; task_id is required only where that workflow needs a real Agent OS task."},
+                "description": "Explicit Laya operation. laya_decision supports taskless request advisory operations with repository-scoped verified evidence and server-derived baseline. curate_dataset uses the state_dir candidate lifecycle: candidate creation requires canonical task/session identity and authorized evidence provenance from an actual runtime callback; per-example consent receipts are not required. Candidate capture uses a bounded atomic write. task_id is required for candidate creation and other workflows needing a real Agent OS task. Repo-root Laya JSONL import is retired."},
             "session_id": {"type": "string", "default": "", "maxLength": 256},
             "question_id": {"type": "string", "default": "", "maxLength": 80},
             "question": {"type": "string", "default": "", "maxLength": 16_384},
