@@ -526,6 +526,20 @@ class LocalAIApp(AppRuntimeMixin, AppStatusMixin, AppBundleMixin, AppLayaRuntime
     swarm: Any = None
     benchmark_runner: Any = None
 
+    def __init__(self, config_path: str | None = None):
+        try:
+            super().__init__(config_path)
+        except BaseException as startup_error:
+            if getattr(self, "_close_lock", None) is not None:
+                try:
+                    if not self.close():
+                        startup_error.add_note("LocalAIApp startup cleanup could not be confirmed")
+                except Exception as cleanup_error:
+                    startup_error.add_note(
+                        f"LocalAIApp startup cleanup failed: {type(cleanup_error).__name__}"
+                    )
+            raise
+
 
 
 

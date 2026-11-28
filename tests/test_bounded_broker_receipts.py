@@ -424,7 +424,7 @@ def test_task_bound_validation_without_patch_does_not_require_barrier(tmp_path, 
     try:
         monkeypatch.setattr(app.services, "agent_state", None)
         store = app.work_orchestrator.verification_store.task_store
-        task = store.create(GoalContract(goal="validate"), ScopeContext(task_id="task"),
+        task = store.create(GoalContract(goal="validate", acceptance_criteria=["validation completed"]), ScopeContext(task_id="task"),
                             task_id="task", actor="owner", repo_root=str(root))
         store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
         monkeypatch.setattr(app.services, "delegate_repo", lambda *_a, **_k: {"success": True, "text": json.dumps({

@@ -730,7 +730,7 @@ def test_rag_index_publish_failure_keeps_previous_snapshot(tmp_path) -> None:
 def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -751,7 +751,7 @@ def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeyp
 def test_client_safe_transport_retry_reuses_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -778,7 +778,7 @@ def test_client_safe_transport_retry_reuses_request_id(tmp_path, monkeypatch) ->
 def test_client_rejects_malformed_request_id_before_network(tmp_path, monkeypatch, request_id: str) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -796,7 +796,7 @@ def test_client_rejects_malformed_request_id_before_network(tmp_path, monkeypatc
 def test_client_accepts_visible_ascii_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -816,7 +816,7 @@ def test_client_accepts_visible_ascii_request_id(tmp_path, monkeypatch) -> None:
 def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -839,7 +839,7 @@ def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeyp
 def test_client_replay_safe_coalescing_timeout_returns_owner_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -1371,13 +1371,19 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     state_dir = tmp_path / "state"
     state_dir.mkdir(exist_ok=True)
     from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
     coordination_id = resolve_project_context(task_root, state_dir).coordination_id
+    scope = {
+        "version": 4,
+        "repo_root": task_root,
+        "project_id": project_scope_id(task_root),
+        "worktree_id": worktree_scope_id(task_root),
+        "snapshot_id": repository_snapshot_id(task_root),
+    }
     task = SimpleNamespace(
         context=SimpleNamespace(repository_id=coordination_id, session_id=session_id),
-        checkpoint=SimpleNamespace(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": task_root},
-        }),
+        checkpoint=SimpleNamespace(state_data={"_agent_task_scope": scope}),
     )
     calls: list[str] = []
 
@@ -1409,8 +1415,8 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         ),
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
-            get=lambda task_id: task if task_id == "task-1" else None,
-            checkpoint=failed_checkpoint,
+            get=lambda task_id, **_kwargs: task if task_id == "task-1" else None,
+        checkpoint=lambda *args, **kwargs: failed_checkpoint(*args, **kwargs),
         ),
         services=SimpleNamespace(),
     )
@@ -1617,12 +1623,17 @@ def test_http_request_journal_replays_action_mutations_once(
     if path == "/api/agent-state/tasks":
         payload["root"] = task_root
         from local_ai_hub.project_config import resolve_project_context
+        from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
         task.context.repository_id = resolve_project_context(task_root, state_dir).coordination_id
         task.owner = "agent-a"
-        task.checkpoint = SimpleNamespace(state_data={
-            "_agent_task_scope": {"version": 2, "repo_root": task_root},
-        })
+        task.checkpoint = SimpleNamespace(state_data={"_agent_task_scope": {
+            "version": 4,
+            "repo_root": task_root,
+            "project_id": project_scope_id(task_root),
+            "worktree_id": worktree_scope_id(task_root),
+            "snapshot_id": repository_snapshot_id(task_root),
+        }})
     calls: list[str] = []
     responses: list[tuple[int, dict[str, Any]]] = []
 
@@ -1648,7 +1659,7 @@ def test_http_request_journal_replays_action_mutations_once(
         agent_tasks=SimpleNamespace(
             enabled=True,
             state_store=SimpleNamespace(enabled=True),
-            get=lambda task_id: task if task_id == "task-1" else None,
+            get=lambda task_id, **_kwargs: task if task_id == "task-1" else None,
             cleanup_worktree=lambda *_args, **_kwargs: effect("worktree-cleanup"),
         ),
         agent_learning=SimpleNamespace(
@@ -1735,7 +1746,7 @@ def test_retired_command_path_never_dispatches_or_creates_journal_entry(tmp_path
     host, port = server.server_address
     config = tmp_path / "client.toml"
     config.write_text(
-        "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -1812,7 +1823,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
     host, port = server.server_address
     config = tmp_path / "client.toml"
     config.write_text(
-        "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)

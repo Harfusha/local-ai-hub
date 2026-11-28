@@ -4,7 +4,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-import shutil
+import subprocess
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_project_tasks import build_project_task_record
@@ -17,7 +17,7 @@ def test_e2e_git_first_multi_clone_collaboration(tmp_path: Path):
     """End-to-end scenario:
     1. Node A creates and publishes canonical task, memory, and incident under .local-ai-hub/
     2. Node A's private SQLite state contains transient leases and session data
-    3. Node B clones the repository (simulated by copying repo without local server state)
+    3. Node B clones the repository without local server state
     4. Node B has NO SQLite database initially
     5. Node B executes projection rebuild
     6. Node B gets full project intelligence without any of Node A's private leases or tokens
@@ -26,21 +26,29 @@ def test_e2e_git_first_multi_clone_collaboration(tmp_path: Path):
     repo_a = tmp_path / "repo_a"
     repo_a.mkdir()
     (repo_a / ".local-ai-hub").mkdir()
+    (repo_a / ".local-ai-hub/.gitignore").write_text("local/\n", encoding="utf-8")
     project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
     (repo_a / ".local-ai-hub/project.json").write_text(json.dumps({
         "schema_version": 1, "project_id": project, "mode": "shared",
     }), encoding="utf-8")
     ensure_agent_os_layout(repo_a)
+    subprocess.run(["git", "init", "--quiet", str(repo_a)], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(repo_a), "add", ".local-ai-hub/project.json",
+                    ".local-ai-hub/.gitignore"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(repo_a), "-c", "user.name=Agent A", "-c",
+                    "user.email=agent-a@example.invalid", "commit", "--quiet", "-m",
+                    "enroll project"], check=True, timeout=15)
     store_a = RepoKnowledgeStore(repo_a)
 
     # Node A publishes canonical records
     t = build_project_task_record(store_a, {
         "task_id": "task-collab-v4",
-        "status": "in_progress",
+        "status": "active",
         "contract": {"goal": "Distributed Agent OS", "description": "", "acceptance_criteria": ["multi-node ok"], "non_goals": [], "constraints": [], "risk_profile": "critical"},
         "checkpoint": {"phase": "testing", "next_action": "e2e verify", "blockers": [], "affected_paths": []},
     })
-    (repo_a / ".local-ai-hub/agent-os/tasks/task-collab-v4.json").write_text(json.dumps(t, indent=2), encoding="utf-8")
+    store_a.save(t, expected_revision="", owner="agent-a", idempotency_key="task-collab-v4",
+                 authorize_write=lambda: True)
 
     m = build_project_memory_record(store_a, {
         "record_id": "mem-shared-rule",
@@ -49,7 +57,8 @@ def test_e2e_git_first_multi_clone_collaboration(tmp_path: Path):
         "key": "git_first_policy",
         "value": "Shared state must be in git, runtime leases stay in sqlite",
     })
-    (repo_a / ".local-ai-hub/agent-os/memory/mem-shared-rule.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+    store_a.save(m, expected_revision="", owner="agent-a", idempotency_key="mem-shared-rule",
+                 authorize_write=lambda: True)
 
     i = build_project_incident_record(store_a, {
         "incident_id": "inc-shared-fix",
@@ -59,7 +68,14 @@ def test_e2e_git_first_multi_clone_collaboration(tmp_path: Path):
         "resolved": True,
         "verified_fix": "Set umask and enforce safe directory permissions",
     })
-    (repo_a / ".local-ai-hub/agent-os/incidents/inc-shared-fix.json").write_text(json.dumps(i, indent=2), encoding="utf-8")
+    store_a.save(i, expected_revision="", owner="agent-a", idempotency_key="inc-shared-fix",
+                 authorize_write=lambda: True)
+
+    subprocess.run(["git", "-C", str(repo_a), "add", ".local-ai-hub/project.json",
+                    ".local-ai-hub/.gitignore", ".local-ai-hub/agent-os"], check=True, timeout=15)
+    subprocess.run(["git", "-C", str(repo_a), "-c", "user.name=Agent A", "-c",
+                    "user.email=agent-a@example.invalid", "commit", "--quiet", "-m",
+                    "publish project intelligence"], check=True, timeout=15)
 
     # Node A local SQLite has private lease
     state_a = tmp_path / "state_a"
@@ -70,9 +86,9 @@ def test_e2e_git_first_multi_clone_collaboration(tmp_path: Path):
         con.execute("INSERT INTO leases VALUES ('lease-private-node-a', 'worker-a', ?)", (str(repo_a),))
         con.commit()
 
-    # Node B clones repo_a (only Git-tracked files)
+    # Node B uses a real Git clone (only published, tracked project records)
     repo_b = tmp_path / "repo_b"
-    shutil.copytree(repo_a, repo_b)
+    subprocess.run(["git", "clone", "--quiet", str(repo_a), str(repo_b)], check=True, timeout=15)
 
     # Node B has fresh, empty server state
     state_b = tmp_path / "state_b"

@@ -46,7 +46,7 @@ def _client(
         )
         security_lines.append(f"{key} = {encoded}")
     config_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 39131\nstate_dir = "{state_dir.as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 39131\nstate_dir = "{state_dir.as_posix()}"\n'
         "[client]\nstartup_wait_seconds = 1\nstartup_poll_seconds = 0.01\n"
         + "\n".join(security_lines)
         + "\n",

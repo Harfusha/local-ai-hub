@@ -136,7 +136,7 @@ def test_recovery_timeout_survives_work_and_mcp_projection(profile):
 def test_empty_journal_with_pending_barrier_requires_agent(tmp_path, monkeypatch):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -172,7 +172,7 @@ def test_empty_journal_with_pending_barrier_requires_agent(tmp_path, monkeypatch
 def test_recovery_rolls_back_journal_and_closes_adopted_barrier(tmp_path, monkeypatch, tampered, mode):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -243,7 +243,7 @@ def test_windows_recovery_blocks_junction_swap_during_restore(tmp_path, monkeypa
     subprocess.run(["git", "-C", str(root), "-c", "user.name=T", "-c", "user.email=t@e",
                     "commit", "-qm", "add source"], check=True)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -301,7 +301,7 @@ def test_windows_recovery_blocks_junction_swap_during_restore(tmp_path, monkeypa
 def test_empty_journal_with_completed_rollback_is_reconciled(tmp_path, monkeypatch, corrupt):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -363,7 +363,7 @@ def test_empty_journal_with_completed_rollback_is_reconciled(tmp_path, monkeypat
 def test_terminal_handoff_with_pending_barrier_is_reported(tmp_path, monkeypatch):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -397,7 +397,7 @@ def test_terminal_handoff_with_pending_barrier_is_reported(tmp_path, monkeypatch
 def test_terminal_handoff_recovery_preserves_postimage(tmp_path, monkeypatch, clear_journal, tampered, corrupt):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -442,7 +442,7 @@ def test_terminal_handoff_recovery_preserves_postimage(tmp_path, monkeypatch, cl
 def test_terminal_status_reconciles_only_matching_finalization(tmp_path, monkeypatch, drift):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -517,7 +517,7 @@ def test_terminal_status_reconciles_only_matching_finalization(tmp_path, monkeyp
 def test_terminal_cleanup_never_erases_journal_while_task_barrier_pending(tmp_path, monkeypatch):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     original_recover = WorkOrchestrator._recover
@@ -572,7 +572,7 @@ def test_terminal_cleanup_does_not_race_live_attempt(tmp_path, monkeypatch):
 def test_terminal_recovery_retries_after_live_attempt(tmp_path, monkeypatch):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     monkeypatch.setattr(WorkOrchestrator, "_recover", lambda self: None)
@@ -603,7 +603,7 @@ def test_terminal_recovery_retries_after_live_attempt(tmp_path, monkeypatch):
 def test_terminal_recovery_scans_past_first_bounded_batch(tmp_path, monkeypatch):
     root = init_repo(tmp_path)
     tasks = TaskStore(AgentStateStore(tmp_path / "agent.sqlite3"))
-    task = tasks.create(GoalContract(goal="change"), ScopeContext(task_id="task"),
+    task = tasks.create(GoalContract(goal="change", acceptance_criteria=["change verified"]), ScopeContext(task_id="task"),
                         task_id="task", actor="owner", repo_root=str(root))
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key="start")
     monkeypatch.setattr(WorkOrchestrator, "_recover", lambda self: None)

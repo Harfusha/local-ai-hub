@@ -513,6 +513,8 @@ class HttpPostHelpersMixin:
                 wire_data = services_module.project_wait_event_response(wire_data, enabled=detail_enabled)
             else:
                 wire_data = services_module.project_agent_response(wire_data, enabled=detail_enabled)
+        if isinstance(wire_data, dict) and isinstance(data, dict) and isinstance(data.get("request_id"), str):
+            wire_data = {**wire_data, "request_id": data["request_id"]}
         body = raw_body if isinstance(raw_body, bytes) else services_module._json_bytes(wire_data)
         if (
             response_path in {"/api/search", "/api/repo/code-index"}
