@@ -157,24 +157,31 @@ def test_update_migration_rejects_source_change_between_record_kinds(tmp_path: P
     assert not (root / ".local-ai-hub/agent-os/incidents/inc-mig-1.json").exists()
 
 
-def test_legacy_database_snapshot_hashes_content_and_enforces_size_limit(tmp_path: Path):
-    import hashlib
-
-    from local_ai_hub.agent_state_migration import _MAX_DATABASE_BYTES, _database_snapshot
+def test_legacy_database_snapshot_hashes_only_bounded_migration_inputs(tmp_path: Path, monkeypatch):
+    import local_ai_hub.agent_state_migration as migration
 
     db = tmp_path / "agent_state.sqlite"
-    db.write_bytes(b"first")
-    first = _database_snapshot(db)
-    assert first == hashlib.sha256(b"first").hexdigest()
-    db.write_bytes(b"other")
-    assert _database_snapshot(db) == hashlib.sha256(b"other").hexdigest()
-    assert _database_snapshot(db) != first
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE agent_memory_records(record_id TEXT PRIMARY KEY, payload BLOB)")
+        con.execute("CREATE TABLE unrelated_cache(payload BLOB)")
+        con.execute("INSERT INTO agent_memory_records VALUES('memory-a', 'first')")
+        con.execute("INSERT INTO unrelated_cache VALUES('unrelated')")
+        con.commit()
 
-    oversized = tmp_path / "oversized.sqlite"
-    with oversized.open("wb") as stream:
-        stream.truncate(_MAX_DATABASE_BYTES + 1)
-    with pytest.raises(RepoPlanValidationError, match="size limit"):
-        _database_snapshot(oversized)
+    first = migration._database_snapshot(db)
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("UPDATE unrelated_cache SET payload='different'")
+        con.commit()
+    assert migration._database_snapshot(db) == first
+
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("UPDATE agent_memory_records SET payload='other'")
+        con.commit()
+    assert migration._database_snapshot(db) != first
+
+    monkeypatch.setattr(migration, "_MAX_DATABASE_BYTES", 1)
+    with pytest.raises(RepoPlanValidationError, match="512 MiB content limit"):
+        migration._database_snapshot(db)
 
 
 def test_update_migrates_old_runtime_task_scope_once_and_fences_active_attempt(tmp_path: Path):

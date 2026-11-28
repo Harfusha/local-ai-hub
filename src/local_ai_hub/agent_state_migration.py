@@ -24,8 +24,9 @@ from .project_identity import project_scope_id, repository_snapshot_id, worktree
 _MAX_BATCH = 16
 _MAX_JSON_BYTES = 65536
 _MAX_DATABASE_BYTES = 512 * 1024 * 1024
+_MAX_DATABASE_ROWS = 100_000
 _MAX_DATABASE_SNAPSHOT_SECONDS = 15.0
-_DATABASE_SNAPSHOT_CHUNK_BYTES = 1024 * 1024
+_MIGRATED_TABLES = ("agent_tasks_projection", "agent_memory_records", "agent_incidents")
 _CHECKPOINT = "CASE WHEN json_valid(checkpoint) THEN checkpoint ELSE '{}' END"
 _SCOPE = "$.state_data._agent_task_scope"
 # Exact v2 scope marker only; no inference from user-supplied context, worktree,
@@ -41,7 +42,7 @@ _SCOPED = (
 
 
 def _database_snapshot(db: Path) -> str:
-    """Hash a bounded, offline SQLite snapshot and fence descriptor/path identity."""
+    """Hash bounded migration inputs, not unrelated or free SQLite pages."""
     if (
         db.is_symlink() or getattr(db, "is_junction", lambda: False)()
         or not db.is_file() or not _sidecars_absent(db)
@@ -65,26 +66,71 @@ def _database_snapshot(db: Path) -> str:
             # those views, then fence each view independently across the read.
             if initial_fd[:4] != initial_path[:4]:
                 raise RepoPlanValidationError("Legacy project database path changed before snapshot")
-            if before_fd.st_size < 0 or before_fd.st_size > _MAX_DATABASE_BYTES:
-                raise RepoPlanValidationError("Legacy project database exceeds the 512 MiB snapshot size limit")
-
             digest = hashlib.sha256()
             total = 0
-            while total < before_fd.st_size:
-                if time.monotonic() - started > _MAX_DATABASE_SNAPSHOT_SECONDS:
-                    raise RepoPlanValidationError("Legacy project database snapshot exceeded the 15 second time limit")
-                chunk = stream.read(min(_DATABASE_SNAPSHOT_CHUNK_BYTES, before_fd.st_size - total))
-                if not chunk:
-                    raise RepoPlanValidationError("Legacy project database changed while hashing")
-                digest.update(chunk)
-                total += len(chunk)
+            rows_seen = 0
+            with closing(sqlite3.connect(db.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=1.0)) as con:
+                con.execute("PRAGMA query_only=ON")
+                con.execute("PRAGMA trusted_schema=OFF")
+                tables = {
+                    str(row[0]): str(row[1] or "")
+                    for row in con.execute(
+                        "SELECT name,sql FROM sqlite_master WHERE type='table' AND name IN (?,?,?)",
+                        _MIGRATED_TABLES,
+                    )
+                }
+                for table in _MIGRATED_TABLES:
+                    name = table.encode("ascii")
+                    schema = tables.get(table, "").encode("utf-8")
+                    total += len(schema) + len(name) + 12
+                    if total > _MAX_DATABASE_BYTES:
+                        raise RepoPlanValidationError("Legacy project migration inputs exceed the 512 MiB content limit")
+                    digest.update(len(name).to_bytes(4, "big"))
+                    digest.update(name)
+                    digest.update(len(schema).to_bytes(8, "big"))
+                    digest.update(schema)
+                    if table not in tables:
+                        continue
+                    count = int(con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+                    if rows_seen + count > _MAX_DATABASE_ROWS:
+                        raise RepoPlanValidationError("Legacy project migration inputs exceed the row limit")
+                    rows_seen += count
+                    cursor = con.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
+                    while True:
+                        batch = cursor.fetchmany(256)
+                        if not batch:
+                            break
+                        for row in batch:
+                            digest.update(b"R")
+                            for value in row:
+                                if value is None:
+                                    tag, encoded = b"N", b""
+                                elif isinstance(value, int):
+                                    tag, encoded = b"I", str(value).encode("ascii")
+                                elif isinstance(value, float):
+                                    tag, encoded = b"F", value.hex().encode("ascii")
+                                elif isinstance(value, str):
+                                    tag, encoded = b"T", value.encode("utf-8")
+                                elif isinstance(value, bytes):
+                                    tag, encoded = b"B", value
+                                else:
+                                    raise RepoPlanValidationError("Legacy project database contains an unsupported value")
+                                total += len(encoded) + 9
+                                if total > _MAX_DATABASE_BYTES:
+                                    raise RepoPlanValidationError("Legacy project migration inputs exceed the 512 MiB content limit")
+                                digest.update(tag)
+                                digest.update(len(encoded).to_bytes(8, "big"))
+                                digest.update(encoded)
+                            digest.update(b"\0")
+                        if time.monotonic() - started > _MAX_DATABASE_SNAPSHOT_SECONDS:
+                            raise RepoPlanValidationError("Legacy project database snapshot exceeded the 15 second time limit")
             if time.monotonic() - started > _MAX_DATABASE_SNAPSHOT_SECONDS:
                 raise RepoPlanValidationError("Legacy project database snapshot exceeded the 15 second time limit")
 
             after_fd = os.fstat(stream.fileno())
             after_path = db.stat()
             if (
-                total != before_fd.st_size or identity(after_fd) != initial_fd
+                identity(after_fd) != initial_fd
                 or identity(after_path) != initial_path or identity(after_fd)[:4] != identity(after_path)[:4]
                 or db.is_symlink()
                 or getattr(db, "is_junction", lambda: False)() or not _sidecars_absent(db)
@@ -93,6 +139,8 @@ def _database_snapshot(db: Path) -> str:
             return digest.hexdigest()
     except RepoPlanValidationError:
         raise
+    except sqlite3.Error as exc:
+        raise RepoPlanValidationError("Legacy project migration inputs are unreadable") from exc
     except OSError as exc:
         raise RepoPlanValidationError("Legacy project database snapshot is unavailable") from exc
 
