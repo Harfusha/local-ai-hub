@@ -30,6 +30,18 @@ def test_legacy_board_import_is_not_a_runtime_operation(public_planner):
     assert validate_operation_arguments("local_ai_coord", "plan_adopt_legacy_board", {})
 
 
+def test_legacy_task_handoff_preflight_is_not_a_runtime_operation(monkeypatch):
+    import sys
+    from tools import hubctl
+
+    monkeypatch.setattr(sys, "argv", [
+        "hubctl.py", "knowledge", "handoff-preflight", "--root", ".",
+    ])
+    with pytest.raises(SystemExit) as error:
+        hubctl.main()
+    assert error.value.code == 2
+
+
 def test_real_public_plan_lifecycle(public_planner):
     services, root = public_planner
     assert services.plan_init(root=root)["success"]

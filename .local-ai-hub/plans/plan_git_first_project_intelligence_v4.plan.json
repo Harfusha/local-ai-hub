@@ -145,7 +145,7 @@
       "depends_on": [],
       "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
       "kind": "code",
-      "next_action": "Finish the remaining storage inventory, canonical task lifecycle and attempt lineage, publication/reconciliation workflows, and complete the V4-E/UPS acceptance matrix. The 803 MB snapshot blocker is resolved by hashing bounded migration inputs; the full update and release gates remain open.",
+      "next_action": "Finish canonical task lifecycle/revision/attempt lineage, remaining storage inventory and safe publication/reconciliation workflows, then complete V4-E/UPS acceptance. Verified this turn: updater enrolls no-origin old checkouts with one persisted UUID; relocation preserves it, unproven independent roots remain distinct; removed runtime handoff-preflight. 76 focused tests and checkout-churn acceptance passed on working tree; installed-runtime and full matrix remain open.",
       "order": 1,
       "spec_refs": [
         {

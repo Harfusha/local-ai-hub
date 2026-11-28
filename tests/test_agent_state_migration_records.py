@@ -89,6 +89,46 @@ def test_update_bootstraps_same_identity_in_independent_old_checkouts(tmp_path: 
     assert identities[0] == identities[1]
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_update_bootstraps_old_checkout_without_origin_and_identity_survives_relocation(tmp_path: Path):
+    checkout = tmp_path / "old-checkout"
+    checkout.mkdir()
+    (checkout / ".local-ai-hub").mkdir()
+    (checkout / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m",
+                    "old checkout"], check=True, capture_output=True)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    result = migrate_project_state_on_update(state_dir, checkout)
+    project_id = project_scope_id(checkout)
+
+    assert result == {"status": "no_legacy_state", "project_id": project_id, "records": 0}
+    repeated = migrate_project_state_on_update(state_dir, checkout)
+    assert repeated["status"] == "no_legacy_state"
+    assert repeated["project_id"] == project_id
+
+    relocated = tmp_path / "relocated-checkout"
+    shutil.copytree(checkout / ".local-ai-hub", relocated / ".local-ai-hub")
+    subprocess.run(["git", "init", str(relocated)], check=True, capture_output=True)
+    assert project_scope_id(relocated) == project_id
+
+    unrelated = tmp_path / "unrelated-old-checkout"
+    unrelated.mkdir()
+    (unrelated / ".local-ai-hub").mkdir()
+    (unrelated / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(unrelated)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(unrelated), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m",
+                    "unrelated checkout"], check=True, capture_output=True)
+    unrelated_state = tmp_path / "unrelated-state"
+    unrelated_state.mkdir()
+    migrate_project_state_on_update(unrelated_state, unrelated)
+    assert project_scope_id(unrelated) != project_id
+
+
 def test_update_migration_publishes_portable_records_once(tmp_path: Path):
     root, store, state_dir = _setup_migration_env(tmp_path)
     first = migrate_project_state_on_update(state_dir, root)
@@ -436,7 +476,7 @@ def test_release_update_bootstraps_missing_identity_for_old_git_checkout(tmp_pat
     assert json.loads((root / ".local-ai-hub/project.json").read_text(encoding="utf-8"))["project_id"] == manifest["project_id"]
 
 
-def test_release_update_rejects_old_checkout_without_stable_origin(tmp_path: Path, monkeypatch):
+def test_release_update_enrolls_old_checkout_without_stable_origin(tmp_path: Path, monkeypatch):
     root, _, state_dir = _setup_migration_env(tmp_path)
     (root / ".local-ai-hub/project.json").unlink()
     (root / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
@@ -445,6 +485,7 @@ def test_release_update_rejects_old_checkout_without_stable_origin(tmp_path: Pat
     subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "old checkout"], check=True, capture_output=True)
+    (root / "pyproject.toml").write_text('[project]\nversion = "8.2.1"\n', encoding="utf-8")
     from tools import setup as setup_module
 
     migration_calls = []
@@ -453,11 +494,11 @@ def test_release_update_rejects_old_checkout_without_stable_origin(tmp_path: Pat
     monkeypatch.setattr(setup_module, "apply_embedding_reset", lambda *args, **kwargs: {"status": "not_required"})
     monkeypatch.setattr(setup_module, "discard_stale_migration_artifacts", lambda *args, **kwargs: [])
 
-    with pytest.raises(RepoPlanValidationError, match="credential-free Git origin"):
-        setup_module.migrate_release_state(state_dir)
-    assert migration_calls == []
-    assert not (root / ".local-ai-hub/project.json").exists()
-    assert not (state_dir / "project_state_migration_v1.json").exists()
+    result = setup_module.migrate_release_state(state_dir)
+    assert result["project_state_migration"]["status"] == "migrated"
+    assert migration_calls == [(state_dir,)]
+    assert project_scope_id(root)
+    assert (state_dir / "project_state_migration_v1.json").is_file()
 
 
 def test_real_repository_update_hook_has_a_published_project_identity(tmp_path: Path, monkeypatch):

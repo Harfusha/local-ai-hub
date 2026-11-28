@@ -273,50 +273,6 @@ def test_handoff_inventory_includes_only_valid_project_records(tmp_path):
     assert not (root / ".local-ai-hub/local").exists()
 
 
-def test_handoff_preflight_is_scoped_read_only_and_never_imports_runtime_state(tmp_path):
-    from local_ai_hub.repo_task_handoff import build_task_handoff, preflight_task_handoffs
-
-    root = tmp_path / "repo"
-    directory = root / ".local-ai-hub/agent-os/handoffs"
-    directory.mkdir(parents=True)
-    other = tmp_path / "other"
-    other.mkdir()
-    project = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
-    (root / ".local-ai-hub/project.json").write_text(json.dumps({
-        "schema_version": 1, "project_id": project, "mode": "shared",
-    }), encoding="utf-8")
-    store = RepoKnowledgeStore(root)
-
-    def task(task_id, **changes):
-        return {
-            "task_id": task_id, "status": "planned", "repo_root": str(root),
-            "contract": {"goal": "Private task details", "description": ""},
-            "checkpoint": {}, "verification_receipts": {"criterion": "local-receipt"},
-            **changes,
-        }
-
-    existing = task("existing")
-    record = build_task_handoff(store, existing)
-    (directory / (record["id"] + ".json")).write_text(json.dumps(record), encoding="utf-8")
-    result = preflight_task_handoffs(store, [
-        existing, task("new"), task("live", status="active", lease_id="local-lease"),
-        task("outside", repo_root=str(other)), task("new"),
-    ], inventory_complete=False)
-    assert [row["state"] for row in result["records"]] == [
-        "already_published", "review_required", "blocked_live_attempt",
-        "blocked_invalid_or_out_of_scope", "blocked_duplicate_task",
-    ]
-    assert not result["complete"]
-    assert not result["canonical_cutover_supported"]
-    assert not result["runtime_state_imported"]
-    assert "Private task details" not in str(result)
-    assert "local-receipt" not in str(result)
-    assert "local-lease" not in str(result)
-    assert "outside" not in str(result)
-    assert len(list(directory.iterdir())) == 1
-    assert not (root / ".local-ai-hub/local").exists()
-
-
 def test_portable_handoff_receipt_summary_never_grants_current_verification(tmp_path):
     from local_ai_hub.repo_task_handoff import (
         attach_historical_verification, build_task_handoff, handoff_resume_contract,

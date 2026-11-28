@@ -601,12 +601,11 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
             hashlib.sha256(f"agent-incident:repository\0{path_identity}".encode("utf-8")).hexdigest(),
         )))
         origin = _git_origin_identity(root)
-        if not origin:
-            raise RepoPlanValidationError(
-                "Old checkout has no stable project manifest or credential-free Git origin; "
-                "bootstrap project identity before update migration"
-            )
-        project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-ai-hub-project:{origin}"))
+        # Without a remote, independent clones cannot be identified safely; enroll this checkout once.
+        project_id = (
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-ai-hub-project:{origin}"))
+            if origin else str(uuid.uuid4())
+        )
         try:
             store.bootstrap(
                 project_id, mode="shared", owner="release-update",
