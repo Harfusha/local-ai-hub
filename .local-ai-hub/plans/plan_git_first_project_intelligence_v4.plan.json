@@ -57,7 +57,7 @@
       ],
       "description": "Finish process/rule extraction, query and task context, findings lifecycle, review/remediation, UI/API/CLI surfaces, Laya gates, and provider workflow integration.",
       "kind": "code",
-      "next_action": "Current source and MCP operation contract omit plan_adopt_legacy_board; regression test passes. The connected running MCP still advertises/accepts that action, so live installation/schema is stale. After shared main checkout owner releases it, install/restart the verified candidate and confirm action is absent; continue exhaustive runtime legacy-reader audit and V4-E/UPS business/provider/UI/Laya scenarios.",
+      "next_action": "Source and regression contract omit runtime plan_adopt_legacy_board and legacy CLI publishers. Connected MCP server still advertises/accepts the removed board action, proving the installed runtime/schema is stale. Do not install/restart over the concurrently edited main checkout; after its owner releases it, install the verified candidate and confirm all runtime surfaces expose only the one-time update migration for old data. Then finish business-flow/provider/UI/Laya checks.",
       "order": 2,
       "spec_refs": [
         {
@@ -145,7 +145,7 @@
       "depends_on": [],
       "description": "Close P0 storage inventory, ownership, task/memory/finding/receipt migrations, portable evidence, sync, recovery, privacy, and fail-closed authorization requirements from V4.",
       "kind": "code",
-      "next_action": "Branch-churn identity anchor persists canonical project_id in local Git config, survives old commits and linked worktrees, and rejects manifest/config conflicts. Final focused suite passed: 84 tests after conflict guard; compileall, pyflakes, release check, and diff check passed. Continue V4-E01-E18/E2E-UPS real clone/UI/provider scenarios and full-suite triage; prior full run remains 18,015 passed, 928 failed, 70 errors.",
+      "next_action": "Fixed Windows \\u005c\\u005c?\\u005c extended-path mismatch in repo-plan confinement comparison while preserving resolved symlink checks. 142 targeted migration, stable identity, repo-knowledge, MCP, linked-worktree, and updater tests pass; independent-process concurrent workspace bootstrap test passes. Continue full V4-E/UPS real-clone divergence, checkout-churn, and recovery scenarios.",
       "order": 1,
       "spec_refs": [
         {
@@ -178,7 +178,7 @@
       ],
       "description": "Run the full acceptance matrix from actual clones and the supported UI/adapters; fix all defects and verify CI, performance, security, docs, and full tests.",
       "kind": "operation",
-      "next_action": "Current full --run-all --no-cache candidate run: 18,015 passed, 928 failed, 70 errors, 148 skipped, 58 subtests in 90m40s; 84 focused migration, identity, repo-knowledge, linked-worktree and updater tests pass on the final working tree. Diagnose full-suite failures, then execute missing V4-E01–E18 and E2E-UPS real-clone/UI/provider scenarios.",
+      "next_action": "Latest focused run: 142 passed, 1 skipped across project identity, updater migration, repo knowledge, MCP, schema, workspace, linked-worktree E2E; new synchronized two-process project bootstrap test also passes. Release check, selftest, and compileall pass. Remaining: complete V4-E01-E18/E2E-UPS freshness/divergence/recovery, safe live runtime install/schema verification, diagnose prior full-suite result (18,015 passed, 928 failed, 70 errors), then final candidate verification.",
       "order": 3,
       "spec_refs": [
         {

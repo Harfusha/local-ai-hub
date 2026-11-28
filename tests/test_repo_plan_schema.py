@@ -255,6 +255,24 @@ def test_reject_invalid_paths(tmp_path):
         validate_repo_path("foo/../bar", repo_root=tmp_path)
 
 
+def test_repo_path_accepts_windows_extended_child_path(monkeypatch, tmp_path):
+    import os
+    from pathlib import Path
+
+    if os.name != "nt":
+        pytest.skip("Windows extended paths are specific to Windows")
+
+    original_resolve = Path.resolve
+
+    def resolve(path, *args, **kwargs):
+        if str(path).endswith(".local-ai-hub/local"):
+            return Path("\\\\?\\" + str(path))
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    validate_repo_path(".local-ai-hub/local", repo_root=tmp_path)
+
+
 def test_dependency_validation():
     """Reject missing dependencies and cyclic dependencies within the plan."""
     # 1. Missing dependency in same plan

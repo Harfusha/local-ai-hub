@@ -73,6 +73,7 @@ def test_repo_plan_e2e_multi_worktree_workflow(isolated_git_repo):
     # 1. Initialize project workspace on master
     ws_master = RepoPlanWorkspace(repo_dir)
     ws_master.init_workspace()
+    assert (repo_dir / ".local-ai-hub" / "project.json").is_file()
 
     # Create plan with two independent tasks
     spec_dir = repo_dir / "docs" / "superpowers" / "specs"

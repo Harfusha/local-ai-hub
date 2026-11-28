@@ -21,13 +21,83 @@ def workspace(tmp_path):
 
 
 def test_init_workspace(tmp_path):
-    """Test initialization creates directories, README, and .gitignore."""
+    """Test initialization creates workspace files and canonical project identity."""
     ws = RepoPlanWorkspace(tmp_path)
     res = ws.init_workspace()
     assert res["success"] is True
     assert (tmp_path / ".local-ai-hub" / "README.md").exists()
     assert (tmp_path / ".local-ai-hub" / ".gitignore").exists()
+    assert (tmp_path / ".local-ai-hub" / "project.json").is_file()
     assert (tmp_path / ".local-ai-hub" / "plans").is_dir()
+
+
+def test_concurrent_workspace_initialization_publishes_one_project_identity(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import json
+    import subprocess
+
+    from local_ai_hub.project_identity import project_scope_id
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "commit", "--allow-empty", "-m", "initial"],
+        check=True, capture_output=True,
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: RepoPlanWorkspace(root).init_workspace(), range(2)))
+
+    manifest = json.loads((root / ".local-ai-hub" / "project.json").read_text(encoding="utf-8"))
+    assert all(result["success"] for result in results)
+    assert project_scope_id(root) == manifest["project_id"]
+
+
+def test_independent_processes_initialize_one_project_identity(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "commit", "--allow-empty", "-m", "initial"],
+        check=True, capture_output=True,
+    )
+    source = str(Path(__file__).resolve().parents[1] / "src")
+    script = (
+        "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[2]); "
+        "from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace; "
+        "from local_ai_hub.project_identity import project_scope_id; "
+        "print('ready', flush=True); sys.stdin.readline(); "
+        "RepoPlanWorkspace(sys.argv[1]).init_workspace(); print(project_scope_id(sys.argv[1]))"
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(root), source],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for _ in range(2)
+    ]
+    try:
+        assert [process.stdout.readline().strip() for process in processes] == ["ready", "ready"]
+        for process in processes:
+            process.stdin.write("go\n")
+            process.stdin.flush()
+        results = [process.communicate(timeout=30) for process in processes]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+    manifest = json.loads((root / ".local-ai-hub" / "project.json").read_text(encoding="utf-8"))
+    assert all(process.returncode == 0 for process in processes), [stderr for _stdout, stderr in results]
+    assert {stdout.strip().splitlines()[-1] for stdout, _stderr in results} == {manifest["project_id"]}
 
 
 @pytest.mark.parametrize("selected_plan", ["", "plan_bad"])

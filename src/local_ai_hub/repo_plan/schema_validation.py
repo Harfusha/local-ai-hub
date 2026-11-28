@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,17 @@ class RepoPlanError(Exception):
 
 class RepoPlanValidationError(RepoPlanError):
     """Raised when a plan violates schema or semantic constraints."""
+
+
+def _comparison_path(path: Path) -> Path:
+    resolved = path.resolve()
+    if os.name == "nt":
+        value = str(resolved)
+        if value.startswith("\\\\?\\UNC\\"):
+            return Path("\\\\" + value[8:])
+        if value.startswith("\\\\?\\"):
+            return Path(value[4:])
+    return resolved
 
 
 class RepoPlanConflictError(RepoPlanError):
@@ -202,8 +214,8 @@ def validate_repo_path(path_str: str, repo_root: str | Path | None = None) -> No
         raise RepoPlanValidationError(f"Path cannot contain control characters: '{path_str}'")
 
     if repo_root is not None:
-        resolved_root = Path(repo_root).resolve()
-        candidate = (resolved_root / path_str).resolve()
+        resolved_root = _comparison_path(Path(repo_root))
+        candidate = _comparison_path(resolved_root / path_str)
         try:
             candidate.relative_to(resolved_root)
         except ValueError as exc:

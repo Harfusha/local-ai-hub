@@ -13,6 +13,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from local_ai_hub.project_config import resolve_project_config
 
@@ -221,6 +222,24 @@ class RepoPlanWorkspace:
             created_paths.append(".local-ai-hub/.gitignore")
         else:
             existing_paths.append(".local-ai-hub/.gitignore")
+
+        manifest_path = workspace_dir / "project.json"
+        if not manifest_path.exists():
+            from local_ai_hub.project_identity import persist_git_project_id, read_git_project_id
+            from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+
+            store = RepoKnowledgeStore(self.repo_root)
+            project_id = read_git_project_id(self.repo_root) or str(uuid4())
+            try:
+                store.bootstrap(
+                    project_id, mode="shared", owner="repo-plan-init",
+                    idempotency_key=f"workspace-init-project-{project_id}",
+                    authorize_write=lambda: True,
+                )
+            except (RepoPlanConflictError, ValueError):
+                manifest, _ = store.manifest()
+                persist_git_project_id(self.repo_root, manifest["project_id"])
+            created_paths.append(".local-ai-hub/project.json")
 
         return {
             "success": True,

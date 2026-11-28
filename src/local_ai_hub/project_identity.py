@@ -55,13 +55,13 @@ def persist_git_project_id(repo_root: str | Path, project_id: str) -> None:
     from .process_utils import clean_git_env, hidden_run_kwargs
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["git", "-C", str(root), "config", "--local", "--replace-all", _GIT_PROJECT_ID_KEY, canonical_id],
             capture_output=True, text=True, timeout=2.0, env=clean_git_env(), **hidden_run_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError("Git project identity could not be saved") from exc
-    if result.returncode != 0 or read_git_project_id(root) != canonical_id:
+    if read_git_project_id(root) != canonical_id:
         raise ValueError("Git project identity could not be saved")
 
 def project_scope_id(repo_root: str | Path) -> str:
