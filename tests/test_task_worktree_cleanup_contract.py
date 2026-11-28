@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import json
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,13 @@ def _repo(root: Path) -> Path:
     root.mkdir()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "a.txt").write_text("baseline\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
+    local = root / ".local-ai-hub"
+    local.mkdir()
+    (local / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (local / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "mode": "shared",
+    }), encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "a.txt", ".local-ai-hub"], check=True)
     subprocess.run(
         ["git", "-C", str(root), "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "init"],
         check=True,

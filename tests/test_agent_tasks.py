@@ -479,10 +479,17 @@ def make_trusted_repository(parent: Path) -> tuple[Path, str]:
         '[verification_rules]\ntests = ["test"]\n',
         encoding="utf-8",
     )
+    project_dir = root / ".local-ai-hub"
+    project_dir.mkdir()
+    (project_dir / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (project_dir / "project.json").write_text(
+        '{"schema_version":1,"project_id":"41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb","mode":"shared"}\n',
+        encoding="utf-8",
+    )
     subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T08 test"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t08-test@example.invalid"], cwd=root, check=True)
-    subprocess.run(["git", "add", ".local-ai.toml"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".local-ai.toml", ".local-ai-hub"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "test project config"], cwd=root, check=True)
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True

@@ -2,6 +2,7 @@
 
 from collections import deque
 from email.message import Message
+from pathlib import Path
 from types import SimpleNamespace
 import threading
 
@@ -12,17 +13,26 @@ from local_ai_hub import http_server
 
 @pytest.fixture
 def bound_handler(monkeypatch, tmp_path):
+    from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
     from local_ai_hub.project_config import resolve_project_context
 
     coordination_id = resolve_project_context(tmp_path, tmp_path / "state").coordination_id
+    stable_project_id = project_scope_id(tmp_path)
     task = SimpleNamespace(
         context=SimpleNamespace(repository_id=coordination_id, session_id="chat-one"),
-        checkpoint=SimpleNamespace(state_data={"_agent_task_scope": {"version": 2, "repo_root": str(tmp_path)}}),
+        checkpoint=SimpleNamespace(state_data={"_agent_task_scope": {
+            "version": 4, "project_id": stable_project_id, "worktree_id": worktree_scope_id(tmp_path),
+            "repo_root": str(tmp_path.resolve()), "snapshot_id": repository_snapshot_id(tmp_path),
+        }}),
     )
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {"api_token": "a" * 32, "allowed_roots": [str(tmp_path)]}},
         agent_state=SimpleNamespace(db_path=str(tmp_path / "state" / "agent_state.sqlite")),
-        agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-one" else None),
+        agent_tasks=SimpleNamespace(get=lambda task_id, repo_root=None: (
+            task if task_id == "task-one" and (
+                repo_root is None or Path(repo_root).resolve() == tmp_path.resolve()
+            ) else None
+        )),
     ))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.headers = Message()

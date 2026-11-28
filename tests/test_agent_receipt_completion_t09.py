@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -44,6 +45,13 @@ def task_ready_for_completion(
     )
     repo_root = Path(tasks.state_store.db_path).parent / "receipt-repositories" / task_id
     repo_root.mkdir(parents=True, exist_ok=True)
+    local_hub = repo_root / ".local-ai-hub"
+    local_hub.mkdir()
+    (local_hub / "project.json").write_text(
+        json.dumps({"schema_version": 1, "project_id": str(uuid.uuid4()), "mode": "shared"}),
+        encoding="utf-8",
+    )
+    (local_hub / ".gitignore").write_text("local/\n", encoding="utf-8")
     (repo_root / ".gitignore").write_text("", encoding="utf-8")
     (repo_root / ".local-ai.toml").write_text(
         '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n', encoding="utf-8"
@@ -51,7 +59,7 @@ def task_ready_for_completion(
     subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
     subprocess.run(["git", "config", "user.name", "T09 test"], cwd=repo_root, check=True)
     subprocess.run(["git", "config", "user.email", "t09-test@example.invalid"], cwd=repo_root, check=True)
-    subprocess.run(["git", "add", ".gitignore", ".local-ai.toml"], cwd=repo_root, check=True)
+    subprocess.run(["git", "add", ".gitignore", ".local-ai.toml", ".local-ai-hub"], cwd=repo_root, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt repository"], cwd=repo_root, check=True)
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, text=True, capture_output=True

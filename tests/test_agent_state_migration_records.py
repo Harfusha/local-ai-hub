@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import subprocess
 import uuid
@@ -14,6 +15,7 @@ from local_ai_hub.agent_state_migration import (
     migrate_project_state_on_update,
 )
 from local_ai_hub.agent_incidents import _incident_scope_key
+from local_ai_hub.project_identity import project_scope_id
 from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
 
 
@@ -53,6 +55,38 @@ def _setup_migration_env(tmp_path: Path):
         con.commit()
 
     return root, store, state_dir
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_update_bootstraps_same_identity_in_independent_old_checkouts(tmp_path: Path):
+    first = tmp_path / "old-checkout-a"
+    first.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(first)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(first), "config", "user.name", "Fixture"], check=True)
+    subprocess.run(["git", "-C", str(first), "config", "user.email", "fixture@example.invalid"], check=True)
+    (first / "README.md").write_text("old checkout\n", encoding="utf-8")
+    (first / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(first), "add", "README.md", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(first), "commit", "-m", "old checkout"], check=True, capture_output=True)
+
+    origin = "https://example.invalid/local-ai-hub/repository.git"
+    subprocess.run(["git", "-C", str(first), "remote", "add", "origin", origin], check=True)
+    second = tmp_path / "old-checkout-b"
+    subprocess.run(["git", "clone", str(first), str(second)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(second), "remote", "set-url", "origin", origin], check=True)
+
+    identities = []
+    for index, checkout in enumerate((first, second), start=1):
+        assert not (checkout / ".local-ai-hub/project.json").exists()
+        state_dir = tmp_path / f"state-{index}"
+        state_dir.mkdir()
+
+        result = migrate_project_state_on_update(state_dir, checkout)
+
+        assert result["status"] == "no_legacy_state"
+        identities.append(project_scope_id(checkout))
+
+    assert identities[0] == identities[1]
 
 
 def test_update_migration_publishes_portable_records_once(tmp_path: Path):

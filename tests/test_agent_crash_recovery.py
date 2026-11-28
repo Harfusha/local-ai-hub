@@ -1,7 +1,9 @@
 import os
+import json
 import sqlite3
 import subprocess
 import sys
+import uuid
 from contextlib import closing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -47,6 +49,13 @@ def _interrupt_after_lease_claim(*_args, **_kwargs):
 def _make_trusted_repository(parent: Path) -> tuple[Path, str]:
     root = parent / "trusted-repo"
     root.mkdir()
+    local_hub = root / ".local-ai-hub"
+    local_hub.mkdir()
+    (local_hub / "project.json").write_text(
+        json.dumps({"schema_version": 1, "project_id": str(uuid.uuid4()), "mode": "shared"}),
+        encoding="utf-8",
+    )
+    (local_hub / ".gitignore").write_text("local/\n", encoding="utf-8")
     (root / ".local-ai.toml").write_text(
         '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n'
         '[verification_rules]\ntests = ["test"]\n',
@@ -55,7 +64,7 @@ def _make_trusted_repository(parent: Path) -> tuple[Path, str]:
     subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T08 test"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t08-test@example.invalid"], cwd=root, check=True)
-    subprocess.run(["git", "add", ".local-ai.toml"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".local-ai.toml", ".local-ai-hub"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "test project config"], cwd=root, check=True)
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True

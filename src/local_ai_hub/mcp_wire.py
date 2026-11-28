@@ -946,9 +946,9 @@ async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
     services_module = _get_services_module()
     call_started = time.monotonic()
     arguments = dict(arguments)
-    # Strip whitespace from string arguments to prevent random rejection on trailing spaces
+    # Normalize free-form argument strings, but preserve exact file content.
     for k, v in list(arguments.items()):
-        if isinstance(v, str):
+        if isinstance(v, str) and not (name == "local_ai_coord" and k == "spec_content"):
             arguments[k] = v.strip()
     # Resolve relative roots gracefully to avoid artificial 'must be absolute' rejections
     if "root" in arguments and isinstance(arguments["root"], str):

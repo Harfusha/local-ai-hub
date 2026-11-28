@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -73,6 +74,14 @@ def test_pending_reconciliation_resists_parent_junction_swap(test_environment, m
 
 def setup_bound_task(test_environment):
     root, storage, _, task_store, _, _, manager = test_environment
+    project_manifest = root / ".local-ai-hub" / "project.json"
+    project_manifest.parent.mkdir(parents=True, exist_ok=True)
+    if not project_manifest.exists():
+        project_manifest.write_text(json.dumps({
+            "schema_version": 1,
+            "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb",
+            "mode": "shared",
+        }), encoding="utf-8")
     plan_path = ".local-ai-hub/plans/workflow.plan.json"
     create_initial_plan_file(storage, plan_path)
     task_store.create(
@@ -342,6 +351,8 @@ def test_http_reconcile_updates_bound_task_and_plan(test_environment, tmp_path, 
     config.write_text(f'''[server]
 bind = "127.0.0.1"
 state_dir = "{state.as_posix()}"
+[local_ai_hub]
+config_schema_version = 1
 [agent_state]
 enabled = true
 [security]

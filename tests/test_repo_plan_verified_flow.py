@@ -103,6 +103,13 @@ def _crash_during_checkpoint(state_path, point):
 def environment(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
+    project_id = "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb"
+    project_dir = root / ".local-ai-hub"
+    project_dir.mkdir()
+    (project_dir / ".gitignore").write_text("local/\n", encoding="utf-8")
+    (project_dir / "project.json").write_text(json.dumps({
+        "schema_version": 1, "project_id": project_id, "mode": "shared",
+    }), encoding="utf-8")
     state = AgentStateStore(tmp_path / "state.db")
     tasks = TaskStore(state)
     artifacts = ArtifactStore(tmp_path / "artifacts")
@@ -110,7 +117,7 @@ def environment(tmp_path: Path):
     tasks.verification_store = verifier
     task = tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
-        context=ScopeContext(repository_id=str(root), session_id="session_a"),
+        context=ScopeContext(repository_id=project_id, session_id="session_a"),
         actor="agent_a", repo_root=str(root), task_id="execution_a",
     )
     storage = RepoPlanStorage(root)

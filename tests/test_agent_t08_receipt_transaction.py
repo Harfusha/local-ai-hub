@@ -1,7 +1,9 @@
 from contextlib import closing
+import json
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 
 import pytest
 
@@ -18,6 +20,13 @@ from local_ai_hub.process_utils import hidden_run_kwargs
 def _repository_fixture(tmp_path):
     repo_root = tmp_path / "repository"
     (repo_root / "tests").mkdir(parents=True)
+    local_hub = repo_root / ".local-ai-hub"
+    local_hub.mkdir()
+    (local_hub / "project.json").write_text(
+        json.dumps({"schema_version": 1, "project_id": str(uuid.uuid4()), "mode": "shared"}),
+        encoding="utf-8",
+    )
+    (local_hub / ".gitignore").write_text("local/\n", encoding="utf-8")
     (repo_root / ".local-ai.toml").write_text(
         '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n',
         encoding="utf-8",
@@ -26,7 +35,7 @@ def _repository_fixture(tmp_path):
     subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
     subprocess.run(["git", "config", "user.name", "Hub test"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
     subprocess.run(["git", "config", "user.email", "hub-test@example.invalid"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
-    subprocess.run(["git", "add", ".local-ai.toml", "tests/test_receipt_fixture.py"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "add", ".local-ai.toml", ".local-ai-hub", "tests/test_receipt_fixture.py"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
     subprocess.run(["git", "commit", "--quiet", "-m", "initialize receipt fixture"], cwd=repo_root, check=True, timeout=10, **hidden_run_kwargs())
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, capture_output=True, timeout=10, **hidden_run_kwargs(text=True)

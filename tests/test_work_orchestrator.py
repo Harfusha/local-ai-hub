@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -179,9 +180,16 @@ def config(state: Path):
 
 def init_repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"; root.mkdir()
+    local_hub = root / ".local-ai-hub"
+    local_hub.mkdir()
+    (local_hub / "project.json").write_text(
+        json.dumps({"schema_version": 1, "project_id": str(uuid.uuid4()), "mode": "shared"}),
+        encoding="utf-8",
+    )
+    (local_hub / ".gitignore").write_text("local/\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "a.txt").write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "a.txt", ".local-ai-hub"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "init"], check=True)
     return root
 
@@ -1062,7 +1070,10 @@ def test_work_order_http_post_transport_routes_to_orchestrator(tmp_path):
     state_dir = tmp_path / "state"
     cfg = tmp_path / "config.toml"
     cfg.write_text(
-        f'''[server]
+        f'''[local_ai_hub]
+config_schema_version = 1
+
+[server]
 bind = "127.0.0.1"
 port = 11435
 state_dir = "{state_dir.as_posix()}"
@@ -1181,6 +1192,7 @@ def test_orchestrator_uses_verification_store_from_services(tmp_path):
 
 def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
     from local_ai_hub.agent_verification import VerificationReceipt
+    from local_ai_hub.project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
     root = init_repo(tmp_path)
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
@@ -1228,8 +1240,11 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
                 owner=task_owner,
                 checkpoint=SimpleNamespace(state_data={
                     "_agent_task_scope": {
-                        "version": 2,
+                        "version": 4,
+                        "project_id": project_scope_id(root),
+                        "worktree_id": worktree_scope_id(root),
                         "repo_root": str(root.resolve()),
+                        "snapshot_id": repository_snapshot_id(root),
                     },
                 }),
             )
