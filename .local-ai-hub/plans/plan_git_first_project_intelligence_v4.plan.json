@@ -27,11 +27,28 @@
         "Business knowledge is source-grounded, freshness-aware, and used by ordinary task/solve/review/test flows.",
         "Findings preserve uncertainty, scope, provenance, review rationale, expiry, and verification status.",
         "Dashboard, HTTP, MCP, CLI, and supported provider setup expose consistent safe operations.",
-        "Laya remains advisory; deterministic policy, evidence, permissions, and abstention govern effects."
+        "Laya remains advisory; deterministic policy, evidence, permissions, and abstention govern effects.",
+        "No runtime MCP, HTTP, client, CLI, or repository-plan action reads or imports archived legacy data; automatic update-time migration is the only legacy reader."
       ],
       "accountable_role": "primary",
       "blocker": null,
-      "clarifications": [],
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_v4_no_runtime_legacy_20261128",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-25-git-first-unified-project-intelligence-v4.md",
+              "revision": {
+                "commit": "723238125f90aed2a9bd535acf07d72b428fed81",
+                "kind": "git_commit"
+              }
+            }
+          ],
+          "summary": "Uživatel požaduje nulové runtime legacy/backward compatibility mimo jednorázovou automatickou migraci při updatu. Odstranit runtime adopci archivovaného globálního boardu.",
+          "supersedes": []
+        }
+      ],
       "depends_on": [
         {
           "plan_id": "plan_git_first_project_intelligence_v4",
@@ -40,7 +57,7 @@
       ],
       "description": "Finish process/rule extraction, query and task context, findings lifecycle, review/remediation, UI/API/CLI surfaces, Laya gates, and provider workflow integration.",
       "kind": "code",
-      "next_action": "Complete business knowledge and workflow integration; §40 still lists many KI/UPS/P1 areas partial or not implemented.",
+      "next_action": "Finish remaining KI/UPS business workflows and provider/UI/Laya parity; validate all V4-E and UPS scenarios. Runtime legacy board adoption is removed; broader E2E and migration gates remain open.",
       "order": 2,
       "spec_refs": [
         {

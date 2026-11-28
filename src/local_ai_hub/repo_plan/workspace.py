@@ -10,7 +10,6 @@ import functools
 import hashlib
 import inspect
 import json
-import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -147,17 +146,7 @@ def _replayable_plan_edit(method):
                     raise RepoPlanConflictError("Idempotent plan snapshot revision does not match")
                 replay = {"success": True, "plan_id": values["plan_id"],
                           "file_revision": stored["file_revision"], "no_op": stored["no_op"]}
-                if method.__name__ == "adopt_legacy_board_items":
-                    response_data = stored.get("client_response_data")
-                    source_items = values.get("board_items")
-                    if (not isinstance(response_data, dict)
-                            or type(response_data.get("adopted_count")) is not int
-                            or not isinstance(source_items, list)
-                            or not 0 <= response_data["adopted_count"] <= len(source_items)):
-                        raise RepoPlanConflictError("Idempotent adoption result is invalid")
-                    count = response_data["adopted_count"]
-                    replay.update(adopted_count=count, tasks_imported=count)
-                elif method.__name__ == "delete_task":
+                if method.__name__ == "delete_task":
                     replay["task_id"] = values["task_id"]
                 elif method.__name__ == "edit_task":
                     task_id = values["task_id"]
@@ -780,122 +769,4 @@ class RepoPlanWorkspace:
             "columns": columns,
             "counts": counts,
             "total_items": total_items,
-        }
-
-    @_replayable_plan_edit
-    def adopt_legacy_board_items(
-        self,
-        plan_id: str = "default",
-        board_items: list[dict[str, Any]] | None = None,
-        title: str = "",
-        owner: str = "agent",
-        idempotency_key: str = "",
-        _client_request_fingerprint: str = "",
-    ) -> dict[str, Any]:
-        """Adopt SQLite board items into a file-backed plan without deleting the originals."""
-        items_to_adopt = board_items
-        if not isinstance(items_to_adopt, list):
-            raise RepoPlanValidationError("board_items must be a list")
-        seen_ids: dict[str, tuple[str, dict[str, Any]]] = {}
-        serialized_items: dict[str, str] = {}
-        for item in items_to_adopt:
-            if not isinstance(item, dict):
-                raise RepoPlanValidationError("legacy board item must be an object")
-            item_id = item.get("item_id", "")
-            item_title = item.get("title", "")
-            if not isinstance(item_title, str) or not isinstance(item_id, str):
-                raise RepoPlanValidationError("legacy board item ID and title must be strings")
-            if not item_title.strip():
-                raise RepoPlanValidationError("legacy board item title must not be blank")
-            if not item_id:
-                raise RepoPlanValidationError("legacy board item ID must not be empty")
-            status = item.get("status", "planned")
-            if not isinstance(status, str) or status.lower() not in {"planned", "in_progress", "active", "done", "blocked"}:
-                raise RepoPlanValidationError("legacy board item has an unsupported status")
-            safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
-            task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
-            if not TASK_ID_REGEX.fullmatch(task_id):
-                raise RepoPlanValidationError("legacy board item ID cannot form a valid task ID")
-            previous = seen_ids.get(task_id)
-            if previous is not None and (previous[0] != item_id or previous[1] != item):
-                raise RepoPlanConflictError(f"Legacy board identity collision for task '{task_id}'")
-            seen_ids[task_id] = (item_id, item)
-            try:
-                serialized_items[task_id] = json.dumps(item, ensure_ascii=False, sort_keys=True, allow_nan=False)
-            except (TypeError, ValueError, UnicodeError) as exc:
-                raise RepoPlanValidationError("legacy board item must contain finite JSON data") from exc
-        rel_path = self._plan_rel_path(plan_id)
-        full_path = self.repo_root / rel_path
-        if not full_path.exists():
-            self.init_workspace()
-            plan_dict = {"schema_version": 1, "id": plan_id, "title": title or f"Plan {plan_id}",
-                         "description": "Adopted from legacy board items", "lifecycle": "draft",
-                         "default_target_ref": "refs/heads/master", "spec_refs": [], "tasks": {}}
-            current_rev = ""
-        else:
-            plan_dict, current_rev = self.storage.read_plan_file(rel_path)
-        board_items = items_to_adopt
-
-        tasks = plan_dict.setdefault("tasks", {})
-        adopted_count = 0
-
-        for item in board_items:
-            item_id = item.get("item_id", "")
-            title = item.get("title", "").strip()
-
-            # Convert item_id to valid task_id
-            safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", item_id)
-            task_id = f"task_{safe_id}" if not safe_id.startswith("task_") else safe_id
-            marker = f"Adopted from board item {item_id}"
-            preserved_description = marker + "\nLegacy board item JSON:\n" + serialized_items[task_id]
-
-            if task_id in tasks:
-                existing = tasks[task_id]
-                description = existing.get("description") if isinstance(existing, dict) else None
-                if description == marker:
-                    existing["description"] = preserved_description
-                elif description != preserved_description:
-                    raise RepoPlanConflictError(f"Legacy board identity collision for existing task '{task_id}'")
-                continue
-
-            status = item.get("status", "planned").lower()
-            plan_status = "planned"
-            if status in {"in_progress", "active"}:
-                plan_status = "in_progress"
-            elif status == "done":
-                plan_status = "done"
-            elif status == "blocked":
-                plan_status = "blocked"
-
-            tasks[task_id] = {
-                "title": title,
-                "description": preserved_description,
-                "kind": "code",
-                "work_status": plan_status,
-                "depends_on": [],
-                "clarifications": [],
-                "acceptance_criteria": [],
-                "next_action": "",
-                "blocker": None,
-            }
-            adopted_count += 1
-
-        validate_plan_dict(plan_dict, repo_root=self.repo_root)
-
-        save_res = self.storage.save_plan_file(
-            rel_path,
-            plan_dict,
-            expected_revision=current_rev,
-            owner=owner,
-            idempotency_key=idempotency_key,
-            client_request_fingerprint=_client_request_fingerprint,
-            client_response_data={"adopted_count": adopted_count} if _client_request_fingerprint else None,
-        )
-        return {
-            "success": True,
-            "plan_id": plan_id,
-            "adopted_count": adopted_count,
-            "tasks_imported": adopted_count,
-            "file_revision": save_res["file_revision"],
-            "no_op": save_res["no_op"],
         }

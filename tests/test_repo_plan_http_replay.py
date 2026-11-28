@@ -1,10 +1,7 @@
 """Plan replay through registered MCP, real HTTP, and file-backed storage."""
 
 import asyncio
-import json
-import sqlite3
 import threading
-from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -15,7 +12,7 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.repo_plan.workspace import RepoPlanWorkspace
 
 
-@pytest.mark.parametrize("action", ["plan_create", "plan_update", "plan_update_crash", "plan_task_edit", "plan_task_delete", "plan_archive", "plan_adopt_legacy_board"])
+@pytest.mark.parametrize("action", ["plan_create", "plan_update", "plan_update_crash", "plan_task_edit", "plan_task_delete", "plan_archive"])
 def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, action):
     import local_ai_hub.repo_plan.workspace as workspace_module
     crash_reservation = action == "plan_update_crash"
@@ -28,38 +25,16 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     state.mkdir()
     config = tmp_path / "config.toml"
     config.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
+        f'[local_ai_hub]\nconfig_schema_version = 1\n\n[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
         f'\n[security]\nallowed_roots = ["{root.as_posix()}"]\n',
         encoding="utf-8",
     )
     workspace = RepoPlanWorkspace(root)
     workspace.init_workspace()
-    created = None if action in {"plan_create", "plan_adopt_legacy_board"} else workspace.create_plan(plan_id="plan_replay", title="Initial")
+    created = None if action == "plan_create" else workspace.create_plan(plan_id="plan_replay", title="Initial")
     if action in {"plan_task_edit", "plan_task_delete"}:
         created = workspace.edit_task("plan_replay", "task_a", title="Initial", expected_revision=created["file_revision"])
     app = LocalAIApp(str(config))
-    if action == "plan_adopt_legacy_board":
-        board_path = state / "agent_board.sqlite"
-        with closing(sqlite3.connect(board_path)) as connection, connection:
-            connection.executescript("""
-                CREATE TABLE agent_board_items (
-                    item_id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
-                    priority TEXT NOT NULL DEFAULT 'medium', labels_json TEXT NOT NULL DEFAULT '[]',
-                    assignee TEXT NOT NULL DEFAULT '', milestone TEXT NOT NULL DEFAULT '',
-                    linked_task_id TEXT NOT NULL DEFAULT '', details_json TEXT NOT NULL DEFAULT '{}',
-                    created_at REAL NOT NULL, updated_at REAL NOT NULL
-                );
-                CREATE TABLE agent_milestones (
-                    name TEXT PRIMARY KEY, target_date TEXT NOT NULL DEFAULT '',
-                    description TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
-                );
-            """)
-            connection.executemany(
-                "INSERT INTO agent_board_items (item_id, title, status, priority, labels_json, assignee, details_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(f"legacy_{index}", f"Legacy {index}", "planned", "high", '["urgent"]', "Adam", '{"description":"kept"}', 1.0, float(index)) for index in range(201)],
-            )
-        from local_ai_hub.legacy_board_archive import migrate_legacy_board_database
-        migrate_legacy_board_database(state)
     monkeypatch.setattr(http_server, "APP", app)
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -72,7 +47,7 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
                  "idempotency_key": "http-retry"}
     if created is not None:
         arguments["expected_revision"] = created["file_revision"]
-    if action in {"plan_create", "plan_update", "plan_adopt_legacy_board"}:
+    if action in {"plan_create", "plan_update"}:
         arguments["title"] = "First"
         different = {**arguments, "title": "Different"}
     elif action == "plan_task_edit":
@@ -98,15 +73,6 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
         _, first = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
         assert first["success"] is True, first
         assert first["mutation_applied"] is True
-        if action == "plan_adopt_legacy_board":
-            tasks = workspace.get_plan("plan_replay")["plan"]["tasks"]
-            assert len(tasks) == 201
-            metadata = json.loads(tasks["task_legacy_0"]["description"].split("\nLegacy board item JSON:\n", 1)[1])
-            assert metadata["priority"] == "high" and metadata["labels"] == ["urgent"]
-            assert metadata["assignee"] == "Adam" and metadata["details"]["description"] == "kept"
-            from local_ai_hub.legacy_board_archive import ARCHIVE_NAME, read_legacy_board_archive
-            assert not board_path.exists()
-            assert len(read_legacy_board_archive(state)) == 201
         later = workspace.update_plan("plan_replay", description="Later", expected_revision=first["file_revision"])
         _, replay = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", arguments))
         assert replay["success"] is True, replay

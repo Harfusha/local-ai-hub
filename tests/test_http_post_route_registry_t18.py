@@ -179,7 +179,6 @@ _CURRENT_ADDED_ROUTES = {
  'post_coord_plan_validate_1': {'paths': ['/api/coord/plan_validate'], 'before': 'post_benchmark_run_1'},
  'post_coord_plan_archive_1': {'paths': ['/api/coord/plan_archive'], 'before': 'post_benchmark_run_1'},
  'post_coord_plan_board_view_1': {'paths': ['/api/coord/plan_board_view'], 'before': 'post_benchmark_run_1'},
- 'post_coord_plan_adopt_legacy_board_1': {'paths': ['/api/coord/plan_adopt_legacy_board'], 'before': 'post_benchmark_run_1'},
  'post_coord_plan_bind_task_1': {'paths': ['/api/coord/plan_bind_task'], 'before': 'post_benchmark_run_1'},
  'post_coord_plan_reconcile_steering_1': {'paths': ['/api/coord/plan_reconcile_steering'], 'before': 'post_benchmark_run_1'},
  'post_gpu_reservation_1': {'paths': ['/api/gpu-reservation'], 'before': 'post_delegate_repo_1'},

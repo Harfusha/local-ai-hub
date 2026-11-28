@@ -231,24 +231,6 @@ class ServiceCoordinationMixin:
         arguments = dict(plan_id=plan_id, query=query, worktree_id=worktree_id)
         return self._plan_workspace(root, "plan_board_view", arguments).get_board_view(**arguments)
 
-    def plan_adopt_legacy_board(self, root: str = "", plan_id: str = "", title: str = "",
-                               owner: str = "agent", idempotency_key: str = "") -> dict[str, Any]:
-        arguments = dict(plan_id=plan_id, title=title, owner=owner, idempotency_key=idempotency_key)
-        ws = self._plan_workspace(root, "plan_adopt_legacy_board", arguments)
-        from .legacy_board_archive import ARCHIVE_NAME, read_legacy_board_archive
-        from .repo_plan.schema_validation import RepoPlanConflictError
-
-        state_dir = Path(self.config.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
-        if not (state_dir / ARCHIVE_NAME).is_file():
-            raise RepoPlanConflictError("no update-migrated global board archive is available")
-        try:
-            items = read_legacy_board_archive(state_dir)
-        except (OSError, ValueError) as exc:
-            raise RepoPlanConflictError(f"global board archive cannot be imported: {exc}") from exc
-        if len(items) > 1000:
-            raise RepoPlanConflictError("legacy board exceeds the 1000-item plan capacity")
-        return ws.adopt_legacy_board_items(board_items=items, **arguments)
-
     def plan_bind_task(self, root: str = "", task_id: str = "", plan_id: str = "",
                        plan_task_id: str = "", expected_revision: str | None = None,
                        session_id: str = "") -> dict[str, Any]:

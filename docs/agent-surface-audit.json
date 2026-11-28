@@ -2005,28 +2005,6 @@
         ]
       }
     },
-    "MCP local_ai_coord.plan_adopt_legacy_board": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
     "MCP local_ai_coord.plan_archive": {
       "decision": "retain",
       "role": "agent",
@@ -6865,19 +6843,6 @@
           "_invoke_cancellable_request",
           "local:result"
         ],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_adopt_legacy_board": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_adopt_legacy_board_1",
-        "literal_response_fields": [],
-        "response_producers": [],
         "action_literals": []
       }
     },

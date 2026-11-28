@@ -7,11 +7,12 @@ Confirms that:
    - Board view / Kanban (plan_board_view)
    - Session briefing (session_briefing)
    - Context compilation (ContextCompiler / context_compile)
-3. Legacy SQLite board items are cleanly adoptable into plan files without data loss.
+3. Legacy SQLite board state is read only by the update-time archive migration.
 4. Agent OS task checkpoints immediately synchronize to the bound plan task.
 """
 
 from pathlib import Path
+import json
 import sqlite3
 import time
 from contextlib import closing
@@ -39,6 +40,13 @@ def repo_env(tmp_path: Path):
     """Setup a temporary repo root with state and db."""
     root = tmp_path / "test_repo"
     root.mkdir()
+    project_dir = root / ".local-ai-hub"
+    project_dir.mkdir()
+    (project_dir / "project.json").write_text(json.dumps({
+        "schema_version": 1,
+        "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb",
+        "mode": "shared",
+    }), encoding="utf-8")
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     db_path = state_dir / "agent_board.db"
@@ -246,8 +254,7 @@ def test_contract_reconciliation_single_source_of_truth(repo_env):
     assert "crash recovery" in spec_path.read_text(encoding="utf-8")
 
 
-def test_adopt_legacy_board_no_duplicate_planner(repo_env):
-    """Verify adopting legacy SQLite items converts them into the authoritative plan and removes dual writers."""
+def test_update_migrates_legacy_board_without_runtime_adoption(repo_env):
     root, state_dir, db_path, task_db_path = repo_env
     db_path = state_dir / "agent_board.sqlite"
     now = time.time()
@@ -276,21 +283,13 @@ def test_adopt_legacy_board_no_duplicate_planner(repo_env):
             ],
         )
 
-    # Update migration archives old rows; an explicit repo selection imports them.
+    # Legacy data is read only by the update migration and remains archived.
     migrate_legacy_board_database(state_dir)
-    services = make_services(state_dir)
-    adopt_res = services.plan_adopt_legacy_board(root=str(root), plan_id="plan_migrated", title="Migrated Plan")
-    assert adopt_res["success"] is True
-    assert adopt_res["tasks_imported"] == 2
+    from local_ai_hub.legacy_board_archive import read_legacy_board_archive
 
-    # Verify plan file now holds both tasks
-    plan = RepoPlanWorkspace(str(root)).get_plan("plan_migrated")["plan"]
-    assert len(plan["tasks"]) == 2
-
-    # Board view reads only the resulting file-backed plan.
-    board = services.plan_board_view(root=str(root))
-    assert len(board["columns"]["planned"]) == 1
-    assert len(board["columns"]["in_progress"]) == 1
+    assert not db_path.exists()
+    assert len(read_legacy_board_archive(state_dir)) == 2
+    assert not hasattr(make_services(state_dir), "plan_adopt_legacy_board")
 
 
 def test_all_public_plan_http_paths_are_registered():
@@ -299,7 +298,7 @@ def test_all_public_plan_http_paths_are_registered():
     actions = (
         "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
         "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
-        "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task",
+        "plan_board_view", "plan_bind_task",
         "plan_reconcile_steering",
     )
     for action in actions:

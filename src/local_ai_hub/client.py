@@ -1817,11 +1817,6 @@ class HubClient:
         return self.coord(action="plan_board_view", root=root, plan_id=plan_id,
                           query=query, worktree_id=worktree_id)
 
-    def adopt_legacy_board(self, plan_id: str, *, root: str, title: str = "",
-                           owner: str = "agent", idempotency_key: str = "") -> dict[str, Any]:
-        return self.coord(action="plan_adopt_legacy_board", root=root, plan_id=plan_id,
-                          title=title, owner=owner, idempotency_key=idempotency_key)
-
     def bind_plan_task(self, task_id: str, plan_id: str, plan_task_id: str, *, root: str,
                        expected_revision: str | None = None, session_id: str = "") -> dict[str, Any]:
         arguments = dict(root=root, task_id=task_id, plan_id=plan_id,

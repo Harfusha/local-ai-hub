@@ -274,7 +274,7 @@ _COORD_ACTIONS = (
     "task_claim", "record_native_receipt",
     "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
     "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
-    "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task", "plan_reconcile_steering",
+    "plan_board_view", "plan_bind_task", "plan_reconcile_steering",
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list", "source")
@@ -967,7 +967,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "plan_validate": ("root", "plan_id"),
             "plan_archive": ("root", "plan_id", "expected_revision", "idempotency_key", "owner"),
             "plan_board_view": ("root", "plan_id", "query", "worktree_id"),
-            "plan_adopt_legacy_board": ("root", "plan_id", "title", "owner", "idempotency_key"),
             "plan_bind_task": ("root", "task_id", "plan_id", "plan_task_id", "expected_revision", "session_id"),
             "plan_reconcile_steering": ("root", "task_id", "steering_id", "spec_rel_path", "spec_content", "acceptance_criteria", "expected_revision", "expected_spec_revision", "summary"),
         },
@@ -1065,7 +1064,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "plan_validate": ("root", "plan_id"),
             "plan_archive": ("root", "plan_id", "expected_revision"),
             "plan_board_view": ("root",),
-            "plan_adopt_legacy_board": ("root", "plan_id"),
             "plan_bind_task": ("root", "task_id", "plan_id", "plan_task_id"),
             "plan_reconcile_steering": ("root", "task_id", "steering_id", "spec_rel_path", "spec_content", "acceptance_criteria", "expected_revision", "expected_spec_revision"),
         },

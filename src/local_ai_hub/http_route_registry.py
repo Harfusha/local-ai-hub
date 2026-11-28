@@ -51,7 +51,6 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_coord_plan_validate_1', frozenset(('/api/coord/plan_validate',))),
     RouteRule('post_coord_plan_archive_1', frozenset(('/api/coord/plan_archive',))),
     RouteRule('post_coord_plan_board_view_1', frozenset(('/api/coord/plan_board_view',))),
-    RouteRule('post_coord_plan_adopt_legacy_board_1', frozenset(('/api/coord/plan_adopt_legacy_board',))),
     RouteRule('post_coord_plan_bind_task_1', frozenset(('/api/coord/plan_bind_task',))),
     RouteRule('post_coord_plan_reconcile_steering_1', frozenset(('/api/coord/plan_reconcile_steering',))),
     RouteRule('post_benchmark_run_1', frozenset(('/api/benchmark/run',))),

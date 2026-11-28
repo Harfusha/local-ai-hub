@@ -140,7 +140,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | HTTP POST | /api/context/pack | conditional | tools/surface_inventory.py | op-bc749f02b288 |
 | HTTP POST | /api/conversations/continue | confirmed | src/local_ai_hub/http_route_registry.py | op-39cb63957f93 |
 | HTTP POST | /api/coord/plan_ | confirmed | src/local_ai_hub/http_routes_post.py | op-0be3b71c9a73 |
-| HTTP POST | /api/coord/plan_adopt_legacy_board | confirmed | src/local_ai_hub/http_route_registry.py | op-45c9226f9570 |
 | HTTP POST | /api/coord/plan_archive | confirmed | src/local_ai_hub/http_route_registry.py | op-bb950955847d |
 | HTTP POST | /api/coord/plan_bind_task | confirmed | src/local_ai_hub/http_route_registry.py | op-592b47089a48 |
 | HTTP POST | /api/coord/plan_board_view | confirmed | src/local_ai_hub/http_route_registry.py | op-cc4751eaaedc |
@@ -318,7 +317,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | MCP action local_ai_coord | memory_record | confirmed | src/local_ai_hub/generator.py | op-90b617e52e5c |
 | MCP action local_ai_coord | negative_knowledge_find | confirmed | src/local_ai_hub/generator.py | op-d40ecfa5c1c9 |
 | MCP action local_ai_coord | negative_knowledge_record | confirmed | src/local_ai_hub/generator.py | op-e7f297ebbc4d |
-| MCP action local_ai_coord | plan_adopt_legacy_board | confirmed | src/local_ai_hub/generator.py | op-14bb9ab09b15 |
 | MCP action local_ai_coord | plan_archive | confirmed | src/local_ai_hub/generator.py | op-cab729821b3e |
 | MCP action local_ai_coord | plan_bind_task | confirmed | src/local_ai_hub/generator.py | op-f722d32ece3d |
 | MCP action local_ai_coord | plan_board_view | confirmed | src/local_ai_hub/generator.py | op-89489a592e6d |
@@ -553,7 +551,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | HubClient method | validate_plan | confirmed | src/local_ai_hub/client.py | op-c97b42877aa6 |
 | HubClient method | archive_plan | confirmed | src/local_ai_hub/client.py | op-6d04ed7d5f3e |
 | HubClient method | get_plan_board_view | confirmed | src/local_ai_hub/client.py | op-800a3ce9f149 |
-| HubClient method | adopt_legacy_board | confirmed | src/local_ai_hub/client.py | op-5571ff121b64 |
 | HubClient method | bind_plan_task | confirmed | src/local_ai_hub/client.py | op-9b3b7aa206a0 |
 | HubClient method | reconcile_plan_steering | confirmed | src/local_ai_hub/client.py | op-92f52f234946 |
 | HubClient method | context_compile | confirmed | src/local_ai_hub/client.py | op-8d57b4edf360 |
@@ -674,6 +671,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_ff75420
 | CLI operation | dashboard | confirmed | tools/hubctl.py | op-a7abef5e4884 |
 | CLI operation | doctor | confirmed | tools/hubctl.py | op-b33c959eab65 |
 | CLI operation | generate | confirmed | tools/hubctl.py | op-53d2882e6404 |
+| CLI operation | knowledge | confirmed | tools/hubctl.py | op-32c5a41228d0 |
 | CLI operation | logs | confirmed | tools/hubctl.py | op-7a6e42f71891 |
 | CLI operation | memory | confirmed | tools/hubctl.py | op-ee8a4e3836f2 |
 | CLI operation | mode | confirmed | tools/hubctl.py | op-9dc37e51eae5 |

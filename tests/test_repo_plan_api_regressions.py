@@ -1,7 +1,5 @@
 """Public planner regressions against real file-backed workspace operations."""
 
-from pathlib import Path
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,23 +23,11 @@ def public_planner(tmp_path):
     return services, str(root)
 
 
-def test_adoption_rejects_over_capacity_before_any_plan_write(public_planner, tmp_path):
-    from local_ai_hub.legacy_board_archive import ARCHIVE_NAME
-    services, root = public_planner
-    state_dir = Path(services.config["server"]["state_dir"])
-    state_dir.mkdir(parents=True)
-    items = [{
-        "item_id": f"legacy_{index}", "title": f"Legacy {index}", "status": "planned",
-        "priority": "medium", "assignee": "", "milestone": "", "linked_task_id": "",
-        "created_at": 1.0, "updated_at": float(index), "labels": [], "details": {},
-    } for index in range(1001)]
-    (state_dir / ARCHIVE_NAME).write_text(
-        json.dumps({"schema_version": 1, "items": items, "milestones": []}), encoding="utf-8",
-    )
-    with pytest.raises(RepoPlanConflictError, match="1000"):
-        services.plan_adopt_legacy_board(root=root, plan_id="plan_adopted", title="Adopted")
-    assert not (Path(root) / ".local-ai-hub/plans/plan_adopted.plan.json").exists()
-    assert len(json.loads((state_dir / ARCHIVE_NAME).read_text(encoding="utf-8"))["items"]) == 1001
+def test_legacy_board_import_is_not_a_runtime_operation(public_planner):
+    services, _root = public_planner
+    assert not hasattr(services, "plan_adopt_legacy_board")
+    assert not hasattr(RepoPlanWorkspace, "adopt_legacy_board_items")
+    assert validate_operation_arguments("local_ai_coord", "plan_adopt_legacy_board", {})
 
 
 def test_real_public_plan_lifecycle(public_planner):
