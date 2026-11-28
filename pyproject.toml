@@ -18,6 +18,7 @@ dependencies = [
   "jsonschema>=4.18,<5",
   "huggingface-hub>=0.30,<3",
   "pyzipper>=0.4,<1",
+  "Pillow>=12,<13",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -59,8 +60,6 @@ local_ai_hub = [
   "defaults.toml",
   "automation_browser.js",
   "grammars/*.gbnf",
-  "ui_static/*",
-  "ui_static/dist/*",
   "data/*.json",
 ]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
@@ -117,7 +116,7 @@ source = ["local_ai_hub"]
 show_missing = true
 
 [tool.mypy]
-python_version = "8.2.0"
+python_version = "3.11"
 mypy_path = "src"
 strict = true
 warn_unused_configs = true
@@ -149,7 +148,7 @@ files = [
 ]
 
 [tool.ruff]
-target-version = "8.2.0"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]

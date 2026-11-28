@@ -165,8 +165,10 @@ class TelemetryQueryMixin:
                     sql + " ORDER BY id DESC LIMIT ?",
                     (*values, bounded_limit + 1),
                 ).fetchall()
-        except (sqlite3.OperationalError, sqlite3.DatabaseError):
-            return {"timeline": [], "next_cursor": None, "has_more": False}
+        except sqlite3.DatabaseError:
+            # The HTTP boundary maps storage failures to a retryable 503.
+            # Returning an empty terminal page would silently lose history.
+            raise
         has_more = len(rows) > bounded_limit
         page_rows = list(reversed(rows[:bounded_limit]))
         timeline = [

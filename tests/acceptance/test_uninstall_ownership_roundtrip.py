@@ -37,7 +37,8 @@ def test_uninstall_deactivates_owned_skills_across_configured_hosts(tmp_path: Pa
         (home / ".codex" / "skills", "plan-led-work"),
         (home / ".cursor" / "skills", "ponytail-audit"),
         (home / ".codeium" / "windsurf" / "skills", "ponytail-review"),
-        (home / "AppData" / "Roaming" / "devin" / "skills", "local-ai-orchestrator"),
+        ((home / "AppData" / "Roaming" / "devin" if sys.platform == "win32"
+          else home / ".config" / "devin") / "skills", "local-ai-orchestrator"),
         (home / ".copilot" / "skills", "token-economizer"),
         (profile_home / ".gemini" / "config" / "skills", "using-superpowers"),
         (home / ".gemini" / "skills", "former-managed-skill"),
@@ -73,6 +74,11 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
     install = tmp_path / "install"
     home.mkdir()
     install.mkdir()
+    # configure_agents generates artifacts from the canonical installed defaults.
+    (install / "defaults.toml").write_bytes((ROOT / "defaults.toml").read_bytes())
+    (install / "src" / "local_ai_hub").mkdir(parents=True)
+    packaged_defaults = ROOT / "src" / "local_ai_hub" / "defaults.toml"
+    original_packaged_defaults = packaged_defaults.read_bytes()
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.setattr(setup, "get_user_homes", lambda: [home])
@@ -85,7 +91,8 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         ".gemini/config/mcp_config.json": "mcpServers",
         ".cursor/mcp.json": "mcpServers",
         ".codeium/windsurf/mcp_config.json": "mcpServers",
-        "AppData/Roaming/devin/mcp_config.json": "mcpServers",
+        ("AppData/Roaming/devin/mcp_config.json" if sys.platform == "win32"
+         else ".config/devin/mcp_config.json"): "mcpServers",
         ".copilot/mcp-config.json": "mcpServers",
         ".local-ai/generic-mcp.json": "mcpServers",
         ".local-ai/vscode-mcp.json": "servers",
@@ -125,8 +132,14 @@ def test_all_agent_mcp_entries_roundtrip_and_user_edits_survive(tmp_path: Path, 
         for component in ("mcp", "skills", "instructions")
     }
     components["agent_antigravity_hooks"] = True
+    # This roundtrip exercises standalone MCP and hooks, not the native
+    # Antigravity plugin route (which intentionally avoids duplicate entries).
+    components["agent_antigravity_plugin"] = False
+    monkeypatch.setattr(setup, "gemini_cli_extension_active", lambda *_args: False)
+    monkeypatch.setattr(setup, "ensure_gemini_cli_extension", lambda *_args, **_kwargs: None)
 
     setup.configure_agents(install, Path(sys.executable), None, cfg, include_companion=False, agent_components=components)
+    assert packaged_defaults.read_bytes() == original_packaged_defaults
     manifest = uninstall.read_install_manifest(install)
     owned_paths = {
         Path(record["path"]).resolve()

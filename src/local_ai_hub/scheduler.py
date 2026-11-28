@@ -2631,14 +2631,13 @@ class AffinityScheduler:
         }
 
     def status(self) -> dict[str, Any]:
+        # Status is an advisory observation, never an admission decision. Read
+        # external state and runtime statistics once before taking the queue lock;
+        # disk or runtime stalls must not serialize scheduler progress.
         external_gpu_reserved = self._external_gpu_reserved()
         external_gpu_blocked = self._external_gpu_blocks_scheduler()
         capacity_sharing_active = self._capacity_sharing_active()
         cache_stats = self._cache_stats()
-        background_allowed = self.background_allowed(
-            external_gpu_reserved=external_gpu_reserved,
-            capacity_sharing_active=capacity_sharing_active,
-        )
         with self._cond:
             by_model: dict[str, int] = {}
             background_queued = 0
@@ -2691,7 +2690,11 @@ class AffinityScheduler:
                 "pending_jobs_truncated": len(self._pending) > self.status_max_items,
                 "inflight_jobs": inflight_jobs,
                 "active_batch_dispatched": self._active_dispatched,
-                "background_allowed": background_allowed,
+                "background_allowed": not (
+                    external_gpu_reserved or capacity_sharing_active or self._internal_gpu_uncertain
+                    or self._inflight - self._inflight_background > 0
+                    or any(not j.background and j.capacity_retry_at <= now for j in self._pending)
+                ) and now - self._last_foreground_activity >= self.background_idle_grace,
                 "blocked_models": {m: max(0, int((until - now) * 1000)) for m, until in self._model_blocked_until.items() if until > now},
                 "last_foreground_activity_ms": max(0, int((now - self._last_foreground_activity) * 1000)),
                 "stats": dict(self._stats),

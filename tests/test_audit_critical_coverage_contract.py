@@ -163,3 +163,33 @@ def test_normalized_source_path_collisions_and_boolean_schema_reject():
     baseline["schema_version"] = True
     assert critical_coverage.check_report(_report({MODULE: _module()}), baseline)["success"] is False
 
+
+
+def test_split_broker_retains_aggregate_historical_threshold_and_requires_every_module():
+    historical = "src/local_ai_hub/commands.py"
+    paths = critical_coverage.COMMAND_BROKER_IMPLEMENTATION
+    baseline = _baseline(_report({paths[0]: _module(9, 10)}), modules=[paths[0]])
+    baseline["modules"] = {historical: _summary(8, 10)}
+    current = _report({path: _module(8, 10) for path in paths})
+    assert critical_coverage.check_report(current, baseline, required_modules=[historical])["success"]
+    current["files"][paths[0]] = _module(7, 10)
+    assert not critical_coverage.check_report(current, baseline)["success"]
+    current["files"].pop(paths[0])
+    current["files"][historical] = _module(10, 10)
+    result = critical_coverage.check_report(current, baseline)
+    assert not result["success"]
+    assert any(paths[0] in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("historical,actual", critical_coverage.FUNCTION_RELOCATIONS.items())
+def test_relocated_function_must_be_measured_at_implementation(historical, actual):
+    old_path, old_name = historical.split("::")
+    path, name = actual.split("::")
+    report = _report({MODULE: _module(), path: _module(functions={name: (8, 10)})})
+    baseline = _baseline(report, functions=[historical])
+    assert critical_coverage.check_report(report, baseline, required_functions=[historical])["success"]
+    report["files"][path]["functions"][name]["summary"] = _summary(7, 10)
+    assert not critical_coverage.check_report(report, baseline)["success"]
+    report["files"].pop(path)
+    report["files"][old_path] = _module(functions={old_name: (10, 10)})
+    assert not critical_coverage.check_report(report, baseline)["success"]

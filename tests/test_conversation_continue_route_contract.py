@@ -19,6 +19,7 @@ def production_hub(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     config = tmp_path / "config.toml"
     config.write_text(
+        '[local_ai_hub]\nconfig_schema_version = 1\n'
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[hardware]\nprofile = "balanced"\n'

@@ -1993,7 +1993,7 @@ def test_config_update_reset_exposes_file_label_without_host_path(monkeypatch, t
     app = SimpleNamespace(
         config={
             "security": {},
-            "features": {"dashboard": True},
+            "features": {"status": True},
             "_config_path": str(tmp_path / "hub.toml"),
         },
         recovery=None,
@@ -2023,7 +2023,7 @@ def test_config_update_error_does_not_disclose_host_path(monkeypatch, tmp_path):
     responses = _dispatch_post(
         monkeypatch,
         "/api/config/update",
-        {"settings": {"features.dashboard": False}},
+        {"settings": {"features.status": False}},
         app,
     )
 

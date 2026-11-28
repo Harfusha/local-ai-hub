@@ -2445,6 +2445,8 @@ def test_setup_rerun_preserves_installed_config_without_explicit_override(tmp_pa
     (source / "config.toml").write_text(f'[setup]\ninstall_dir="{install.as_posix()}"\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
     installed = install / "config.toml"
     installed.write_text(f'[setup]\ninstall_dir="{install.as_posix()}"\n[hardware]\nprofile="high"\n', encoding="utf-8")
+    (install / "tools").mkdir()
+    (install / "tools" / "service.py").write_text("# existing Hub entrypoint\n", encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
     selected, cfg, selected_install = setup.select_config_source(None)
     assert selected == installed.resolve()
@@ -2459,6 +2461,8 @@ def test_setup_explicit_config_wins_over_installed_config(tmp_path: Path, monkey
     explicit = source / "custom.toml"
     explicit.write_text(f'[setup]\ninstall_dir="{install.as_posix()}"\n[hardware]\nprofile="low"\n', encoding="utf-8")
     (install / "config.toml").write_text(f'[setup]\ninstall_dir="{install.as_posix()}"\n[hardware]\nprofile="high"\n', encoding="utf-8")
+    (install / "tools").mkdir()
+    (install / "tools" / "service.py").write_text("# existing Hub entrypoint\n", encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
     selected, cfg, selected_install = setup.select_config_source(explicit)
     assert selected == explicit.resolve()
@@ -2560,6 +2564,8 @@ def test_skip_service_does_not_restart_global_hub_without_managed_service(tmp_pa
     source_config = source / "config.toml"
     source_config.write_text(config_text, encoding="utf-8")
     (install / "config.toml").write_text(config_text, encoding="utf-8")
+    (install / "tools").mkdir()
+    (install / "tools" / "service.py").write_text("# existing Hub entrypoint\n", encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
     monkeypatch.setattr(setup, "copy_install_tree", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
@@ -2609,6 +2615,8 @@ def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatc
     )
     (source / "config.toml").write_text(config_text, encoding="utf-8")
     (install / "config.toml").write_text(config_text, encoding="utf-8")
+    (install / "tools").mkdir()
+    (install / "tools" / "service.py").write_text("# existing Hub entrypoint\n", encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
     monkeypatch.setattr(setup, "copy_install_tree", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")

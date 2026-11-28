@@ -95,6 +95,22 @@ _SKIP_DIRS = {
 }
 
 
+def _eligible_instruction_path(path: Path, root: Path) -> bool:
+    if not path.is_relative_to(root) or path == root:
+        return False
+    lower = path.name.casefold()
+    parts = [part.casefold() for part in path.relative_to(root).parts[:-1]]
+    if (lower.endswith(".original.md") or _has_reparse_ancestor(path)
+            or any(part in _SKIP_DIRS or part.endswith(".original") for part in parts)
+            or any(part.casefold() in {"plugins", "cache", "caches"} for part in root.parts)):
+        return False
+    in_rules = any(part in {"skills", "rules", "instructions", "prompts", "mcp-prompts"} for part in parts)
+    return (lower in _INSTRUCTION_NAMES
+            or (in_rules and (lower in {"readme.md", "mcp.md", "instructions.md"}
+                              or lower.endswith((".mdc", ".md", ".txt"))))
+            or ("agents" in parts and lower.endswith(".md")))
+
+
 def discover_instruction_files(roots: list[Path]) -> list[Path]:
     """Find agent instructions under explicit roots; skip managed/vendor trees."""
     found: set[Path] = set()
@@ -115,13 +131,7 @@ def discover_instruction_files(roots: list[Path]) -> list[Path]:
             )
             for name in filenames:
                 path = base / name
-                lower = name.casefold()
-                if lower.endswith(".original.md") or _has_reparse_ancestor(path):
-                    continue
-                parts = [part.casefold() for part in path.relative_to(root).parts[:-1]]
-                in_rules = any(part in {"skills", "rules", "instructions", "prompts", "mcp-prompts"} for part in parts)
-                in_agent_specs = "agents" in parts
-                if lower in _INSTRUCTION_NAMES or (in_rules and (lower in {"readme.md", "mcp.md", "instructions.md"} or lower.endswith((".mdc", ".md", ".txt")))) or (in_agent_specs and lower.endswith(".md")):
+                if _eligible_instruction_path(path, root):
                     found.add(path.resolve(strict=True))
     return sorted(found, key=lambda p: str(p).casefold())
 
@@ -181,16 +191,14 @@ def backup_instruction(source: Path, stage_root: Path) -> StagedInstruction:
     stage_root = stage_root.resolve(strict=True)
     if stage_root == source.parent or source.parent in stage_root.parents or stage_root in source.parents:
         raise ValueError("staging must be outside the source tree")
-    original = source.read_bytes()
-    if len(original) > 1024 * 1024:
-        raise ValueError("instruction file exceeds 1 MiB")
+    original = _bounded_regular_bytes(source, 1024 * 1024)
     text = original.decode("utf-8")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     folder = Path(tempfile.mkdtemp(prefix="instruction-", dir=stage_root))
     backup = folder / f"original{source.suffix.lower()}"
     backup.write_bytes(original)
     original_sha256 = _sha256(original)
-    backup_bytes = backup.read_bytes()
+    backup_bytes = _bounded_regular_bytes(backup, 1024 * 1024)
     backup_sha256 = _sha256(backup_bytes)
     if backup_sha256 != original_sha256:
         raise OSError("backup verification failed")
@@ -214,10 +222,10 @@ def compress_backed_up_instruction(
     if prepared.candidate is not None or prepared.candidate_sha256 is not None:
         raise ValueError("instruction already has a staged candidate")
     source = prepared.source
-    original = prepared.backup.read_bytes()
+    original = _bounded_regular_bytes(prepared.backup, 1024 * 1024)
     if _sha256(original) != prepared.original_sha256 or prepared.backup_sha256 != prepared.original_sha256:
         raise ValueError("verified backup changed; refusing compression")
-    if _sha256(source.read_bytes()) != prepared.original_sha256:
+    if _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != prepared.original_sha256:
         raise ValueError("source changed after backup; refusing compression")
     text = original.decode("utf-8")
     output = compressor(text)
@@ -245,11 +253,11 @@ def compress_backed_up_instruction(
             raise ValueError(f"semantic review found {key} content")
     if review.get("equivalent") is not True:
         raise ValueError("semantic review did not affirm equivalence")
-    if _sha256(source.read_bytes()) != prepared.original_sha256:
+    if _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != prepared.original_sha256:
         raise ValueError("source changed while compression ran")
     candidate = prepared.backup.parent / f"candidate{source.suffix.lower()}"
     candidate.write_bytes(candidate_bytes)
-    candidate_bytes = candidate.read_bytes()
+    candidate_bytes = _bounded_regular_bytes(candidate, 1024 * 1024)
     result = StagedInstruction(
         source=source, backup=prepared.backup, candidate=candidate,
         original_sha256=prepared.original_sha256, backup_sha256=prepared.backup_sha256,
@@ -283,16 +291,16 @@ def apply_instruction(staged: StagedInstruction) -> None:
         staged.semantic_review.get(key) != [] for key in ("missing", "weakened", "changed", "uncertain")
     ):
         raise ValueError("candidate lacks a clean semantic review")
-    if _has_reparse_ancestor(source) or _sha256(source.read_bytes()) != staged.original_sha256:
+    if _has_reparse_ancestor(source) or _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != staged.original_sha256:
         raise ValueError("source changed after staging; refusing apply")
-    backup = staged.backup.read_bytes()
-    candidate = staged.candidate.read_bytes()
+    backup = _bounded_regular_bytes(staged.backup, 1024 * 1024)
+    candidate = _bounded_regular_bytes(staged.candidate, 1024 * 1024)
     if _sha256(backup) != staged.backup_sha256 or _sha256(backup) != staged.original_sha256:
         raise ValueError("verified backup changed; refusing apply")
     if _sha256(candidate) != staged.candidate_sha256:
         raise ValueError("candidate changed after review; refusing apply")
     _safe_replace(source, candidate)
-    if _sha256(source.read_bytes()) != staged.candidate_sha256:
+    if _sha256(_bounded_regular_bytes(source, 1024 * 1024)) != staged.candidate_sha256:
         raise OSError(f"applied candidate verification failed; verified backup retained at {staged.backup}")
 
 
@@ -302,14 +310,116 @@ def restore_instruction(staged: StagedInstruction) -> None:
         raise ValueError("source path changed to a symlink or junction; refusing restore")
     if staged.candidate is None or staged.candidate_sha256 is None:
         raise ValueError("instruction has no staged candidate")
-    if _sha256(staged.candidate.read_bytes()) != staged.candidate_sha256:
+    if _sha256(_bounded_regular_bytes(staged.candidate, 1024 * 1024)) != staged.candidate_sha256:
         raise ValueError("candidate changed; refusing restore")
-    if _sha256(staged.source.read_bytes()) != staged.candidate_sha256:
+    if _sha256(_bounded_regular_bytes(staged.source, 1024 * 1024)) != staged.candidate_sha256:
         raise ValueError("source changed after apply; refusing restore")
-    original = staged.backup.read_bytes()
+    original = _bounded_regular_bytes(staged.backup, 1024 * 1024)
     if _sha256(original) != staged.original_sha256:
         raise ValueError("verified backup changed; refusing restore")
     _safe_replace(staged.source, original)
+
+
+def _bounded_regular_bytes(path: Path, limit: int) -> bytes:
+    if _has_reparse_ancestor(path) or not path.is_file():
+        raise ValueError("Expected a regular file without symlinks or junctions")
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("Staged instruction file exceeds byte limit")
+    return data
+
+
+def reviewed_instruction_manifest(
+    manifest_path: Path, *, repository_root: Path, stage_root: Path,
+    action: str = "inspect", expected_digest: str = "",
+) -> dict[str, object]:
+    """Inspect or apply exactly one explicitly reviewed local manifest.
+
+    The manifest is not an authorization token. It must remain within the
+    configured staging directory, and its source must be an eligible file
+    under the separately selected repository root. Apply/restore never
+    regenerate candidate text or invoke a model.
+    """
+    if action not in {"inspect", "apply", "restore"}:
+        raise ValueError("Unknown staged instruction action")
+    root = Path(repository_root).expanduser().absolute()
+    staging = Path(stage_root).expanduser().absolute()
+    manifest_path = Path(manifest_path).expanduser().absolute()
+    if any(_has_reparse_ancestor(path) for path in (root, staging, manifest_path)):
+        raise ValueError("Instruction review paths cannot traverse links")
+    root = root.resolve(strict=True)
+    staging = staging.resolve(strict=True)
+    manifest_path = manifest_path.resolve(strict=True)
+    if (not root.is_dir() or not staging.is_dir()
+            or manifest_path.name != "manifest.json"
+            or manifest_path.parent.parent != staging
+            or not manifest_path.parent.name.startswith("instruction-")):
+        raise ValueError("Select an instruction manifest directly under the configured staging directory")
+    raw = _bounded_regular_bytes(manifest_path, 64 * 1024)
+    digest = _sha256(raw)
+    if action != "inspect" and (not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+                                or digest != expected_digest):
+        raise ValueError("Reviewed manifest digest changed; inspect again before applying")
+    manifest = json.loads(raw.decode("utf-8"))
+    required = {"source", "backup", "candidate", "original_sha256", "backup_sha256",
+                "candidate_sha256", "semantic_review"}
+    if not isinstance(manifest, dict) or set(manifest) != required:
+        raise ValueError("Staged instruction manifest is incomplete")
+    for key in ("source", "backup", "candidate"):
+        if type(manifest[key]) is not str or not Path(manifest[key]).is_absolute():
+            raise ValueError("Manifest requires absolute file paths")
+    for key in ("original_sha256", "backup_sha256", "candidate_sha256"):
+        if type(manifest[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", manifest[key]):
+            raise ValueError("Invalid staged instruction digest")
+    source, backup, candidate = (Path(manifest[key]) for key in ("source", "backup", "candidate"))
+    if any(_has_reparse_ancestor(path) for path in (source, backup, candidate)):
+        raise ValueError("Manifest files cannot traverse links")
+    source, backup, candidate = (path.resolve(strict=True) for path in (source, backup, candidate))
+    if (not _eligible_instruction_path(source, root)
+            or re.search(r"secret|credential|password|token|private|\\.env", source.name, re.I)
+            or source == backup or source == candidate
+            or backup != manifest_path.parent / f"original{source.suffix.lower()}"
+            or candidate != manifest_path.parent / f"candidate{source.suffix.lower()}"):
+        raise ValueError("Manifest source or staging files do not match the authorized repository and layout")
+    review = manifest["semantic_review"]
+    if (not isinstance(review, dict) or review.get("equivalent") is not True
+            or any(review.get(key) != [] for key in ("missing", "weakened", "changed", "uncertain"))):
+        raise ValueError("Manifest lacks a clean semantic review")
+    original = _bounded_regular_bytes(backup, 1024 * 1024)
+    proposed = _bounded_regular_bytes(candidate, 1024 * 1024)
+    current = _bounded_regular_bytes(source, 1024 * 1024)
+    if (_sha256(original) != manifest["original_sha256"] or _sha256(original) != manifest["backup_sha256"]
+            or _sha256(proposed) != manifest["candidate_sha256"]):
+        raise ValueError("Staged instruction contents changed after review")
+    original_text, proposed_text = original.decode("utf-8"), proposed.decode("utf-8")
+    if (not proposed_text.strip() or len(proposed) >= len(original)
+            or _protected(original_text) - _protected(proposed_text)
+            or _protected_order(original_text) != _protected_order(proposed_text)):
+        raise ValueError("Candidate failed deterministic instruction preservation")
+    current_hash = _sha256(current)
+    status = "staged" if current_hash == manifest["original_sha256"] else (
+        "applied" if current_hash == manifest["candidate_sha256"] else "source_changed")
+    if action != "inspect":
+        staged = StagedInstruction(
+            source=source, backup=backup, candidate=candidate,
+            original_sha256=manifest["original_sha256"], backup_sha256=manifest["backup_sha256"],
+            candidate_sha256=manifest["candidate_sha256"], semantic_review=review, duration_seconds=0.0,
+        )
+        if action == "apply":
+            apply_instruction(staged)
+            status = "applied"
+        else:
+            restore_instruction(staged)
+            status = "staged"
+    return {
+        "success": True, "action": action, "status": status, "source": str(source),
+        "manifest": str(manifest_path), "manifest_sha256": digest,
+        "original_sha256": manifest["original_sha256"], "candidate_sha256": manifest["candidate_sha256"],
+        "original_bytes": len(original), "candidate_bytes": len(proposed),
+        "semantic_review": review,
+        **({"original": original_text, "candidate": proposed_text} if action == "inspect" else {}),
+    }
 
 
 def restore_instruction_manifest(manifest_path: Path) -> None:
@@ -318,7 +428,7 @@ def restore_instruction_manifest(manifest_path: Path) -> None:
     if _has_reparse_ancestor(manifest_path) or not manifest_path.is_file():
         raise ValueError("Caveman manifest must be a regular non-symlink file")
     manifest_path = manifest_path.resolve(strict=True)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads(_bounded_regular_bytes(manifest_path, 64 * 1024).decode("utf-8"))
     required = {"source", "backup", "candidate", "original_sha256", "backup_sha256", "candidate_sha256", "semantic_review"}
     if not isinstance(manifest, dict) or not required.issubset(manifest):
         raise ValueError("Caveman manifest is incomplete")

@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
-from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
+from local_ai_hub.process_utils import hidden_run_kwargs
 
 ROOT_CONFIG = ROOT / "config.toml"
 ACTIVITY_MODES = ("active", "gaming", "maintenance", "preprocessing")
@@ -172,26 +172,61 @@ def _startup_wait_seconds() -> float:
     return min(330.0, max(12.0, grace + 30.0))
 
 
-def stop() -> bool:
-    # Stop the supervisor/service first; killing only the hub would make the supervisor restart it.
-    _service("stop")
-    data = status()
-    if not data.get("running"):
-        return True
-    pid = int(data.get("hub_pid", 0) or 0)
-    if pid <= 0 or pid == os.getpid():
+def _confirmed_service_stop(completed: subprocess.CompletedProcess[str]) -> bool:
+    # A native service stop proves owner identity, role exit and listener
+    # release. Never substitute an untrusted PID from /api/status or equate
+    # HTTP unreachability with a stopped supervisor.
+    if completed.returncode == 0:
+        return completed.stdout.strip() == "stopped"
+    if completed.returncode != 1:
         return False
     try:
-        terminate_tree(pid, grace_seconds=5.0)
-    except Exception:
+        receipt = json.loads(completed.stdout)
+    except (TypeError, ValueError):
         return False
-    deadline = time.time() + 8
-    c = client()
-    while time.time() < deadline:
-        if not c._online():
-            return True
-        time.sleep(0.15)
-    return not c._online()
+    if not isinstance(receipt, dict):
+        return False
+    manager = receipt.get("service_manager")
+    if not isinstance(manager, dict) or manager.get("supported") is not False:
+        return False
+    reason = manager.get("reason")
+    # Linux/macOS installations without a registered user service may use
+    # the detached supervisor. Accept only the explicit missing-manager
+    # reason with every owned process and port positively confirmed stopped.
+    return (
+        reason in ("managed_user_unit_not_installed", "managed_launch_agent_not_installed")
+        and receipt.get("errors") == [reason]
+        and all(receipt.get(key) is True for key in (
+            "stopped", "supervisor_stopped", "hub_stopped", "managed_ollama_stopped",
+        ))
+        and "port_listener_pid" in receipt
+        and receipt["port_listener_pid"] is None
+    )
+
+
+def stop() -> bool:
+    service = ROOT / "tools" / "service.py"
+    if not service.is_file():
+        print("Service controller unavailable; shutdown not confirmed.", file=sys.stderr)
+        return False
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(service), "stop"], check=False, timeout=35.0,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            **hidden_run_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        print("Service controller failed; shutdown outcome unknown.", file=sys.stderr)
+        return False
+    if not _confirmed_service_stop(completed):
+        print("Service controller did not confirm owned shutdown: " +
+              (completed.stdout.strip() or completed.stderr.strip())[-2000:], file=sys.stderr)
+        return False
+    c = HubClient(config_path=_config_arg(), auto_start=False)
+    try:
+        return not c._online(timeout=2.0)
+    finally:
+        c.close()
 
 
 def start(verbose: bool = True) -> bool:
@@ -247,16 +282,18 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions", "client", "knowledge"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "desktop", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "compress-instructions", "client", "knowledge"])
     parser.add_argument("sub_arg", nargs="?", default=None, metavar="ARG", help="Mode name (for mode action) or client subcommand (status, detect, inject, remove, config)")
     parser.add_argument("--client", dest="client_name", type=str, default="", help="Client ID for client commands (antigravity, codex, claude, opencode, cursor, windsurf, devin, vscode, gemini_cli)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
     parser.add_argument("--all-agents", action="store_true", help="Discover and compress instructions across all configured agent directories (.gemini, .codex, .claude, etc.)")
-    parser.add_argument("--apply", action="store_true", help="Apply reviewed compressed candidates in-place (default: preview/stage only)")
+    parser.add_argument("--apply", action="store_true", help="Apply explicitly reviewed knowledge or supported client configuration changes")
     parser.add_argument("--model", type=str, default="", help="Model name for caveman compression (defaults to configured model)")
     parser.add_argument("--staging-dir", type=Path, default=None, help="Directory for backups and candidates")
+    parser.add_argument("--manifest", type=Path, default=None, help="Exact staged instruction manifest for review-staged, apply-staged or restore-staged")
+    parser.add_argument("--manifest-sha256", default="", help="Digest of the reviewed staged instruction manifest")
     parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
     parser.add_argument("--status", type=str, default="", help="Task status filter (planned, active, verifying, completed, failed, blocked)")
     parser.add_argument("--complete", action="store_true", help="Mark task as completed")
@@ -273,8 +310,6 @@ def main() -> int:
     parser.add_argument("--knowledge-mode", choices=["shared", "review_only", "read_only"], default="shared")
     parser.add_argument("--preview-digest", default="", help="Exact reviewed handoff export digest")
     parser.add_argument("--include-historical-verification", action="store_true", help="Include redacted historical receipt summaries in handoff export")
-    parser.add_argument("--after-task-id", default="", help="Offline migration continuation cursor")
-    parser.add_argument("--snapshot", default="", help="Expected offline task inventory snapshot")
     parser.add_argument("--handoff-id", default="", help="Portable Agent OS handoff ID")
     parser.add_argument("--base", default="", help="Base Git commit/ref for committed knowledge diff")
     parser.add_argument("--head", default="HEAD", help="Head Git commit/ref for committed knowledge diff")
@@ -288,6 +323,7 @@ def main() -> int:
     parser.add_argument("--ports", action="store_true", help="Report listeners on ports 11436, 11437, 11439; do not signal them")
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
+    parser.add_argument("--no-auto-start", action="store_true", help="Do not start Hub implicitly for knowledge operations")
     args = parser.parse_args()
     if args.action == "mode":
         if args.sub_arg is not None and args.sub_arg not in ACTIVITY_MODES:
@@ -298,8 +334,8 @@ def main() -> int:
             parser.error(f"Action '{args.action}' takes no arguments")
         requested_mode = None
     elif args.action == "knowledge":
-        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch", "projection-rebuild"}:
-            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover, legacy-task-batch, legacy-memory-batch, legacy-incident-batch or projection-rebuild")
+        if args.sub_arg not in {"catalog", "query", "validate", "audit", "sync-status", "impact", "remediate", "init", "save", "review", "handoff-export", "handoff-resume", "handoff-list", "handoff-preflight", "diff", "batch-preview", "batch-apply", "batch-recover", "projection-rebuild"}:
+            parser.error("knowledge requires catalog, query, validate, audit, sync-status, impact, remediate, init, save, review, handoff-export, handoff-resume, handoff-list, handoff-preflight, diff, batch-preview, batch-apply, batch-recover or projection-rebuild")
         if args.root is None:
             parser.error("knowledge requires an explicit --root")
         if args.sub_arg in {"init", "save", "review"} and (not args.apply or args.dry_run):
@@ -343,6 +379,10 @@ def main() -> int:
             parser.error("--apply for client config currently requires 'config --client vscode'")
         if args.apply and args.root is None:
             parser.error("client config --apply requires an explicit --root workspace path")
+        requested_mode = None
+    elif args.action in {"caveman-compress", "compress-instructions"}:
+        if args.apply:
+            parser.error("direct compression --apply was removed; review and apply a staged manifest instead")
         requested_mode = None
     elif args.action == "agent-state" and args.sub_arg == "storage-inventory":
         if args.apply:
@@ -400,54 +440,6 @@ def main() -> int:
                 result = checkout_sync_status(store.root)
                 print(json.dumps(result, indent=2, ensure_ascii=False))
                 return 0 if result["complete"] and result["state"] == "clean_shared_paths" else 1
-            if args.sub_arg == "legacy-task-batch":
-                from local_ai_hub.agent_state_migration import preview_legacy_task_batch
-                from local_ai_hub.repository_scope import authorized_repository_root
-
-                if args.apply or not 1 <= args.limit <= 16:
-                    parser.error("legacy-task-batch is read-only; use --limit 1 through 16")
-                config = load_config(_config_arg(args.config))
-                authorized_repository_root(config, str(store.root))
-                result = preview_legacy_task_batch(
-                    config["server"]["state_dir"], store, limit=args.limit,
-                    after_task_id=args.after_task_id, expected_snapshot=args.snapshot,
-                )
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                return 0 if result["inventory_complete"] and all(
-                    row["state"] in {"review_required", "already_published"} for row in result["states"]
-                ) else 1
-            if args.sub_arg == "legacy-memory-batch":
-                from local_ai_hub.agent_state_migration import preview_legacy_memory_batch
-                from local_ai_hub.repository_scope import authorized_repository_root
-
-                if args.apply or not 1 <= args.limit <= 16:
-                    parser.error("legacy-memory-batch is read-only; use --limit 1 through 16")
-                config = load_config(_config_arg(args.config))
-                authorized_repository_root(config, str(store.root))
-                result = preview_legacy_memory_batch(
-                    config["server"]["state_dir"], store, limit=args.limit,
-                    after_record_id=args.after_task_id, expected_snapshot=args.snapshot,
-                )
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                return 0 if result["inventory_complete"] and all(
-                    row["state"] in {"review_required", "already_published"} for row in result["states"]
-                ) else 1
-            if args.sub_arg == "legacy-incident-batch":
-                from local_ai_hub.agent_state_migration import preview_legacy_incident_batch
-                from local_ai_hub.repository_scope import authorized_repository_root
-
-                if args.apply or not 1 <= args.limit <= 16:
-                    parser.error("legacy-incident-batch is read-only; use --limit 1 through 16")
-                config = load_config(_config_arg(args.config))
-                authorized_repository_root(config, str(store.root))
-                result = preview_legacy_incident_batch(
-                    config["server"]["state_dir"], store, limit=args.limit,
-                    after_incident_id=args.after_task_id, expected_snapshot=args.snapshot,
-                )
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                return 0 if result["inventory_complete"] and all(
-                    row["state"] in {"review_required", "already_published"} for row in result["states"]
-                ) else 1
             if args.sub_arg == "projection-rebuild":
                 from local_ai_hub.repo_agent_state import rebuild_agent_state_projection
                 from local_ai_hub.repository_scope import authorized_repository_root
@@ -462,7 +454,7 @@ def main() -> int:
 
                 if args.apply or not 1 <= args.limit <= 64:
                     parser.error("handoff-preflight is read-only; limit must be 1 through 64")
-                response = HubClient(config_path=_config_arg(args.config)).post(
+                response = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start).post(
                     "/api/agent-state/tasks", {
                         "action": "list", "root": str(store.root),
                         "limit": args.limit + 1, "include_stale": True,
@@ -494,7 +486,7 @@ def main() -> int:
                     from local_ai_hub.repo_knowledge import _digest_value
                     from local_ai_hub.repo_task_handoff import attach_historical_verification, attach_source_dependencies
 
-                    handoff_client = HubClient(config_path=_config_arg(args.config))
+                    handoff_client = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start)
                     response = handoff_client.get_task(args.task_id, root=target_root)
                     if response.get("success") is not True or not isinstance(response.get("task"), dict):
                         print(json.dumps({"success": False, "error": "Scoped task unavailable"}))
@@ -544,7 +536,7 @@ def main() -> int:
                 if preview["revision"] != args.expected_revision or preview["preview_digest"] != args.preview_digest:
                     print(json.dumps({"success": False, "error": "Handoff or dependencies changed; review again"}))
                     return 1
-                result = HubClient(config_path=_config_arg(args.config)).post(
+                result = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start).post(
                     "/api/agent-state/tasks", {
                         "action": "create", "root": target_root, "task_id": args.task_id,
                         "contract": preview["contract"],
@@ -597,7 +589,7 @@ def main() -> int:
                 if not args.apply:
                     print(json.dumps({"preview": True, "contract": contract}, indent=2, ensure_ascii=False))
                     return 0
-                result = HubClient(config_path=_config_arg(args.config)).create_task(
+                result = HubClient(config_path=_config_arg(args.config), auto_start=not args.no_auto_start).create_task(
                     contract, task_id=args.task_id, root=str(store.root),
                 )
                 print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -835,10 +827,29 @@ def main() -> int:
             setup_mod.configure_agents(install_dir, python_bin, None, cfg)
         print(json.dumps({"success": True, "generated": res}, indent=2, ensure_ascii=False))
         return 0
-    if args.action in {"caveman-compress", "compress-instructions"}:
+    if args.action == "compress-instructions":
         cfg = load_config(_config_arg(args.config))
         from local_ai_hub import caveman_instructions
         from tools import setup as setup_mod
+
+        state_dir = Path(cfg.get("server", {}).get("state_dir", ROOT / "state"))
+        staging_dir = args.staging_dir or (state_dir / "caveman-staging")
+        if args.sub_arg in {"review-staged", "apply-staged", "restore-staged"}:
+            if args.root is None or args.manifest is None or args.all_agents or args.apply:
+                parser.error("staged instruction operations require --root and --manifest, without --all-agents or --apply")
+            operation = {"review-staged": "inspect", "apply-staged": "apply", "restore-staged": "restore"}[args.sub_arg]
+            try:
+                result = caveman_instructions.reviewed_instruction_manifest(
+                    args.manifest, repository_root=args.root, stage_root=staging_dir,
+                    action=operation, expected_digest=args.manifest_sha256,
+                )
+            except (OSError, ValueError) as exc:
+                print(json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+                return 1
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if args.sub_arg is not None or args.manifest is not None or args.manifest_sha256:
+            parser.error("unknown compression subcommand or misplaced manifest options")
 
         roots: list[Path] = []
         if args.all_agents:
@@ -865,24 +876,23 @@ def main() -> int:
         review_model = cfg.get("models", {}).get("reasoning") or model
         endpoint = cfg.get("ollama", {}).get("endpoint") or "http://127.0.0.1:11434"
 
-        state_dir = Path(cfg.get("server", {}).get("state_dir", ROOT / "state"))
-        staging_dir = args.staging_dir or (state_dir / "caveman-staging")
         staging_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Found {len(files)} instruction file(s) across {len(roots)} root(s).")
         print(f"Compressor model: {model} | Review model: {review_model}")
         print(f"Staging/backup: {staging_dir}")
-        print(f"Mode: {'APPLY (in-place replacement)' if args.apply else 'PREVIEW / STAGE (pass --apply to overwrite)'}\n")
+        print("Mode: STAGE (review and apply the manifest explicitly)\n")
 
         prepared = []
+        backup_failures = 0
         for f in files:
             try:
                 prepared.append(caveman_instructions.backup_instruction(f, staging_dir))
             except Exception as exc:
+                backup_failures += 1
                 print(f"[SKIP] Backup failed for {f.name}: {exc}")
 
-        applied = 0
-        failed = 0
+        failed = backup_failures
         total_before = 0
         total_after = 0
 
@@ -903,28 +913,45 @@ def main() -> int:
                 total_before += before
                 total_after += after
 
-                if args.apply:
-                    caveman_instructions.apply_instruction(res)
-                    status_lbl = "APPLIED"
-                    applied += 1
-                else:
-                    status_lbl = "STAGED"
+                status_lbl = "STAGED"
 
                 print(f"[{status_lbl}] {item.source.name} ({item.source.parent.name}) — {before}B -> {after}B (-{saved_pct:.1f}%) in {res.duration_seconds:.1f}s")
+                if res.candidate is not None:
+                    print(f"Manifest: {res.candidate.parent / 'manifest.json'}")
             except Exception as exc:
                 failed += 1
                 print(f"[FAILED] {item.source.name}: {exc}")
 
         net_saved = ((total_before - total_after) / total_before) * 100 if total_before > 0 else 0
         print("\n" + "=" * 55)
-        print(f"Summary: {len(prepared) - failed}/{len(prepared)} succeeded. Total bytes: {total_before}B -> {total_after}B (-{net_saved:.1f}%)")
-        if not args.apply and (len(prepared) - failed) > 0:
-            print("Note: Run with --apply to apply candidates in-place.")
+        print(f"Summary: {len(files) - failed}/{len(files)} succeeded. Total bytes: {total_before}B -> {total_after}B (-{net_saved:.1f}%)")
+        if (len(files) - failed) > 0:
+            print("Review a manifest using compress-instructions review-staged --root ROOT --manifest PATH.")
+            print("Then use apply-staged with the reviewed --manifest-sha256; this never regenerates the candidate.")
         return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
-    if args.action == "dashboard":
-        c = client(); print(c.base_url + "/dashboard"); return 0
+    if args.action == "desktop":
+        name = "local-ai-hub-desktop.exe" if os.name == "nt" else "local-ai-hub-desktop"
+        import tomllib
+        version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+        candidates = (ROOT / "bin" / "desktop" / version / name, ROOT / "desktop" / "target" / "release" / name)
+        binary = next((path for path in candidates if path.is_file()), None)
+        if binary is None:
+            print("Desktop binary missing. Build: cargo build --manifest-path desktop/Cargo.toml --release", file=sys.stderr)
+            return 1
+        env = os.environ.copy()
+        env["LOCAL_AI_HUB_ROOT"] = str(ROOT)
+        env["LOCAL_AI_DESKTOP_PYTHON"] = sys.executable
+        config = _config_arg(args.config)
+        if config:
+            env["LOCAL_AI_CONFIG"] = str(Path(config).expanduser().resolve())
+        try:
+            subprocess.Popen([str(binary)], cwd=ROOT, env=env, **hidden_run_kwargs())
+        except OSError as exc:
+            print(f"Desktop launch failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.action == "service-status":
         path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0

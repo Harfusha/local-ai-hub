@@ -39,6 +39,9 @@ def public_http_hub(tmp_path):
     state_dir = tmp_path / "state"
     config_path.write_text(
         "\n".join((
+            "[local_ai_hub]",
+            "config_schema_version = 1",
+            "",
             "[server]",
             'bind = "127.0.0.1"',
             "port = 11435",

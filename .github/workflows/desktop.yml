@@ -1,0 +1,125 @@
+name: Native desktop
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'tools/desktop.py'
+      - 'tools/desktop_operator.py'
+      - 'tools/desktop_smoke.py'
+      - 'tests/test_desktop_control.py'
+      - 'tests/test_desktop_smoke.py'
+      - 'tests/test_desktop_http_acceptance.py'
+      - 'tests/test_dashboard_operational_surfaces.py'
+      - 'tests/test_operator_settings_contract.py'
+      - 'src/local_ai_hub/http_*.py'
+      - 'tools/hubctl.py'
+      - 'tools/service.py'
+      - 'src/local_ai_hub/supervisor.py'
+      - 'src/local_ai_hub/shutdown.py'
+      - 'tools/install_desktop.py'
+      - 'tools/package_desktop.py'
+      - 'tools/verify_desktop_release.py'
+      - 'src/local_ai_hub/caveman_instructions.py'
+      - 'LICENSE'
+      - 'tools/check_desktop_cutover.py'
+      - 'tests/test_desktop_install.py'
+      - 'pyproject.toml'
+      - 'MANIFEST.in'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxkbcommon-x11-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev xvfb x11-utils xauth xdotool libgl1-mesa-dri libegl-mesa0 libvulkan1 mesa-vulkan-drivers
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Package verified portable desktop
+        shell: bash
+        run: |
+          binary=target/release/local-ai-hub-desktop
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          cargo metadata --locked --format-version 1 > cargo-metadata.json
+          python ../tools/package_desktop.py "$binary" "local-ai-hub-desktop-${RUNNER_OS}-${RUNNER_ARCH}.zip" --revision "$GITHUB_SHA" --cargo-metadata cargo-metadata.json
+          rm cargo-metadata.json
+      - name: Linux native window and idle measurement (isolated Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install -e .. psutil
+          set -o pipefail
+          xvfb-run -a -e /dev/stderr -s '-screen 0 1280x800x24 +extension GLX' env -u WAYLAND_DISPLAY LIBGL_ALWAYS_SOFTWARE=1 python -u ../tools/desktop_smoke.py target/release/local-ai-hub-desktop | tee desktop-smoke.json
+          xvfb-run -a -e /dev/stderr -s '-screen 0 1280x800x24 +extension GLX' env -u WAYLAND_DISPLAY LIBGL_ALWAYS_SOFTWARE=1 python -u ../tools/desktop_smoke.py target/release/local-ai-hub-desktop --online-hub-root .. | tee desktop-online-smoke.json
+      - name: Native Win32 or macOS window acceptance (offline and online)
+        if: runner.os != 'Linux'
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          python -m pip install -e .. psutil
+          binary=target/release/local-ai-hub-desktop
+          if [ "$RUNNER_OS" = Windows ]; then
+            binary="$binary.exe"
+          else
+            python -m pip install pyobjc-framework-Quartz pyobjc-framework-Cocoa
+          fi
+          set -o pipefail
+          python -u ../tools/desktop_smoke.py "$binary" | tee desktop-smoke.json
+          python -u ../tools/desktop_smoke.py "$binary" --online-hub-root .. | tee desktop-online-smoke.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            desktop/target/release/local-ai-hub-desktop
+            desktop/target/release/local-ai-hub-desktop.exe
+            desktop/Cargo.lock
+            desktop/local-ai-hub-desktop-*.zip
+            desktop/desktop-smoke.json
+            desktop/desktop-online-smoke.json
+          if-no-files-found: error
+  bridge:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/check_desktop_cutover.py
+      - run: python -m pip install -e . pytest
+      - run: python -m compileall -q tools/desktop.py tests/test_desktop_control.py
+      - run: python -m pytest tests/test_desktop_control.py tests/test_desktop_http_acceptance.py tests/test_dashboard_operational_surfaces.py::test_retired_dashboard_route_returns_json_not_found tests/test_packaging_assets.py tests/test_dashboard_updates.py tests/test_operator_settings_contract.py tests/test_desktop_install.py tests/test_endpoint_stats_integration.py -q
+      - name: Real isolated supervisor lifecycle (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        env:
+          LOCAL_AI_RUN_DESKTOP_LIFECYCLE_SMOKE: '1'
+        run: |
+          python -m pip install psutil
+          python -m pytest -q tests/test_desktop_http_acceptance.py::test_desktop_supervisor_lifecycle

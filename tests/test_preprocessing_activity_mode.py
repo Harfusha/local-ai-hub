@@ -727,16 +727,6 @@ def test_module_cards_use_preprocessing_admission():
     assert len(stored) == 1
 
 
-def test_dashboard_exposes_preprocessing_activity_mode():
-    from local_ai_hub.dashboard import DASHBOARD_HTML
-
-    assert 'data-activity-mode="preprocessing"' in DASHBOARD_HTML
-    assert "'preprocessing'" in DASHBOARD_HTML[DASHBOARD_HTML.index("const ACTIVITY_MODES="):][:100]
-    assert "preprocessing:'Preprocessing'" in DASHBOARD_HTML
-    assert "data.preprocessing_ready!==true" in DASHBOARD_HTML
-    assert "Preprocessing not ready. Select Preprocessing to retry." in DASHBOARD_HTML
-
-
 def test_exclusive_entry_rechecks_complete_projects_without_discarding_cache(tmp_path):
     import sqlite3
     import threading

@@ -148,7 +148,7 @@ The source gateway now normalizes OpenAI-compatible assistant tool-call
 `arguments` strings into the object shape required by Ollama's native chat API;
 `python -m pytest tests/test_opencode_gateway.py -q` passes 9 tests. This fix is
 not installed in the active Hub: process 2444 runs from
-`C:\Users\Adam\.local-ai-hub`, and its `/api/chat/completions` route returned
+`%USERPROFILE%\.local-ai-hub`, and its `/api/chat/completions` route returned
 404 during a read-only probe. No real inference was started. A temporary
 `OPENCODE_CONFIG` file appeared in `opencode debug config`, but OpenCode 2.2.5
 `mcp list --standalone` still reported `No MCP servers configured`; its config
@@ -1214,7 +1214,7 @@ Prior isolated evidence does include a real Gemma 4 12B Code Mode `execute` call
 
 ### Existing profile upgrade and OpenCode V2 runtime retest — 2026-11-26
 
-The current user OpenCode config is `C:\Users\Adam\.config\opencode\opencode.json`. It contains the Hub plugin and `local-builder`, but its MCP servers contain only `scan2cad`; it has no Local AI Hub provider/default model and does not register the goal lifecycle plugin. The installed config file was not changed.
+The current user OpenCode config is `%USERPROFILE%\.config\opencode\opencode.json`. It contains the Hub plugin and `local-builder`, but its MCP servers contain only `scan2cad`; it has no Local AI Hub provider/default model and does not register the goal lifecycle plugin. The installed config file was not changed.
 
 Setup now refreshes exactly one existing Hub plugin entry in `opencode.json` through `sync_opencode_plugin_config`; this adds the current native MCP entry, goal plugin and Hub provider/model while preserving unrelated entries. It leaves JSONC and multiple-config cases untouched. The new regression test failed before this branch change and passed after it. `python -m pytest tests/test_setup.py -q` passes 110 tests; the preceding focused sandbox/gateway suite passes 167 tests with one platform skip, and the plugin/lifecycle Node suite passes 14/14.
 

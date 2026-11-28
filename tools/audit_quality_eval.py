@@ -11,9 +11,11 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.evaluation_quality import paired_retrieval_delta, retrieval_metrics, review_metrics
 from local_ai_hub.repo_tools import RepositoryTools
 
-GOLDSET_VERSION = 2
+GOLDSET_VERSION = 3
+# v3 follows the actual callable definitions after the MCP module extraction.
+# v2 captures are not paired against a different source contract.
 GOLD = (
-    ("mcp-entrypoint", "local_ai_status", "src/local_ai_hub/mcp_server.py", "local_ai_status", "production"),
+    ("mcp-entrypoint", "local_ai_status", "src/local_ai_hub/mcp_tools_status.py", "local_ai_status", "production"),
     ("http-deadline", "RequestHeadReader", "src/local_ai_hub/http_transport.py", "RequestHeadReader", "production"),
     ("budget-failure", "BudgetUnavailableError", "src/local_ai_hub/agent_policy.py", "BudgetUnavailableError", "production"),
     ("async-owner", "AsyncJobManager", "src/local_ai_hub/async_jobs.py", "AsyncJobManager", "production"),
@@ -46,6 +48,18 @@ ARCHITECTURE_TARGETS = {
                           "local_ai_rag", "local_ai_coord", "local_ai_work",
                           "local_ai_artifact"), "production"),
 }
+MCP_ENTRYPOINT_SOURCES = {
+    f"src/local_ai_hub/mcp_tools_{name.removeprefix('local_ai_')}.py": [name]
+    for name in ARCHITECTURE_TARGETS["mcp-architecture"][0]
+}
+
+
+def architecture_symbols(case, path):
+    if case == "mcp-architecture":
+        return {path: list(names) for path, names in MCP_ENTRYPOINT_SOURCES.items()}
+    return {path: list(ARCHITECTURE_TARGETS[case][0])}
+
+
 GOLD_K = {case: 5 for case, *_ in GOLD}
 ARCHITECTURE_K = {"http-architecture": 5, "async-architecture": 5, "mcp-architecture": 7}
 
@@ -58,7 +72,7 @@ def goldset_contract():
     ]
     contracts.extend(
         {"case": case, "query": query, "expected_path": path,
-         "expected_symbols": {path: list(ARCHITECTURE_TARGETS[case][0])},
+         "expected_symbols": architecture_symbols(case, path),
          "intent": ARCHITECTURE_TARGETS[case][1], "k": ARCHITECTURE_K[case]}
         for case, query, path in ARCHITECTURE_QUERIES
     )
@@ -69,8 +83,9 @@ def run(root, baseline=None, baseline_source_root=None):
     if not root.is_absolute() or not root.is_dir():
         raise ValueError("authorized absolute repository root required")
     sources, hashes = {}, {}
-    paths = sorted({path for _, _, path, _, _ in GOLD} | {
+    paths = sorted({path for _, _, path, _, _ in GOLD} | set(MCP_ENTRYPOINT_SOURCES) | {
         "tests/test_audit_remediation.py", "tests/test_audit_transport_remediation.py",
+        "src/local_ai_hub/mcp_server.py",
     })
     for path in paths:
         target = root / path
@@ -113,10 +128,10 @@ def run(root, baseline=None, baseline_source_root=None):
             for case, query, relevant in ARCHITECTURE_QUERIES:
                 k = ARCHITECTURE_K[case]
                 report = index.query(str(root), query, limit=k, verify_freshness=True)
-                expected_names, intent = ARCHITECTURE_TARGETS[case]
-                expected_symbols = {relevant: list(expected_names)}
+                _, intent = ARCHITECTURE_TARGETS[case]
+                expected_symbols = architecture_symbols(case, relevant)
                 metrics = retrieval_metrics(
-                    report, {relevant}, sources, k=k,
+                    report, set(expected_symbols), sources, k=k,
                     expected_symbols=expected_symbols, intent=intent,
                 )
                 metrics["k"] = k
@@ -225,7 +240,7 @@ def run(root, baseline=None, baseline_source_root=None):
 
 
 def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_hashes):
-    """Regrade v2 captures only when source hashes and the full case contract match."""
+    """Regrade current-version captures only when all hashes and the case contract match."""
     if not isinstance(baseline, dict) or not isinstance(baseline.get("source_hashes"), dict):
         return {"success": False, "status": "unavailable", "reason": "baseline_source_hashes_missing"}
     if baseline.get("goldset_version") != GOLDSET_VERSION:
@@ -282,7 +297,7 @@ def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_has
             }
         measured = retrieval_metrics(
             {"success": True, "symbols": original["symbols"]},
-            {relevant},
+            set(expected_symbols),
             source_text_by_path,
             k=k,
             expected_symbols=expected_symbols,
@@ -307,7 +322,7 @@ def regrade_captured_baseline_symbols(baseline, source_text_by_path, current_has
         "architecture_diagnostics": [],
         "source_hashes": dict(current_hashes),
         "derivative_regrade": {
-            "scope": "regraded_captured_v2_baseline_symbols_against_verified_original_source",
+            "scope": f"regraded_captured_v{GOLDSET_VERSION}_baseline_symbols_against_verified_original_source",
             "original_baseline_modified": False,
             "source_hashes_verified": True,
             "goldset_version": GOLDSET_VERSION,
@@ -375,8 +390,10 @@ def regrade_legacy_path_only_baseline(baseline, source_text_by_path, current_has
             return {"status": "unavailable", "reason": "baseline_source_hash_mismatch",
                     "paired_comparable": False, "rows": []}
     contracts = [
-        {"case": case, "query": query, "expected_path": path,
-         "expected_symbols": {path: [symbol]}, "intent": intent, "k": 5}
+        {"case": case, "query": query,
+         "expected_path": "src/local_ai_hub/mcp_server.py" if case == "mcp-entrypoint" else path,
+         "expected_symbols": {"src/local_ai_hub/mcp_server.py" if case == "mcp-entrypoint" else path: [symbol]},
+         "intent": intent, "k": 5}
         for case, query, path, symbol, intent in GOLD if case != "explicit-test-intent"
     ] + [
         {"case": case, "query": query, "expected_path": path,
@@ -429,8 +446,15 @@ def main():
     if baseline_bytes is not None:
         result["baseline_sha256"] = hashlib.sha256(baseline_bytes).hexdigest()
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # CI logs must identify the actual failed cases, not just a Boolean.
     print(json.dumps({"success": result["success"], "cases": len(result["retrieval"]),
-                      "scope": result["scope"]}))
+                      "scope": result["scope"],
+                      "case_metrics": [
+                          {"case": row["case"], "metrics": row["metrics"],
+                           "ranked": [{"path": hit.get("path"), "name": hit.get("name"), "line": hit.get("line")}
+                                      for hit in row["symbols"][:row["k"]]]}
+                          for row in result["retrieval"] + result["architecture_diagnostics"]
+                      ]}))
     return 0 if result["success"] else 1
 
 

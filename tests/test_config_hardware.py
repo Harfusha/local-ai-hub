@@ -113,9 +113,9 @@ def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     assert cfg["_hardware"]["profile"] == "cpu"
     assert cfg["models"]["background_code"] == "qwen2.5-coder:3b"
     assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
-    assert cfg["models"]["reasoning"] == "qwen2.5-coder:3b"
-    assert cfg["models"]["general"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b"
+    assert cfg["models"]["reasoning"].startswith("qwen3.5:9b")
+    assert cfg["models"]["general"] == "qwen2.5-coder:7b"
     assert cfg["background_gpu"]["enabled"] is False
     assert cfg["features"]["local_reranking"] is True
 
@@ -211,7 +211,10 @@ def test_health_probe_timeout_rejects_absurd_values(tmp_path: Path):
 def test_default_health_probe_timeout_matches_supervisor_fallback(tmp_path: Path):
     path = tmp_path / "config.toml"
     state_dir = (tmp_path / "state").as_posix()
-    path.write_text(f'[server]\nstate_dir = "{state_dir}"\n', encoding="utf-8")
+    path.write_text(
+        f'[local_ai_hub]\nconfig_schema_version = 1\n[server]\nstate_dir = "{state_dir}"\n',
+        encoding="utf-8",
+    )
 
     config = load_config(path, probe_hardware=False)
 

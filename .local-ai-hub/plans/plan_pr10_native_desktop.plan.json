@@ -1,0 +1,99 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Complete sections 1–35 of the supplied PR #10 goal. No backward compatibility or legacy behavior; only a one-time migration during update. Verify implementation, tests, CI, release and merge evidence.",
+  "id": "plan_pr10_native_desktop",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [
+    {
+      "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
+      "revision": {
+        "content_sha256": "ce376e36837fa71460670941086d55341a1826ecf81189f88af4be7b57a5f4a5",
+        "kind": "working"
+      }
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-27-pr10-native-desktop.md",
+      "revision": {
+        "content_sha256": "4d21ad5073e49de4a9144c249be860e0dfc95bd0c3d040912dfb5f6c48de9385",
+        "kind": "working"
+      }
+    }
+  ],
+  "tasks": {
+    "task_pr10_completion": {
+      "acceptance_criteria": [
+        "All explicit requirements in the supplied document and the active PR #10 plan are mapped to verified native behavior or a documented external blocker.",
+        "No legacy runtime behavior or backward-compatibility path remains; only a one-time update migration is retained.",
+        "The native Rust application replaces the web dashboard while preserving supported canonical HTTP, MCP and CLI contracts.",
+        "Required cross-platform runtime, security, performance, installation/update, regression, CI and release checks pass with authentic evidence.",
+        "PR #10 is synchronized with current master, updated, merged under required branch protections, and post-merge state is verified."
+      ],
+      "blocker": null,
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_pr10_no_legacy_20261127",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
+              "revision": {
+                "content_sha256": "ce376e36837fa71460670941086d55341a1826ecf81189f88af4be7b57a5f4a5",
+                "kind": "working"
+              }
+            },
+            {
+              "path": "docs/superpowers/plans/2026-11-27-pr10-native-desktop.md",
+              "revision": {
+                "content_sha256": "4d21ad5073e49de4a9144c249be860e0dfc95bd0c3d040912dfb5f6c48de9385",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "User directs no backward compatibility or legacy runtime behavior, allowing only a one-time migration during update. This supersedes the original prompt's allowance to retain old CLI aliases or other compatibility paths.",
+          "supersedes": []
+        }
+      ],
+      "depends_on": [],
+      "description": "Deliver every requirement in the supplied goal document, sections 1–35, including branch synchronization, complete native UI and CLI parity, system and workload views, Agent OS and knowledge workflows, project/model/telemetry features, security, performance, cross-platform runtime, installation/updater, documentation, complete validation, independent audit, and actual PR merge/post-merge verification. No runtime backward compatibility or legacy behavior; the only exception is one-time migration during update.",
+      "kind": "code",
+      "next_action": "Dokončeny a lokálně ověřeny jednorázové migrace `features.dashboard` v config.toml/config.runtime.toml včetně verified backupů; runtime starý klíč odmítá. Sjednoceny CPU/integrated/low modelové routy s dokumentovanými rolemi (3B quick/preprocess odděleně, 7B ordinary, 9B hardest) a aktualizována matice/testy; fokální konfigurace 72/72, cutover guard i release_check --allow-installed prošly. Zůstávají otevřené: plná dashboard/CLI parity a interaktivní UI/runtime/platform, bezpečnostní scan incomplete, independent review async outcome_unknown, přesný-head CI, instalační/signing akceptace, externí full suite PID 49244 (zatím běží), commit/push/PR update/merge/post-merge. Připravit ověřený commit do draft PR, potom spustit aktuální CI a pokračovat v parity/acceptance.",
+      "spec_refs": [
+        {
+          "path": "docs/superpowers/specs/2026-11-27-pr10-native-desktop-design.md",
+          "revision": {
+            "content_sha256": "ce376e36837fa71460670941086d55341a1826ecf81189f88af4be7b57a5f4a5",
+            "kind": "working"
+          }
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-27-pr10-native-desktop.md",
+          "revision": {
+            "content_sha256": "4d21ad5073e49de4a9144c249be860e0dfc95bd0c3d040912dfb5f6c48de9385",
+            "kind": "working"
+          }
+        }
+      ],
+      "title": "Complete PR #10 native desktop cutover",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    },
+    "task_pr10_sync_master": {
+      "acceptance_criteria": [
+        "PR branch contains current origin/master and remains on feat/native-desktop-hub.",
+        "All conflicts and overlapping edits are resolved by preserving valid behavior from both branches.",
+        "Focused tests for every overlap pass and are tied to the integrated revision."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Integrate the latest origin/master into feat/native-desktop-hub. Preserve both sides of every overlapping change in HTTP/MCP, scheduler, configuration, setup and tests. Run focused checks for resolved contracts.",
+      "kind": "code",
+      "next_action": "Master synchronization verified at eda8fca18d8241b13d42e30de93a87d8e7ce08ce; scheduler contract tests passed 9/9 and audit context transport tests passed 11/11. Continue PR parity audit.",
+      "title": "Synchronize PR branch with current master",
+      "work_phase": "verification",
+      "work_status": "completed"
+    }
+  },
+  "title": "PR #10 — Native desktop replacement"
+}

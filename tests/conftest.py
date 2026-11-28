@@ -86,17 +86,28 @@ _TEST_PORT_GUARD: socket.socket | None = None
 _ORIGINAL_CONFIG_CAPTURED = False
 _ORIGINAL_CONFIG_PRESENT = False
 _ORIGINAL_CONFIG: str | None = None
+_ORIGINAL_GIT_CONFIG_ENV: dict[str, str] = {}
 
 
 def pytest_configure(config):
     """Isolate default config, mode state, and loopback port before collection."""
     global _TEST_PORT_GUARD
     global _ORIGINAL_CONFIG_CAPTURED, _ORIGINAL_CONFIG_PRESENT, _ORIGINAL_CONFIG
+    global _ORIGINAL_GIT_CONFIG_ENV
     if _ORIGINAL_CONFIG_CAPTURED:
         return
     _ORIGINAL_CONFIG_CAPTURED = True
     _ORIGINAL_CONFIG_PRESENT = "LOCAL_AI_CONFIG" in os.environ
     _ORIGINAL_CONFIG = os.environ.get("LOCAL_AI_CONFIG")
+    _ORIGINAL_GIT_CONFIG_ENV = {
+        key: value
+        for key, value in os.environ.items()
+        if key == "GIT_CONFIG_COUNT"
+        or key.startswith("GIT_CONFIG_KEY_")
+        or key.startswith("GIT_CONFIG_VALUE_")
+    }
+    for key in _ORIGINAL_GIT_CONFIG_ENV:
+        os.environ.pop(key, None)
     root = Path(tempfile.mkdtemp(prefix="local-ai-hub-pytest-"))
     guard = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -124,7 +135,7 @@ def pytest_configure(config):
 
 def pytest_unconfigure(config):
     """Restore inherited environment; retain isolated config/state as artifacts."""
-    global _TEST_PORT_GUARD, _ORIGINAL_CONFIG_CAPTURED
+    global _TEST_PORT_GUARD, _ORIGINAL_CONFIG_CAPTURED, _ORIGINAL_GIT_CONFIG_ENV
     if not _ORIGINAL_CONFIG_CAPTURED:
         return
     if _ORIGINAL_CONFIG_PRESENT:
@@ -134,6 +145,8 @@ def pytest_unconfigure(config):
     if _TEST_PORT_GUARD is not None:
         _TEST_PORT_GUARD.close()
         _TEST_PORT_GUARD = None
+    os.environ.update(_ORIGINAL_GIT_CONFIG_ENV)
+    _ORIGINAL_GIT_CONFIG_ENV = {}
     _ORIGINAL_CONFIG_CAPTURED = False
 
 

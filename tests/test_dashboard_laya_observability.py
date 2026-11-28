@@ -1,37 +1,3 @@
-import pytest
-
-from local_ai_hub.dashboard import DASHBOARD_HTML
-from tools.check_dashboard import validate_dashboard_html
-
-
-def test_dashboard_contains_laya_observability_surfaces():
-    # Verify unique IDs for Laya components in the dashboard
-    for element_id in (
-        'id="layaSection"',
-        'id="layaStatusPill"',
-        'id="layaRuntimeVal"',
-        'id="layaRuntimeSub"',
-        'id="layaDecisionsCount"',
-        'id="layaDecisionsSub"',
-        'id="layaCoverageVal"',
-        'id="layaCoverageSub"',
-        'id="layaLatencyVal"',
-        'id="layaLatencySub"',
-        'id="layaDecisionsBody"',
-        'id="layaCaptureBody"',
-    ):
-        assert element_id in DASHBOARD_HTML, f"Expected {element_id} in DASHBOARD_HTML"
-
-    # Verify Laya feature pill
-    assert "k:'laya'" in DASHBOARD_HTML
-    assert "label:'Laya'" in DASHBOARD_HTML
-    assert "wiredLayaCategories=['context_source','context_budget','model_route','redundant_step','next_step','delegation','completion_gap','watchdog','retrieval_strategy','subagent_budget']" in DASHBOARD_HTML
-
-    # Verify HTML structure validity and uniqueness of IDs
-    valid, errors = validate_dashboard_html(DASHBOARD_HTML)
-    assert valid, f"Dashboard validation failed: {errors}"
-
-
 def test_realtime_status_exposes_laya_runtime_and_features():
     from tests.test_status_snapshot_quality import make_realtime_app
 
@@ -93,39 +59,6 @@ def test_telemetry_realtime_summary_forwards_laya_reports(tmp_path):
         store.close()
 
 
-def test_dashboard_contains_all_subsystems_observability_surfaces():
-    for element_id in (
-        'id="circuitBreakersBody"',
-        'id="recoveryJournalSummary"',
-        'id="recoveryJournalBody"',
-        'id="dedicatedModelsSection"',
-        'id="embeddingsRuntimeVal"',
-        'id="embeddingsRuntimeSub"',
-        'id="rerankerRuntimeVal"',
-        'id="rerankerRuntimeSub"',
-        'id="vramBalancerVal"',
-        'id="vramBalancerSub"',
-        'id="dedicatedRuntimesBody"',
-        'id="optimizationSection"',
-        'id="autotuneVal"',
-        'id="autotuneSub"',
-        'id="learningVal"',
-        'id="learningSub"',
-        'id="evidenceStoreVal"',
-        'id="evidenceStoreSub"',
-        'id="losslessRouterVal"',
-        'id="losslessRouterSub"',
-        'id="asyncJobsSummary"',
-        'id="asyncJobsBody"',
-        'id="workOrchestratorSummary"',
-        'id="workOrchestratorBody"',
-    ):
-        assert element_id in DASHBOARD_HTML, f"Expected {element_id} in DASHBOARD_HTML"
-
-    valid, errors = validate_dashboard_html(DASHBOARD_HTML)
-    assert valid, f"Dashboard validation failed: {errors}"
-
-
 def test_realtime_status_exposes_all_subsystems():
     from tests.test_status_snapshot_quality import make_realtime_app
 
@@ -147,5 +80,3 @@ def test_realtime_status_exposes_all_subsystems():
     ]
     for key in expected_keys:
         assert key in status, f"Expected key '{key}' in realtime_status snapshot"
-
-

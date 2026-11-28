@@ -10,6 +10,7 @@ def local_ai_status(
     response_profile: str = "",
     reuse_key: str = "",
 ) -> dict[str, Any]:
+    """MCP public tool entrypoint. Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
     import sys
     services_module = None
     for mod_name, mod in list(sys.modules.items()):
@@ -18,7 +19,6 @@ def local_ai_status(
             break
     if services_module is None:
         from . import mcp_server as services_module
-    """Compact Hub and local-model readiness: availability, active model, and VRAM pressure."""
     if detail != "brief":
         return services_module.contract_error("detail supports only brief")
     if not services_module.FEATURES.status:

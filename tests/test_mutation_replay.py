@@ -730,7 +730,7 @@ def test_rag_index_publish_failure_keeps_previous_snapshot(tmp_path) -> None:
 def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -751,7 +751,7 @@ def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeyp
 def test_client_safe_transport_retry_reuses_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -778,7 +778,7 @@ def test_client_safe_transport_retry_reuses_request_id(tmp_path, monkeypatch) ->
 def test_client_rejects_malformed_request_id_before_network(tmp_path, monkeypatch, request_id: str) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -796,7 +796,7 @@ def test_client_rejects_malformed_request_id_before_network(tmp_path, monkeypatc
 def test_client_accepts_visible_ascii_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -816,7 +816,7 @@ def test_client_accepts_visible_ascii_request_id(tmp_path, monkeypatch) -> None:
 def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -839,7 +839,7 @@ def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeyp
 def test_client_replay_safe_coalescing_timeout_returns_owner_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -1735,7 +1735,7 @@ def test_retired_command_path_never_dispatches_or_creates_journal_entry(tmp_path
     host, port = server.server_address
     config = tmp_path / "client.toml"
     config.write_text(
-        "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -1812,7 +1812,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
     host, port = server.server_address
     config = tmp_path / "client.toml"
     config.write_text(
-        "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
+        "[local_ai_hub]\nconfig_schema_version=1\n\n[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)

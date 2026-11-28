@@ -223,8 +223,14 @@ def test_source_symlink_escape_is_rejected(tmp_path):
     assert read_source_slice(str(root), str(link))["success"] is False
 
 
-def test_code_index_null_boolean_returns_typed_field_diagnostic(tmp_path, monkeypatch):
+@pytest.mark.parametrize("detailed", [False, True])
+def test_code_index_null_boolean_returns_typed_field_diagnostic(tmp_path, monkeypatch, detailed):
     from local_ai_hub import mcp_server
+    monkeypatch.setattr(mcp_server, "CFG", {
+        **mcp_server.CFG,
+        "agent_output": {"detailed_diagnostics": detailed},
+        "telemetry": {**mcp_server.CFG.get("telemetry", {}), "agent_diagnostics": False},
+    })
     monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: {
         "success": True, "symbols": [], "stale": None, "request_id": "req_fixture",
     })
@@ -234,4 +240,7 @@ def test_code_index_null_boolean_returns_typed_field_diagnostic(tmp_path, monkey
     assert payload["success"] is False
     assert payload["terminal"] is True and payload["retryable"] is False
     assert "result.stale" in payload["error"]
-    assert payload["request_id"] == "req_fixture"
+    if detailed:
+        assert payload["request_id"] == "req_fixture"
+    else:
+        assert "request_id" not in payload

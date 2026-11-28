@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools import hubctl
 
 
@@ -29,19 +31,14 @@ def test_hubctl_clean_dispatches_cleanup_and_json_output(monkeypatch, capsys, tm
     }
 
 
-def test_hubctl_dashboard_prints_configured_url(monkeypatch, capsys):
-    class Client:
-        base_url = "http://127.0.0.1:11436"
+def test_retired_caveman_compress_alias_is_rejected(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "caveman-compress"])
+    monkeypatch.setattr(hubctl, "load_config", lambda *_: pytest.fail("retired alias was accepted"))
 
-    calls = []
-    monkeypatch.setattr(hubctl, "client", lambda: calls.append("client") or Client())
-    monkeypatch.setattr(sys, "argv", ["hubctl.py", "dashboard"])
+    with pytest.raises(SystemExit) as raised:
+        hubctl.main()
 
-    result = hubctl.main()
-
-    assert result == 0
-    assert calls == ["client"]
-    assert capsys.readouterr().out == "http://127.0.0.1:11436/dashboard\n"
+    assert raised.value.code == 2
 
 
 def test_hubctl_generate_dispatches_writers_and_optional_agent_install(

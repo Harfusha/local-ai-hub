@@ -497,9 +497,13 @@ def _instrumented_tool(services_module: Any = None):
             call_event_id = uuid.uuid4().hex
             try:
                 result = fn(*args, **kwargs)
-            except Exception:
+            except Exception as exc:
                 duration_ms = (time.monotonic() - started) * 1000
-                services_module._record_adoption(fn.__name__, arguments, None, duration_ms, failed=True, event_id=call_event_id)
+                failure_reason = services_module._adoption_reason(exc)
+                services_module._record_adoption(
+                    fn.__name__, arguments, None, duration_ms,
+                    failed=True, failure_reason=failure_reason, event_id=call_event_id,
+                )
                 pending = services_module._PENDING_MCP_ACCOUNTING.get()
                 if pending is None:
                     services_module._record_tool_accounting(tool_name=fn.__name__, arguments=arguments, response={"success": False},
@@ -573,11 +577,16 @@ def _instrumented_tool(services_module: Any = None):
             contract_action = arguments.get(selector, parameter.default if parameter is not None else "")
             output_error = services_module.validate_operation_output(fn.__name__, str(contract_action), clean)
             if output_error is not None:
+                request_id = clean.get("request_id") if isinstance(clean, dict) else None
                 clean = {
                     "success": False, "status_code": 500, "terminal": True, "retryable": False,
                     "error": f"MCP output contract failed: {output_error}",
                     "failure_kind": "output_contract_violation",
                 }
+                if isinstance(request_id, str) and 0 < len(request_id) <= 200 and not any(
+                    ord(char) < 32 or ord(char) == 127 for char in request_id
+                ):
+                    clean["request_id"] = request_id
             duration_ms = (services_module.time.monotonic() - started) * 1000
             call_success = isinstance(clean, dict) and clean.get("success") is True
             services_module._record_adoption(fn.__name__, arguments, clean, duration_ms, recommended=handoff_added, event_id=call_event_id)

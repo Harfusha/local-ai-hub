@@ -2461,7 +2461,8 @@ def _remove_duplicate_antigravity_hooks(path: Path, backup_enabled: bool) -> boo
     ]
     # Recognize the previous exact Hub-owned hook shape so it can be safely
     # removed when the native plugin becomes active after this upgrade.
-    for config in list(generated_configs):
+    for runner in (f'"{current_runner}"', current_runner, legacy_runner):
+        config = _antigravity_hook_config(runner)
         config["PostToolUse"][0]["matcher"] = "edit_file|write_file"
         generated_configs.append(config)
     # Earlier releases emitted only the narrow PreToolUse policy.
@@ -4161,8 +4162,9 @@ def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
-    sync_packaged_defaults()
-    if install_dir.resolve() != SOURCE_ROOT.resolve():
+    if install_dir.resolve() == SOURCE_ROOT.resolve():
+        sync_packaged_defaults()
+    else:
         sync_packaged_defaults(install_dir)
     write_all_generated(cfg, install_dir, hub_python, serena)
     sync_generated_prompt_policies()
@@ -4880,21 +4882,53 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
 
     A normal rerun preserves the config already living in the install directory.
     Passing --config is explicit replacement/import intent and therefore wins.
+    Legacy config migration is limited to an existing installation update.
     """
     if explicit is not None:
-        source = explicit.expanduser().resolve()
+        source = explicit.expanduser()
     else:
         local_config = SOURCE_ROOT / "config.toml"
         example_config = SOURCE_ROOT / "config.toml.example"
-        source = (local_config if local_config.is_file() else example_config).expanduser().resolve()
+        source = (local_config if local_config.is_file() else example_config).expanduser()
+
+    def installed_config_path(raw_config: dict[str, Any]) -> Path | None:
+        raw_setup = raw_config.get("setup", {})
+        if not isinstance(raw_setup, dict):
+            raise ValueError("config setup must be a table")
+        install_value = raw_setup.get("install_dir", "~/.local-ai-hub")
+        if not isinstance(install_value, str) or not install_value.strip() or "\x00" in install_value:
+            return None
+        return expand(install_value) / "config.toml"
+
+    def existing_install(installed_config: Path | None) -> bool:
+        if installed_config is None or installed_config.is_symlink() or not installed_config.is_file():
+            return False
+        entrypoint = installed_config.parent / "tools" / "service.py"
+        return entrypoint.is_file() and not entrypoint.is_symlink()
+
     if source.name != "config.toml.example":
-        run_config_migrations(source)
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"config source must be a regular file: {source}")
+        source = source.resolve()
+        raw = tomllib.loads(source.read_text(encoding="utf-8"))
+        installed = installed_config_path(raw)
+        if explicit is None and installed is not None and installed.is_file() and installed != source:
+            if installed.is_symlink():
+                raise ValueError(f"installed config must be a regular file: {installed}")
+            source = installed
+            raw = tomllib.loads(source.read_text(encoding="utf-8"))
+            installed = installed_config_path(raw)
+        if existing_install(installed):
+            run_config_migrations(source)
     cfg = load_hub_config(str(source))
     install_dir = expand(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub"))
-    installed = (install_dir / "config.toml").resolve()
+    installed = install_dir / "config.toml"
     if explicit is None and installed.exists() and installed != source:
+        if installed.is_symlink():
+            raise ValueError(f"installed config must be a regular file: {installed}")
         source = installed
-        run_config_migrations(source)
+        if existing_install(installed):
+            run_config_migrations(source)
         cfg = load_hub_config(str(source))
     return source, cfg, install_dir
 
@@ -4914,6 +4948,7 @@ def main() -> int:
     parser.add_argument("--skip-tools", action="store_true", default=None, help="Do not install Serena")
     parser.add_argument("--skip-agent-config", action="store_true", default=None)
     parser.add_argument("--skip-service", action="store_true", default=None)
+    parser.add_argument("--skip-desktop", action="store_true", help="Keep installation headless; do not fetch native desktop asset")
     parser.add_argument("--skip-ollama-install", action="store_true")
     parser.add_argument("--skip-token-economy", action="store_true", default=None, help="Do not install token economy packages or probe external CLI tools")
     parser.add_argument("--skip-companion-skills", action="store_true", default=None, help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
@@ -5015,7 +5050,9 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         except Exception as exc:
             log(f"Provider plugin skill generation failed: {exc}")
             return 1
-        if install_dir.resolve() != SOURCE_ROOT.resolve():
+        if install_dir.resolve() != SOURCE_ROOT.resolve() and (install_dir / "defaults.toml").is_file():
+            # Generate-only must not fabricate a second installation or require
+            # an installed checkout at the configured destination.
             write_all_generated(cfg, install_dir, hub_python)
             sync_packaged_defaults(install_dir)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
@@ -5836,7 +5873,24 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
-    log("Dashboard: http://127.0.0.1:11435/dashboard")
+    desktop_disabled = install_dir / ".desktop-disabled"
+    if getattr(args, "skip_desktop", False):
+        try:
+            with desktop_disabled.open("x", encoding="utf-8") as marker:
+                marker.write("Headless installation requested.\n")
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            log(f"Could not persist headless preference: {exc}")
+    elif not desktop_disabled.exists() and getattr(args, "expected_revision", None):
+        try:
+            from tools.install_desktop import install_release
+            version = tomllib.loads((install_dir / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+            binary = install_release(install_dir, version, args.expected_revision)
+            log(f"Verified native desktop installed: {binary}")
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            log(f"Native desktop not installed (Hub remains usable headlessly): {exc}")
+    log("Desktop: python tools/hubctl.py desktop (build/install native binary first if absent)")
     return 0
 
 

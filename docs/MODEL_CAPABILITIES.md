@@ -81,9 +81,9 @@ names do not establish cached-weight availability, transcription quality or WER.
 
 | Profile | `background_code` | `fast_code` | `heavy_code` | `reasoning` | `general` | `vision` |
 | --- | --- | --- | --- | --- | --- | --- |
-| `cpu` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
-| `integrated` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
-| `low` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:3b` | `qwen3-vl:4b` |
+| `cpu` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
+| `integrated` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
+| `low` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `minicpm-v:8b` |
 | `medium` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
 | `high` | `qwen2.5-coder:3b-instruct-q4_K_M` | `qwen2.5-coder:7b-instruct-q4_K_M` | `qwen2.5-coder:14b-instruct-q4_K_M` | `qwen3.5:9b-q4_K_M` | `qwen3.5:9b-q4_K_M` | `minicpm-v:8b` |

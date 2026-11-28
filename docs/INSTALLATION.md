@@ -8,7 +8,7 @@
 
 ## Local API security
 
-The Hub accepts loopback connections only and must bind to `127.0.0.1`. No Hub API token or bearer credential exists; loopback HTTP/MCP calls need no Hub credential. Non-loopback peers are rejected before routing. Same-origin checks protect dashboard mutations. Configured `allowed_roots`, command authorization, capabilities, approvals, leases, rate limits, and audit records continue to constrain operations. Retired token fields reject by presence. See [Security model](SECURITY_MODEL.md).
+The Hub accepts loopback connections only and must bind to `127.0.0.1`. No Hub API token or bearer credential exists; loopback HTTP/MCP calls need no Hub credential. Non-loopback peers are rejected before routing. Origin checks protect browser-originated mutation requests. Configured `allowed_roots`, command authorization, capabilities, approvals, leases, rate limits, and audit records continue to constrain operations. Retired token fields reject by presence. See [Security model](SECURITY_MODEL.md).
 
 ## Bootstrap & One-Command Setup
 

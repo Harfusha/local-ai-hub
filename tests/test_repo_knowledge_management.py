@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from local_ai_hub.repo_knowledge import RepoKnowledgeStore
 from local_ai_hub.repo_knowledge_management import manage_repository_knowledge
@@ -33,6 +36,39 @@ def test_preview_requires_current_revision_and_explicit_authorized_save(tmp_path
     assert report["findings"][0]["type"] == "unverified_knowledge"
     assert manage_repository_knowledge({"security": {"allowed_roots": []}}, request,
                                        authorize_operator_write=lambda: True)["status_code"] == 403
+
+
+def test_legacy_record_publication_is_not_a_runtime_knowledge_action(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    result = manage_repository_knowledge({}, {
+        "action": "publish_legacy_record", "root": str(root), "kind": "task",
+        "record_id": "task-1", "expected_snapshot": "a" * 64,
+        "operation_id": "migration-1", "apply": True,
+    }, authorize_operator_write=lambda: True)
+    assert result["status_code"] == 400
+    assert result["error"] == "Invalid knowledge management action or fields"
+
+
+def test_legacy_migration_preview_commands_are_not_cli_actions(tmp_path):
+    hubctl = Path(__file__).resolve().parents[1] / "tools" / "hubctl.py"
+    for action in ("legacy-task-batch", "legacy-memory-batch", "legacy-incident-batch"):
+        result = subprocess.run(
+            [sys.executable, str(hubctl), "knowledge", action, "--root", str(tmp_path)],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 2
+        assert "knowledge requires" in result.stderr
+
+
+def test_retired_dashboard_command_is_not_a_cli_alias():
+    hubctl = Path(__file__).resolve().parents[1] / "tools" / "hubctl.py"
+    result = subprocess.run(
+        [sys.executable, str(hubctl), "dashboard"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
 
 
 def test_handoff_inventory_includes_only_valid_project_records(tmp_path):
@@ -392,82 +428,3 @@ def test_batch_http_requires_exact_scope_authorization_and_reviewed_content(tmp_
     assert result["success"] and len(result["file_revisions"]) == 2
     assert not result["canonical_cutover_supported"]
     assert RepoKnowledgeStore(root).get("business_rule", "rule")["record"] == record
-
-
-def test_offline_legacy_task_batch_scopes_rows_and_supports_snapshot_pagination(tmp_path):
-    import sqlite3
-    from contextlib import closing
-
-    import pytest
-
-    from local_ai_hub.agent_state_migration import preview_legacy_task_batch
-    from local_ai_hub.repo_knowledge_batch import apply_knowledge_batch
-    from local_ai_hub.repo_plan.schema_validation import RepoPlanValidationError
-
-    root = tmp_path / "repo"
-    (root / ".local-ai-hub").mkdir(parents=True)
-    (root / ".local-ai-hub/project.json").write_text(json.dumps({
-        "schema_version": 1, "project_id": "41a9ce2a-d6b9-4ff0-ae6a-87e6c884f7bb", "mode": "shared",
-    }), encoding="utf-8")
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    db = state_dir / "agent_state.sqlite"
-    with closing(sqlite3.connect(db)) as con:
-        con.execute("""CREATE TABLE agent_tasks_projection (
-            task_id TEXT PRIMARY KEY, status TEXT NOT NULL, owner TEXT NOT NULL,
-            lease_id TEXT NOT NULL, contract TEXT NOT NULL, context TEXT NOT NULL,
-            checkpoint TEXT NOT NULL, receipts TEXT NOT NULL, heartbeat_expires_at REAL NOT NULL,
-            created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
-
-        def add(task_id, goal, scope, status="planned", lease=""):
-            checkpoint = {"phase": "planning", "next_action": "Review",
-                          "affected_paths": [], "blockers": [],
-                          "state_data": {"private": "local-only",
-                                         "_agent_task_scope": scope}}
-            con.execute("INSERT INTO agent_tasks_projection VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (task_id, status, "local-owner", lease, json.dumps({"goal": goal}),
-                         '{"session_id":"local-session"}', json.dumps(checkpoint),
-                         '{"criterion":"local-receipt"}', 0, 0, 0))
-
-        scope = {"version": 2, "repo_root": str(root.resolve())}
-        add("task-a", "First scoped task", scope)
-        add("task-b", "Second scoped task", scope)
-        add("task-live", "Live secret goal", scope, "active", "local-lease")
-        add("task-other", "Other project confidential", {"version": 2, "repo_root": str(tmp_path / "other")})
-        add("task-legacy", "Unscoped confidential", None)
-        con.commit()
-
-    before = db.read_bytes()
-    store = RepoKnowledgeStore(root)
-    first = preview_legacy_task_batch(state_dir, store, limit=1)
-    assert first["success"]
-    assert not first["inventory_complete"]
-    assert first["unscoped_rows_require_separate_review"] == 1
-    assert first["next_after_task_id"] == "task-a"
-    assert first["states"][0]["state"] == "review_required"
-    assert first["batch"]["records"][0]["record"]["payload"]["contract"]["goal"] == "First scoped task"
-    second = preview_legacy_task_batch(state_dir, store, limit=2,
-                                      after_task_id=first["next_after_task_id"],
-                                      expected_snapshot=first["snapshot"])
-    assert second["page_complete"]
-    assert not second["inventory_complete"]
-    assert [row["state"] for row in second["states"]] == ["review_required", "blocked_live_attempt"]
-    for private in ("local-only", "local-owner", "local-session", "local-receipt", "local-lease",
-                    "Other project confidential", "Unscoped confidential", "Live secret goal"):
-        assert private not in str(first) + str(second)
-    assert not (root / ".local-ai-hub/local").exists()
-    assert db.read_bytes() == before
-    published = apply_knowledge_batch(store, first["batch"]["records"],
-                                      preview_digest=first["preview"]["preview_digest"],
-                                      operation_id="reviewed-migration", authorize_write=lambda: True)
-    assert published["success"]
-    assert not published["canonical_cutover_supported"]
-    assert db.read_bytes() == before
-    again = preview_legacy_task_batch(state_dir, store, limit=1)
-    assert again["states"][0]["state"] == "already_published"
-    with closing(sqlite3.connect(db)) as con:
-        con.execute("UPDATE agent_tasks_projection SET updated_at=1 WHERE task_id='task-b'")
-        con.commit()
-    with pytest.raises(RepoPlanValidationError):
-        preview_legacy_task_batch(state_dir, store, limit=2, after_task_id="task-a",
-                                  expected_snapshot=first["snapshot"])

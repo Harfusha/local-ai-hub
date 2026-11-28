@@ -22,8 +22,8 @@ def test_prompt_role_matrix_matches_hardware_profiles() -> None:
         "integrated": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3-vl:4b"),
         "low": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3-vl:4b"),
         "balanced": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "minicpm-v:8b"),
-        "high": ("qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen3.5:9b", "qwen3.5:9b", "minicpm-v:8b"),
-        "max": ("qwen2.5-coder:7b", "qwen2.5-coder:7b", "qwen2.5-coder:32b", "qwen3.5:9b", "qwen3.5:9b", "minicpm-v:8b"),
+        "high": ("qwen2.5-coder:3b-instruct-q4_K_M", "qwen2.5-coder:7b-instruct-q4_K_M", "qwen2.5-coder:14b-instruct-q4_K_M", "qwen3.5:9b-q4_K_M", "qwen3.5:9b-q4_K_M", "minicpm-v:8b"),
+        "max": ("qwen2.5-coder:7b-instruct-q4_K_M", "qwen2.5-coder:7b-instruct-q4_K_M", "qwen2.5-coder:14b-instruct-q4_K_M", "qwen2.5-coder:14b-instruct-q4_K_M", "qwen3.5:9b-q4_K_M", "minicpm-v:8b"),
     }
     for profile, models in routes.items():
         role_order = ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision")

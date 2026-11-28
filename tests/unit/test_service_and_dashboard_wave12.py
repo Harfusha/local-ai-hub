@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -14,7 +13,6 @@ from service import (
     is_valid_service_role,
     run,
 )
-from check_dashboard import validate_dashboard_html
 
 
 def test_service_null_bytes_and_path_traversal() -> None:
@@ -39,43 +37,3 @@ def test_service_null_bytes_and_path_traversal() -> None:
     cp = run(["echo\x00bad"])
     assert cp.returncode == 127
 
-
-def test_validate_dashboard_html() -> None:
-    valid_html = """
-    <html>
-      <body>
-        <div id="status-card">Status</div>
-        <div id="chart-panel">Chart</div>
-        <script>console.log("ok");</script>
-      </body>
-    </html>
-    """
-    valid, errors = validate_dashboard_html(valid_html)
-    assert valid is True
-    assert errors == []
-
-    # Duplicate IDs
-    dup_html = """
-    <html>
-      <body>
-        <div id="status-card">Status 1</div>
-        <div id="status-card">Status 2</div>
-        <script>console.log("ok");</script>
-      </body>
-    </html>
-    """
-    valid, errors = validate_dashboard_html(dup_html)
-    assert valid is False
-    assert any("duplicate" in err.lower() for err in errors)
-
-    # Missing script block
-    no_script = """
-    <html><body><div id="one"></div></body></html>
-    """
-    valid, errors = validate_dashboard_html(no_script)
-    assert valid is False
-    assert any("script" in err.lower() for err in errors)
-
-    # Empty / non-str
-    assert validate_dashboard_html("")[0] is False
-    assert validate_dashboard_html(None)[0] is False  # type: ignore[arg-type]

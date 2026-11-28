@@ -81,8 +81,7 @@ def local_ai_task(
     question: str = "",
     text: str = "",
 ) -> dict[str, Any]:
-    from . import mcp_server as services_module
-    """Run a bounded semantic task or an explicitly authorized UI automation session.
+    """MCP public tool entrypoint. Run a bounded semantic task or an explicitly authorized UI automation session.
 
     automation uses root, task_id and a closed automation object with op
     open/act/status/close. Browser/desktop targets are default-deny; use the
@@ -105,6 +104,7 @@ def local_ai_task(
     model. Use when: one bounded semantic task should run on a configured
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
+    from . import mcp_server as services_module
     if action not in services_module.operation_actions("local_ai_task", services_module.FEATURES):
         return services_module._invalid_action(
             "local_ai_task",

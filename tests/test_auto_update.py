@@ -11,6 +11,13 @@ from tools import auto_update
 from tools.install_ownership import write_install_manifest
 
 
+def test_retired_dashboard_update_argument_is_rejected(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["auto_update.py", "--dashboard"])
+    with pytest.raises(SystemExit) as exc:
+        auto_update.main()
+    assert exc.value.code == 2
+
+
 def release(tag="v6.1.2", **overrides):
     return {"tag_name": tag, "draft": False, "prerelease": False, "assets": [], **overrides}
 
@@ -92,26 +99,26 @@ def test_git_checkout_preserves_source_for_exact_release(tmp_path, monkeypatch):
     assert (target / "RELEASE.json").read_bytes() == (origin / "RELEASE.json").read_bytes()
 
 
-def test_dashboard_stale_release_is_persisted_without_installing(tmp_path, monkeypatch):
+def test_desktop_stale_release_is_persisted_without_installing(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_update, "ROOT", tmp_path)
     monkeypatch.setattr(auto_update, "managed_target", lambda root: None)
     monkeypatch.setattr(auto_update, "installed_version", lambda root: "6.1.1")
     monkeypatch.setattr(auto_update, "find_update", lambda current: auto_update.Release("v6.1.2", "b" * 40, "unused", "c" * 64))
     monkeypatch.setattr(auto_update, "apply_update", lambda *args: pytest.fail("stale release was applied"))
     monkeypatch.setattr(sys, "prefix", sys.base_prefix)
-    monkeypatch.setattr(sys, "argv", ["auto_update.py", "--apply", "--dashboard",
+    monkeypatch.setattr(sys, "argv", ["auto_update.py", "--apply", "--desktop",
                                     "--expect-version", "6.1.2", "--expect-revision", "a" * 40])
     assert auto_update.main() == 1
-    result = json.loads((tmp_path / "auto-update-dashboard.json").read_text(encoding="utf-8"))
+    result = json.loads((tmp_path / "auto-update-desktop.json").read_text(encoding="utf-8"))
     assert result["status"] == "failed"
     assert "reviewed release changed" in result["error"]
 
 
 @pytest.mark.parametrize("publish_error", [False, True])
-def test_dashboard_attempt_covers_final_report(tmp_path, monkeypatch, publish_error):
+def test_desktop_update_attempt_covers_final_report(tmp_path, monkeypatch, publish_error):
     target = tmp_path / "install"
     target.mkdir()
-    report = target / "auto-update-dashboard.json"
+    report = target / "auto-update-desktop.json"
     stage = auto_update._attempt_path(target)
     wheel = b"synthetic wheel"
     release = auto_update.Release("v6.1.2", "a" * 40, "fixture.whl", hashlib.sha256(wheel).hexdigest())
@@ -153,7 +160,7 @@ def test_dashboard_attempt_covers_final_report(tmp_path, monkeypatch, publish_er
     monkeypatch.setattr(auto_update, "write_install_report", publish)
     monkeypatch.setattr(sys, "prefix", sys.base_prefix)
     monkeypatch.setattr(sys, "argv", [
-        "auto_update.py", "--apply", "--dashboard", "--expect-version", release.version,
+        "auto_update.py", "--apply", "--desktop", "--expect-version", release.version,
         "--expect-revision", release.revision,
     ])
 
@@ -162,7 +169,10 @@ def test_dashboard_attempt_covers_final_report(tmp_path, monkeypatch, publish_er
         assert json.loads((stage / "result.json").read_text(encoding="utf-8")) == {"success": True}
         assert (stage / "installer.log").is_file()
         assert auto_update.main() == 1
-    assert json.loads(report.read_text(encoding="utf-8"))["status"] == ("installing" if publish_error else "installed")
+    if publish_error:
+        assert json.loads(report.read_text(encoding="utf-8"))["status"] == "installing"
+    else:
+        assert json.loads(report.read_text(encoding="utf-8"))["status"] == "installed"
     assert checks == ["6.1.1"]
     assert stage.exists() is publish_error
 
@@ -212,19 +222,19 @@ def test_installer_can_finish_after_observation_timeout_without_replaying(tmp_pa
     with pytest.raises(ValueError, match="previous update attempt"):
         auto_update.apply_update(release, "6.1.1", target)
     assert fetched == [stage / "source"]
-    dashboard_report = target / "auto-update-dashboard.json"
-    dashboard_report.write_text(json.dumps(result), encoding="utf-8")
-    previous_report = dashboard_report.read_bytes()
+    desktop_report = target / "auto-update-desktop.json"
+    desktop_report.write_text(json.dumps(result), encoding="utf-8")
+    previous_report = desktop_report.read_bytes()
     monkeypatch.setattr(auto_update, "ROOT", target)
     monkeypatch.setattr(auto_update, "managed_target", lambda _root: None)
     monkeypatch.setattr(auto_update, "find_update", lambda _version: pytest.fail("attempt was replayed"))
     monkeypatch.setattr(sys, "prefix", sys.base_prefix)
     monkeypatch.setattr(sys, "argv", [
-        "auto_update.py", "--apply", "--dashboard", "--expect-version", release.version,
+        "auto_update.py", "--apply", "--desktop", "--expect-version", release.version,
         "--expect-revision", release.revision,
     ])
     assert auto_update.main() == 1
-    assert dashboard_report.read_bytes() == previous_report
+    assert desktop_report.read_bytes() == previous_report
 
 
 @pytest.mark.parametrize(("payload", "exit_code", "known"), [

@@ -279,6 +279,17 @@ def main() -> int:
             if hashlib.file_digest(stream, "sha256").hexdigest() != args.wheel_digest:
                 raise ValueError("release wheel digest changed before installation")
         result = install_candidate(SOURCE, install, configured_state(install), args.wheel, args.version, args.previous_version)
+        if result.get("success") is True and (install / ".desktop-disabled").exists():
+            result["desktop"] = {"skipped": True, "reason": "headless installation preference"}
+        elif result.get("success") is True:
+            try:
+                from tools.install_desktop import install_release
+                binary = install_release(install, args.version, args.revision)
+                result["desktop"] = {"success": True, "path": str(binary)}
+            except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                # Native binaries are versioned; the previous executable is not
+                # overwritten while running, and the service update is independent.
+                result["desktop"] = {"success": False, "error": str(exc)}
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         result = {"success": False, "error": str(exc)}
     write_install_report(args.report, result)

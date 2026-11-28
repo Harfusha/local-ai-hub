@@ -1,6 +1,7 @@
 """Contracts for exact-symbol derivative grading in the audit evaluator."""
 from __future__ import annotations
 
+import ast
 import copy
 import sys
 from pathlib import Path
@@ -12,14 +13,13 @@ import audit_quality_eval as evaluator
 
 def _captured_baseline():
     contracts = evaluator.goldset_contract()
-    texts = {contract["expected_path"]: f"# captured source for {contract['expected_path']}\n"
-             for contract in contracts}
+    texts = {path: f"# captured source for {path}\n"
+             for contract in contracts for path in contract["expected_symbols"]}
     hashes = {path: evaluator.hashlib.sha256(text.encode("utf-8")).hexdigest()
               for path, text in texts.items()}
     rows = [{**contract,
-             "symbols": [{"path": contract["expected_path"], "line": 1,
-                          "name": name, "kind": "function"}
-                         for name in contract["expected_symbols"][contract["expected_path"]]]}
+             "symbols": [{"path": path, "line": 1, "name": name, "kind": "function"}
+                         for path, names in contract["expected_symbols"].items() for name in names]}
             for contract in contracts]
     gold_count = len(evaluator.GOLD)
     return ({"goldset_version": evaluator.GOLDSET_VERSION,
@@ -82,13 +82,13 @@ def test_derivative_requires_all_architecture_captures_and_preserves_query_targe
     graded_contracts = [(call.kwargs["expected_symbols"], call.kwargs["intent"])
                         for call in grade.call_args_list]
     for case, _, path in evaluator.ARCHITECTURE_QUERIES:
-        symbols, intent = evaluator.ARCHITECTURE_TARGETS[case]
-        assert ({path: list(symbols)}, intent) in graded_contracts
+        _, intent = evaluator.ARCHITECTURE_TARGETS[case]
+        assert (evaluator.architecture_symbols(case, path), intent) in graded_contracts
     assert evaluator.ARCHITECTURE_TARGETS["async-architecture"][0] == ("AsyncJobManager",)
     assert len(evaluator.ARCHITECTURE_TARGETS["mcp-architecture"][0]) == 7
 
 
-def test_v2_contract_binds_current_explicit_test_target_and_mcp_recall_k():
+def test_current_contract_binds_explicit_test_target_and_mcp_recall_k():
     contract = evaluator.goldset_contract()
     by_case = {row["case"]: row for row in contract}
     current = by_case["explicit-test-intent"]
@@ -106,3 +106,28 @@ def test_v2_contract_binds_current_explicit_test_target_and_mcp_recall_k():
     result = evaluator.regrade_captured_baseline_symbols(baseline, texts, hashes)
     assert result["success"] is False
     assert result["reason"] == "goldset_contract_mismatch"
+
+
+def test_mcp_goldset_cites_real_definitions_after_module_extraction():
+    root = Path(__file__).resolve().parents[1]
+    contract = {row["case"]: row for row in evaluator.goldset_contract()}
+    expected = contract["mcp-architecture"]["expected_symbols"]
+    assert len(expected) == 7
+    assert sum(map(len, expected.values())) == 7
+    for path, names in expected.items():
+        module = ast.parse((root / path).read_text(encoding="utf-8"))
+        for name in names:
+            matches = [node for node in module.body
+                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+            assert len(matches) == 1, (path, name)
+            assert "MCP public tool entrypoint" in (ast.get_docstring(matches[0]) or "")
+    assert contract["mcp-entrypoint"]["expected_symbols"] == {
+        "src/local_ai_hub/mcp_tools_status.py": ["local_ai_status"]}
+
+
+def test_old_single_file_goldset_cannot_be_paired_with_extracted_contract():
+    baseline, texts, hashes, _ = _captured_baseline()
+    baseline["goldset_version"] = 2
+    result = evaluator.regrade_captured_baseline_symbols(baseline, texts, hashes)
+    assert result["success"] is False
+    assert result["reason"] == "goldset_version_mismatch"

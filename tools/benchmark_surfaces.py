@@ -2977,6 +2977,7 @@ def run_benchmark(
             if inference_server_url is not None else ""
         )
         app_config_path.write_text(
+            "[local_ai_hub]\nconfig_schema_version = 1\n\n"
             "[server]\n"
             'bind = "127.0.0.1"\n'
             "port = 11497\n"
@@ -3277,7 +3278,8 @@ def run_benchmark(
                 if not isinstance(state_fingerprint, str) or not state_fingerprint:
                     return {"success": False}
                 cache_key = cache_stable_hash({
-                    "op": "code-index", "root": canonical_root(repo_root), "state": state_fingerprint, "params": params,
+                    "op": "code-index", "root": canonical_root(repo_root), "state": state_fingerprint,
+                    "params": params, "version": 2,
                 })
                 cached = app.services.repo_cache.get(cache_key)
             except Exception:
@@ -3872,6 +3874,7 @@ def run_benchmark(
                     "top_k": 10,
                     "reranker": False,
                     "semantic_only": False,
+                    "lexical_only": False,
                     "semantic_query": clean_query,
                     "scope_path": None,
                     "chunker_version": RAG_CHUNKER_VERSION,

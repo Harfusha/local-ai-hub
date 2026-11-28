@@ -37,7 +37,7 @@ Avoid dumping source files longer than 80 lines; prefer precise, bounded slices
 and scoped indexed search. Use `tokcount` to measure actual token use and
 `trim-run` only for supported read-only or summary-producing commands.
 
-## Response budget and safe fallback
+## Safe response handling
 
 - `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.

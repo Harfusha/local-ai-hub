@@ -716,7 +716,7 @@ def _adoption_target(arguments: dict[str, Any]) -> tuple[str, str] | None:
     return tool, action
 
 
-def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False, recommended: bool = False, event_id: str = "") -> None:
+def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False, failure_reason: str | None = None, recommended: bool = False, event_id: str = "") -> None:
     """Best-effort aggregate telemetry; never retain request/response values."""
     try:
         action = str(arguments.get("action") or "default").lower()
@@ -729,7 +729,7 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
         if target is not None:
             outcome, reason = "bypassed", "explicit_client_signal"
         elif failed:
-            outcome, reason = "failed", "other"
+            outcome, reason = "failed", failure_reason or "other"
         elif payload.get("fallback_used") is True:
             outcome, reason = "fallback_used", _adoption_reason(payload.get("error"))
         elif payload.get("success") is True:

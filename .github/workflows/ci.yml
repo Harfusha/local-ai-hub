@@ -49,7 +49,7 @@ jobs:
       - run: python -m compileall -q src tools tests
       - run: pyflakes src tools
       - run: ruff check src tools tests
-      - run: npm run typecheck
+
       - run: python tools/validate_ci_selectors.py
 
   typing:
@@ -84,7 +84,7 @@ jobs:
           package-manager-cache: false
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c tools/ci-constraints-py3.13.txt
-      - run: npm run build
+
       - run: python tools/setup.py --config config.toml.example --generate-only --skip-agent-config --skip-companion-skills
       - run: python -m pytest -q tests/test_packaging_assets.py tests/test_provider_plugin_bundles.py
       - run: >-
@@ -253,7 +253,7 @@ jobs:
       - name: Reject test/runtime side effects
         run: python tools/release_check.py --post-test
       - run: python -m local_ai_hub.generator --config src/local_ai_hub/defaults.toml --output-dir .
-      - run: python tools/check_dashboard.py
+
       - name: Reject tracked test mutations
         run: git diff --exit-code
       - name: Clean ignored test artifacts
@@ -291,7 +291,13 @@ jobs:
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev]" "Pillow>=10,<13"
+      - name: Install CPU tensor test dependency (Linux and Windows)
+        if: ${{ env.RUN_FULL_SUITE == 'true' && runner.os != 'macOS' }}
+        run: python -m pip install "torch>=2.7,<3" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install tensor test dependency (macOS)
+        if: ${{ env.RUN_FULL_SUITE == 'true' && runner.os == 'macOS' }}
+        run: python -m pip install "torch>=2.7,<3"
       - name: Run full integration suite
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
         run: python -m coverage run -m pytest -ra -p tools.ci_diagnostics --junitxml=${{ runner.temp }}/integration-junit.xml
@@ -413,6 +419,13 @@ jobs:
         run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json
       - name: Check fresh source-symbol and citation goldset
         run: python tools/audit_quality_eval.py --root "${{ github.workspace }}" --output "${{ runner.temp }}/audit-quality.json"
+      - name: Retain exact goldset diagnostics (including failed cases)
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: audit-quality-windows-py3.13
+          path: ${{ runner.temp }}/audit-quality.json
+          if-no-files-found: warn
       - name: Check source intent and registered entrypoint regressions
         run: python -m pytest -q tests/test_audit_code_index_entrypoints.py
       - uses: actions/upload-artifact@v7
@@ -443,7 +456,7 @@ jobs:
       - run: python tools/selftest.py
         env:
           LOCAL_AI_SELFTEST_STARTUP_TIMEOUT: "60.0"
-      - run: python tools/check_dashboard.py
+
       - name: Reject tracked mutations
         run: git diff --exit-code
       - name: Reject runtime side effects before cleanup
@@ -500,10 +513,15 @@ jobs:
           path: ${{ runner.temp }}/wheel-mcp-smoke.json
           if-no-files-found: warn
 
+  native-desktop-release:
+    name: Verify native desktop release assets
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') }}
+    uses: ./.github/workflows/desktop.yml
+
   release:
     name: Publish verified release
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [package]
+    needs: [package, native-desktop-release]
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml

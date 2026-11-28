@@ -1,5 +1,7 @@
 from pathlib import Path
+import hashlib
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -285,3 +287,85 @@ def test_cli_stages_and_applies_only_after_semantic_review(tmp_path: Path, monke
     assert "semantic review: PASS" in output
     assert "sha256=" in output
     assert "applied: True" in output
+
+
+def test_cli_rejects_removed_direct_apply_flag():
+    from local_ai_hub import __main__ as cli
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--apply"])
+
+    assert error.value.code == 2
+
+
+def test_hubctl_rejects_legacy_direct_apply_without_writing(tmp_path, monkeypatch):
+    from tools import hubctl
+    from local_ai_hub import caveman_instructions
+
+    source = tmp_path / "agent" / "AGENTS.md"
+    source.parent.mkdir()
+    original = "Keep this instruction unchanged.\n"
+    source.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        hubctl,
+        "load_config",
+        lambda _path: {"server": {"state_dir": str(tmp_path / "state")}},
+    )
+    monkeypatch.setattr(caveman_instructions, "discover_instruction_files", lambda _roots: [source])
+    monkeypatch.setattr(
+        caveman_instructions,
+        "backup_instruction",
+        lambda *_args, **_kwargs: pytest.fail("legacy compression must be rejected before processing files"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hubctl.py", "caveman-compress", "--root", str(source.parent), "--apply"],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        hubctl.main()
+
+    assert error.value.code == 2
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_hubctl_applies_only_digest_bound_staged_manifest(tmp_path, monkeypatch, capsys):
+    from tools import hubctl
+
+    source = tmp_path / "agent" / "AGENTS.md"
+    source.parent.mkdir()
+    source.write_text("Please run tests before you start.\n", encoding="utf-8")
+    state_dir = tmp_path / "state"
+    staged = _stage(
+        source,
+        state_dir / "caveman-staging",
+        lambda _text: "Run tests first.\n",
+    )
+    manifest = staged.backup.parent / "manifest.json"
+    manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        hubctl,
+        "load_config",
+        lambda _path: {"server": {"state_dir": str(state_dir)}},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hubctl.py",
+            "compress-instructions",
+            "apply-staged",
+            "--root",
+            str(tmp_path),
+            "--manifest",
+            str(manifest),
+            "--manifest-sha256",
+            manifest_digest,
+        ],
+    )
+
+    assert hubctl.main() == 0
+
+    assert source.read_text(encoding="utf-8") == "Run tests first.\n"
+    assert '"success": true' in capsys.readouterr().out

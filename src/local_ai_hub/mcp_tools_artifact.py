@@ -8,8 +8,8 @@ ArtifactAction: TypeAlias = Literal[*operation_actions("local_ai_artifact")]
 
 
 def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0, root: str = "", expected_file_sha256: str = "") -> dict[str, Any]:
+    """MCP public tool entrypoint. Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     from . import mcp_server as services_module
-    """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not services_module.operation_enabled(services_module.FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
     if action == "source":

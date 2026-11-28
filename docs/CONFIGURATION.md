@@ -2,7 +2,7 @@
 
 `defaults.toml` is the authoritative reference. `config.toml` should contain only overrides. User values are merged after the auto-selected hardware profile, so explicit settings always win. Malformed explicit TOML and invalid transport/resource limits fail fast.
 
-Runtime accepts only config files stamped with `local_ai_hub.config_schema_version = 1`; defaults do not make an unversioned user file current. Setup/update migrates unversioned config and runtime overrides before launch, verifies adjacent recovery copies, and stamps the current version. Run the updater before starting an unversioned config. New dashboard runtime overrides are written with the current schema marker.
+Runtime accepts only config files stamped with `local_ai_hub.config_schema_version = 1`; defaults do not make an unversioned user file current. Setup migrates config and runtime overrides only when updating an existing installation, verifies adjacent recovery copies, and stamps the current version. A fresh installation rejects unversioned or retired settings; run the updater for an existing installation before starting it. Native desktop runtime overrides are written with the current schema marker.
 
 ## HTTP authentication
 
@@ -10,9 +10,11 @@ The HTTP server accepts loopback peers only and binds to `127.0.0.1`. Hub API cr
 
 ## Telemetry and trace detail
 
-`[telemetry].mode` is the single detail control: `off` disables persisted telemetry, `minimal` keeps aggregate request counts and fatal errors, and `full` enables detailed traces and endpoint latency data. The dashboard writes the canonical `telemetry.mode` setting (`full` or `minimal`). Trace retention and size limits, including `max_list_limit`, also live under `[telemetry]`.
+`[telemetry].mode` is the single detail control: `off` disables persisted telemetry, `minimal` keeps aggregate request counts and fatal errors, and `full` enables detailed traces and endpoint latency data. The native desktop writes the canonical `telemetry.mode` setting (`full` or `minimal`). Trace retention and size limits, including `max_list_limit`, also live under `[telemetry]`.
 
 The retired `[debug_traces]` and `[observability.debug_traces]` tables are converted during setup/update into `[telemetry]`; each changed config is first copied to a verified adjacent backup. Runtime config loading rejects these retired tables. Run the installer/update before starting a config that still contains them.
+
+The retired `features.dashboard` flag is removed during the one-time setup/update migration and retained in the verified recovery copy. Runtime config loading rejects it. The native desktop is the only supported user interface.
 
 ## Hardware
 
@@ -205,22 +207,27 @@ concise_local_output = true    # Default: true — injects Caveman style (ultra)
 compress_local_input = true    # Default: true — compacts excessive whitespace in safe plain-text prompts
 ```
 
-### Instruction & Skill Compression CLI (`caveman-compress`)
+### Instruction & Skill Compression (`caveman-compress`)
 
 To automatically compress agent instructions (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `rules.md`, `*.mdc`, `SKILL.md`) using local models in Caveman Ultra mode:
 
 ```bash
-# Preview token savings on project instructions (creates byte-verified backups in staging, no file changes):
+# Stage a candidate with byte-verified backup and semantic review; source files stay unchanged:
 python tools/hubctl.py caveman-compress --root /path/to/project
 
-# Apply compressed instructions in-place (atomic replace with SHA-256 manifest backup):
-python tools/hubctl.py caveman-compress --root /path/to/project --apply
+# Inspect the exact staged manifest; copy its manifest_sha256 from the JSON result:
+python tools/hubctl.py caveman-compress review-staged --root /path/to/project --manifest /path/from/staging/manifest.json
 
-# Discover and compress all agent skills and instructions across all user environments:
-python tools/hubctl.py caveman-compress --all-agents --apply
+# Apply only those reviewed bytes using that exact digest:
+python tools/hubctl.py caveman-compress apply-staged --root /path/to/project --manifest /path/from/staging/manifest.json --manifest-sha256 DIGEST_FROM_REVIEW
+
+# Restore the original bytes using the same unchanged manifest digest:
+python tools/hubctl.py caveman-compress restore-staged --root /path/to/project --manifest /path/from/staging/manifest.json --manifest-sha256 DIGEST_FROM_REVIEW
 ```
 
 All compressions strictly enforce:
 1. Exact preservation of code blocks, inline backticks, URLs, file paths, versions, and structure.
 2. Independent semantic review for equivalence (`{"equivalent": true, "missing": [], "weakened": []}`).
-3. Hash-verified backup retention with reversible manifests.
+3. Hash-verified backup retention with reversible manifests. Review/apply/restore remain bound to the configured staging directory and selected repository; apply/restore do not invoke inference or regenerate text.
+
+The native desktop exposes the same staging and digest-bound review/apply/restore flow under **Settings → Instruction compression**. Direct compression `--apply` and cross-directory in-place writes were removed.

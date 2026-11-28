@@ -18,7 +18,7 @@ def _installed_hub_version() -> str | None:
 class HTTPAdminMixin:
     def _handle_post_config_update(self, payload: dict[str, Any]) -> None:
         from . import http_server as services_module
-        from .dashboard_contracts import dashboard_settings_patch
+        from .dashboard_contracts import operator_settings_patch
 
         app = services_module.APP
         action = str(payload.get("action", "update")).strip().lower()
@@ -39,7 +39,7 @@ class HTTPAdminMixin:
             self._send(400, {"success": False, "error": "settings must be an object"})
             return
         try:
-            patch = dashboard_settings_patch(requested)
+            patch = operator_settings_patch(requested)
         except ValueError as exc:
             self._send(400, {"success": False, "error": str(exc)})
             return
@@ -556,29 +556,43 @@ class HTTPAdminMixin:
             req = services_module.urllib.request.Request(f"{ollama_url}/api/tags")
             with services_module.urllib.request.urlopen(req, timeout=3) as resp:
                 tags_data = services_module.json.loads(resp.read().decode("utf-8"))
-            models = tags_data.get("models", [])
+            models = tags_data.get("models")
+            if not isinstance(models, list) or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"] for item in models):
+                return {"success": False, "error": "Invalid Ollama model inventory", "models": []}
             running: dict[str, services_module.Any] = {}
+            running_status_available = False
             try:
                 req_ps = services_module.urllib.request.Request(f"{ollama_url}/api/ps")
                 with services_module.urllib.request.urlopen(req_ps, timeout=2) as resp_ps:
                     ps_data = services_module.json.loads(resp_ps.read().decode("utf-8"))
-                    running = {m.get("model"): m for m in ps_data.get("models", [])}
+                    records = ps_data.get("models")
+                    if isinstance(records, list) and all(
+                        isinstance(item, dict) and isinstance(item.get("model"), str) and item["model"]
+                        for item in records
+                    ):
+                        running = {m["model"]: m for m in records}
+                        running_status_available = True
             except Exception:
                 pass
 
             enriched = []
             for m in models:
                 name = str(m.get("name", ""))
-                is_running = name in running or any(name.startswith(k) for k in running)
+                # Ollama names include tags. Prefix matches confuse distinct
+                # models (e.g. qwen:7b and qwen:7b-large).
+                is_running = (name in running) if running_status_available else None
                 run_info = running.get(name, {})
                 enriched.append({
                     "name": name,
                     "size_gb": round(m.get("size", 0) / (1024**3), 2),
                     "modified_at": m.get("modified_at", ""),
                     "running": is_running,
-                    "vram_mb": round(run_info.get("size_vram", 0) / (1024**2), 1) if is_running else 0,
+                    "vram_mb": (round(run_info["size_vram"] / (1024**2), 1)
+                                if is_running and type(run_info.get("size_vram")) in (int, float)
+                                else 0 if is_running is False else None),
                 })
-            return {"success": True, "models": enriched, "count": len(enriched)}
+            return {"success": True, "models": enriched, "count": len(enriched),
+                    "running_status_available": running_status_available}
         except Exception as exc:
             return {"success": False, "error": f"Ollama query failed: {exc}", "models": []}
 

@@ -539,7 +539,8 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     else:
         assert 'case "${1-}" in' in runner_text
         assert "PreToolUse)" in runner_text
-        assert "echo '{}'" in runner_text
+        assert "printf '{}\\n'" in runner_text
+        assert 'printf \'{"decision":"allow"}\\n\'' in runner_text
     hub_hook = data["local-ai-hub"]
     assert hub_hook["enabled"] is True
     assert "PreInvocation" not in hub_hook
@@ -687,31 +688,40 @@ def test_sync_antigravity_hooks_json_migrates_only_recognized_unowned_runner(
     assert data["custom-hook"] == {"enabled": True, "PreInvocation": []}
 
 
-def test_remove_duplicate_antigravity_hooks_removes_only_exact_generated_group(tmp_path):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_remove_duplicate_antigravity_hooks_removes_only_exact_generated_group(tmp_path, legacy):
     import json
 
     hooks_file = tmp_path / "hooks.json"
-    hooks_file.write_text(json.dumps({
-        "custom": {"enabled": True, "PreInvocation": []},
-        "local-ai-hub": {
-            "enabled": True,
-            "SessionStart": [{
-                "type": "command", "command": "local-ai-hook.cmd SessionStart", "timeout": 10,
+    runner = "local-ai-hook.cmd" if os.name == "nt" else "./local-ai-hook.sh"
+    matcher = "edit_file|write_file" if legacy else (
+        "edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content"
+    )
+    hook = {
+        "enabled": True,
+        "SessionStart": [{
+            "type": "command", "command": f"{runner} SessionStart", "timeout": 10,
+        }],
+        "PreToolUse": [{
+            "matcher": "read_file|run_command",
+            "hooks": [{
+                "type": "command", "command": f"{runner} PreToolUse", "timeout": 15,
             }],
-            "PreToolUse": [{
-                "matcher": "read_file|run_command",
-                "hooks": [{
-                    "type": "command", "command": "local-ai-hook.cmd PreToolUse", "timeout": 15,
-                }],
+        }],
+        "PostToolUse": [{
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command", "command": f"{runner} PostToolUse", "timeout": 15,
             }],
-            "PostToolUse": [{
-                "matcher": "edit_file|write_file",
-                "hooks": [{
-                    "type": "command", "command": "local-ai-hook.cmd PostToolUse", "timeout": 15,
-                }],
-            }],
-        },
-    }), encoding="utf-8")
+        }],
+    }
+    custom = {"enabled": True, "PreInvocation": []}
+    hook["SessionStart"][0]["timeout"] = 99
+    hooks_file.write_text(json.dumps({"custom": custom, "local-ai-hub": hook}), encoding="utf-8")
+    assert setup._remove_duplicate_antigravity_hooks(hooks_file, False) is False
+    assert json.loads(hooks_file.read_text(encoding="utf-8"))["local-ai-hub"] == hook
+    hook["SessionStart"][0]["timeout"] = 10
+    hooks_file.write_text(json.dumps({"custom": custom, "local-ai-hub": hook}), encoding="utf-8")
 
     assert setup._remove_duplicate_antigravity_hooks(hooks_file, False) is True
     data = json.loads(hooks_file.read_text(encoding="utf-8"))
