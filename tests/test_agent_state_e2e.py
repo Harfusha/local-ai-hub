@@ -410,6 +410,10 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
             "confirmed post-task learning sentinel",
             "mem-app-memory-post-task-learning",
         )
+        canonical_after = _canonical_project_memory_records(
+            ContextRequest(task_id="app-memory-follow-up", root=str(root), coordination_id=repository_id)
+        )
+        assert learned["id"] in {record.record_id for record in canonical_after}
         follow_up = app.agent_tasks.create(
             GoalContract(goal="confirmed post-task learning sentinel", acceptance_criteria=("Use relevant project memory",)),
             ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-follow-up"),
@@ -421,7 +425,7 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
         }
         # The follow-up needs the confirmed learning, not unrelated parser facts.
         # Require exact IDs so relevance filtering cannot silently add noise.
-        assert follow_up_ids == {learned["id"]}
+        assert follow_up_ids == {learned["id"]}, follow_up.checkpoint.state_data["memory_context"]
     finally:
         trace_context.reset_context(token)
         app.close()
