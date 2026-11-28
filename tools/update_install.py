@@ -166,8 +166,22 @@ def _activate(source: Path, install: Path, state: Path, wheel: Path, wheelhouse:
         os.replace(venv, previous_venv)
         shutil.copytree(previous_venv, venv, symlinks=True)
         install_runtime(python, install / "requirements-core.txt", wheel, wheelhouse, version)
+        project_migration = None
+        project_manifest = install / ".local-ai-hub" / "project.json"
+        git_marker = install / ".git"
+        legacy_db = state / "agent_state.sqlite"
+        if (
+            state.is_dir()
+            and (project_manifest.is_file() or git_marker.exists() or git_marker.is_symlink())
+            and (project_manifest.is_file() or legacy_db.exists())
+        ):
+            from local_ai_hub.agent_state_migration import migrate_project_state_on_update
+
+            project_migration = migrate_project_state_on_update(state, install)
         try:
             migration = run_state_migrations(state, backup_current=True)
+            if project_migration is not None:
+                migration["project_state_migration"] = project_migration
         except StateMigrationError as exc:
             migration["backups"] = [str(exc.backup_path)]
             raise

@@ -110,9 +110,15 @@ def test_update_bootstraps_old_checkout_without_origin_and_identity_survives_rel
     assert repeated["status"] == "no_legacy_state"
     assert repeated["project_id"] == project_id
 
+    subprocess.run(["git", "-C", str(checkout), "add", ".local-ai-hub/project.json"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "-m",
+                    "publish project identity"], check=True, capture_output=True)
     relocated = tmp_path / "relocated-checkout"
-    shutil.copytree(checkout / ".local-ai-hub", relocated / ".local-ai-hub")
-    subprocess.run(["git", "init", str(relocated)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(checkout), str(relocated)], check=True, capture_output=True)
+    relocated_state = tmp_path / "relocated-state"
+    relocated_state.mkdir()
+    assert migrate_project_state_on_update(relocated_state, relocated)["status"] == "no_legacy_state"
     assert project_scope_id(relocated) == project_id
 
     unrelated = tmp_path / "unrelated-old-checkout"
@@ -127,6 +133,35 @@ def test_update_bootstraps_old_checkout_without_origin_and_identity_survives_rel
     unrelated_state.mkdir()
     migrate_project_state_on_update(unrelated_state, unrelated)
     assert project_scope_id(unrelated) != project_id
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Git unavailable")
+def test_concurrent_updates_bootstrap_one_identity_for_same_old_checkout(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    checkout = tmp_path / "old-checkout"
+    checkout.mkdir()
+    (checkout / ".local-ai-hub").mkdir()
+    (checkout / ".gitignore").write_text(".local-ai-hub/local/\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m",
+                    "old checkout"], check=True, capture_output=True)
+    states = [tmp_path / "state-a", tmp_path / "state-b"]
+    for state in states:
+        state.mkdir()
+    start = Barrier(2)
+
+    def update(state: Path):
+        start.wait(timeout=5)
+        return migrate_project_state_on_update(state, checkout)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [future.result(timeout=15) for future in [pool.submit(update, state) for state in states]]
+
+    assert [result["status"] for result in results] == ["no_legacy_state", "no_legacy_state"]
+    assert results[0]["project_id"] == results[1]["project_id"] == project_scope_id(checkout)
 
 
 def test_update_migration_publishes_portable_records_once(tmp_path: Path):

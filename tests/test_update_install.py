@@ -1,10 +1,13 @@
 import json
 import sqlite3
+import subprocess
 from contextlib import closing
 from threading import Thread
 
 import pytest
 
+from local_ai_hub import agent_state_migration
+from local_ai_hub.project_identity import project_scope_id
 from local_ai_hub.state_lifecycle import read_state_version, write_state_version
 from tools import state_migrations, update_install
 
@@ -150,6 +153,14 @@ def test_v8_update_runs_state_migrations_and_rolls_back_in_reverse_order(tmp_pat
     install, source = tmp_path / "install", tmp_path / "source"
     layout(install, "7.9.9")
     layout(source, "8.0.0")
+    subprocess.run(["git", "init", "--quiet", str(install)], check=True, capture_output=True)
+    (install / ".local-ai-hub").mkdir()
+    (install / ".local-ai-hub" / ".gitignore").write_text("local/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(install), "add", ".local-ai-hub/.gitignore"], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(install), "-c", "user.name=Fixture", "-c",
+        "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "old checkout",
+    ], check=True, capture_output=True)
     (install / "config.toml").write_text("# preserve\n", encoding="utf-8")
     venv = install / ".venv"
     venv.mkdir()
@@ -157,6 +168,7 @@ def test_v8_update_runs_state_migrations_and_rolls_back_in_reverse_order(tmp_pat
     state = install / "state"
     state.mkdir()
     (state / "service.managed").touch()
+    (state / "agent_state.sqlite").touch()
     write_state_version(state, version=1)
     database = state / "rag.sqlite3"
     with closing(sqlite3.connect(database)) as con:
@@ -165,6 +177,14 @@ def test_v8_update_runs_state_migrations_and_rolls_back_in_reverse_order(tmp_pat
         con.commit()
 
     events = []
+    project_migrations = []
+
+    real_project_migration = agent_state_migration.migrate_project_state_on_update
+
+    def migrate_project_state(state_dir, repo_root):
+        project_migrations.append((state_dir, repo_root))
+        events.append("project-state-migration")
+        return real_project_migration(state_dir, repo_root)
 
     def migrate(path):
         events.append("state-migration")
@@ -188,6 +208,7 @@ def test_v8_update_runs_state_migrations_and_rolls_back_in_reverse_order(tmp_pat
     monkeypatch.setattr(update_install, "configured_state", lambda _root: state)
     monkeypatch.setattr(update_install, "venv_python", lambda _venv: tmp_path / "python.exe")
     monkeypatch.setattr(update_install, "install_runtime", lambda *_args: None)
+    monkeypatch.setattr(agent_state_migration, "migrate_project_state_on_update", migrate_project_state)
     monkeypatch.setattr(update_install, "run_state_migrations", lambda path, **kwargs: state_migrations.run_state_migrations(
         path, migrations=(migration,), target_version=2, **kwargs,
     ))
@@ -224,7 +245,10 @@ def test_v8_update_runs_state_migrations_and_rolls_back_in_reverse_order(tmp_pat
         "8.0.0", "7.9.9", 1, tmp_path / "recovery",
     )
 
-    assert events == ["state-migration", "embedding-reset", "start-candidate", "start-previous"], result["message"]
+    assert events == ["project-state-migration", "state-migration", "embedding-reset", "start-candidate", "start-previous"], result["message"]
+    assert project_migrations == [(state, install)]
+    manifest = json.loads((install / ".local-ai-hub" / "project.json").read_text(encoding="utf-8"))
+    assert manifest["project_id"] == project_scope_id(install)
     assert result["success"] is False
     assert result["previous_install_restored"] is True
     assert read_state_version(state) == 1

@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 import pytest
 
@@ -61,6 +62,19 @@ def make_trusted_repository(parent: Path, rules: str) -> tuple[Path, str]:
     subprocess.run(["git", "config", "user.email", "t08-test@example.invalid"], cwd=root, check=True)
     subprocess.run(["git", "add", ".local-ai.toml"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "test project config"], cwd=root, check=True)
+    from local_ai_hub.repo_agent_state import ensure_agent_os_layout
+    from local_ai_hub.repo_knowledge import RepoKnowledgeStore
+
+    control = root / ".local-ai-hub"
+    control.mkdir()
+    (control / ".gitignore").write_text("local/\n", encoding="utf-8")
+    ensure_agent_os_layout(root)
+    RepoKnowledgeStore(root).bootstrap(
+        str(uuid.uuid4()), mode="shared", owner="test-bootstrap",
+        idempotency_key="test-project-bootstrap", authorize_write=lambda: True,
+    )
+    subprocess.run(["git", "add", ".local-ai-hub"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "bootstrap shared Agent OS"], cwd=root, check=True)
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
     ).stdout.strip()

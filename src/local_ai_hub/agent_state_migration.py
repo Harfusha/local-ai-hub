@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from .agent_state_inventory import _identity, _sidecars_absent
 from .repo_knowledge import RepoKnowledgeStore, _encode, _path_for, validate_knowledge_file
 from .repo_knowledge_batch import preview_knowledge_batch
-from .repo_plan.schema_validation import RepoPlanValidationError
+from .repo_plan.schema_validation import RepoPlanConflictError, RepoPlanValidationError
 from .project_identity import project_scope_id, repository_snapshot_id, worktree_scope_id
 
 _MAX_BATCH = 16
@@ -612,10 +612,17 @@ def migrate_project_state_on_update(state_dir: Path | str, repo_root: Path | str
                 idempotency_key=f"update-project-bootstrap-{project_id}",
                 authorize_write=lambda: True,
             )
-        except (OSError, RepoPlanValidationError, RuntimeError) as exc:
-            raise RepoPlanValidationError(
-                "Old checkout project identity could not be bootstrapped safely"
-            ) from exc
+        except (OSError, RepoPlanConflictError, RepoPlanValidationError, RuntimeError) as exc:
+            try:
+                manifest, _ = store.manifest()
+            except (OSError, RepoPlanConflictError, RepoPlanValidationError, RuntimeError) as read_exc:
+                raise RepoPlanValidationError(
+                    "Old checkout project identity could not be bootstrapped safely"
+                ) from read_exc
+            if manifest.get("mode") != "shared":
+                raise RepoPlanValidationError(
+                    "Concurrent project bootstrap did not produce a shared project"
+                ) from exc
     manifest, _ = store.manifest()
     project_id = manifest["project_id"]
     marker = state / "project_state_migration_v1.json"
