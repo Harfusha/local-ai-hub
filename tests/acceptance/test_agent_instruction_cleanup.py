@@ -15,6 +15,8 @@ def test_uninstall_removes_only_owned_instruction_blocks(tmp_path: Path, monkeyp
     install = tmp_path / "install"
     home.mkdir()
     install.mkdir()
+    (install / "defaults.toml").write_bytes((ROOT / "defaults.toml").read_bytes())
+    (install / "src" / "local_ai_hub").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(setup, "get_user_homes", lambda: [home])
     codex_home = home / ".codex"
