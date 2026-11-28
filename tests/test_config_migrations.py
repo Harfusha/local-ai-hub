@@ -75,7 +75,11 @@ def test_runtime_rejects_retired_dashboard_feature_until_update_migrates_it(tmp_
 
 def test_default_configs_do_not_reintroduce_retired_dashboard_feature():
     root = Path(__file__).resolve().parents[1]
-    for path in (root / "defaults.toml", root / "src/local_ai_hub/defaults.toml"):
+    for path in (
+        root / "defaults.toml",
+        root / "src/local_ai_hub/defaults.toml",
+        root / "config.toml.example",
+    ):
         assert "dashboard" not in tomllib.loads(path.read_text(encoding="utf-8"))["features"]
 
 

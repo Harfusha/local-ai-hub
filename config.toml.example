@@ -23,13 +23,13 @@ model = "qwen2.5-coder-prep-v4:3b"
 [models]
 # The pinned local Laya checkpoint may be fetched on first eligible inference.
 allow_hf_downloads = true
-# Use the trained Qwen 3B preprocessing model, 1.5B for quick/simple requests, 3B for ordinary and more involved work, and 7B for the hardest reasoning.
+# Use 3B for quick/simple requests, 7B for ordinary work, and Qwen3.5 9B for hardest reasoning. Qwen 1.5B is preprocessing-only.
 # Check installed aliases with Ollama /api/tags or llama.cpp /models.
-# fast_code = "qwen2.5-coder:1.5b"
-# heavy_code = "qwen2.5-coder:3b"
-# reasoning = "qwen2.5-coder:7b"
-# background_code = "qwen2.5-coder:0.5b"
-# general = "qwen2.5-coder:3b"
+# fast_code = "qwen2.5-coder:3b"
+# heavy_code = "qwen2.5-coder:7b"
+# reasoning = "qwen3.5:9b"
+# background_code = "qwen2.5-coder:3b"
+# general = "qwen2.5-coder:7b"
 # Vision model follows hardware profile: qwen3.5:9b on balanced/high/max,
 # qwen3-vl:4b on cpu/integrated/low. Override only when needed.
 
@@ -131,7 +131,6 @@ code_intelligence = true  # Serena integration
 preprocessing = true      # background idle project warmup
 subagents = true          # advisory local profiles
 agent_os = true           # durable execution: tasks, verification receipts, memory
-dashboard = true          # legacy compatibility flag; browser UI retired
 work_orchestrator = true  # whole-task plan/edit/verify/handoff (local_ai_work)
 
 # After changing configuration, regenerate dynamic agent skills, instructions, and MCP schemas:
